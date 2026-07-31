@@ -11,7 +11,7 @@ export async function checkCommand(
   options: { file?: string; command?: string; ci?: boolean; write?: boolean; analyzeReasoning?: string }
 ) {
   const cwd = process.cwd()
-  const engine = new PolicyEngine(join(cwd, '.ai-enforce.yaml'))
+  const engine = new PolicyEngine(join(cwd, '.keel.yaml'))
   engine.loadPolicy()
 
   let hasViolations = false
@@ -162,11 +162,11 @@ export async function checkCommand(
   }
 
   if (!target && !options.file && !options.command && !options.ci) {
-    console.log(chalk.cyan('ai-enforce check'))
-    console.log('Usage: ai-enforce check <file>')
-    console.log('       ai-enforce check --command "<shell-command>"')
-    console.log('       ai-enforce check --file <path>')
-    console.log('       ai-enforce check --ci  (check staged changes against policy)')
+    console.log(chalk.cyan('keel check'))
+    console.log('Usage: keel check <file>')
+    console.log('       keel check --command "<shell-command>"')
+    console.log('       keel check --file <path>')
+    console.log('       keel check --ci  (check staged changes against policy)')
   }
 
   // Exit status is part of the contract, not just --ci decoration: the
@@ -189,7 +189,7 @@ function isViolation(result: { action: string }): boolean {
   return result.action === 'block'
 }
 
-function printResult(result: { action: string; rule_name: string; message: string; timestamp?: string; matched_pattern?: string }) {
+function printResult(result: { action: string; rule_name?: string; message: string; timestamp?: string; matched_pattern?: string }) {
   const icon = result.action === 'block' ? chalk.red('✗') :
     result.action === 'warn' ? chalk.yellow('⚠') :
     chalk.green('✓')

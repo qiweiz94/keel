@@ -6,13 +6,13 @@ import { DEFAULT_POLICY_YAML } from '../policy-engine.js'
 
 export async function initCommand(options: { hooks?: boolean }) {
   const cwd = process.cwd()
-  const policyPath = join(cwd, '.ai-enforce.yaml')
+  const policyPath = join(cwd, '.keel.yaml')
 
   if (existsSync(policyPath)) {
-    console.log(chalk.yellow('.ai-enforce.yaml already exists. Use ai-enforce check to verify it.'))
+    console.log(chalk.yellow('.keel.yaml already exists. Use keel check to verify it.'))
   } else {
     writeFileSync(policyPath, DEFAULT_POLICY_YAML, 'utf-8')
-    console.log(chalk.green('✓ Created .ai-enforce.yaml'))
+    console.log(chalk.green('✓ Created .keel.yaml'))
   }
 
   if (options.hooks) {
@@ -27,10 +27,10 @@ export async function initCommand(options: { hooks?: boolean }) {
       console.log(chalk.cyan('  Detected pre-commit framework.'))
       console.log(chalk.cyan('  Add to .pre-commit-config.yaml:'))
       console.log(chalk.cyan('    repos:'))
-      console.log(chalk.cyan('      - repo: https://github.com/nanoclaw/ai-enforce'))
+      console.log(chalk.cyan('      - repo: https://github.com/qiweiz94/keel'))
       console.log(chalk.cyan('        rev: v0.1.0'))
       console.log(chalk.cyan('        hooks:'))
-      console.log(chalk.cyan('          - id: ai-enforce-check'))
+      console.log(chalk.cyan('          - id: keel-check'))
     }
 
     const hooksDir = join(cwd, '.git', 'hooks')
@@ -44,19 +44,19 @@ export async function initCommand(options: { hooks?: boolean }) {
   }
 
   console.log(chalk.cyan('\nNext steps:'))
-  console.log('  1. Review .ai-enforce.yaml and customize the rules')
-  console.log('  2. Run ai-enforce check --ci to verify compliance')
-  console.log('  3. Commit .ai-enforce.yaml to your repository')
+  console.log('  1. Review .keel.yaml and customize the rules')
+  console.log('  2. Run keel check --ci to verify compliance')
+  console.log('  3. Commit .keel.yaml to your repository')
   if (!options.hooks) {
-    console.log('  4. Run ai-enforce init --hooks to install git hook enforcement')
+    console.log('  4. Run keel init --hooks to install git hook enforcement')
   }
 }
 
-const HOOK_MARKER = '# installed by ai-enforce'
+const HOOK_MARKER = '# installed by keel'
 
 function installHook(hooksDir: string, hookName: string) {
   const hookPath = join(hooksDir, hookName)
-  const backupPath = join(hooksDir, `${hookName}.ai-enforce-backup`)
+  const backupPath = join(hooksDir, `${hookName}.keel-backup`)
 
   // A backup already on disk means a previous install displaced a real hook;
   // keep chaining it even when re-running init over our own hook.
@@ -71,15 +71,15 @@ function installHook(hooksDir: string, hookName: string) {
       writeFileSync(backupPath, existing, 'utf-8')
       execSync(`chmod +x "${backupPath}"`)
       hasPredecessor = true
-      console.log(chalk.yellow(`  Preserved existing ${hookName} hook — it will run first, then ai-enforce.`))
+      console.log(chalk.yellow(`  Preserved existing ${hookName} hook — it will run first, then keel.`))
     }
   }
 
   const chained = hasPredecessor
     ? `
-# Run the hook that was here before ai-enforce was installed. Its failure is
-# still a failure — ai-enforce adds a gate, it does not replace yours.
-PRIOR="$(dirname "$0")/${hookName}.ai-enforce-backup"
+# Run the hook that was here before keel was installed. Its failure is
+# still a failure — keel adds a gate, it does not replace yours.
+PRIOR="$(dirname "$0")/${hookName}.keel-backup"
 if [ -x "$PRIOR" ]; then
   "$PRIOR" "$@" || exit $?
 fi
@@ -87,18 +87,18 @@ fi
     : ''
 
   writeFileSync(hookPath, `#!/bin/bash
-# ai-enforce ${hookName} hook
+# keel ${hookName} hook
 ${HOOK_MARKER}
 set -e
 ${chained}
 # Fail closed: a missing binary means enforcement cannot run, which must not
 # be silently equivalent to passing.
-command -v ai-enforce >/dev/null 2>&1 || {
-  echo "ai-enforce: not installed — refusing to skip enforcement." >&2
-  echo "  Install it (npm install -g ai-enforce), or remove .git/hooks/${hookName}." >&2
+command -v keel >/dev/null 2>&1 || {
+  echo "keel: not installed — refusing to skip enforcement." >&2
+  echo "  Install it (npm install -g keel-cli), or remove .git/hooks/${hookName}." >&2
   exit 1
 }
-ai-enforce check --ci
+keel check --ci
 `, 'utf-8')
   execSync(`chmod +x "${hookPath}"`)
 }

@@ -128,7 +128,7 @@ export function createReceipt(
   sessionName?: string
 ): ActionReceipt {
   initReceiptKey()
-  const session = sessionName || process.env.AI_ENFORCE_SESSION_ID || 'default'
+  const session = sessionName || process.env.KEEL_SESSION_ID || 'default'
   // Continue the chain already on disk. Without this the Map starts empty in
   // every one-shot CLI process, so each run wrote previous_receipt_hash=null
   // and the "chain" linked nothing to anything — deleting receipts left no

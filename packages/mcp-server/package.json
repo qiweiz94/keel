@@ -1,11 +1,11 @@
 {
-  "name": "@ai-enforce/mcp-server",
+  "name": "@keel/mcp-server",
   "version": "0.1.2",
-  "description": "(DEPRECATED \u2014 use 'ai-enforce serve' instead) MCP enforcement server for real-time policy checking",
+  "description": "(DEPRECATED \u2014 use 'keel serve' instead) MCP enforcement server for real-time policy checking",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "ai-enforce-mcp": "./bin/ai-enforce-mcp.js"
+    "keel-mcp": "./bin/keel-mcp.js"
   },
   "files": [
     "dist",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@ai-enforce/core": "^0.1.2",
+    "@keel/core": "^0.1.2",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
@@ -30,6 +30,6 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/qiweiz94/ai-enforce.git"
+    "url": "https://github.com/qiweiz94/keel.git"
   }
 }

@@ -78,16 +78,16 @@ export class PolicyEngine {
     try {
       parsed = parseYaml(readFileSync(p, 'utf-8'))
     } catch (err) {
-      console.error(`ai-enforce: cannot parse policy file ${p}: ${err}`)
-      console.error('ai-enforce: failing closed — every action will be denied until this is fixed.')
+      console.error(`keel: cannot parse policy file ${p}: ${err}`)
+      console.error('keel: failing closed — every action will be denied until this is fixed.')
       this.policy = null
       this.secretPatterns = []
       return this.defaultPolicy()
     }
 
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.error(`ai-enforce: policy file ${p} is empty or is not a policy object.`)
-      console.error('ai-enforce: failing closed — every action will be denied until this is fixed.')
+      console.error(`keel: policy file ${p} is empty or is not a policy object.`)
+      console.error('keel: failing closed — every action will be denied until this is fixed.')
       this.policy = null
       this.secretPatterns = []
       return this.defaultPolicy()
@@ -104,7 +104,7 @@ export class PolicyEngine {
       // Fail-closed: no policy means deny everything
       results.push({
         action: 'block', rule_name: 'fail-closed',
-        message: 'No policy loaded. Set up .ai-enforce.yaml to enable enforcement.',
+        message: 'No policy loaded. Set up .keel.yaml to enable enforcement.',
         timestamp: new Date().toISOString(),
       })
       return results
@@ -369,7 +369,7 @@ export class PolicyEngine {
           break
         case '.yaml':
         case '.yml':
-          // Directly relevant to this tool: a malformed .ai-enforce.yaml now
+          // Directly relevant to this tool: a malformed .keel.yaml now
           // fails closed, so catching it at edit time beats discovering it
           // when every action starts being denied.
           parseYaml(readFileSync(filePath, 'utf-8'))
@@ -428,7 +428,7 @@ export class PolicyEngine {
       compiled = new RegExp(source, 'i')
     } catch (err) {
       console.error(
-        `ai-enforce: ignoring invalid regex in ${context}: ${source} (${(err as Error).message})`
+        `keel: ignoring invalid regex in ${context}: ${source} (${(err as Error).message})`
       )
     }
     this.regexCache.set(source, compiled)
@@ -671,7 +671,7 @@ export class PolicyEngine {
       initSigning()
       signed = createSignedEntry({
         action: result.action,
-        rule_name: result.rule_name,
+        rule_name: result.rule_name || '',
         message: result.message,
         tool_name: event.tool_name,
       })
@@ -697,7 +697,7 @@ export class PolicyEngine {
       rule_name: result.rule_name,
       action: result.action,
       message: result.message,
-      session_id: process.env.AI_ENFORCE_SESSION_ID,
+      session_id: process.env.KEEL_SESSION_ID || '',
     }
     this.auditLog.push(entry)
     // Persist to disk (signed)
@@ -710,11 +710,11 @@ export class PolicyEngine {
     // Generate signed action receipt (offline-verifiable evidence)
     try {
       createReceipt(
-        process.env.AI_ENFORCE_SESSION_ID || 'local',
+        process.env.KEEL_SESSION_ID || 'local',
         event.tool_name,
         event.args,
         result.action,
-        result.rule_name,
+        result.rule_name || '',
         'default'
       )
     } catch { /* best-effort receipt generation */ }
@@ -735,7 +735,7 @@ export class PolicyEngine {
 
 export const DEFAULT_POLICY: PolicyFile = {
   version: '1.0',
-  name: 'ai-enforce default policy',
+  name: 'keel default policy',
   description: 'Sensible defaults for AI coding assistant governance',
   settings: { default_action: 'warn', audit_log: true },
   command_rules: [
@@ -805,7 +805,7 @@ export const DEFAULT_POLICY: PolicyFile = {
       // so an agent can still explain the policy it is bound by.
       name: 'Protect enforcement configuration',
       paths: [
-        '**/.ai-enforce.yaml',
+        '**/.keel.yaml',
         '**/.ai-enforce.yml',
         '**/.ai-enforce/**',
         '**/.claude/settings.json',
@@ -829,7 +829,7 @@ export const DEFAULT_POLICY: PolicyFile = {
  * not — so a project that ran "init" ended up with weaker rules than one with
  * no policy file at all. Edit DEFAULT_POLICY; this follows.
  */
-export const DEFAULT_POLICY_YAML = `# ai-enforce policy file
+export const DEFAULT_POLICY_YAML = `# keel policy file
 # Generated from ai-enforce's built-in defaults. Edit freely — this file is
 # authoritative once it exists.
 ${stringifyYaml(DEFAULT_POLICY)}`

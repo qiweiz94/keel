@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ai-enforce MCP enforcement server.
+ * keel MCP enforcement server.
  *
  * Two modes:
  *   1. POLICY CHECK (stdio, default) — Exposes ai_enforce_check and ai_enforce_audit tools
@@ -12,18 +12,18 @@
  *
  * Usage:
  *   # Policy check mode (stdio):
- *   npx @ai-enforce/mcp-server
+ *   npx @keel/mcp-server
  *
  *   # Forwarding proxy mode (HTTP):
  *   AI_ENFORCE_UPSTREAM_SERVERS='{"fs":{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}' \
- *   npx @ai-enforce/mcp-server --transport http
+ *   npx @keel/mcp-server --transport http
  */
 
-import { PolicyEngine } from '@ai-enforce/core'
+import { PolicyEngine } from '@keel/core'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-const policyPath = process.env.AI_ENFORCE_POLICY || join(process.cwd(), '.ai-enforce.yaml')
+const policyPath = process.env.KEEL_POLICY || join(process.cwd(), '.keel.yaml')
 const engine = new PolicyEngine(policyPath)
 
 if (existsSync(policyPath)) {
@@ -93,11 +93,11 @@ function startHttpServer() {
       })
     } else {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ server: 'ai-enforce-mcp', version: '0.1.0', transport: 'http' }))
+      res.end(JSON.stringify({ server: 'keel-mcp', version: '0.1.0', transport: 'http' }))
     }
   })
   server.listen(PORT, () => {
-    console.error(`ai-enforce MCP server listening on http://localhost:${PORT}`)
+    console.error(`keel MCP server listening on http://localhost:${PORT}`)
   })
 }
 
@@ -109,7 +109,7 @@ function handleMessageHTTP(msg: { jsonrpc: string; id: number | string | null; m
         result: {
           protocolVersion: '2025-11-25',
           capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} },
-          serverInfo: { name: 'ai-enforce', version: '0.1.0' },
+          serverInfo: { name: 'keel', version: '0.1.0' },
         },
       }
     case 'tools/list':
@@ -133,7 +133,7 @@ function handleMessage(msg: { jsonrpc: string; id: number | string | null; metho
       sendResponseStdio(msg.id, {
         protocolVersion: '2025-11-25',
         capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} },
-        serverInfo: { name: 'ai-enforce', version: '0.1.0' },
+        serverInfo: { name: 'keel', version: '0.1.0' },
       })
       break
     case 'notifications/initialized':

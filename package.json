@@ -1,5 +1,5 @@
 {
-  "name": "ai-enforce-monorepo",
+  "name": "keel-monorepo",
   "version": "0.1.0",
   "private": true,
   "description": "Pre-commit hooks for AI coding assistants. Stop AI agents from making the same mistakes twice.",
@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/core",
     "packages/cli",
-    "packages/mcp-server"
+    "packages/mcp-server",
+    "packages/opencode-plugin"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

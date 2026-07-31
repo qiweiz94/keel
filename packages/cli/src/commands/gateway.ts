@@ -4,12 +4,12 @@ import { MCPGateway } from '../mcp/gateway.js'
 
 export async function gatewayCommand(options: { upstream?: string; command?: string; port?: string }) {
   // Parse upstream config
-  const upstreamJson = options.upstream || process.env.AI_ENFORCE_UPSTREAM_SERVERS
+  const upstreamJson = options.upstream || process.env.KEEL_UPSTREAM_SERVERS
   if (!upstreamJson && !options.command) {
     console.log(chalk.red('Error: Upstream MCP server required.'))
     console.log('Usage:')
-    console.log('  ai-enforce gateway --command "npx @modelcontextprotocol/server-filesystem ."')
-    console.log('  AI_ENFORCE_UPSTREAM_SERVERS=\'{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}\' ai-enforce gateway')
+    console.log('  keel gateway --command "npx @modelcontextprotocol/server-filesystem ."')
+    console.log('  KEEL_UPSTREAM_SERVERS=\'{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}\' keel gateway')
     return
   }
 
@@ -21,12 +21,12 @@ export async function gatewayCommand(options: { upstream?: string; command?: str
     try {
       config = JSON.parse(upstreamJson!)
     } catch {
-      console.log(chalk.red('Error: Invalid AI_ENFORCE_UPSTREAM_SERVERS JSON'))
+      console.log(chalk.red('Error: Invalid KEEL_UPSTREAM_SERVERS JSON'))
       return
     }
   }
 
-  console.log(chalk.cyan('\n🔐 ai-enforce MCP Security Gateway'))
+  console.log(chalk.cyan('\n🔐 keel MCP Security Gateway'))
   console.log(chalk.cyan(`   Upstream: ${config.command} ${config.args.join(' ')}\n`))
 
   const gateway = new MCPGateway(config)

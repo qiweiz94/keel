@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PolicyEngine } from '@ai-enforce/core'
+import { PolicyEngine } from '@keel/core'
 
 function engine(): PolicyEngine {
   const e = new PolicyEngine()

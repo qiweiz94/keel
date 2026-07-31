@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import chalk from 'chalk'
 
 /**
- * ai-enforce scan command
+ * keel scan command
  * Auto-discovers AI coding assistant configurations on the machine.
  * Inspired by Snyk Agent Scan's discovery pipeline.
  */
@@ -218,7 +218,7 @@ function detectTools(detectDir?: string): DetectedTool[] {
 export async function scanCommand(options: { json?: boolean; dir?: string }) {
   const cwd = options.dir || process.cwd()
 
-  console.log(chalk.cyan(`\nai-enforce scan — detecting AI coding assistant configurations\n`))
+  console.log(chalk.cyan(`\nkeel scan — detecting AI coding assistant configurations\n`))
   console.log(`  Scanning: ${cwd}\n`)
 
   const tools = detectTools(options.dir)
@@ -276,6 +276,6 @@ export async function scanCommand(options: { json?: boolean; dir?: string }) {
   if (withMCP.length > 0) {
     console.log(chalk.cyan('  Security note:'))
     console.log(chalk.cyan('    MCP servers execute arbitrary commands on your machine.'))
-    console.log(chalk.cyan('    Run `ai-enforce check --ci` to verify your policies cover them.\n'))
+    console.log(chalk.cyan('    Run `keel check --ci` to verify your policies cover them.\n'))
   }
 }

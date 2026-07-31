@@ -1,15 +1,15 @@
-- id: ai-enforce-check
-  name: ai-enforce check
+- id: keel-check
+  name: keel check
   description: Check staged changes against AI coding assistant governance policies
-  entry: ai-enforce check --ci
+  entry: keel check --ci
   language: node
   stages: [pre-commit, pre-push]
   pass_filenames: false
 
-- id: ai-enforce-secrets
-  name: ai-enforce secrets
+- id: keel-secrets
+  name: keel secrets
   description: Check for secrets and API keys in staged changes
-  entry: ai-enforce check --ci
+  entry: keel check --ci
   language: node
   stages: [pre-commit]
   pass_filenames: false

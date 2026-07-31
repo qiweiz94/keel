@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { PolicyEngine as CorePolicyEngine } from '@ai-enforce/core'
+import { PolicyEngine as CorePolicyEngine } from '@keel/core'
 import { PolicyEngine as CliPolicyEngine } from '../policy-engine.js'
 import { MCPGateway } from '../mcp/gateway.js'
 
@@ -28,7 +28,7 @@ describe('one engine, not two', () => {
   it('the CLI shim contains no implementation', () => {
     // A re-export is a handful of lines; a fork is hundreds.
     const shim = readFileSync(join(CLI_SRC, 'policy-engine.ts'), 'utf-8')
-    expect(shim).toContain("from '@ai-enforce/core'")
+    expect(shim).toContain("from '@keel/core'")
     expect(shim).not.toContain('class PolicyEngine')
     expect(shim.split('\n').length).toBeLessThan(40)
   })
@@ -36,7 +36,7 @@ describe('one engine, not two', () => {
   it('signing and receipts are also single-sourced', () => {
     for (const f of ['signing.ts', 'receipts.ts', 'types.ts']) {
       const shim = readFileSync(join(CLI_SRC, f), 'utf-8')
-      expect(shim).toContain('@ai-enforce/core')
+      expect(shim).toContain('@keel/core')
       expect(shim.split('\n').length).toBeLessThan(40)
     }
   })
@@ -59,7 +59,7 @@ describe('policy-absence semantics are the same at every entry point', () => {
   it('the gateway applies defaults when no policy file exists, like the CLI', () => {
     // Previously the gateway skipped loadPolicy() when the file was missing,
     // leaving policy null so evaluate() fail-closed and denied EVERY tool call
-    // — while `ai-enforce check` applied defaults for the same project.
+    // — while `keel check` applied defaults for the same project.
     const gateway = new MCPGateway({ command: 'true', args: [] })
     const engine = (gateway as any).engine as InstanceType<typeof CorePolicyEngine>
 

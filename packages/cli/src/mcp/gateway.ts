@@ -4,7 +4,7 @@
  * Sits between the AI agent and its MCP tool servers, intercepting all
  * traffic in both directions:
  *
- *   AI Agent <-> [ai-enforce MCP Gateway] <-> MCP Tool Server
+ *   AI Agent <-> [keel MCP Gateway] <-> MCP Tool Server
  *
  * Inspired by:
  *   - Microsoft AGT MCP Security Gateway spec (127 conformance tests)
@@ -81,9 +81,9 @@ export class MCPGateway {
 
   constructor(config: UpstreamConfig) {
     this.upstreamConfig = config
-    const policyPath = process.env.AI_ENFORCE_POLICY || join(process.cwd(), '.ai-enforce.yaml')
+    const policyPath = process.env.KEEL_POLICY || join(process.cwd(), '.keel.yaml')
     this.engine = new PolicyEngine(policyPath)
-    // Load unconditionally, matching `ai-enforce check`.
+    // Load unconditionally, matching `keel check`.
     //
     // Guarding this on existsSync left `policy` null when no file was present,
     // which routed evaluate() into its fail-closed branch — so the gateway
@@ -130,7 +130,7 @@ export class MCPGateway {
         params: {
           protocolVersion: '2025-11-25',
           capabilities: {},
-          clientInfo: { name: 'ai-enforce-gateway', version: '0.1.0' },
+          clientInfo: { name: 'keel-gateway', version: '0.1.0' },
         },
       }).then(() => {
         // Send initialized notification
@@ -266,7 +266,7 @@ export class MCPGateway {
     for (const tool of tools) {
       const warnings = this.scanToolDescription(tool)
       if (warnings.length > 0) {
-        console.error(`[ai-enforce-gateway] ⚠ Tool poisoning warning for "${tool.name}":`, warnings.join('; '))
+        console.error(`[keel-gateway] ⚠ Tool poisoning warning for "${tool.name}":`, warnings.join('; '))
       }
     }
 
@@ -317,7 +317,7 @@ export class MCPGateway {
           if (typeof content.text === 'string') {
             const dlpWarnings = this.scanResponse(toolName, content.text)
             if (dlpWarnings.length > 0) {
-              console.error(`[ai-enforce-gateway] ⚠ DLP alert in "${toolName}" response:`, dlpWarnings.join('; '))
+              console.error(`[keel-gateway] ⚠ DLP alert in "${toolName}" response:`, dlpWarnings.join('; '))
             }
           }
         }
@@ -346,7 +346,7 @@ export class MCPGateway {
           result: {
             protocolVersion: '2025-11-25',
             capabilities: { tools: { listChanged: true } },
-            serverInfo: { name: 'ai-enforce-gateway', version: '0.1.0' },
+            serverInfo: { name: 'keel-gateway', version: '0.1.0' },
           },
         }
 
@@ -391,7 +391,7 @@ export class MCPGateway {
             return {
               jsonrpc: '2.0',
               id: msg.id,
-              error: { code: -32602, message: 'ai-enforce: malformed resource URI' },
+              error: { code: -32602, message: 'keel: malformed resource URI' },
             }
           }
         }
@@ -407,7 +407,7 @@ export class MCPGateway {
             return {
               jsonrpc: '2.0',
               id: msg.id,
-              error: { code: -32000, message: `ai-enforce: ${blocked.message}` },
+              error: { code: -32000, message: `keel: ${blocked.message}` },
             }
           }
         }

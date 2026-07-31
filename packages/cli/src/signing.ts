@@ -1,4 +1,4 @@
-/** Re-export shim — implementation lives in @ai-enforce/core. */
+/** Re-export shim — implementation lives in @keel/core. */
 export {
   initSigning,
   getPublicKeyJwk,
@@ -7,5 +7,5 @@ export {
   verifyChain,
   resetHashChain,
   auditLogPath,
-} from '@ai-enforce/core'
-export type { SigningKey, Signature, SignedEntry, ChainReport } from '@ai-enforce/core'
+} from '@keel/core'
+export type { SigningKey, Signature, SignedEntry, ChainReport } from '@keel/core'

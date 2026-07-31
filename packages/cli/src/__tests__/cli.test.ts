@@ -121,7 +121,7 @@ describe('CLI Integration', () => {
 
   it('scan detects tools', () => {
     const { stdout: out } = run('scan')
-    expect(out).toContain('ai-enforce scan')
+    expect(out).toContain('keel scan')
   })
 
   it('verify shows help with no args', () => {

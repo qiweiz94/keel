@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "ai-enforce — Installing..."
+echo "keel — Installing..."
 
 # Detect OS
 OS="$(uname -s)"
@@ -33,18 +33,18 @@ echo "  Node.js $(node -v) ✓"
 # Install via npm
 # Do not pipe into tail without checking status: the pipeline's exit code is
 # tail's, so a failed install still printed "installed successfully!".
-if ! npm install -g ai-enforce; then
+if ! npm install -g keel; then
   echo ""
-  echo "  Install failed. ai-enforce is NOT installed."
-  echo "  If this is a permissions error, try: sudo npm install -g ai-enforce"
+  echo "  Install failed. keel is NOT installed."
+  echo "  If this is a permissions error, try: sudo npm install -g keel"
   exit 1
 fi
 
 echo ""
-echo "  ai-enforce installed successfully!"
+echo "  keel installed successfully!"
 echo ""
 echo "  Quick start:"
 echo "    cd your-project"
-echo "    ai-enforce init --hooks"
-echo "    ai-enforce check --ci"
+echo "    keel init --hooks"
+echo "    keel check --ci"
 echo ""

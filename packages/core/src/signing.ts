@@ -157,7 +157,7 @@ export function createSignedEntry(
   sessionName?: string
 ): SignedEntry {
   const key = currentKey || initSigning()
-  const session = sessionName || process.env.AI_ENFORCE_SESSION_ID || 'default'
+  const session = sessionName || process.env.KEEL_SESSION_ID || 'default'
   // First write in this process continues the chain already on disk.
   if (!sessionHashChains.has(session)) sessionHashChains.set(session, loadChainHead(session))
 
@@ -279,6 +279,6 @@ export function verifyChain(logPath?: string, publicKeyJwk?: object): ChainRepor
 }
 
 export function resetHashChain(sessionName?: string): void {
-  const session = sessionName || process.env.AI_ENFORCE_SESSION_ID || 'default'
+  const session = sessionName || process.env.KEEL_SESSION_ID || 'default'
   sessionHashChains.set(session, null)
 }

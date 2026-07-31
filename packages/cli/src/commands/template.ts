@@ -6,7 +6,7 @@ import chalk from 'chalk'
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 const BUILTIN_TEMPLATES: Record<string, string> = {
-  'default': `# ai-enforce default policy
+  'default': `# keel default policy
 # Safe defaults for most projects
 version: "1.0"
 settings:
@@ -40,7 +40,7 @@ file_rules:
     message: "Protected file: use a secrets manager instead."
 `,
 
-  'strict': `# ai-enforce strict policy
+  'strict': `# keel strict policy
 # Maximum protection for sensitive projects
 version: "1.0"
 settings:
@@ -94,7 +94,7 @@ file_rules:
     message: "Config file changes should be reviewed."
 `,
 
-  'minimal': `# ai-enforce minimal policy
+  'minimal': `# keel minimal policy
 # Lightweight protection — just the basics
 version: "1.0"
 settings:
@@ -120,7 +120,7 @@ file_rules:
     message: ".env file is protected."
 `,
 
-  'security': `# ai-enforce security policy
+  'security': `# keel security policy
 # Focused on preventing security incidents
 version: "1.0"
 settings:
@@ -164,7 +164,7 @@ export async function templateCommand(
 ) {
   if (options.list || !action) {
     // List available templates
-    console.log(chalk.cyan('\nai-enforce policy templates:\n'))
+    console.log(chalk.cyan('\nkeel policy templates:\n'))
     const customDir = join(process.cwd(), '.ai-enforce', 'templates')
     const customTemplates: string[] = []
     if (existsSync(customDir)) {
@@ -183,7 +183,7 @@ export async function templateCommand(
     for (const name of customTemplates) {
       console.log(`  ${chalk.yellow(name)} (custom)`)
     }
-    console.log(chalk.cyan('\nUsage: ai-enforce template <name>\n'))
+    console.log(chalk.cyan('\nUsage: keel template <name>\n'))
     return
   }
 

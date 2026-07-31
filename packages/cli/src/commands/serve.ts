@@ -4,7 +4,7 @@ export async function serveCommand(options: { port?: string; transport?: string 
   const port = parseInt(options.port || '3100', 10)
   const transport = options.transport === 'http' ? 'http' : 'stdio'
 
-  console.log(chalk.cyan(`ai-enforce MCP server starting (${transport} transport)...`))
+  console.log(chalk.cyan(`keel MCP server starting (${transport} transport)...`))
 
   if (transport === 'http') {
     console.log(chalk.cyan(`  Listening on http://localhost:${port}`))

@@ -1,5 +1,5 @@
 /**
- * ai-enforce MCP enforcement server.
+ * keel MCP enforcement server.
  *
  * Two modes:
  *   1. POLICY CHECK (stdio, default) — Exposes ai_enforce_check and ai_enforce_audit tools
@@ -10,9 +10,9 @@
  *      Requires AI_ENFORCE_UPSTREAM_SERVERS env var for upstream forwarding.
  *
  * Usage via CLI:
- *   ai-enforce serve                    # Stdio mode (default)
- *   ai-enforce serve --transport http   # HTTP proxy mode (experimental)
- *   ai-enforce serve --port 8080        # Custom port
+ *   keel serve                    # Stdio mode (default)
+ *   keel serve --transport http   # HTTP proxy mode (experimental)
+ *   keel serve --port 8080        # Custom port
  */
 
 import { PolicyEngine } from '../policy-engine.js'
@@ -22,7 +22,7 @@ import { join } from 'node:path'
 let engine: PolicyEngine
 
 function initEngine(): void {
-  const policyPath = process.env.AI_ENFORCE_POLICY || join(process.cwd(), '.ai-enforce.yaml')
+  const policyPath = process.env.KEEL_POLICY || join(process.cwd(), '.keel.yaml')
   engine = new PolicyEngine(policyPath)
   if (existsSync(policyPath)) {
     engine.loadPolicy()
@@ -86,12 +86,12 @@ export function startHttpServer(port: number = 3100): void {
       })
     } else {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ server: 'ai-enforce-mcp', version: '0.1.0', transport: 'http' }))
+      res.end(JSON.stringify({ server: 'keel-mcp', version: '0.1.0', transport: 'http' }))
     }
   })
 
   server.listen(port, () => {
-    console.error(`ai-enforce MCP server listening on http://localhost:${port}`)
+    console.error(`keel MCP server listening on http://localhost:${port}`)
   })
 }
 
@@ -105,7 +105,7 @@ function handleRequest(msg: { jsonrpc: string; id: number | string | null; metho
         result: {
           protocolVersion: '2025-11-25',
           capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} },
-          serverInfo: { name: 'ai-enforce', version: '0.1.0' },
+          serverInfo: { name: 'keel', version: '0.1.0' },
         },
       }
     case 'notifications/initialized':

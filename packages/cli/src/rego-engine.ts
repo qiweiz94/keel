@@ -10,7 +10,7 @@
  * Usage:
  *   1. Write a .rego policy file
  *   2. Compile it:  opa build -t wasm -e policy/allow policy.rego
- *   3. Evaluate:     ai-enforce policy eval --wasm policy.wasm
+ *   3. Evaluate:     keel policy eval --wasm policy.wasm
  *
  * Dependencies:
  *   - @open-policy-agent/opa-wasm (for WASM evaluation in Node.js)
@@ -194,7 +194,7 @@ export async function policyEvalCommand(wasmFile: string, options: { input?: str
 }
 
 export async function policyInitCommand() {
-  const exampleRego = `package ai_enforce_policy
+  const exampleRego = `package keel_policy
 
 # Default: allow all actions
 default allow := true
@@ -226,6 +226,6 @@ warn if {
 
   writeFileSync('policy.rego', exampleRego, 'utf-8')
   console.log(chalk.green('Created policy.rego'))
-  console.log(chalk.cyan('Compile with: opa build -t wasm -e ai_enforce_policy/allow policy.rego'))
-  console.log(chalk.cyan('Or use: ai-enforce policy build policy.rego'))
+  console.log(chalk.cyan('Compile with: opa build -t wasm -e keel_policy/allow policy.rego'))
+  console.log(chalk.cyan('Or use: keel policy build policy.rego'))
 }

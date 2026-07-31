@@ -6,7 +6,7 @@ import type { AuditEntry } from '../types.js'
 export async function auditCommand(options: { json?: boolean; tail?: string }) {
   const logPath = join(process.cwd(), '.ai-enforce', 'audit.log')
   if (!existsSync(logPath)) {
-    console.log(chalk.yellow('No audit log found. Run ai-enforce check to generate one.'))
+    console.log(chalk.yellow('No audit log found. Run keel check to generate one.'))
     return
   }
 
@@ -19,7 +19,7 @@ export async function auditCommand(options: { json?: boolean; tail?: string }) {
     return
   }
 
-  console.log(chalk.cyan(`\nai-enforce audit (last ${Math.min(tail, recent.length)} of ${lines.length} entries):\n`))
+  console.log(chalk.cyan(`\nkeel audit (last ${Math.min(tail, recent.length)} of ${lines.length} entries):\n`))
   for (const line of recent) {
     try {
       const entry: AuditEntry = JSON.parse(line)

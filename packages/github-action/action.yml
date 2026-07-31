@@ -3,13 +3,13 @@ description: 'Check PR changes against AI coding assistant governance policies'
 author: 'nanoclaw'
 inputs:
   policy-path:
-    description: 'Path to .ai-enforce.yaml policy file'
+    description: 'Path to .keel.yaml policy file'
     required: false
-    default: '.ai-enforce.yaml'
+    default: '.keel.yaml'
 runs:
   using: 'composite'
   steps:
-    - run: npm install -g ai-enforce
+    - run: npm install -g keel
       shell: bash
-    - run: ai-enforce check --ci
+    - run: keel check --ci
       shell: bash

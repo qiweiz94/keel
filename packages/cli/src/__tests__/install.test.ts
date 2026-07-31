@@ -39,8 +39,8 @@ beforeEach(() => {
   execSync('git config user.name t', { cwd: dir })
   shim = join(dir, 'shim')
   execSync(`mkdir -p "${shim}"`)
-  writeFileSync(join(shim, 'ai-enforce'), `#!/bin/bash\nexec node "${CLI}" "$@"\n`, 'utf-8')
-  chmodSync(join(shim, 'ai-enforce'), 0o755)
+  writeFileSync(join(shim, 'keel'), `#!/bin/bash\nexec node "${CLI}" "$@"\n`, 'utf-8')
+  chmodSync(join(shim, 'keel'), 0o755)
 })
 
 afterEach(() => {

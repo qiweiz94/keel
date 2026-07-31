@@ -91,7 +91,7 @@ export function analyzeReasoning(event: ReasoningEvent): ReasoningVerdict | null
 }
 
 /**
- * CLI handler for `ai-enforce check --analyze-reasoning`
+ * CLI handler for `keel check --analyze-reasoning`
  */
 export function analyzeReasoningHandler(reasoning: string, proposedAction: string, toolName: string): void {
   const verdict = analyzeReasoning({

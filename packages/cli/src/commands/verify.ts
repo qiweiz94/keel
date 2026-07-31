@@ -45,7 +45,7 @@ export async function verifyCommand(target?: string, options?: { key?: string; r
   const receiptsDir = join(process.cwd(), '.ai-enforce', 'receipts')
   if (!existsSync(receiptsDir)) {
     console.log(chalk.yellow('No receipts directory found at ' + receiptsDir))
-    console.log(chalk.cyan('Run `ai-enforce check` to generate receipts.'))
+    console.log(chalk.cyan('Run `keel check` to generate receipts.'))
     return
   }
 

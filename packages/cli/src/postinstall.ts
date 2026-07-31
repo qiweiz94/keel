@@ -1,37 +1,37 @@
 #!/usr/bin/env node
 /**
- * ai-enforce postinstall script
- * Runs after `npm install -g ai-enforce` to print setup instructions.
+ * keel-cli postinstall script
+ * Runs after npm install -g keel-cli to print setup instructions.
  */
 
 console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║                ai-enforce installed!                    ║
+║                keel installed!                           ║
 ╚══════════════════════════════════════════════════════════╝
 
-Quick start in any project:
+Wire the OpenCode plugin (rules enforced on every tool call):
 
-  cd your-project
-  ai-enforce init --hooks
+  keel install --opencode
+  # restart OpenCode — rules are enforced immediately
 
-This creates .ai-enforce.yaml with default policies and
-installs git hooks that block AI coding assistants from:
+Standing requirements are injected into the system prompt every
+turn, and the audit trail powers self-improvement:
 
-  • Running destructive commands (rm -rf /, sudo, etc.)
-  • Bypassing git hooks (--no-verify, core.hooksPath)
-  • Writing to secret files (.env, credentials, *.pem)
-  • Leaking API keys (AWS, OpenAI, Anthropic, GitHub)
-  • Force-pushing without --force-with-lease
+  keel validate               # Check rules for conflicts
+  keel suggest                # Analyze the audit trail
+  keel lessons                # Extract lessons from violations
+  keel gather                 # Distill history into requirements
+  keel schedule daily         # Automate gather (launchd/cron)
+  keel watch                  # Live audit monitor
 
-Also available:
+Other agents:
 
-  ai-enforce check --ci              # Check staged changes
-  ai-enforce check --command <cmd>   # Check a command
-  ai-enforce audit                   # View enforcement log
+  keel install --claude-code  # Claude Code hooks (blocking)
+  keel install --cline        # Cline (.clinerules + MCP check)
+  keel install --cursor       # Cursor (.cursor/rules advisory)
+  keel install --codex        # Codex CLI (AGENTS.md instructions)
 
-For MCP integration with AI coding assistants:
-
-  ai-enforce serve
-
-Documentation: https://github.com/qiweiz94/ai-enforce
+Rules:      ~/.keel/rules.yaml
+Standing requirements: ~/.keel/requirements.md
+Docs:       https://github.com/qiweiz94/keel
 `)

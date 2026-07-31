@@ -1,7 +1,6 @@
-# ai-enforce policy for the ai-enforce project itself
-# Dogfooding: this governs our own development
+# (Legacy) — new rules in CLAUDE.md with Keel YAML frontmatter
 version: "1.0"
-name: "ai-enforce self-governance"
+name: "keel self-governance (legacy)"
 settings:
   default_action: warn
   audit_log: true

@@ -1,4 +1,4 @@
-/** Re-export shim — implementation lives in @ai-enforce/core. */
+/** Re-export shim — implementation lives in @keel/core. */
 export {
   initReceiptKey,
   createReceipt,
@@ -6,4 +6,4 @@ export {
   verifyReceiptFromJson,
   getReceiptPublicKey,
   receiptsLogPath,
-} from '@ai-enforce/core'
+} from '@keel/core'

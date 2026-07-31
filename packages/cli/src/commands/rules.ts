@@ -55,12 +55,12 @@ export async function rulesCommand(
   options: { output?: string; lane?: string }
 ) {
   if (!source) {
-    console.log(chalk.cyan('\nai-enforce rules:\n'))
+    console.log(chalk.cyan('\nkeel rules:\n'))
     console.log('  atr            Import rules from Agent Threat Rules (ATR) format')
     console.log('  Options:')
     console.log('    --output <dir>    Output directory')
     console.log('    --lane <mode>     Detection lane: enforce, alert, or hunt (default: hunt)')
-    console.log('  Usage: ai-enforce rules atr --lane enforce\n')
+    console.log('  Usage: keel rules atr --lane enforce\n')
     return
   }
 
@@ -76,7 +76,7 @@ export async function rulesCommand(
     const rules = filtered.map(mapATRToRule).filter(Boolean) as Record<string, unknown>[]
     const commandRules = rules.filter(r => r.patterns && Array.isArray(r.patterns))
 
-    let yaml = '# ai-enforce policy generated from ATR (Agent Threat Rules)\n'
+    let yaml = '# keel policy generated from ATR (Agent Threat Rules)\n'
     yaml += '# Source: https://github.com/Agent-Threat-Rule/agent-threat-rules\n'
     yaml += '# Lane: ' + activeLane + ' (' + filtered.length + ' of ' + ATR_CATEGORIES.length + ' categories)\n\n'
     yaml += 'version: "1.0"\nname: "atr-imported-rules"\nsettings:\n  default_action: warn\n  audit_log: true\n\ncommand_rules:\n'
@@ -107,5 +107,5 @@ export async function rulesCommand(
   }
 
   console.log(chalk.red('Unknown rules source: ' + source))
-  console.log('Usage: ai-enforce rules atr [--lane enforce|alert|hunt]')
+  console.log('Usage: keel rules atr [--lane enforce|alert|hunt]')
 }
