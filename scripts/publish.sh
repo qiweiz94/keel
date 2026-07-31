@@ -32,6 +32,9 @@ publish() {
   echo "Publishing $pkg from $dir ..."
 
   local out code
+  # set -e would abort on the failed publish inside the substitution;
+  # capture the status explicitly instead.
+  set +e
   if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
     # Token path: pass as a CLI flag so it overrides any token already in
     # ~/.npmrc (npm prefers .npmrc over NODE_AUTH_TOKEN).
@@ -40,14 +43,18 @@ publish() {
     out=$(cd "$dir" && npm publish --access public --otp="$OTP" 2>&1)
   fi
   code=$?
+  set -e
 
-  if echo "$out" | grep -q "cannot publish over the previously published versions"; then
+  if [ "$code" -ne 0 ] && printf '%s' "$out" | grep -q "cannot publish over the previously published versions"; then
     echo "  ✓ $pkg already published — skipping"
     return 0
   fi
 
   printf '%s\n' "$out"
-  return $code
+  if [ "$code" -ne 0 ]; then
+    echo "  ✗ Failed to publish $pkg (exit $code)"
+    exit "$code"
+  fi
 }
 
 publish packages/core "@get-keel/core"
