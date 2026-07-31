@@ -106,6 +106,12 @@ rules:
   - id: re-inject-at-thresholds
     type: context
     message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
+
+  - id: verify-before-irreversible
+    type: command
+    match: "gh repo delete|gh repo transfer|npm unpublish|git push --force(?!-with-lease)|rm -rf (?!.*node_modules)"
+    action: warn
+    message: "Irreversible action — verify inbound references (npm metadata, badges, forks, links) and state what was checked vs assumed before proceeding."
 `
 
 export async function installCommand(options: {

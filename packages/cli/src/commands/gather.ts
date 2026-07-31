@@ -46,6 +46,10 @@ const LESSON_REQUIREMENTS: Record<string, { title: string; bullet: string }> = {
     title: 'Verification',
     bullet: 'After changing source code, run the test suite before moving on.',
   },
+  'irreversible-action': {
+    title: 'Irreversible operations',
+    bullet: 'Before destructive or irreversible actions (repo deletion, publish, force push), verify inbound references and state what was checked vs assumed.',
+  },
 }
 
 function loadAuditEntries(auditDir: string, sinceDays?: number): AuditEntry[] {

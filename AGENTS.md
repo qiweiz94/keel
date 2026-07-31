@@ -121,3 +121,9 @@ npm publish
 ### Product identity
 - Product name is "keel". Never "ai-enforce" or any other name.
 - Before any rename/sed/replaceAll operation: verify the direction.
+
+### Irreversible operations
+- Before recommending or executing an IRREVERSIBLE action (repo deletion, npm publish/unpublish, force push, data deletion), enumerate inbound references: npm registry metadata, README badges, CI links, forks, issues, other repos.
+- For irreversible actions the burden of proof is higher: keep unless there is proven harm, not "no harm found in what I checked."
+- Check INBOUND references (what points to the target), not just outbound (what the target points to).
+- State explicitly what was verified vs assumed before acting irreversibly.

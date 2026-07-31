@@ -10,11 +10,9 @@
 #   1. @keel/core              — enforcement engine
 #   2. keel-cli                — CLI (binary name: keel)
 #   3. @keel/opencode-plugin   — OpenCode plugin (builds from templates/)
-#   4. @keel/mcp-server        — deprecated MCP server
 #
-# Notes:
-#   - The npm name "keel" is taken by teamkeel; the CLI publishes as "keel-cli".
-#   - Each package is built before publishing.
+# @keel/mcp-server is intentionally NOT published — it is deprecated
+# (use `keel serve` instead) and not part of the v1 launch.
 set -euo pipefail
 
 OTP="${KEEL_NPM_OTP:-}"
@@ -36,7 +34,6 @@ publish() {
 publish packages/core "@keel/core"
 publish packages/cli "keel-cli"
 publish packages/opencode-plugin "@keel/opencode-plugin"
-publish packages/mcp-server "@keel/mcp-server"
 
 echo ""
 echo "✅ All packages published!"

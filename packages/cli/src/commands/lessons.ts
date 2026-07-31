@@ -6,7 +6,7 @@ import type { AuditEntry, ProjectInsights, Suggestion, KeelRule } from '../core/
 
 interface ExtractedLesson {
   pattern: string
-  category: 'claim-without-evidence' | 'context-drift' | 'sequence-violation' | 'rate-violation' | 'format-default' | 'build-not-test'
+  category: 'claim-without-evidence' | 'context-drift' | 'sequence-violation' | 'rate-violation' | 'format-default' | 'build-not-test' | 'irreversible-action'
   severity: 'high' | 'medium' | 'low'
   description: string
   suggested_rule: Omit<KeelRule, 'id'> & { id?: string }
@@ -244,6 +244,44 @@ export function extractLessons(entries: AuditEntry[]): ExtractedLesson[] {
       },
       occurrences: run.count,
       example_turns: run.turns.slice(0, 5),
+    })
+  }
+
+  // ── Lesson 6: Irreversible action without prior verification ──
+  // Destructive/irreversible commands executed without an adjacent
+  // verification step (registry/API/reference checks). Based on the
+  // 2026-07-31 near-miss: a repo deletion was recommended without checking
+  // inbound npm metadata references.
+  const irreversible = entries.filter(e => {
+    const cmdStr = e.args?.command ? String(e.args.command) : ''
+    return /gh repo delete|gh repo transfer|npm unpublish|npm publish|git push --force(?!-with-lease)/i.test(cmdStr)
+  })
+  const irreversiblesWithoutCheck: Array<{ e: AuditEntry; turn: number }> = []
+  for (const e of irreversible) {
+    const idx = entries.indexOf(e)
+    const window = entries.slice(Math.max(0, idx - 5), idx)
+    const hasCheck = window.some(w => {
+      const c = w.args?.command ? String(w.args.command) : ''
+      return /curl.*registry|npm (view|info)|gh api|gh repo view|git remote -v|git ls-remote/i.test(c)
+    })
+    if (!hasCheck) irreversiblesWithoutCheck.push({ e, turn: e.turn_number ?? 0 })
+  }
+  if (irreversiblesWithoutCheck.length >= 1) {
+    lessons.push({
+      pattern: 'Irreversible action without verification',
+      category: 'irreversible-action',
+      severity: 'high',
+      description: 'Agent executed (or recommended) an irreversible action without verifying inbound references first. Destructive actions need evidence of what links to the target.',
+      suggested_rule: {
+        id: 'verify-before-irreversible',
+        type: 'command',
+        match: 'gh repo delete|gh repo transfer|npm unpublish|git push --force(?!-with-lease)|rm -rf (?!.*node_modules)',
+        action: 'warn',
+        message: 'Irreversible action — verify inbound references (npm metadata, badges, forks, links) and state what was checked vs assumed before proceeding.',
+        priority: 90,
+      },
+      occurrences: irreversiblesWithoutCheck.length,
+      example_turns: irreversiblesWithoutCheck.slice(0, 5).map(x => x.turn),
     })
   }
 
