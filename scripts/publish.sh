@@ -29,7 +29,13 @@ publish() {
   local pkg="$2"
   echo ""
   echo "Publishing $pkg from $dir ..."
-  (cd "$dir" && npm publish --access public ${OTP:+--otp="$OTP"})
+  if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+    # Token path: pass as a CLI flag so it overrides any token already in
+    # ~/.npmrc (npm prefers .npmrc over NODE_AUTH_TOKEN).
+    (cd "$dir" && npm publish --access public --//registry.npmjs.org/:_authToken="$NODE_AUTH_TOKEN")
+  else
+    (cd "$dir" && npm publish --access public --otp="$OTP")
+  fi
 }
 
 publish packages/core "@keel/core"
