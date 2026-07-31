@@ -1,6 +1,6 @@
-# ai-enforce vs. Other Projects
+# keel vs. Other Projects
 
-## How ai-enforce Differs from Prompt-Based Approaches
+## How keel Differs from Prompt-Based Approaches
 
 CLAUDE.md, AGENTS.md, .cursorrules, .clinerules, and AI agent memory/skills are all **prompt-based governance**. They inject instructions into the AI's system prompt and *hope* the AI follows them.
 
@@ -12,7 +12,7 @@ Research proves this is structurally unreliable:
 - The AI can "self-bypass" using `--no-verify`, `core.hooksPath`, MCP API writes
 - Prompt injection from external files overrides governance instructions
 
-**ai-enforce operates at a different layer entirely.** It intercepts tool calls BEFORE execution using:
+**keel operates at a different layer entirely.** It intercepts tool calls BEFORE execution using:
 1. **PreToolUse hooks** (Claude Code, Cline) — hooks fire before the tool runs; the AI receives a `permissionDecision: "deny"` it cannot override
 2. **Git hooks** (any AI tool) — catches violations at commit time; works with every AI coding assistant
 3. **MCP enforcement server** — real-time policy checking via the Model Context Protocol
@@ -21,7 +21,7 @@ Research proves this is structurally unreliable:
 |----------|-----------|---------------|---------|
 | Prompt-based | Instructions in system prompt | ✅ Yes — trivially | CLAUDE.md, AGENTS.md, .cursorrules |
 | Memory/Skills | Optional context loaded by AI | ✅ Yes — AI chooses to use | Claude memory, skill directories |
-| **Hard enforcement** | OS/hook-level block before execution | ❌ No — cannot override | **ai-enforce** |
+| **Hard enforcement** | OS/hook-level block before execution | ❌ No — cannot override | **keel** |
 
 ---
 
@@ -29,7 +29,7 @@ Research proves this is structurally unreliable:
 
 ### Comparison Matrix
 
-| Capability | Cupcake | agentsh | Aegis | DashClaw | MS AGT | Guardrails | block-no-verify | Semgrep | Snyk Agent Scan | **ai-enforce** |
+| Capability | Cupcake | agentsh | Aegis | DashClaw | MS AGT | Guardrails | block-no-verify | Semgrep | Snyk Agent Scan | **keel** |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **Hard enforcement** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ⚠️ (post-hoc) | ❌ | **✅ 3 layers** |
 | **PreToolUse hook** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | **✅** |
@@ -56,7 +56,7 @@ Research proves this is structurally unreliable:
 - **What it does**: OS-level execution sandboxing via seccomp, eBPF, FUSE, Landlock, ESF. Intercepts at kernel level.
 - **Strengths**: Hardest enforcement (kernel-level). Cannot be bypassed by any AI process.
 - **Gaps**: No git hook enforcement. Requires kernel dependencies. No CLI/CI mode. Heavy infrastructure.
-- **What we can learn**: Optional OS sandbox mode (`ai-enforce sandbox`) for high-security environments.
+- **What we can learn**: Optional OS sandbox mode (`keel sandbox`) for high-security environments.
 
 #### Aegis (Justin0504/Aegis)
 - **Stars**: 370 | **Languages**: Python, TypeScript, Go | **License**: MIT
@@ -106,11 +106,11 @@ Research proves this is structurally unreliable:
 - **What it does**: Scans MCP servers, agent skills, and configurations for vulnerabilities. Auto-discovers MCP configs across all major tools.
 - **Strengths**: Comprehensive MCP vulnerability scanning. Auto-discovers configs from Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, and more.
 - **Gaps**: Scan-only (detective, not preventative). No runtime enforcement. No blocking.
-- **What we can learn**: Auto-discover tool configurations — `ai-enforce scan` command that detects which AI tools are configured.
+- **What we can learn**: Auto-discover tool configurations — `keel scan` command that detects which AI tools are configured.
 
 ---
 
-## What ai-enforce Does Differently
+## What keel Does Differently
 
 ### Three Enforcement Layers (No Other Project Has This)
 
@@ -120,16 +120,16 @@ Layer 2: Git Hook (commit-time, ANY tool)
 Layer 3: MCP/CLI/CI (manual, pipeline, audit)
 ```
 
-Every other project has exactly **one** enforcement layer. If that layer fails, protection drops to zero. ai-enforce requires **three independent failures** to lose protection.
+Every other project has exactly **one** enforcement layer. If that layer fails, protection drops to zero. keel requires **three independent failures** to lose protection.
 
 ### Cross-Platform Git Enforcement
 Git hooks work with EVERY AI coding assistant — Cline, Claude Code, Cursor, GitHub Copilot, Aider, Windsurf, Devin. This is the universal enforcement surface.
 
 ### Git Bypass Prevention
-Only block-no-verify addresses this, and only for git bypass. ai-enforce combines git bypass prevention with file/command/secret protection and audit logging.
+Only block-no-verify addresses this, and only for git bypass. keel combines git bypass prevention with file/command/secret protection and audit logging.
 
 ### Secret Detection in Git Hooks
-Only Semgrep does this (post-hoc), and it can be bypassed with `--no-verify`. ai-enforce catches secrets at commit time AND prevents bypass.
+Only Semgrep does this (post-hoc), and it can be bypassed with `--no-verify`. keel catches secrets at commit time AND prevents bypass.
 
 ---
 
@@ -137,9 +137,9 @@ Only Semgrep does this (post-hoc), and it can be bypassed with `--no-verify`. ai
 
 | Priority | Feature | Source | Effort | Status |
 |----------|---------|--------|--------|--------|
-| P0 | Policy template library (`ai-enforce template`) | Guardrails AI | 2 days | ✅ Done |
+| P0 | Policy template library (`keel template`) | Guardrails AI | 2 days | ✅ Done |
 | P0 | MCP API write detection (improved) | block-no-verify | 1 day | ✅ Done |
-| P1 | Auto-discover tool configs (`ai-enforce scan`) | Snyk Agent Scan | 3 days | ✅ Done |
+| P1 | Auto-discover tool configs (`keel scan`) | Snyk Agent Scan | 3 days | ✅ Done |
 | P1 | Tamper-evident audit logs (Ed25519 signed) | DashClaw | 2 days | ✅ Done |
 | P1 | ATR rule import (10 categories + lanes) | Agent Threat Rules | 5 days | ✅ Done |
 | P2 | Rego as optional policy engine | Cupcake | 5 days | ✅ Done (partial — requires `@open-policy-agent/opa-wasm`) |
@@ -148,7 +148,7 @@ Only Semgrep does this (post-hoc), and it can be bypassed with `--no-verify`. ai
 | P2 | Anomaly detection classifier | Aegis | 5 days | 📋 Planned |
 | P2 | Signed action receipts (evidence trail) | Pipelock | 3 days | 📋 Planned |
 | P3 | MCP security gateway (bidirectional proxy) | Pipelock, AGT | 5 days | 📋 Planned |
-| P3 | OS-level sandbox (`ai-enforce sandbox`) | agentsh | 3 weeks | 🔮 Future |
+| P3 | OS-level sandbox (`keel sandbox`) | agentsh | 3 weeks | 🔮 Future |
 | P3 | Formal specs + conformance tests | MS AGT | Ongoing | 🔮 Future |
 
 ---
@@ -157,7 +157,7 @@ Only Semgrep does this (post-hoc), and it can be bypassed with `--no-verify`. ai
 
 DashClaw documented a real incident where a hook configuration error disabled ALL enforcement for **18 days**. The team **didn't notice** because the audit log showed decisions that were never applied.
 
-With ai-enforce's three layers:
+With keel's three layers:
 - If the PreToolUse hook fails → git hook catches it at commit time
 - If git hooks are bypassed → CI/CD pipeline catches it
 - If all three fail → audit log provides forensic evidence
