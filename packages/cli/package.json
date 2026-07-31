@@ -4,7 +4,7 @@
   "description": "Enforce rules on AI agents. Rules survive context rot, compaction, and agent amnesia.",
   "type": "module",
   "bin": {
-    "keel": "./bin/keel.js"
+    "keel": "bin/keel.js"
   },
   "files": [
     "dist",
@@ -32,6 +32,6 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/qiweiz94/keel.git"
+    "url": "git+https://github.com/qiweiz94/keel.git"
   }
 }
