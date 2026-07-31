@@ -1,0 +1,359 @@
+// keel-enforce — Keel enforcement plugin for OpenCode
+//
+// CANONICAL SOURCE. This single file is used by:
+//   1. `keel install --opencode`  — copied to ~/.opencode/plugins/keel-enforce.js
+//   2. `keel install --project`   — copied to <project>/.opencode/plugins/keel-enforce.js
+//   3. @keel/opencode-plugin npm  — built to dist/index.js verbatim
+//
+// Hooks (SPEC.md §6):
+//   tool.execute.before                — deny/warn/fix every tool call (involuntary)
+//   experimental.chat.system.transform — inject standing requirements each turn (voluntary)
+//   experimental.session.compacting    — embed requirements in compaction context (backup)
+//
+// Format: V1 `{ id, server }` — REQUIRED for file plugins (OpenCode throws
+// "Path plugin must export id" otherwise). The `export const` style shown in
+// OpenCode docs is the legacy format.
+
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+const KEEL_DIR = path.join(os.homedir(), '.keel')
+const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
+const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
+const STATE_PATH = path.join(KEEL_DIR, 'state', 'deny-first-time.json')
+const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
+const CONFIG_PATH = path.join(KEEL_DIR, 'config.json')
+const TRACES_DIR = path.join(KEEL_DIR, 'traces')
+const DENY_TTL_MS = 24 * 60 * 60 * 1000
+
+// Keep in sync with DEFAULT_RULES_YAML in packages/cli/src/commands/install.ts.
+const DEFAULT_RULES_YAML = `# Keel rules — enforced OUTSIDE agent context (via OpenCode plugin)
+# These rules cannot be forgotten, overridden, or degraded by context rot.
+# Layer 3 enforcement (semantic) — runs before every tool dispatch.
+version: 1
+level: balanced
+rules:
+  - id: product-name-is-keel
+    type: command
+    match: "(sed|replaceAll|rename).*(keel|product).*(ai-enforce)"
+    action: deny
+    level: sprint
+    priority: 100
+    message: "Product name is 'keel'. Never change it back to ai-enforce."
+
+  - id: verify-before-claim
+    type: sequence
+    steps:
+      - tool: WriteFile
+        pattern: "src/"
+      - tool: edit
+        pattern: "src/"
+    sequence_window_seconds: 300
+    action: deny
+    message: "After changing source code, you must run npm test. Build is not sufficient verification."
+
+  - id: test-after-build
+    type: sequence
+    steps:
+      - tool: Bash
+        pattern: "npm run build|tsc|vite build"
+    sequence_window_seconds: 120
+    action: deny
+    message: "Build success does not mean tests pass. Run npm test and confirm all green before reporting done."
+
+  - id: verify-format-before-decision
+    type: command
+    match: "(default|choose).*(format|config|rule)"
+    action: warn
+    unless_reasoning: "user.*(said|asked|want|use|prefer)|verify|check|ask"
+    message: "You are choosing a format without verifying the user. Ask what they use before deciding."
+
+  - id: no-force-push
+    type: command
+    match: "git push --force(?!-with-lease)"
+    action: deny
+    level: sprint
+    message: "Use --force-with-lease instead of --force."
+
+  - id: no-destructive-commands
+    type: command
+    match: "rm -rf /|rm -rf ~"
+    action: deny
+    level: sprint
+    message: "Destructive commands are blocked."
+
+  - id: must-sign-commits
+    type: command
+    match: "git commit"
+    action: fix
+    fix:
+      - pattern: "git commit"
+        replace: "git commit --signoff"
+    message: "Auto-adding --signoff to commits."
+
+  - id: re-inject-at-thresholds
+    type: context
+    message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
+`
+
+// ── config (permissive by default; ~/.keel/config.json optional) ──
+function loadConfig() {
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'))
+      return { record_all: cfg.record_all === true }
+    }
+  } catch {}
+  return { record_all: false }
+}
+
+// ── kill switch (matches `keel disable` / `keel enable`) ──
+function isDisabled() {
+  try {
+    if (!fs.existsSync(DISABLED_PATH)) return false
+    const state = JSON.parse(fs.readFileSync(DISABLED_PATH, 'utf-8'))
+    if (state.expires_at && new Date(state.expires_at) < new Date()) {
+      fs.rmSync(DISABLED_PATH, { force: true })
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ── rule loading ──
+function loadRules(filePath) {
+  try {
+    const text = fs.readFileSync(filePath, 'utf-8')
+    const rules = []
+    const blocks = text.split(/\n\s+-\s+id:\s*/)
+    if (blocks.length >= 2) {
+      for (let i = 1; i < blocks.length; i++) {
+        const b = blocks[i]
+        const id = b.split('\n')[0]?.trim()
+        const type = b.match(/type:\s*(\S+)/)?.[1]
+        const match = b.match(/match:\s*["']?([^"'\n]+)["']?/)?.[1]
+        const action = b.match(/action:\s*(\S+)/)?.[1]
+        const msg = b.match(/message:\s*["']?([^"'\n]+)["']?/)?.[1]
+        if (id && type && (type === 'command' || type === 'content') && match) {
+          const fix = []
+          const fixRe = /pattern:\s*["']([^"']+)["']\s*\n\s*replace:\s*["']([^"']+)["']/g
+          let hit
+          while ((hit = fixRe.exec(b)) !== null) {
+            fix.push({ pattern: hit[1], replace: hit[2] })
+          }
+          rules.push({
+            id,
+            type,
+            match,
+            action: action || 'deny',
+            message: msg || '',
+            ...(fix.length ? { fix } : {}),
+          })
+        }
+      }
+    }
+    return rules
+  } catch {
+    return []
+  }
+}
+
+// ── requirements loading (returns bullet-ready lines, headers stripped) ──
+function loadRequirementLines(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return []
+    return fs
+      .readFileSync(filePath, 'utf-8')
+      .split('\n')
+      .map(l => l.replace(/^#+\s*/, '').trim())
+      .filter(l => l && !l.startsWith('[') && !l.startsWith('<!--'))
+  } catch {
+    return []
+  }
+}
+
+// ── state (warn-then-deny escalation, survives restarts) ──
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_PATH)) return JSON.parse(fs.readFileSync(STATE_PATH, 'utf-8'))
+  } catch {}
+  return {}
+}
+
+function saveState(state) {
+  try {
+    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true })
+    const tmp = STATE_PATH + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(state))
+    fs.renameSync(tmp, STATE_PATH)
+  } catch {}
+}
+
+// ── audit (JSONL, compatible with keel suggest / lessons / watch) ──
+function record(entry) {
+  try {
+    fs.mkdirSync(TRACES_DIR, { recursive: true })
+    const now = new Date()
+    const d = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    fs.appendFileSync(
+      path.join(TRACES_DIR, `${d}.jsonl`),
+      JSON.stringify({
+        t: Date.now(),
+        timestamp: now.toISOString(),
+        session_id: entry.session_id || 'unknown',
+        tool: entry.tool,
+        args: entry.args || {},
+        rule_id: entry.rule_id || null,
+        rule_name: entry.rule_name || '',
+        action: entry.action,
+        message: entry.message || '',
+        agent: entry.agent || 'opencode-plugin',
+        hook: entry.hook || null,
+      }) + '\n'
+    )
+  } catch {}
+}
+
+function testMatch(pattern, text) {
+  try {
+    return new RegExp(pattern, 'i').test(text)
+  } catch {
+    return false
+  }
+}
+
+function applyFix(rule, args) {
+  if (!rule.fix || !rule.fix.length) return false
+  const command = typeof args?.command === 'string' ? args.command : null
+  if (!command) return false
+  let next = command
+  for (const f of rule.fix) {
+    next = next.split(f.pattern).join(f.replace)
+  }
+  if (next !== command) {
+    args.command = next
+    return true
+  }
+  return false
+}
+
+export default {
+  id: 'keel-enforce',
+
+  server: async (input) => {
+    const projectKeelDir = input?.directory ? path.join(input.directory, '.keel') : null
+    const config = loadConfig()
+
+    // Self-bootstrap: zero-config users get working defaults.
+    if (!fs.existsSync(RULES_PATH)) {
+      try {
+        fs.mkdirSync(KEEL_DIR, { recursive: true })
+        fs.writeFileSync(RULES_PATH, DEFAULT_RULES_YAML, 'utf-8')
+      } catch {}
+    }
+
+    // Project rules override global rules for the same rule id.
+    let rules = loadRules(RULES_PATH)
+    const projectRulesPath = projectKeelDir ? path.join(projectKeelDir, 'rules.yaml') : null
+    if (projectRulesPath && fs.existsSync(projectRulesPath)) {
+      const projectRules = loadRules(projectRulesPath)
+      if (projectRules.length) {
+        rules = [...projectRules, ...rules.filter(g => !projectRules.some(p => p.id === g.id))]
+      }
+    }
+
+    let denyState = loadState()
+    record({ tool: 'keel-init', action: 'allow', message: `Keel server started (${rules.length} rules)`, hook: 'init' })
+
+    const requirementSources = [
+      REQUIREMENTS_PATH,
+      ...(projectKeelDir && projectKeelDir !== KEEL_DIR ? [path.join(projectKeelDir, 'requirements.md')] : []),
+    ]
+
+    return {
+      'tool.execute.before': async (input, output) => {
+        try {
+          if (isDisabled()) return
+          const tool = input?.tool || 'unknown'
+          const args = output?.args || {}
+          const str = JSON.stringify(args)
+          const rule = rules.find(r => testMatch(r.match, str))
+
+          if (rule) {
+            const entry = {
+              session_id: input?.sessionID,
+              tool,
+              args,
+              rule_id: rule.id,
+              rule_name: rule.id,
+              agent: 'opencode-plugin',
+            }
+
+            if (rule.action === 'fix') {
+              const applied = applyFix(rule, args)
+              record({ ...entry, action: 'fix', message: applied ? `${rule.message} (fixed)` : rule.message, hook: 'tool.execute.before' })
+              return
+            }
+
+            if (rule.action === 'warn') {
+              record({ ...entry, action: 'warn', message: rule.message, hook: 'tool.execute.before' })
+              return
+            }
+
+            // deny / block — first violation warns, repeat denies.
+            const last = denyState[rule.id]
+            if (!last || Date.now() - last > DENY_TTL_MS) {
+              denyState[rule.id] = Date.now()
+              saveState(denyState)
+              record({ ...entry, action: 'warn', message: `First violation of "${rule.id}" — warning only. Next time will be blocked.`, hook: 'tool.execute.before' })
+              return
+            }
+            record({ ...entry, action: 'deny', message: rule.message, hook: 'tool.execute.before' })
+            throw new Error(`[Keel] ${rule.id}: ${rule.message}`)
+          }
+
+          if (config.record_all) {
+            record({ session_id: input?.sessionID, tool, args, rule_id: null, action: 'allow', message: 'No matching rule', hook: 'tool.execute.before' })
+          }
+        } catch (err) {
+          if (err instanceof Error && err.message.startsWith('[Keel]')) throw err
+          // Plugin faults must never break OpenCode.
+        }
+      },
+
+      'experimental.chat.system.transform': async (input, output) => {
+        try {
+          const blocks = []
+          for (const src of requirementSources) {
+            const lines = loadRequirementLines(src)
+            if (lines.length) {
+              blocks.push(`Standing Requirements (mandatory):\n${lines.map(l => `- ${l}`).join('\n')}`)
+            }
+          }
+          if (blocks.length) {
+            if (!output.system) output.system = []
+            output.system.push(...blocks)
+            record({ session_id: input?.sessionID, tool: 'chat', rule_id: null, action: 'allow', message: `Injected ${blocks.length} requirement block(s) into system prompt`, hook: 'system.transform' })
+          }
+        } catch {}
+      },
+
+      'experimental.session.compacting': async (input, output) => {
+        try {
+          const lines = []
+          for (const src of requirementSources) {
+            lines.push(...loadRequirementLines(src))
+          }
+          if (lines.length) {
+            if (!output.context) output.context = []
+            output.context.push(`## Standing Requirements (survive compaction)\n${lines.map(l => `- ${l}`).join('\n')}`)
+            record({ session_id: input?.sessionID, tool: 'compaction', rule_id: null, action: 'allow', message: `Embedded ${lines.length} requirement line(s) in compaction context`, hook: 'session.compacting' })
+          }
+        } catch {}
+      },
+    }
+  },
+}

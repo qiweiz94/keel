@@ -1,7 +1,7 @@
 {
-  "name": "@ai-enforce/core",
+  "name": "@keel/core",
   "version": "0.1.2",
-  "description": "Shared core types, policy engine, and enforcement logic for ai-enforce",
+  "description": "Core enforcement engine for Keel — policy engine, signing, receipts, enforce pipeline",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,7 +10,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npx esbuild src/keel-core.ts --bundle --format=esm --outfile=dist/keel-core.mjs --external:yaml --packages=external",
     "test": "vitest run",
     "clean": "rm -rf dist"
   },
@@ -24,6 +24,6 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/qiweiz94/ai-enforce.git"
+    "url": "https://github.com/qiweiz94/keel.git"
   }
 }

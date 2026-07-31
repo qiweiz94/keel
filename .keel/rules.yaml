@@ -1,0 +1,33 @@
+# Project-specific Keel rules for the keel project
+# These are enforced alongside global rules in ~/.keel/rules.yaml
+# Project rules override global rules for the same rule id.
+version: 1
+rules:
+  - id: test-after-code-change
+    type: sequence
+    steps:
+      - tool: WriteFile
+        pattern: "src/"
+      - tool: edit
+        pattern: "src/"
+    sequence_window_seconds: 300
+    action: deny
+    priority: 95
+    message: "After changing source code, you must run npm test. Build is not sufficient verification."
+
+  - id: build-is-not-tests
+    type: sequence
+    steps:
+      - tool: Bash
+        pattern: "npm run build|tsc|vite build"
+    sequence_window_seconds: 120
+    action: deny
+    priority: 95
+    message: "Build success does not mean tests pass. Run npm test."
+
+  - id: claim-must-have-evidence
+    type: command
+    match: "(done|fixed|complete|working)"
+    action: deny
+    unless_reasoning: "test.*pass|verified|confirmed.*output|evidence"
+    message: "Don't claim completion without evidence. Include test output or verification steps."

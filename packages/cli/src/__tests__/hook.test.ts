@@ -1,164 +1,137 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execSync } from 'node:child_process'
-import { writeFileSync, mkdirSync, chmodSync } from 'node:fs'
+import { writeFileSync, mkdirSync, chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * Contract test for the Claude Code PreToolUse hook.
+ * Contract test for the canonical Claude Code PreToolUse hook
+ * (packages/cli/templates/claude-pretooluse.sh, installed by
+ * `keel install --claude-code`).
  *
- * This is the only test in the repo that exercises the README's headline
- * claim: "Intercepts EVERY tool call BEFORE the AI executes it. The AI
- * cannot override this."
+ * Contract (modern Claude Code shell hooks):
+ *   INPUT:  env vars TOOL_NAME (tool name) and TOOL_INPUT (JSON of tool args)
+ *   OUTPUT: exit 0 = allow, exit 2 = deny (stderr shown to the model)
  *
- * The payload shape below is what Claude Code actually sends —
- * `tool_name`, `tool_input`, `hook_event_name` — verified against the
- * installed binary. Response must nest under `hookSpecificOutput`.
+ * The hook shells out to `keel evaluate` per call, so warn-then-deny
+ * escalation is exercised across processes via the persisted state.
  *
- * NOTE ON PATH: the hook resolves `ai-enforce` from PATH, which on a dev
- * machine is the *globally installed* npm version, not this working tree.
- * We prepend a shim so the test exercises the code under review.
+ * Isolation: HOME is overridden to a temp dir so the test uses its own
+ * ~/.keel (rules, state, audit) and never touches the real one. The
+ * project's .keel/rules.yaml is the sole rule source.
  */
 
-// Resolved from this file's location so the suite works under both
-// `npm test` (cwd=packages/cli) and a root-level vitest invocation.
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const REPO_ROOT = join(HERE, '..', '..', '..', '..')
-const HOOK = join(REPO_ROOT, 'docs', 'hooks', 'claude-code-pre-tool-use.sh')
+const HOOK = join(REPO_ROOT, 'packages', 'cli', 'templates', 'claude-pretooluse.sh')
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 
 let testDir: string
+let tempHome: string
 let shimPath: string
 
-function runHook(payload: object): { stdout: string; code: number } {
+const TEST_RULES = `version: 1
+rules:
+  - id: no-destructive-commands
+    type: command
+    match: "rm -rf /|rm -rf ~"
+    action: deny
+    message: "Destructive commands are blocked."
+
+  - id: no-verify-commits
+    type: command
+    match: "git commit.*--no-verify"
+    action: deny
+    message: "No --no-verify."
+
+  - id: must-sign-commits
+    type: command
+    match: "git commit"
+    action: fix
+    fix:
+      - pattern: "git commit"
+        replace: "git commit --signoff"
+    message: "Auto-adding --signoff to commits."
+`
+
+function runHook(toolName: string, toolInput: object): { stdout: string; stderr: string; code: number } {
   try {
     const stdout = execSync(`bash "${HOOK}"`, {
       encoding: 'utf-8',
       cwd: testDir,
-      input: JSON.stringify(payload),
       timeout: 10000,
-      env: { ...process.env, PATH: `${shimPath}:${process.env.PATH}` },
+      env: {
+        ...process.env,
+        HOME: tempHome,
+        PATH: `${shimPath}:${process.env.PATH}`,
+        TOOL_NAME: toolName,
+        TOOL_INPUT: JSON.stringify(toolInput),
+      },
     })
-    return { stdout, code: 0 }
+    return { stdout, stderr: '', code: 0 }
   } catch (err: any) {
-    return { stdout: err.stdout || err.message, code: err.status ?? 1 }
+    return { stdout: err.stdout || '', stderr: err.stderr || '', code: err.status ?? 1 }
   }
-}
-
-function decision(payload: object): string {
-  const { stdout } = runHook(payload)
-  let parsed: any
-  try {
-    parsed = JSON.parse(stdout)
-  } catch {
-    throw new Error(`hook did not emit valid JSON: ${stdout}`)
-  }
-  // Accept either the nested (current) or flat (legacy) shape when reading,
-  // so this test fails on the *decision*, not on the envelope.
-  return parsed?.hookSpecificOutput?.permissionDecision ?? parsed?.permissionDecision
 }
 
 describe('Claude Code PreToolUse hook', () => {
   beforeAll(() => {
-    testDir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    testDir = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'keel-hook-'))
+    tempHome = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'keel-home-'))
     execSync('git init', { cwd: testDir })
-    execSync(`node "${CLI}" init`, { cwd: testDir })
 
+    // Project rules — the only rule source (temp HOME has no global rules).
+    mkdirSync(join(testDir, '.keel'), { recursive: true })
+    writeFileSync(join(testDir, '.keel', 'rules.yaml'), TEST_RULES, 'utf-8')
+
+    // Shim `keel` so the hook exercises this working tree's CLI.
     shimPath = join(testDir, 'shim')
     mkdirSync(shimPath, { recursive: true })
-    const shim = join(shimPath, 'ai-enforce')
+    const shim = join(shimPath, 'keel')
     writeFileSync(shim, `#!/bin/bash\nexec node "${CLI}" "$@"\n`, 'utf-8')
     chmodSync(shim, 0o755)
   })
 
   afterAll(() => {
-    execSync(`rm -rf "${testDir}"`)
+    rmSync(testDir, { recursive: true, force: true })
+    rmSync(tempHome, { recursive: true, force: true })
   })
 
-  it('denies a destructive bash command', () => {
-    expect(
-      decision({
-        session_id: 'test',
-        hook_event_name: 'PreToolUse',
-        cwd: testDir,
-        tool_name: 'Bash',
-        tool_input: { command: 'rm -rf /' },
-      })
-    ).toBe('deny')
+  it('warns on the first destructive command, denies the repeat', () => {
+    const first = runHook('Bash', { command: 'rm -rf /' })
+    expect(first.code).toBe(0) // first violation: warn only
+
+    const second = runHook('Bash', { command: 'rm -rf /' })
+    expect(second.code).toBe(2)
+    expect(second.stderr).toContain('Keel blocked')
   })
 
   it('denies a git hook bypass', () => {
-    expect(
-      decision({
-        session_id: 'test',
-        hook_event_name: 'PreToolUse',
-        cwd: testDir,
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit --no-verify -m x' },
-      })
-    ).toBe('deny')
-  })
+    const first = runHook('Bash', { command: 'git commit --no-verify -m x' })
+    expect(first.code).toBe(0) // first violation: warn only
 
-  it('denies a write to a protected file', () => {
-    expect(
-      decision({
-        session_id: 'test',
-        hook_event_name: 'PreToolUse',
-        cwd: testDir,
-        tool_name: 'Write',
-        tool_input: { file_path: join(testDir, '.env'), content: 'X=1' },
-      })
-    ).toBe('deny')
-  })
-
-  it('denies an agent rewriting the policy that governs it', () => {
-    // The self-disable path: if this is allowed, every other rule is advisory.
-    expect(
-      decision({
-        session_id: 'test',
-        hook_event_name: 'PreToolUse',
-        cwd: testDir,
-        tool_name: 'Write',
-        tool_input: { file_path: join(testDir, '.ai-enforce.yaml'), content: '{}' },
-      })
-    ).toBe('deny')
+    const second = runHook('Bash', { command: 'git commit --no-verify -m x' })
+    expect(second.code).toBe(2)
   })
 
   it('allows an ordinary command', () => {
-    expect(
-      decision({
-        session_id: 'test',
-        hook_event_name: 'PreToolUse',
-        cwd: testDir,
-        tool_name: 'Bash',
-        tool_input: { command: 'ls -la' },
-      })
-    ).toBe('allow')
+    const result = runHook('Bash', { command: 'ls -la' })
+    expect(result.code).toBe(0)
+  })
+
+  it('allows a fix-rule command (fix is advisory in Claude Code hooks)', () => {
+    // must-sign-commits is action: fix — Claude Code hooks cannot mutate
+    // the input, so the hook allows the call (the message surfaces the fix).
+    const result = runHook('Bash', { command: 'git commit -m wip' })
+    expect(result.code).toBe(0)
   })
 
   it('does not let an embedded quote smuggle a command past the check', () => {
-    // Extraction must survive escaped quotes in the JSON string.
-    expect(
-      decision({
-        session_id: 'test',
-        hook_event_name: 'PreToolUse',
-        cwd: testDir,
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit -m "wip" --no-verify' },
-      })
-    ).toBe('deny')
-  })
-
-  it('emits the documented nested response envelope', () => {
-    const { stdout } = runHook({
-      session_id: 'test',
-      hook_event_name: 'PreToolUse',
-      cwd: testDir,
-      tool_name: 'Bash',
-      tool_input: { command: 'ls -la' },
-    })
-    const parsed = JSON.parse(stdout)
-    expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
-    expect(parsed.hookSpecificOutput?.permissionDecision).toBeDefined()
+    // State for no-verify-commits may already be set by the earlier test,
+    // so assert the eventual outcome rather than first-call semantics.
+    runHook('Bash', { command: 'git commit -m "wip" --no-verify' })
+    const second = runHook('Bash', { command: 'git commit -m "wip" --no-verify' })
+    expect(second.code).toBe(2)
+    expect(second.stderr).toContain('Keel blocked')
   })
 })

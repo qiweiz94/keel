@@ -1,8 +1,8 @@
 /**
- * @ai-enforce/core — the enforcement library.
+ * @keel/core — the enforcement library.
  *
- * Single source of truth for policy evaluation and the evidence trail.
- * `ai-enforce` (the CLI) and `@ai-enforce/mcp-server` are thin consumers.
+ * Single source of truth for policy evaluation, evidence trail, and the enforce engine.
+ * `keel` (the CLI) and `@keel/mcp-server` are thin consumers.
  *
  * This package used to be a stale fork: the CLI carried its own divergent copy
  * of PolicyEngine, security fixes landed only there, and this package's test
@@ -37,3 +37,6 @@ export {
 } from './receipts.js'
 
 export type * from './types.js'
+
+// ── Enforce engine ────────────────────────────────────────────────
+export * from './enforce/index.js'

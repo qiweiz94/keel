@@ -1,0 +1,208 @@
+import { readFileSync, existsSync } from 'node:fs'
+import { parse as parseYaml } from 'yaml'
+import type { KeelConfig, KeelRule, ProtectionLevel, RuleContext } from '../types.js'
+
+export interface ParsedRules {
+  config: KeelConfig
+  rules: KeelRule[]
+  sourcePath: string
+  version: number
+  markdown: string        // the markdown portion (for re-injection)
+}
+
+/**
+ * Parse rules from a CLAUDE.md file with YAML frontmatter.
+ * Also supports standalone .keel.yaml for global rules.
+ */
+export function parseRulesFile(filePath: string): ParsedRules | null {
+  if (!existsSync(filePath)) return null
+
+  const content = readFileSync(filePath, 'utf-8')
+  return parseRulesContent(content, filePath)
+}
+
+export function parseRulesContent(content: string, sourcePath: string): ParsedRules {
+  const frontmatter = extractFrontmatter(content)
+  const markdown = frontmatter ? content.replace(/---\n[\s\S]*?\n---\n?/, '') : content
+
+  let config: KeelConfig = { version: 1 }
+  let yamlSource = frontmatter
+
+  if (!yamlSource) {
+    // No frontmatter — try parsing the entire file as YAML
+    // (standalone .keel.yaml files have no frontmatter)
+    yamlSource = content
+  }
+
+  try {
+    const parsed = parseYaml(yamlSource)
+    if (parsed && typeof parsed === 'object' && 'keel' in parsed) {
+      config = parsed.keel as KeelConfig
+    } else if (parsed && typeof parsed === 'object' && 'rules' in parsed) {
+      // Direct rules object (standalone .keel.yaml or pure YAML)
+      config = parsed as KeelConfig
+    } else if (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) {
+      // Empty file or just comments — use defaults
+    }
+  } catch {
+    // Invalid YAML — use defaults silently
+  }
+
+  return {
+    config,
+    rules: config.rules || [],
+    sourcePath,
+    version: config.version || 1,
+    markdown: markdown.trim(),
+  }
+}
+
+/**
+ * Scan the rule hierarchy: global → user → project → local
+ * Returns merged rules with more specific scopes overriding less specific.
+ *
+ * Sources (in priority order for each level):
+ *   global: ~/.keel/rules.yaml → ~/.config/keel/rules.yaml
+ *   user:   ~/.config/keel/rules.yaml (legacy)
+ *   project: .keel/rules.yaml → AGENTS.md → CLAUDE.md
+ *   local:  .keel.local.yaml → AGENTS.local.md → CLAUDE.local.md
+ */
+export interface RuleHierarchy {
+  global: ParsedRules | null      // ~/.keel/rules.yaml
+  user: ParsedRules | null        // ~/.config/keel/rules.yaml (legacy)
+  project: ParsedRules | null     // .keel/rules.yaml > AGENTS.md > CLAUDE.md
+  local: ParsedRules | null       // .keel.local.yaml > AGENTS.local.md > CLAUDE.local.md
+}
+
+export function loadRuleHierarchy(projectDir: string): RuleHierarchy {
+  const home = process.env.HOME || '~'
+
+  // Project-level: prefer .keel/rules.yaml, then AGENTS.md, then CLAUDE.md
+  const projectRules =
+    parseRulesFile(`${projectDir}/.keel/rules.yaml`)
+    || parseRulesFile(`${projectDir}/AGENTS.md`)
+    || parseRulesFile(`${projectDir}/CLAUDE.md`)
+
+  // Local overrides: prefer .keel.local.yaml, then AGENTS.local.md, then CLAUDE.local.md
+  const localRules =
+    parseRulesFile(`${projectDir}/.keel.local.yaml`)
+    || parseRulesFile(`${projectDir}/AGENTS.local.md`)
+    || parseRulesFile(`${projectDir}/CLAUDE.local.md`)
+
+  return {
+    global: parseRulesFile(`${home}/.keel/rules.yaml`)
+      || parseRulesFile(`${home}/.config/keel/rules.yaml`),
+    user: parseRulesFile(`${home}/.config/keel/rules.yaml`)
+      || null,
+    project: projectRules,
+    local: localRules,
+  }
+}
+
+/**
+ * Merge rules from hierarchy into a single flat list.
+ * More specific scopes override less specific ones for same rule id.
+ */
+export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext): KeelRule[] {
+  const all: KeelRule[] = []
+
+  const pushRules = (source: ParsedRules | null, scope: KeelRule['scope']) => {
+    if (!source) return
+    for (const rule of source.rules) {
+      // Filter by protection level
+      const ruleLevel = rule.level || 'balanced'
+      const levelOrder: Record<ProtectionLevel, number> = { sprint: 0, balanced: 1, protect: 2 }
+      if (levelOrder[ruleLevel] > levelOrder[level]) continue
+
+      // Filter by context
+      if (rule.context && !rule.context.includes(context)) continue
+
+      all.push({ ...rule, scope: rule.scope || scope })
+    }
+  }
+
+  pushRules(hierarchy.global, 'global')
+  pushRules(hierarchy.user, 'user')
+  pushRules(hierarchy.project, 'project')
+  pushRules(hierarchy.local, 'folder')
+
+  // Deduplicate: more specific scope wins for same rule id
+  const scopeOrder: Record<string, number> = { global: 0, user: 1, project: 2, folder: 3, session: 4 }
+  const deduped = new Map<string, KeelRule>()
+  for (const rule of all) {
+    const existing = deduped.get(rule.id)
+    if (!existing || (rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || 'global'])) {
+      deduped.set(rule.id, rule)
+    }
+  }
+
+  // Sort by priority (higher first), then by type
+  return Array.from(deduped.values()).sort((a, b) => (b.priority || 0) - (a.priority || 0))
+}
+
+/**
+ * Detect conflicts between rules.
+ * Returns pairs of rules that contradict each other.
+ */
+export interface RuleConflict {
+  ruleA: KeelRule
+  ruleB: KeelRule
+  reason: string
+}
+
+export function detectConflicts(rules: KeelRule[]): RuleConflict[] {
+  const conflicts: RuleConflict[] = []
+
+  for (let i = 0; i < rules.length; i++) {
+    for (let j = i + 1; j < rules.length; j++) {
+      const a = rules[i]
+      const b = rules[j]
+
+      // Same match pattern, different actions
+      if (a.match && b.match && a.match === b.match) {
+        if ((a.action === 'deny' || a.action === 'block') && (b.action === 'allow')) {
+          conflicts.push({ ruleA: a, ruleB: b, reason: `"${a.match}" is denied by "${a.id}" but allowed by "${b.id}"` })
+        }
+        if ((a.action === 'allow') && (b.action === 'deny' || b.action === 'block')) {
+          conflicts.push({ ruleA: a, ruleB: b, reason: `"${b.match}" is denied by "${b.id}" but allowed by "${a.id}"` })
+        }
+      }
+
+      // Network deny all vs. specific allow
+      if (a.type === 'network' && b.type === 'network') {
+        if (a.match === '*' && b.except?.length) {
+          conflicts.push({ ruleA: a, ruleB: b, reason: `"${a.id}" denies all network, "${b.id}" expects to allow specific domains` })
+        }
+      }
+
+      // Sequence vs. single action contradiction
+      if (a.type === 'sequence' && b.type === 'command') {
+        if (a.steps?.some(s => s.tool === b.match)) {
+          conflicts.push({ ruleA: a, ruleB: b, reason: `"${a.id}" blocks sequences involving "${b.match}", "${b.id}" individually checks it` })
+        }
+      }
+    }
+  }
+
+  return conflicts
+}
+
+function extractFrontmatter(content: string): string | null {
+  const match = content.match(/^---\n([\s\S]*?)\n---/)
+  return match ? match[1] : null
+}
+
+/**
+ * Compute a content hash for version detection / cache invalidation.
+ */
+export function hashRulesFile(filePath: string): string {
+  if (!existsSync(filePath)) return ''
+  const content = readFileSync(filePath, 'utf-8')
+  let hash = 0
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash |= 0
+  }
+  return hash.toString(36)
+}
