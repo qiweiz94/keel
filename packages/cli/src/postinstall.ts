@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * keel-cli postinstall script
- * Runs after npm install -g keel-cli to print setup instructions.
+ * @get-keel/cli postinstall script
+ * Runs after npm install -g @get-keel/cli to print setup instructions.
  */
 
 console.log(`

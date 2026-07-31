@@ -15,7 +15,7 @@ git init
 
 echo "📦 Setting up keel..."
 if ! command -v keel &>/dev/null; then
-  echo "Error: keel not installed. Run: npm install -g keel-cli"
+  echo "Error: keel not installed. Run: npm install -g @get-keel/cli"
   exit 1
 fi
 keel init --hooks 2>/dev/null || true

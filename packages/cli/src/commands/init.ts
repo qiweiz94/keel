@@ -95,7 +95,7 @@ ${chained}
 # be silently equivalent to passing.
 command -v keel >/dev/null 2>&1 || {
   echo "keel: not installed — refusing to skip enforcement." >&2
-  echo "  Install it (npm install -g keel-cli), or remove .git/hooks/${hookName}." >&2
+  echo "  Install it (npm install -g @get-keel/cli), or remove .git/hooks/${hookName}." >&2
   exit 1
 }
 keel check --ci

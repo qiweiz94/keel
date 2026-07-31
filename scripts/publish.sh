@@ -9,7 +9,7 @@
 # Packages (publish order matters — nothing depends on a published package,
 # but the plugin build copies the canonical template from this repo):
 #   1. @get-keel/core              — enforcement engine
-#   2. keel-cli                — CLI (binary name: keel)
+#   2. @get-keel/cli           — CLI (binary name: keel)
 #   3. @get-keel/opencode-plugin   — OpenCode plugin (builds from templates/)
 #
 # @get-keel/mcp-server is intentionally NOT published — it is deprecated
@@ -27,7 +27,15 @@ npm run build
 publish() {
   local dir="$1"
   local pkg="$2"
+  local version
+  version=$(node -p "require('./$dir/package.json').version" 2>/dev/null || echo "")
+
   echo ""
+  if [ -n "$version" ] && npm view "$pkg@$version" version >/dev/null 2>&1; then
+    echo "Skipping $pkg@$version — already published"
+    return
+  fi
+
   echo "Publishing $pkg from $dir ..."
   if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
     # Token path: pass as a CLI flag so it overrides any token already in
@@ -39,11 +47,11 @@ publish() {
 }
 
 publish packages/core "@get-keel/core"
-publish packages/cli "keel-cli"
+publish packages/cli "@get-keel/cli"
 publish packages/opencode-plugin "@get-keel/opencode-plugin"
 
 echo ""
 echo "✅ All packages published!"
 echo ""
-echo "Test: npm install -g keel-cli && keel --version"
+echo "Test: npm install -g @get-keel/cli && keel --version"
 echo "Plugin: add \"@get-keel/opencode-plugin\" to opencode.json, or run: keel install --opencode"

@@ -33,7 +33,7 @@ Claude Code — the call is allowed and the fix is surfaced in the message.
 
 ## Requirements
 
-- `keel` on PATH (`npm install -g keel-cli`)
+- `keel` on PATH (`npm install -g @get-keel/cli`)
 - Rules in `~/.keel/rules.yaml` and/or `.keel/rules.yaml` (project rules
   override global rules for the same id)
 - Standing requirements in `~/.keel/requirements.md` / `.keel/requirements.md`

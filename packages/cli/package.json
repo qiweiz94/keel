@@ -1,5 +1,5 @@
 {
-  "name": "keel-cli",
+  "name": "@get-keel/cli",
   "version": "0.1.2",
   "description": "Enforce rules on AI agents. Rules survive context rot, compaction, and agent amnesia.",
   "type": "module",

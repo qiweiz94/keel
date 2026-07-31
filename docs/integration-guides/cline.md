@@ -35,5 +35,5 @@ force it. For hard enforcement use OpenCode (plugin) or Claude Code (hooks).
 
 ## Requirements
 
-- `keel` on PATH (`npm install -g keel-cli`)
+- `keel` on PATH (`npm install -g @get-keel/cli`)
 - Rules in `~/.keel/rules.yaml` / `.keel/rules.yaml`
