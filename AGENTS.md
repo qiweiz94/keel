@@ -7,7 +7,8 @@ Keel enforces rules on AI coding agents OUTSIDE the agent's context window.
 ```bash
 npm run build                    # Build all packages
 npm run test -w @get-keel/core       # Core tests (expected: 55/55)
-npm run test -w keel             # CLI tests (9 pre-existing failures expected — legacy init/check/policy tests)
+npm run test -w @get-keel/cli        # CLI tests (8 pre-existing failures expected — legacy init/check/policy tests)
+npm run test -w @get-keel/opencode-plugin  # Plugin load tests (11 checks)
 keel validate                    # Check rules
 ```
 
@@ -16,7 +17,7 @@ keel validate                    # Check rules
 ```
 packages/
 ├── core/              @get-keel/core      — Enforcement pipeline, state, audit
-├── cli/               keel            — CLI binary + OpenCode plugin
+├── cli/               @get-keel/cli — CLI binary (`keel`) + OpenCode plugin
 ├── opencode-plugin/   @get-keel/opencode-plugin — npm package for plugin
 └── mcp-server/        @get-keel/mcp-server — (deprecated)
 ```
@@ -47,8 +48,10 @@ NEVER edit the installed plugin, the npm dist, or any other copy directly —
 edit `templates/keel-enforce.js` and re-run the build/install.
 
 Hooks implemented (SPEC.md §6):
-- `tool.execute.before` — deny/warn/fix every tool call (first violation of a deny
-  rule warns, repeat denies; state persists across restarts)
+- `tool.execute.before` — deny/warn/fix every tool call, plus sequence-rule
+  detection (forbidden step orders within a sliding window, mirroring
+  `core/src/enforce/sequencer.ts`); first violation of a deny rule warns,
+  repeat denies; state persists across restarts
 - `experimental.chat.system.transform` — injects `~/.keel/requirements.md` and
   `<project>/.keel/requirements.md` into the system prompt every turn
 - `experimental.session.compacting` — embeds requirements in compaction context

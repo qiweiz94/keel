@@ -143,7 +143,10 @@ function loadRules(filePath) {
         const match = b.match(/match:\s*["']?([^"'\n]+)["']?/)?.[1]
         const action = b.match(/action:\s*(\S+)/)?.[1]
         const msg = b.match(/message:\s*["']?([^"'\n]+)["']?/)?.[1]
-        if (id && type && (type === 'command' || type === 'content') && match) {
+        if (!id || !type) continue
+
+        if (type === 'command' || type === 'content') {
+          if (!match) continue
           const fix = []
           const fixRe = /pattern:\s*["']([^"']+)["']\s*\n\s*replace:\s*["']([^"']+)["']/g
           let hit
@@ -158,6 +161,26 @@ function loadRules(filePath) {
             message: msg || '',
             ...(fix.length ? { fix } : {}),
           })
+        } else if (type === 'sequence') {
+          const steps = []
+          const stepRe = /-\s+tool:\s*(\S+)(?:\n\s+path:\s*["']?([^"'\n]+)["']?)?(?:\n\s+pattern:\s*["']([^"'\n]+)["']?)?/g
+          let stepHit
+          while ((stepHit = stepRe.exec(b)) !== null) {
+            steps.push({
+              tool: stepHit[1],
+              ...(stepHit[2] ? { path: stepHit[2] } : {}),
+              ...(stepHit[3] ? { pattern: stepHit[3] } : {}),
+            })
+          }
+          if (steps.length < 2) continue
+          rules.push({
+            id,
+            type,
+            steps,
+            sequence_window_seconds: Number(b.match(/sequence_window_seconds:\s*(\d+)/)?.[1] || 60),
+            action: action || 'deny',
+            message: msg || '',
+          })
         }
       }
     }
@@ -165,6 +188,51 @@ function loadRules(filePath) {
   } catch {
     return []
   }
+}
+
+// ── sequence detection (mirrors core/src/enforce/sequencer.ts) ──
+function matchesStep(step, tool, args) {
+  if (String(step.tool).toLowerCase() !== String(tool).toLowerCase()) return false
+  if (step.path) {
+    const argPath = String(args.path || args.filePath || args.file || args.dest || '')
+    if (!argPath.includes(step.path)) return false
+  }
+  if (step.pattern) {
+    const argStr = JSON.stringify(args)
+    try {
+      if (!new RegExp(step.pattern, 'i').test(argStr)) return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
+// Returns a violation message when the current action completes a forbidden
+// sequence within the rule's window, otherwise null.
+function checkSequence(rule, tool, args, history) {
+  if (!rule.steps || rule.steps.length < 2) return null
+  const windowMs = (rule.sequence_window_seconds || 60) * 1000
+  const cutoff = Date.now() - windowMs
+  const recent = history.filter(r => r.timestamp >= cutoff)
+
+  const lastStep = rule.steps[rule.steps.length - 1]
+  if (!matchesStep(lastStep, tool, args)) return null
+
+  let idx = recent.length - 1
+  for (let s = rule.steps.length - 2; s >= 0; s--) {
+    let found = false
+    while (idx >= 0) {
+      const rec = recent[idx]
+      idx--
+      if (matchesStep(rule.steps[s], rec.tool, rec.args)) {
+        found = true
+        break
+      }
+    }
+    if (!found) return null
+  }
+  return `Sequence detected: ${rule.steps.map(s => s.tool).join(' → ')} (rule: ${rule.id})`
 }
 
 // ── requirements loading (returns bullet-ready lines, headers stripped) ──
@@ -272,6 +340,11 @@ export default {
     }
 
     let denyState = loadState()
+
+    // In-process action history for sequence rules (sliding window).
+    const history = []
+    const maxSeqWindowMs = Math.max(300, ...rules.filter(r => r.type === 'sequence').map(r => (r.sequence_window_seconds || 60) * 1000))
+
     record({ tool: 'keel-init', action: 'allow', message: `Keel server started (${rules.length} rules)`, hook: 'init' })
 
     const requirementSources = [
@@ -286,7 +359,13 @@ export default {
           const tool = input?.tool || 'unknown'
           const args = output?.args || {}
           const str = JSON.stringify(args)
-          const rule = rules.find(r => testMatch(r.match, str))
+
+          // Record the action for sequence detection, then prune stale entries.
+          history.push({ tool, args, timestamp: Date.now() })
+          const seqCutoff = Date.now() - maxSeqWindowMs
+          while (history.length && history[0].timestamp < seqCutoff) history.shift()
+
+          const rule = rules.find(r => (r.type === 'command' || r.type === 'content') && testMatch(r.match, str))
 
           if (rule) {
             const entry = {
@@ -319,6 +398,33 @@ export default {
             }
             record({ ...entry, action: 'deny', message: rule.message, hook: 'tool.execute.before' })
             throw new Error(`[Keel] ${rule.id}: ${rule.message}`)
+          }
+
+          // Sequence rules — did this call complete a forbidden sequence?
+          const seqRule = rules.find(r => r.type === 'sequence' && checkSequence(r, tool, args, history))
+          if (seqRule) {
+            const entry = {
+              session_id: input?.sessionID,
+              tool,
+              args,
+              rule_id: seqRule.id,
+              rule_name: seqRule.id,
+              agent: 'opencode-plugin',
+            }
+            if (seqRule.action === 'warn') {
+              record({ ...entry, action: 'warn', message: seqRule.message, hook: 'tool.execute.before' })
+              return
+            }
+            // deny / block — first violation warns, repeat denies.
+            const last = denyState[seqRule.id]
+            if (!last || Date.now() - last > DENY_TTL_MS) {
+              denyState[seqRule.id] = Date.now()
+              saveState(denyState)
+              record({ ...entry, action: 'warn', message: `First violation of "${seqRule.id}" — warning only. Next time will be blocked.`, hook: 'tool.execute.before' })
+              return
+            }
+            record({ ...entry, action: 'deny', message: seqRule.message, hook: 'tool.execute.before' })
+            throw new Error(`[Keel] ${seqRule.id}: ${seqRule.message}`)
           }
 
           if (config.record_all) {

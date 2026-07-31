@@ -2,9 +2,14 @@
 
 Enforce rules on AI coding agents — rules that survive context rot, compaction, and agent amnesia.
 
+[![npm](https://img.shields.io/npm/v/@get-keel/cli?label=@get-keel/cli&logo=npm)](https://www.npmjs.com/package/@get-keel/cli)
+[![npm](https://img.shields.io/npm/v/@get-keel/opencode-plugin?label=@get-keel/opencode-plugin&logo=npm)](https://www.npmjs.com/package/@get-keel/opencode-plugin)
+[![npm](https://img.shields.io/npm/v/@get-keel/core?label=@get-keel/core&logo=npm)](https://www.npmjs.com/package/@get-keel/core)
+
 ```bash
-keel install --opencode   # Wire the OpenCode plugin
-keel validate             # Check your rules
+npm install -g @get-keel/cli   # or: keel install --opencode after install
+keel install --opencode        # Wire the OpenCode plugin
+keel validate                  # Check your rules
 ```
 
 ## The Problem

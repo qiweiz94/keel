@@ -49,6 +49,34 @@ try {
 }
 check('warn then deny', denied)
 
+// Sequence rule (verify-before-claim: WriteFile src/ → edit src/ within 300s).
+// First violation warns; repeat within the window denies.
+await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 't2' }, { args: { filePath: 'src/foo.ts', content: 'x' } })
+let seqWarned = true
+let seqDenied = false
+try {
+  await hooks['tool.execute.before']({ tool: 'edit', sessionID: 't2' }, { args: { filePath: 'src/foo.ts', oldString: 'a', newString: 'b' } })
+} catch (e) {
+  seqWarned = false // first violation must warn, not deny
+}
+try {
+  await hooks['tool.execute.before']({ tool: 'edit', sessionID: 't2' }, { args: { filePath: 'src/foo.ts', oldString: 'b', newString: 'c' } })
+} catch (e) {
+  seqDenied = e.message.startsWith('[Keel]')
+}
+check('sequence first violation warns', seqWarned)
+check('sequence repeat denies', seqDenied)
+
+// Sequence rule does NOT fire for unrelated tool calls.
+let seqFalse = false
+await hooks['tool.execute.before']({ tool: 'Read', sessionID: 't2' }, { args: { filePath: 'src/other.ts' } })
+try {
+  await hooks['tool.execute.before']({ tool: 'edit', sessionID: 't2' }, { args: { filePath: 'README.md', oldString: 'a', newString: 'b' } })
+} catch (e) {
+  seqFalse = e.message.startsWith('[Keel]')
+}
+check('sequence ignores unrelated calls', !seqFalse)
+
 // Requirements injection with a requirements file present.
 fs.mkdirSync(join(tmpHome, '.keel'), { recursive: true })
 fs.writeFileSync(join(tmpHome, '.keel', 'requirements.md'), '## Test\n- must run tests\n')
