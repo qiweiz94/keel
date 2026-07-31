@@ -11,6 +11,7 @@ import { mergeRules, detectConflicts, hashRulesFile } from './rule-parser.js'
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StateManager } from './state-manager.js'
+import { VerificationTracker } from './verification.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -20,6 +21,7 @@ export interface PipelineConfig {
   cache: ActionCache
   contentTracker: ContentTracker
   sequenceDetector: SequenceDetector
+  verificationTracker?: VerificationTracker
   flowTracker: FlowTracker
   ruleHierarchy: RuleHierarchy
   ruleVersion: number
@@ -45,6 +47,7 @@ export interface PipelineConfig {
  */
 export class EnforcementPipeline {
   private config: PipelineConfig
+  private verificationTracker: VerificationTracker
   private denyFirstTime: Map<string, boolean> = new Map()
   private circuitBreaker: Map<string, { count: number; startTime: number }> = new Map()
   private rateCounts: Map<string, { count: number; windowStart: number }> = new Map()
@@ -53,6 +56,7 @@ export class EnforcementPipeline {
 
   constructor(config: PipelineConfig) {
     this.config = config
+    this.verificationTracker = config.verificationTracker || new VerificationTracker(config.stateManager)
     this.lastRulesHash = this.computeRulesHash()
     this.loadState()
   }
@@ -121,9 +125,34 @@ export class EnforcementPipeline {
 
     // Get merged rules for current level and context
     const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context)
+    const statefulRules = rules.filter(rule => rule.type === 'sequence' || rule.type === 'verification')
+    if (statefulRules.length) {
+      const maxWindow = Math.max(...statefulRules.map(rule => rule.sequence_window_seconds || rule.window_seconds || 60))
+      this.config.sequenceDetector.setWindow(maxWindow * 1000)
+      // Stateful rules depend on every action and cannot use a stateless cache verdict.
+      this.config.sequenceDetector.record(input)
+    }
+
+    for (const rule of statefulRules) {
+      if (rule.type === 'verification') {
+        const boundaryMessage = this.verificationTracker.boundary(rule, input)
+        if (boundaryMessage) {
+          const stateKey = `${rule.id}:${input.cwd}`
+          const isFirstTime = !this.denyFirstTime.has(stateKey)
+          const action = boundaryMessage.action || rule.action
+          if (isFirstTime && (action === 'deny' || action === 'warn')) {
+            this.denyFirstTime.set(stateKey, true)
+            const sm = this.config.stateManager
+            if (sm) sm.markFirstTime(stateKey)
+            return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, 6)
+          }
+          return this.block(input, rule, boundaryMessage.message, start, 6)
+        }
+      }
+    }
 
     // ── Tier 1: Cache check ──
-    const cached = this.config.cache.get(input.tool, input.args, this.config.ruleVersion)
+    const cached = statefulRules.length ? null : this.config.cache.get(input.tool, input.args, this.config.ruleVersion)
     if (cached) {
       if (cached.verdict === 'deny' || cached.verdict === 'block') {
         return this.result('deny', cached.rule_id || '', 'Cached deny verdict', start, true, 1)
@@ -301,8 +330,18 @@ export class EnforcementPipeline {
       if (rule.type === 'sequence' && rule.steps) {
         const seqResult = this.config.sequenceDetector.check(input, rule)
         if (seqResult) {
+          if (isFirstTime && rule.action === 'deny') {
+            this.denyFirstTime.set(rule.id, true)
+            const sm = this.config.stateManager
+            if (sm) sm.markFirstTime(rule.id)
+            return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, 6)
+          }
           return this.block(input, rule, seqResult, start, 6)
         }
+      }
+
+      if (rule.type === 'verification') {
+        this.verificationTracker.observeTrigger(rule, input)
       }
 
       // Check flow/IFC rules (Tier 6)
@@ -339,14 +378,23 @@ export class EnforcementPipeline {
     }
 
     // ── Allowed — cache and return ──
-    this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
-      verdict: 'allow',
-      rule_id: null,
-      count: 0,
-      timestamp: Date.now(),
-    })
+    if (!statefulRules.length) {
+      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
+        verdict: 'allow',
+        rule_id: null,
+        count: 0,
+        timestamp: Date.now(),
+      })
+    }
 
     return this.result('allow', '', 'Allowed (no matching rule)', start, false, 0)
+  }
+
+  markVerificationSatisfied(input: EnforceInput): void {
+    const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context)
+    for (const rule of rules) {
+      if (rule.type === 'verification') this.verificationTracker.markSatisfied(rule, input)
+    }
   }
 
   /**
@@ -406,7 +454,6 @@ export class EnforcementPipeline {
 
     // Track for flow analysis
     this.config.flowTracker.record(input, rule.id)
-    this.config.sequenceDetector.record(input)
 
     const result = this.result('deny', rule.id, message, start, false, tier)
 
@@ -458,5 +505,3 @@ export class EnforcementPipeline {
     return Array.from(this.denyFirstTime.keys())
   }
 }
-
-

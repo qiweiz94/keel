@@ -3,6 +3,7 @@ export { ActionCache, ContentTracker } from './cache.js'
 export { ContextManager } from './context-manager.js'
 export { AuditLog } from './audit.js'
 export { SequenceDetector } from './sequencer.js'
+export { VerificationTracker } from './verification.js'
 export { FlowTracker } from './flow-tracker.js'
 export { Suggester } from './suggester.js'
 export { StateManager } from './state-manager.js'
@@ -12,6 +13,7 @@ export {
   loadRuleHierarchy,
   mergeRules,
   detectConflicts,
+  validateRules,
   hashRulesFile,
   type ParsedRules,
   type RuleHierarchy,

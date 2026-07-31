@@ -52,6 +52,7 @@ Hooks implemented (SPEC.md §6):
   detection (forbidden step orders within a sliding window, mirroring
   `core/src/enforce/sequencer.ts`); first violation of a deny rule warns,
   repeat denies; state persists across restarts
+- `tool.execute.after` — records successful verification commands (`metadata.exit === 0`)
 - `experimental.chat.system.transform` — injects `~/.keel/requirements.md` and
   `<project>/.keel/requirements.md` into the system prompt every turn
 - `experimental.session.compacting` — embeds requirements in compaction context

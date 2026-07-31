@@ -21,7 +21,7 @@ AI agents follow your rules at turn 1, ignore them at turn 20+. The "Lost in the
 Keel enforces rules OUTSIDE the agent's context window. Three layers:
 
 1. **OpenCode permissions** — pattern matching in `opencode.json`. Always enforced.
-2. **Keel plugin** — hooks `tool.execute.before` in OpenCode. Warns on first violation, denies on repeat; state survives restarts.
+2. **Keel plugin** — hooks tool execution in OpenCode. Warns on first violation, denies on repeat; verification obligations are satisfied only by successful test commands; state survives restarts.
 3. **Standing requirements** — injected into the system prompt every turn via `experimental.chat.system.transform`, and embedded in compaction context.
 
 Verified in `opencode run` (headless), `opencode serve`, and the TUI.

@@ -23,6 +23,22 @@ export type ToolExecuteBeforeOutput = {
   args: Record<string, unknown>
 }
 
+export type ToolExecuteAfterInput = {
+  tool: string
+  sessionID: string
+  callID: string
+  args: Record<string, unknown>
+}
+
+export type ToolExecuteAfterOutput = {
+  title: string
+  output: string
+  metadata: {
+    exit?: number
+    [key: string]: unknown
+  }
+}
+
 export type SystemTransformInput = {
   sessionID?: string
   model: unknown
@@ -45,6 +61,10 @@ export type KeelHooks = {
   'tool.execute.before'?: (
     input: ToolExecuteBeforeInput,
     output: ToolExecuteBeforeOutput,
+  ) => Promise<void>
+  'tool.execute.after'?: (
+    input: ToolExecuteAfterInput,
+    output: ToolExecuteAfterOutput,
   ) => Promise<void>
   'experimental.chat.system.transform'?: (
     input: SystemTransformInput,

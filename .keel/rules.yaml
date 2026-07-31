@@ -3,27 +3,26 @@
 # Project rules override global rules for the same rule id.
 version: 1
 rules:
-  - id: test-after-code-change
-    type: sequence
-    steps:
-      - tool: WriteFile
-        pattern: "src/"
-      - tool: edit
-        pattern: "src/"
-    sequence_window_seconds: 300
+  - id: source-change-requires-test
+    type: verification
+    trigger:
+      tools: [WriteFile, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    boundaries:
+      commit:
+        pattern: "git commit"
+        action: warn
+      push:
+        pattern: "git push"
+        action: deny
+    verification_window_seconds: 300
     action: deny
     priority: 95
-    message: "After changing source code, you must run npm test. Build is not sufficient verification."
-
-  - id: build-is-not-tests
-    type: sequence
-    steps:
-      - tool: Bash
-        pattern: "npm run build|tsc|vite build"
-    sequence_window_seconds: 120
-    action: deny
-    priority: 95
-    message: "Build success does not mean tests pass. Run npm test."
+    message: "Source changes require a successful test run before commit or push."
 
   - id: claim-must-have-evidence
     type: command

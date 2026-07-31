@@ -69,7 +69,86 @@ function makePipeline(level: ProtectionLevel = 'balanced'): EnforcementPipeline 
   return new EnforcementPipeline(config)
 }
 
+function makePipelineFromYaml(yaml: string): EnforcementPipeline {
+  const rules = parseRulesContent(yaml, '/tmp/test-rules.md')
+  return new EnforcementPipeline({
+    level: 'balanced',
+    context: 'local' as RuleContext,
+    cache: new ActionCache({ maxSize: 100 }),
+    contentTracker: new ContentTracker(),
+    sequenceDetector: new SequenceDetector(),
+    flowTracker: new FlowTracker(),
+    ruleHierarchy: { global: null, user: null, project: rules, local: null },
+    ruleVersion: 1,
+    allowedFixTransforms: true,
+    enableReasoningCheck: false,
+  })
+}
+
+function input(tool: string, args: Record<string, unknown>, session = 'sequence-test') {
+  return {
+    tool,
+    args,
+    cwd: '/tmp/project',
+    session_id: session,
+    turn_number: 1,
+    context_tokens: 0,
+    level: 'balanced' as const,
+    context: 'local' as const,
+    agent: 'test',
+    subagent_of: null,
+  }
+}
+
 describe('EnforcementPipeline', () => {
+  describe('Stateful rules', () => {
+    it('records allowed actions before evaluating a sequence', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: write-then-edit
+    type: sequence
+    steps:
+      - tool: WriteFile
+        pattern: "src/"
+      - tool: edit
+        pattern: "src/"
+    sequence_window_seconds: 300
+    action: deny
+    message: "Do not edit immediately after writing source."
+`)
+
+      expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts' }))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('edit', { filePath: 'src/a.ts' }))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('edit', { filePath: 'src/a.ts' }))).action).toBe('deny')
+    })
+
+    it('tracks and clears verification obligations at an explicit boundary', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: source-test
+    type: verification
+    trigger:
+      tools: [WriteFile, edit]
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "npm test"
+    boundaries:
+      commit:
+        pattern: "git commit"
+        action: warn
+    verification_window_seconds: 300
+    action: deny
+    message: "Test before commit."
+`)
+
+      expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts' }, 'obligation'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m x' }, 'obligation'))).action).toBe('warn')
+      pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }, 'obligation'))
+      expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m x' }, 'obligation'))).action).toBe('allow')
+    })
+  })
+
   describe('Kill switch', () => {
     const sentinelPath = join(homedir(), '.keel', 'DISABLED')
 

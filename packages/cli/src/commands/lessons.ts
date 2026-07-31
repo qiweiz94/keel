@@ -119,50 +119,27 @@ export function extractLessons(entries: AuditEntry[]): ExtractedLesson[] {
       pattern: 'Claim without evidence',
       category: 'claim-without-evidence',
       severity: 'high',
-      description: 'Agent made changes and claimed completion without running tests. Add a sequence rule requiring npm test after source file edits.',
-      suggested_rule: {
-        id: 'verify-before-claim',
-        type: 'sequence',
-        steps: [
-          { tool: 'WriteFile', pattern: 'src/' },
-          { tool: 'edit', pattern: 'src/' },
-        ],
-        sequence_window_seconds: 300,
-        action: 'deny',
-        message: 'After changing source code, you must run npm test. Build is not sufficient verification.',
-        priority: 80,
-      },
+       description: 'Agent made changes and claimed completion without running tests. Add a verification obligation before commit or push.',
+       suggested_rule: {
+         id: 'source-change-requires-test',
+         type: 'verification',
+         trigger: { tools: ['WriteFile', 'edit'], path: 'src/', pattern: 'src/' },
+         satisfy: { tools: ['Bash'], pattern: '(npm test|npm run test|vitest|jest)' },
+         boundaries: {
+           commit: { pattern: 'git commit', action: 'warn' },
+           push: { pattern: 'git push', action: 'deny' },
+         },
+         verification_window_seconds: 300,
+         action: 'deny',
+         message: 'Source changes require a successful test run before commit or push.',
+         priority: 80,
+       },
       occurrences: buildClaims.length,
       example_turns: buildClaims.slice(0, 5).map(e => e.turn_number ?? 0),
     })
   }
 
-  // ── Lesson 2: Build-only verification ──
-  // Agent ran npm run build but NOT npm test
-  const buildOnly = findBuildWithoutTest(entries)
-  if (buildOnly.length >= 1) {
-    lessons.push({
-      pattern: 'Build-only verification',
-      category: 'build-not-test',
-      severity: 'high',
-      description: 'Agent ran build but skipped tests. Build success does not mean tests pass.',
-      suggested_rule: {
-        id: 'test-after-build',
-        type: 'sequence',
-        steps: [
-          { tool: 'Bash', pattern: 'npm run build|tsc|vite build' },
-        ],
-        sequence_window_seconds: 120,
-        action: 'deny',
-        message: 'Build success does not mean tests pass. Run npm test and confirm all green before reporting done.',
-        priority: 85,
-      },
-      occurrences: buildOnly.length,
-      example_turns: buildOnly.slice(0, 5),
-    })
-  }
-
-  // ── Lesson 3: Format defaulting without asking ──
+  // ── Lesson 2: Format defaulting without asking ──
   // Agent chose a file format/name without verifying
   const formatDecisions = entries.filter(e => {
     const cmdStr = e.args?.command ? String(e.args.command) : ''
@@ -286,30 +263,6 @@ export function extractLessons(entries: AuditEntry[]): ExtractedLesson[] {
   }
 
   return lessons
-}
-
-function findBuildWithoutTest(entries: AuditEntry[]): number[] {
-  const turns: number[] = []
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i]
-    const cmd = e.args?.command ? String(e.args.command) : ''
-    if (cmd.includes('npm run build') || cmd.includes('npm run typecheck') || cmd.includes('tsc') || cmd.includes('vite build')) {
-      // Check if tests were run in the next 5 entries
-      let hasTest = false
-      for (let j = i + 1; j < Math.min(i + 6, entries.length); j++) {
-        const nextEntry = entries[j]
-        const nextCmd = nextEntry?.args?.command ? String(nextEntry.args.command) : ''
-        if (nextCmd.includes('npm test') || nextCmd.includes('npm run test') || nextCmd.includes('vitest run') || nextCmd.includes('jest')) {
-          hasTest = true
-          break
-        }
-      }
-      if (!hasTest) {
-        turns.push(e.turn_number ?? 0)
-      }
-    }
-  }
-  return turns
 }
 
 function loadAuditEntries(auditDir: string, since?: string): AuditEntry[] {

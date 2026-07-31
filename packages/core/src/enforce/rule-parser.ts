@@ -8,6 +8,7 @@ export interface ParsedRules {
   sourcePath: string
   version: number
   markdown: string        // the markdown portion (for re-injection)
+  errors?: string[]
 }
 
 /**
@@ -34,6 +35,7 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
     yamlSource = content
   }
 
+  const errors: string[] = []
   try {
     const parsed = parseYaml(yamlSource)
     if (parsed && typeof parsed === 'object' && 'keel' in parsed) {
@@ -44,8 +46,8 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
     } else if (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) {
       // Empty file or just comments — use defaults
     }
-  } catch {
-    // Invalid YAML — use defaults silently
+  } catch (error) {
+    errors.push(`Invalid YAML: ${error instanceof Error ? error.message : String(error)}`)
   }
 
   return {
@@ -54,7 +56,38 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
     sourcePath,
     version: config.version || 1,
     markdown: markdown.trim(),
+    ...(errors.length ? { errors } : {}),
   }
+}
+
+export function validateRules(rules: KeelRule[]): string[] {
+  const errors: string[] = []
+  for (const rule of rules) {
+    if (rule.type === 'sequence' && (!rule.steps || rule.steps.length < 2)) {
+      errors.push(`Rule "${rule.id}" is a sequence rule but has fewer than two steps`)
+    }
+    if (rule.type === 'verification') {
+      if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing verification.trigger`)
+      if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing verification.satisfy`)
+      for (const boundary of Object.values(rule.boundaries || {})) {
+        if (!boundary.pattern) errors.push(`Rule "${rule.id}" has a boundary without a pattern`)
+      }
+    }
+    for (const pattern of [
+      rule.match,
+      rule.match_regex,
+      rule.unless_reasoning,
+      ...(rule.steps || []).map(step => step.pattern),
+      rule.trigger?.pattern,
+      rule.satisfy?.pattern,
+      ...Object.values(rule.boundaries || {}).map(boundary => boundary.pattern),
+    ]) {
+      if (pattern) {
+        try { new RegExp(pattern) } catch { errors.push(`Rule "${rule.id}" contains invalid regex: ${pattern}`) }
+      }
+    }
+  }
+  return errors
 }
 
 /**

@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import chalk from 'chalk'
-import { loadRuleHierarchy, mergeRules, detectConflicts, hashRulesFile, parseRulesFile } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, mergeRules, detectConflicts, hashRulesFile, parseRulesFile, validateRules } from '../core/enforce/rule-parser.js'
 
 /**
  * `keel validate` — check rules for conflicts, syntax errors, and version drift.
@@ -42,6 +42,9 @@ export async function validateCommand() {
       const count = parsed?.rules.length || 0
       totalRules += count
       console.log(chalk.green(`  ✓ ${file.name}: ${chalk.white(file.path)} (${count} rules)`))
+      for (const issue of [...(parsed?.errors || []), ...validateRules(parsed?.rules || [])]) {
+        console.log(chalk.yellow(`    ⚠ ${issue}`))
+      }
       // Show version info
       if (parsed) {
         const hash = hashRulesFile(file.path)

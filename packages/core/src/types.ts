@@ -13,7 +13,7 @@ export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' |
 export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
-  | 'session' | 'inheritance' | 'context' | 'meta'
+  | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -67,6 +67,12 @@ export interface KeelRule {
   steps?: SequenceStep[]
   sequence_window_seconds?: number
 
+  // ── Verification obligations ──
+  trigger?: VerificationMatcher
+  satisfy?: VerificationMatcher
+  boundaries?: Record<string, VerificationBoundary>
+  verification_window_seconds?: number
+
   // ── Flow / IFC rules ──
   sources?: string[]
   sinks?: string[]
@@ -98,6 +104,18 @@ export interface SequenceStep {
   tool: string
   path?: string                     // optional path matching (${same_ref} for cross-step refs)
   pattern?: string
+}
+
+export interface VerificationMatcher {
+  tools?: string[]
+  tool?: string
+  path?: string
+  pattern?: string
+}
+
+export interface VerificationBoundary {
+  pattern: string
+  action?: EnforcementAction
 }
 
 export interface FixTransform {

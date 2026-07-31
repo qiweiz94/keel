@@ -55,8 +55,8 @@ describe('init --hooks', () => {
 
     run('init --hooks')
 
-    expect(existsSync(join(dir, '.git', 'hooks', 'pre-commit.ai-enforce-backup'))).toBe(true)
-    expect(readFileSync(join(dir, '.git', 'hooks', 'pre-commit.ai-enforce-backup'), 'utf-8'))
+    expect(existsSync(join(dir, '.git', 'hooks', 'pre-commit.keel-backup'))).toBe(true)
+    expect(readFileSync(join(dir, '.git', 'hooks', 'pre-commit.keel-backup'), 'utf-8'))
       .toContain('PROJECT-LINT-RAN')
 
     // And it must actually run at commit time, not merely sit in a backup file.
@@ -112,14 +112,14 @@ describe('policy loading fails closed', () => {
   it('denies when the policy file is empty', () => {
     // parseYaml("") returns null without throwing, so this must be checked
     // explicitly — it used to throw a TypeError and crash the CLI.
-    writeFileSync(join(dir, '.ai-enforce.yaml'), '', 'utf-8')
+    writeFileSync(join(dir, '.keel.yaml'), '', 'utf-8')
     const { stdout, code } = run('check --command "ls -la"')
     expect(stdout).toContain('BLOCKED')
     expect(code).not.toBe(0)
   })
 
   it('denies when the policy file is malformed', () => {
-    writeFileSync(join(dir, '.ai-enforce.yaml'), 'not: [valid yaml\n', 'utf-8')
+    writeFileSync(join(dir, '.keel.yaml'), 'not: [valid yaml\n', 'utf-8')
     const { stdout, code } = run('check --command "ls -la"')
     expect(stdout).toContain('BLOCKED')
     expect(code).not.toBe(0)
@@ -134,7 +134,7 @@ describe('policy loading fails closed', () => {
 
 describe('the policy protects its own configuration', () => {
   const protectedPaths = [
-    '.ai-enforce.yaml',
+    '.keel.yaml',
     '.ai-enforce/audit.log',
     '.claude/settings.json',
     '.git/hooks/pre-commit',

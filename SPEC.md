@@ -243,7 +243,8 @@ rules:
 | `network` | Control egress | `match: "."` with `except: [github.com]` |
 | `rate` | Rate limit tool calls | `window_seconds: 60`, `max_calls: 5` |
 | `time` | Time-based restrictions | `schedule: {start: "09:00", end: "17:00"}` |
-| `sequence` | Multi-step action patterns | `steps: [{tool: ReadFile}, {tool: HttpRequest}]` |
+| `sequence` | Forbidden multi-step action patterns | `steps: [{tool: ReadFile}, {tool: HttpRequest}]` |
+| `verification` | A source-change obligation satisfied by a successful test before a concrete boundary | `trigger`, `satisfy`, `boundaries` |
 | `flow` | Information flow control | `sources: [".env"]`, `sinks: ["network"]` |
 | `mcp` | MCP-specific threats | `mcp_check: tool_descriptions` |
 | `session` | Session-level rules | `max_duration_minutes: 120` |

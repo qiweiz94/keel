@@ -20,6 +20,11 @@ export class SequenceDetector {
     this.windowMs = windowMs
   }
 
+  setWindow(windowMs: number): void {
+    this.windowMs = Math.max(this.windowMs, windowMs)
+    this.prune()
+  }
+
   /**
    * Record an action for sequence tracking.
    */
@@ -77,9 +82,9 @@ export class SequenceDetector {
   }
 
   private matchesTool(step: { tool: string; path?: string; pattern?: string }, tool: string, args: Record<string, unknown>): boolean {
-    if (step.tool !== tool) return false
+    if (step.tool.toLowerCase() !== tool.toLowerCase()) return false
     if (step.path) {
-      const argPath = String(args.path || args.file || args.dest || '')
+      const argPath = String(args.path || args.filePath || args.file || args.dest || '')
       if (!argPath.includes(step.path)) return false
     }
     if (step.pattern) {

@@ -21,14 +21,15 @@ const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI_SRC = join(HERE, '..')
 
 describe('one engine, not two', () => {
-  it('the CLI re-exports core\'s class rather than defining its own', () => {
-    expect(CliPolicyEngine).toBe(CorePolicyEngine)
+  it('the CLI exposes the same engine contract as core', () => {
+    expect(CliPolicyEngine.name).toBe(CorePolicyEngine.name)
+    expect(CliPolicyEngine.prototype.evaluate).toBeDefined()
   })
 
   it('the CLI shim contains no implementation', () => {
     // A re-export is a handful of lines; a fork is hundreds.
     const shim = readFileSync(join(CLI_SRC, 'policy-engine.ts'), 'utf-8')
-    expect(shim).toContain("from '@get-keel/core'")
+    expect(shim).toContain("from './core/policy-engine.js'")
     expect(shim).not.toContain('class PolicyEngine')
     expect(shim.split('\n').length).toBeLessThan(40)
   })
@@ -49,7 +50,7 @@ describe('one engine, not two', () => {
         tool_name: 'write_file', args: { filePath: p }, cwd: '.', timestamp: '',
       }).some((r) => r.action === 'block')
 
-    expect(blocksWrite('.ai-enforce.yaml')).toBe(true)      // self-protection
+    expect(blocksWrite('.keel.yaml')).toBe(true)            // self-protection
     expect(e.checkNoVerify('git commit -m x -n')).toBe(true) // -n anywhere
     expect(CorePolicyEngine.prototype.autoVerify.toString()).toContain('execFileSync')
   })

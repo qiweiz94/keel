@@ -53,25 +53,25 @@ rules:
     priority: 100
     message: "Product name is 'keel'. Never change it back to ai-enforce."
 
-  - id: verify-before-claim
-    type: sequence
-    steps:
-      - tool: WriteFile
-        pattern: "src/"
-      - tool: edit
-        pattern: "src/"
-    sequence_window_seconds: 300
+  - id: source-change-requires-test
+    type: verification
+    trigger:
+      tools: [WriteFile, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    boundaries:
+      commit:
+        pattern: "git commit"
+        action: warn
+      push:
+        pattern: "git push"
+        action: deny
+    verification_window_seconds: 300
     action: deny
-    message: "After changing source code, you must run npm test. Build is not sufficient verification."
-
-  - id: test-after-build
-    type: sequence
-    steps:
-      - tool: Bash
-        pattern: "npm run build|tsc|vite build"
-    sequence_window_seconds: 120
-    action: deny
-    message: "Build success does not mean tests pass. Run npm test and confirm all green before reporting done."
+    message: "Source changes require a successful test run before commit or push."
 
   - id: verify-format-before-decision
     type: command

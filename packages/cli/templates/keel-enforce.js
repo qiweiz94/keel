@@ -7,6 +7,7 @@
 //
 // Hooks (SPEC.md §6):
 //   tool.execute.before                — deny/warn/fix every tool call (involuntary)
+//   tool.execute.after                 — record successful verification commands
 //   experimental.chat.system.transform — inject standing requirements each turn (voluntary)
 //   experimental.session.compacting    — embed requirements in compaction context (backup)
 //
@@ -17,6 +18,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 
 const KEEL_DIR = path.join(os.homedir(), '.keel')
 const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
@@ -25,6 +28,7 @@ const STATE_PATH = path.join(KEEL_DIR, 'state', 'deny-first-time.json')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
 const CONFIG_PATH = path.join(KEEL_DIR, 'config.json')
 const TRACES_DIR = path.join(KEEL_DIR, 'traces')
+const VERIFICATION_STATE_PATH = path.join(KEEL_DIR, 'state', 'verification.json')
 const DENY_TTL_MS = 24 * 60 * 60 * 1000
 
 // Keep in sync with DEFAULT_RULES_YAML in packages/cli/src/commands/install.ts.
@@ -42,25 +46,25 @@ rules:
     priority: 100
     message: "Product name is 'keel'. Never change it back to ai-enforce."
 
-  - id: verify-before-claim
-    type: sequence
-    steps:
-      - tool: WriteFile
-        pattern: "src/"
-      - tool: edit
-        pattern: "src/"
-    sequence_window_seconds: 300
+  - id: source-change-requires-test
+    type: verification
+    trigger:
+      tools: [WriteFile, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    boundaries:
+      commit:
+        pattern: "git commit"
+        action: warn
+      push:
+        pattern: "git push"
+        action: deny
+    verification_window_seconds: 300
     action: deny
-    message: "After changing source code, you must run npm test. Build is not sufficient verification."
-
-  - id: test-after-build
-    type: sequence
-    steps:
-      - tool: Bash
-        pattern: "npm run build|tsc|vite build"
-    sequence_window_seconds: 120
-    action: deny
-    message: "Build success does not mean tests pass. Run npm test and confirm all green before reporting done."
+    message: "Source changes require a successful test run before commit or push."
 
   - id: verify-format-before-decision
     type: command
@@ -181,6 +185,26 @@ function loadRules(filePath) {
             action: action || 'deny',
             message: msg || '',
           })
+        } else if (type === 'verification') {
+          const trigger = parseMatcher(b, 'trigger')
+          const satisfy = parseMatcher(b, 'satisfy')
+          if (!trigger || !satisfy) continue
+          const boundaries = {}
+          const boundaryRe = /(?:^|\n)\s{2,}(commit|push):\s*\n\s+pattern:\s*["']([^"'\n]+)["'](?:\s*\n\s+action:\s*(\S+))?/g
+          let boundary
+          while ((boundary = boundaryRe.exec(b)) !== null) {
+            boundaries[boundary[1]] = { pattern: boundary[2], action: boundary[3] || 'deny' }
+          }
+          rules.push({
+            id,
+            type,
+            trigger,
+            satisfy,
+            boundaries,
+            verification_window_seconds: Number(b.match(/verification_window_seconds:\s*(\d+)/)?.[1] || 300),
+            action: action || 'deny',
+            message: msg || '',
+          })
         }
       }
     }
@@ -235,6 +259,51 @@ function checkSequence(rule, tool, args, history) {
   return `Sequence detected: ${rule.steps.map(s => s.tool).join(' → ')} (rule: ${rule.id})`
 }
 
+function parseMatcher(block, name) {
+  const marker = new RegExp(`(?:^|\\n)\\s*${name}:`)
+  const match = marker.exec(block)
+  if (!match) return null
+  const section = block.slice(match.index + match[0].length)
+  const next = section.search(/\n\s{2,}(?:trigger|satisfy|boundaries|action|message|priority|verification_window_seconds):/)
+  const text = next >= 0 ? section.slice(0, next) : section
+  const toolsMatch = text.match(/tools:\s*\[([^\]]+)\]/)
+  const tools = toolsMatch?.[1].split(',').map(value => value.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  const tool = text.match(/(?:^|\n)\s*tool:\s*([^\s\n]+)/)?.[1]
+  const pathValue = text.match(/(?:^|\n)\s*path:\s*["']?([^"'\n]+)["']?/)?.[1]
+  const pattern = text.match(/(?:^|\n)\s*pattern:\s*["']([^"']+)["']/)?.[1]
+  if (!tools?.length && !tool && !pathValue && !pattern) return null
+  return { ...(tools?.length ? { tools } : {}), ...(tool ? { tool } : {}), ...(pathValue ? { path: pathValue } : {}), ...(pattern ? { pattern } : {}) }
+}
+
+function matchesVerification(matcher, tool, args) {
+  if (!matcher) return false
+  const tools = matcher.tools || (matcher.tool ? [matcher.tool] : [])
+  if (tools.length && !tools.some(t => t.toLowerCase() === String(tool).toLowerCase())) return false
+  if (matcher.path) {
+    const value = String(args.path || args.filePath || args.file || args.dest || '')
+    if (!value.includes(matcher.path)) return false
+  }
+  if (matcher.pattern && !testMatch(matcher.pattern, JSON.stringify(args))) return false
+  return true
+}
+
+function worktreeFingerprint(directory, sourcePath) {
+  if (!sourcePath) return null
+  try {
+    const diff = spawnSync('git', ['-C', directory, 'diff', '--binary', 'HEAD', '--', sourcePath], { encoding: 'utf-8' })
+    if (diff.status !== 0) return null
+    const untracked = spawnSync('git', ['-C', directory, 'ls-files', '--others', '--exclude-standard', '--', sourcePath], { encoding: 'utf-8' })
+    if (untracked.status !== 0) return null
+    let content = `${diff.stdout}\n${untracked.stdout}`
+    for (const relative of untracked.stdout.split('\n').filter(Boolean)) {
+      try { content += `\n${relative}\n${fs.readFileSync(path.join(directory, relative), 'utf-8')}` } catch {}
+    }
+    return crypto.createHash('sha256').update(content).digest('hex')
+  } catch {
+    return null
+  }
+}
+
 // ── requirements loading (returns bullet-ready lines, headers stripped) ──
 function loadRequirementLines(filePath) {
   try {
@@ -263,6 +332,22 @@ function saveState(state) {
     const tmp = STATE_PATH + '.tmp'
     fs.writeFileSync(tmp, JSON.stringify(state))
     fs.renameSync(tmp, STATE_PATH)
+  } catch {}
+}
+
+function loadVerificationState() {
+  try {
+    if (fs.existsSync(VERIFICATION_STATE_PATH)) return JSON.parse(fs.readFileSync(VERIFICATION_STATE_PATH, 'utf-8'))
+  } catch {}
+  return {}
+}
+
+function saveVerificationState(state) {
+  try {
+    fs.mkdirSync(path.dirname(VERIFICATION_STATE_PATH), { recursive: true })
+    const tmp = VERIFICATION_STATE_PATH + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(state))
+    fs.renameSync(tmp, VERIFICATION_STATE_PATH)
   } catch {}
 }
 
@@ -344,6 +429,28 @@ export default {
     // In-process action history for sequence rules (sliding window).
     const history = []
     const maxSeqWindowMs = Math.max(300, ...rules.filter(r => r.type === 'sequence').map(r => (r.sequence_window_seconds || 60) * 1000))
+    const verificationState = loadVerificationState()
+    const verificationScope = input?.directory || process.cwd()
+    const verificationKey = rule => `${rule.id}:${verificationScope}`
+    const verificationBaseline = new Map()
+    for (const rule of rules) {
+      if (rule.type === 'verification') {
+        verificationBaseline.set(verificationKey(rule), worktreeFingerprint(verificationScope, rule.trigger?.path))
+      }
+    }
+
+    const refreshVerificationChanges = () => {
+      for (const rule of rules) {
+        if (rule.type !== 'verification' || !rule.trigger?.path) continue
+        const key = verificationKey(rule)
+        const current = worktreeFingerprint(verificationScope, rule.trigger.path)
+        const baseline = verificationBaseline.get(key)
+        if (current && baseline && current !== baseline && !verificationState[key]) {
+          verificationState[key] = Date.now()
+          saveVerificationState(verificationState)
+        }
+      }
+    }
 
     record({ tool: 'keel-init', action: 'allow', message: `Keel server started (${rules.length} rules)`, hook: 'init' })
 
@@ -364,6 +471,33 @@ export default {
           history.push({ tool, args, timestamp: Date.now() })
           const seqCutoff = Date.now() - maxSeqWindowMs
           while (history.length && history[0].timestamp < seqCutoff) history.shift()
+          refreshVerificationChanges()
+
+          // Concrete completion boundaries are checked before ordinary command rules.
+          const boundaryRule = rules.find(r => {
+            if (r.type !== 'verification' || !verificationState[verificationKey(r)]) return false
+            const pendingAt = verificationState[verificationKey(r)]
+            if (Date.now() - pendingAt > (r.verification_window_seconds || 300) * 1000) {
+              delete verificationState[verificationKey(r)]
+              saveVerificationState(verificationState)
+              return false
+            }
+            return Object.values(r.boundaries || {}).some(boundary => testMatch(boundary.pattern, str))
+          })
+          if (boundaryRule) {
+            const boundary = Object.values(boundaryRule.boundaries || {}).find(b => testMatch(b.pattern, str))
+            const entry = { session_id: input?.sessionID, tool, args, rule_id: boundaryRule.id, rule_name: boundaryRule.id, agent: 'opencode-plugin' }
+            const boundaryStateKey = `${boundaryRule.id}:${verificationScope}`
+            const lastBoundary = denyState[boundaryStateKey]
+            if (boundary?.action === 'warn' && (!lastBoundary || Date.now() - lastBoundary > DENY_TTL_MS)) {
+              denyState[boundaryStateKey] = Date.now()
+              saveState(denyState)
+              record({ ...entry, action: 'warn', message: `First violation of "${boundaryRule.id}" — warning only. Next time will be blocked.`, hook: 'tool.execute.before' })
+              return
+            }
+            record({ ...entry, action: 'deny', message: boundaryRule.message, hook: 'tool.execute.before' })
+            throw new Error(`[Keel] ${boundaryRule.id}: ${boundaryRule.message}`)
+          }
 
           const rule = rules.find(r => (r.type === 'command' || r.type === 'content') && testMatch(r.match, str))
 
@@ -427,6 +561,13 @@ export default {
             throw new Error(`[Keel] ${seqRule.id}: ${seqRule.message}`)
           }
 
+          for (const rule of rules) {
+            if (rule.type === 'verification' && matchesVerification(rule.trigger, tool, args)) {
+              verificationState[verificationKey(rule)] = Date.now()
+              saveVerificationState(verificationState)
+            }
+          }
+
           if (config.record_all) {
             record({ session_id: input?.sessionID, tool, args, rule_id: null, action: 'allow', message: 'No matching rule', hook: 'tool.execute.before' })
           }
@@ -434,6 +575,23 @@ export default {
           if (err instanceof Error && err.message.startsWith('[Keel]')) throw err
           // Plugin faults must never break OpenCode.
         }
+      },
+
+      'tool.execute.after': async (input, output) => {
+        try {
+          refreshVerificationChanges()
+          const exitCode = Number(output?.metadata?.exit)
+          for (const rule of rules) {
+            if (rule.type !== 'verification') continue
+            const key = verificationKey(rule)
+            if (matchesVerification(rule.satisfy, input?.tool, input?.args || {}) && exitCode === 0) {
+              delete verificationState[key]
+              saveVerificationState(verificationState)
+              verificationBaseline.set(key, worktreeFingerprint(verificationScope, rule.trigger?.path))
+              record({ session_id: input?.sessionID, tool: input?.tool, args: input?.args || {}, rule_id: rule.id, action: 'allow', message: 'Verification obligation satisfied', hook: 'tool.execute.after' })
+            }
+          }
+        } catch {}
       },
 
       'experimental.chat.system.transform': async (input, output) => {

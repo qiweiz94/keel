@@ -51,9 +51,9 @@ describe('CLI Integration', () => {
 
   it('init creates config and hooks', () => {
     const { stdout: out } = run('init --hooks')
-    expect(out).toContain('Created .ai-enforce.yaml')
+    expect(out).toContain('Created .keel.yaml')
     expect(out).toContain('Installed git hooks')
-    expect(existsSync(join(testDir, '.ai-enforce.yaml'))).toBe(true)
+    expect(existsSync(join(testDir, '.keel.yaml'))).toBe(true)
     expect(existsSync(join(testDir, '.git', 'hooks', 'pre-commit'))).toBe(true)
   })
 

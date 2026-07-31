@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -12,6 +12,10 @@ export interface CircuitBreakerState {
 
 export interface RateLimitState {
   [key: string]: { count: number; windowStart: number }
+}
+
+export interface VerificationState {
+  [key: string]: { createdAt: number; generation: number }
 }
 
 const STATE_DIR = join(homedir(), '.keel', 'state')
@@ -28,6 +32,7 @@ export class StateManager {
   denyFirstTime: DenyState = {}
   circuitBreaker: CircuitBreakerState = {}
   rateCounts: RateLimitState = {}
+  verification: VerificationState = {}
 
   constructor() {
     this.load()
@@ -53,8 +58,7 @@ export class StateManager {
       const p = this.statePath(name)
       const tmp = p + '.tmp'
       writeFileSync(tmp, JSON.stringify(data))
-      // Atomic rename — overwrite original
-      writeFileSync(p, JSON.stringify(data))
+      renameSync(tmp, p)
     } catch { /* state persistence is non-critical */ }
   }
 
@@ -80,6 +84,12 @@ export class StateManager {
     this.rateCounts = {}
     for (const [key, val] of Object.entries(rawRate)) {
       if (now - val.windowStart < TTL_MS) this.rateCounts[key] = val
+    }
+
+    const rawVerification = this.loadFile<VerificationState>('verification', {})
+    this.verification = {}
+    for (const [key, val] of Object.entries(rawVerification)) {
+      if (now - val.createdAt < TTL_MS) this.verification[key] = val
     }
   }
 
@@ -127,5 +137,15 @@ export class StateManager {
       this.saveFile('rate-counts', this.rateCounts)
       return false
     }
+  }
+
+  setVerification(key: string, value: { createdAt: number; generation: number }): void {
+    this.verification[key] = value
+    this.saveFile('verification', this.verification)
+  }
+
+  clearVerification(key: string): void {
+    delete this.verification[key]
+    this.saveFile('verification', this.verification)
   }
 }
