@@ -27,23 +27,27 @@ npm run build
 publish() {
   local dir="$1"
   local pkg="$2"
-  local version
-  version=$(node -p "require('./$dir/package.json').version" 2>/dev/null || echo "")
 
   echo ""
-  if [ -n "$version" ] && npm view "$pkg@$version" version >/dev/null 2>&1; then
-    echo "Skipping $pkg@$version — already published"
-    return
-  fi
-
   echo "Publishing $pkg from $dir ..."
+
+  local out code
   if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
     # Token path: pass as a CLI flag so it overrides any token already in
     # ~/.npmrc (npm prefers .npmrc over NODE_AUTH_TOKEN).
-    (cd "$dir" && npm publish --access public --//registry.npmjs.org/:_authToken="$NODE_AUTH_TOKEN")
+    out=$(cd "$dir" && npm publish --access public --//registry.npmjs.org/:_authToken="$NODE_AUTH_TOKEN" 2>&1)
   else
-    (cd "$dir" && npm publish --access public --otp="$OTP")
+    out=$(cd "$dir" && npm publish --access public --otp="$OTP" 2>&1)
   fi
+  code=$?
+
+  if echo "$out" | grep -q "cannot publish over the previously published versions"; then
+    echo "  ✓ $pkg already published — skipping"
+    return 0
+  fi
+
+  printf '%s\n' "$out"
+  return $code
 }
 
 publish packages/core "@get-keel/core"
