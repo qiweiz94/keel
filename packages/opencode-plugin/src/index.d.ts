@@ -1,4 +1,4 @@
-// Type declarations for @keel/opencode-plugin.
+// Type declarations for @get-keel/opencode-plugin.
 // The runtime implementation is built verbatim from
 // packages/cli/templates/keel-enforce.js (the canonical plugin source).
 

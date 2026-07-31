@@ -1,8 +1,8 @@
 /**
- * @keel/core — the enforcement library.
+ * @get-keel/core — the enforcement library.
  *
  * Single source of truth for policy evaluation, evidence trail, and the enforce engine.
- * `keel` (the CLI) and `@keel/mcp-server` are thin consumers.
+ * `keel` (the CLI) and `@get-keel/mcp-server` are thin consumers.
  *
  * This package used to be a stale fork: the CLI carried its own divergent copy
  * of PolicyEngine, security fixes landed only there, and this package's test

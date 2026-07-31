@@ -12,14 +12,14 @@
  *
  * Usage:
  *   # Policy check mode (stdio):
- *   npx @keel/mcp-server
+ *   npx @get-keel/mcp-server
  *
  *   # Forwarding proxy mode (HTTP):
  *   AI_ENFORCE_UPSTREAM_SERVERS='{"fs":{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}' \
- *   npx @keel/mcp-server --transport http
+ *   npx @get-keel/mcp-server --transport http
  */
 
-import { PolicyEngine } from '@keel/core'
+import { PolicyEngine } from '@get-keel/core'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 

@@ -1,4 +1,4 @@
-/** Re-export shim — implementation lives in @keel/core. */
+/** Re-export shim — implementation lives in @get-keel/core. */
 export {
   initSigning,
   getPublicKeyJwk,
@@ -7,5 +7,5 @@ export {
   verifyChain,
   resetHashChain,
   auditLogPath,
-} from '@keel/core'
-export type { SigningKey, Signature, SignedEntry, ChainReport } from '@keel/core'
+} from '@get-keel/core'
+export type { SigningKey, Signature, SignedEntry, ChainReport } from '@get-keel/core'

@@ -6,7 +6,7 @@ Keel enforces rules on AI coding agents OUTSIDE the agent's context window.
 
 ```bash
 npm run build                    # Build all packages
-npm run test -w @keel/core       # Core tests (expected: 55/55)
+npm run test -w @get-keel/core       # Core tests (expected: 55/55)
 npm run test -w keel             # CLI tests (9 pre-existing failures expected — legacy init/check/policy tests)
 keel validate                    # Check rules
 ```
@@ -15,10 +15,10 @@ keel validate                    # Check rules
 
 ```
 packages/
-├── core/              @keel/core      — Enforcement pipeline, state, audit
+├── core/              @get-keel/core      — Enforcement pipeline, state, audit
 ├── cli/               keel            — CLI binary + OpenCode plugin
-├── opencode-plugin/   @keel/opencode-plugin — npm package for plugin
-└── mcp-server/        @keel/mcp-server — (deprecated)
+├── opencode-plugin/   @get-keel/opencode-plugin — npm package for plugin
+└── mcp-server/        @get-keel/mcp-server — (deprecated)
 ```
 
 ## Running locally
@@ -41,7 +41,7 @@ packages/cli/templates/keel-enforce.js   ← source of truth (V1 format, 3 hooks
 It is consumed by:
 - `keel install --opencode`  → copies to `~/.opencode/plugins/keel-enforce.js`
 - `keel install --project`   → copies to `<project>/.opencode/plugins/keel-enforce.js`
-- `@keel/opencode-plugin`    → build script copies it to `dist/index.js` verbatim
+- `@get-keel/opencode-plugin`    → build script copies it to `dist/index.js` verbatim
 
 NEVER edit the installed plugin, the npm dist, or any other copy directly —
 edit `templates/keel-enforce.js` and re-run the build/install.
@@ -91,11 +91,11 @@ Auto-load gotchas:
 ## Publishing
 
 ```bash
-# @keel/core
+# @get-keel/core
 cd packages/core
 npm publish
 
-# @keel/opencode-plugin
+# @get-keel/opencode-plugin
 cd packages/opencode-plugin
 npm publish
 ```
@@ -103,7 +103,7 @@ npm publish
 ## Standing requirements (for Keel itself)
 
 ### Verification culture
-- Before ANY "done" claim: run `npm run build` AND `npm run test -w @keel/core`
+- Before ANY "done" claim: run `npm run build` AND `npm run test -w @get-keel/core`
 - Include test output as evidence in the response
 - List what was changed and how each change was verified
 - A compile check is NOT verification. Tests must pass.

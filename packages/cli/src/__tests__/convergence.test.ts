@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { PolicyEngine as CorePolicyEngine } from '@keel/core'
+import { PolicyEngine as CorePolicyEngine } from '@get-keel/core'
 import { PolicyEngine as CliPolicyEngine } from '../policy-engine.js'
 import { MCPGateway } from '../mcp/gateway.js'
 
@@ -28,7 +28,7 @@ describe('one engine, not two', () => {
   it('the CLI shim contains no implementation', () => {
     // A re-export is a handful of lines; a fork is hundreds.
     const shim = readFileSync(join(CLI_SRC, 'policy-engine.ts'), 'utf-8')
-    expect(shim).toContain("from '@keel/core'")
+    expect(shim).toContain("from '@get-keel/core'")
     expect(shim).not.toContain('class PolicyEngine')
     expect(shim.split('\n').length).toBeLessThan(40)
   })
@@ -36,7 +36,7 @@ describe('one engine, not two', () => {
   it('signing and receipts are also single-sourced', () => {
     for (const f of ['signing.ts', 'receipts.ts', 'types.ts']) {
       const shim = readFileSync(join(CLI_SRC, f), 'utf-8')
-      expect(shim).toContain('@keel/core')
+      expect(shim).toContain('@get-keel/core')
       expect(shim.split('\n').length).toBeLessThan(40)
     }
   })

@@ -1,5 +1,5 @@
 {
-  "name": "@keel/mcp-server",
+  "name": "@get-keel/mcp-server",
   "version": "0.1.2",
   "description": "(DEPRECATED \u2014 use 'keel serve' instead) MCP enforcement server for real-time policy checking",
   "type": "module",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@keel/core": "^0.1.2",
+    "@get-keel/core": "^0.1.2",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {

@@ -15,7 +15,7 @@ import chalk from 'chalk'
  *   keel install --all        — everything above
  *
  * The installed plugin is a verbatim copy of templates/keel-enforce.js —
- * the canonical source shared with the @keel/opencode-plugin npm package.
+ * the canonical source shared with the @get-keel/opencode-plugin npm package.
  */
 
 async function findTemplateSource(name: string): Promise<string | null> {
@@ -245,7 +245,7 @@ function upgradePluginConfig() {
 
   // Note: plugins in .opencode/plugins/ are auto-loaded.
   // The config entry is optional but recommended for documentation.
-  // For npm package users, they should use "@keel/opencode-plugin" in the config.
+  // For npm package users, they should use "@get-keel/opencode-plugin" in the config.
 
   if (existsSync(configPath)) {
     try {
@@ -260,7 +260,7 @@ function upgradePluginConfig() {
       config.plugin = filtered
       writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8')
       console.log(chalk.dim('  Plugin auto-loaded from .opencode/plugins/'))
-      console.log(chalk.dim('  For npm: add "@keel/opencode-plugin" to opencode.json'))
+      console.log(chalk.dim('  For npm: add "@get-keel/opencode-plugin" to opencode.json'))
     } catch {
       // Ignore parse errors
     }

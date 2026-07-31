@@ -1,4 +1,4 @@
-// Load test for @keel/opencode-plugin.
+// Load test for @get-keel/opencode-plugin.
 // Verifies the built dist/index.js is the canonical plugin: correct id,
 // all three hooks present, and the installed dist matches the template
 // (catches the "stale dist" failure mode).

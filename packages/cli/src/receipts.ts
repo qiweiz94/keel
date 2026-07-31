@@ -1,4 +1,4 @@
-/** Re-export shim — implementation lives in @keel/core. */
+/** Re-export shim — implementation lives in @get-keel/core. */
 export {
   initReceiptKey,
   createReceipt,
@@ -6,4 +6,4 @@ export {
   verifyReceiptFromJson,
   getReceiptPublicKey,
   receiptsLogPath,
-} from '@keel/core'
+} from '@get-keel/core'

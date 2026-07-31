@@ -493,7 +493,7 @@ Plugin hooks:
 ```
 
 The plugin is **self-contained** (only node builtins) so it runs unmodified in
-OpenCode's Bun runtime. It does not import `@keel/core` — rule parsing and
+OpenCode's Bun runtime. It does not import `@get-keel/core` — rule parsing and
 warn-then-deny state are implemented inline. Enforcement state persists across
 tool calls (in-memory closure) AND across processes (deny-first-time JSON in
 `~/.keel/state/`, 24h TTL).
@@ -526,7 +526,7 @@ export default {
 packages/cli/templates/keel-enforce.js   ← single source of truth
   ├─ keel install --opencode  → ~/.opencode/plugins/keel-enforce.js   (global, all projects)
   ├─ keel install --project   → <project>/.opencode/plugins/keel-enforce.js
-  └─ @keel/opencode-plugin    → dist/index.js (built verbatim from the template)
+  └─ @get-keel/opencode-plugin    → dist/index.js (built verbatim from the template)
 ```
 
 Global rules come from `~/.keel/rules.yaml`; if a project has
@@ -552,7 +552,7 @@ self-bootstraps defaults (zero-config install).
 - File plugins MUST export `id` — OpenCode throws "Path plugin must export id"
   otherwise. The `export const` style in OpenCode docs is the legacy format.
 - `--pure` flag disables all external plugins.
-- Project config `opencode.json` with `"plugin": ["@keel/opencode-plugin"]`
+- Project config `opencode.json` with `"plugin": ["@get-keel/opencode-plugin"]`
   loads the npm package; both file and npm copies can be installed (they are
   treated as separate plugins).
 
@@ -807,7 +807,7 @@ $ keel validate
 | `packages/cli/src/commands/install.ts` | 350 | Environment setup and plugin wiring |
 | `packages/core/src/enforce/state-manager.ts` | 120 | Cross-process state persistence |
 | `packages/core/src/keel-core.ts` | 27 | Bundle entry point for plugin |
-| `packages/opencode-plugin/` | — | npm package `@keel/opencode-plugin` |
+| `packages/opencode-plugin/` | — | npm package `@get-keel/opencode-plugin` |
 | `packages/cli/templates/opencode-plugin-v2.mjs` | — | Plugin template for install |
 | `~/code/trading-claw/investing/lib/audit-trail-integrity.ts` | — | Audit trail integrity patterns to reference |
 
@@ -967,7 +967,7 @@ All 21 gaps documented in Section 11 with P0-P3 priorities. Self-learning archit
 | 9 | 2026-07-29 | **Ed25519 deferred for local dev** | Signed receipts add compliance value for export, zero value for local debugging. |
 | 10 | 2026-07-29 | **Three protection levels, not one** | Different contexts need different strictness. Sprint for speed, protect for safety. |
 | 11 | 2026-07-29 | **Standing requirements ≠ Keel rules** | Requirements prevent wrong decisions (voluntary, system prompt). Rules catch wrong decisions (involuntary, tool dispatch). Both needed. |
-| 12 | 2026-07-29 | **Plugin imports @keel/core in-process** | Subprocess model breaks state-dependent features (first-time warning, circuit breaker, rate limiting, sequences, cache). In-process fixes all at once. |
+| 12 | 2026-07-29 | **Plugin imports @get-keel/core in-process** | Subprocess model breaks state-dependent features (first-time warning, circuit breaker, rate limiting, sequences, cache). In-process fixes all at once. |
 | 13 | 2026-07-29 | **Context hygiene via system.transform + session.compacting** | Proactive injection keeps requirements fresh every turn. Compaction survival prevents loss on context shrink. More effective than reactive re-injection at token thresholds. |
 | 14 | 2026-07-29 | **Bug fixes first, then new system** | Fix what's broken before building new features. Prerequisite for reliable foundation. |
 | 15 | 2026-07-29 | **AGENTS.md replaces CLAUDE.md as primary rule format** | OpenCode uses AGENTS.md. Rule parser hierarchy: `.keel/rules.yaml` > `AGENTS.md` > `CLAUDE.md` (CLAUDE.md kept as fallback for Claude Code users). |
@@ -1028,7 +1028,7 @@ Tier 3 — Reactive Enforcement (plugin → tool dispatch)
   Hook: tool.execute.before
   Effect: Blocks/warns/fixes violations at the tool call level
   Catches: Agent making wrong decision despite Tiers 1-2
-  Mechanism: In-process EnforcementPipeline from @keel/core bundle
+  Mechanism: In-process EnforcementPipeline from @get-keel/core bundle
 ```
 
 ### Standing Requirements File
@@ -1078,7 +1078,7 @@ Both are needed. Standing requirements PREVENT wrong decisions. Keel rules CATCH
 
 Instead of spawning `keel evaluate` as a subprocess (state doesn't persist between calls), the plugin:
 
-1. Imports a bundled @keel/core (`keel-core.mjs`) directly in-process
+1. Imports a bundled @get-keel/core (`keel-core.mjs`) directly in-process
 2. Holds EnforcementPipeline state in plugin closure memory
 3. All state persists between tool calls within the same OpenCode session
 4. StateManager persists cross-session state to disk
@@ -1142,7 +1142,7 @@ The loop closes. The system gets better over time.
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 11 | 2026-07-29 | **Standing requirements ≠ Keel rules** | Requirements prevent wrong decisions (voluntary). Rules catch wrong decisions (involuntary). Both needed. |
-| 12 | 2026-07-29 | **Plugin imports @keel/core in-process** | Subprocess model breaks all state-dependent features. In-process fixes all of them at once. |
+| 12 | 2026-07-29 | **Plugin imports @get-keel/core in-process** | Subprocess model breaks all state-dependent features. In-process fixes all of them at once. |
 | 13 | 2026-07-29 | **Context hygiene via system.transform + session.compacting** | Proactive injection keeps requirements fresh. Compaction survival prevents loss on context shrink. |
 | 14 | 2026-07-29 | **Bug fixes first, then new system** | Fix what's broken before building new features. Prerequisite for everything else. |
 | 15 | 2026-07-29 | **Self-improvement loop closes via keel suggest → user approval** | Learning layer never writes rules automatically. But the gap between detection and enforcement should be minimal. |
@@ -1158,7 +1158,7 @@ Phase 1 — Bug fixes (immediate) ✅
   └─ 55/55 tests pass
 
 Phase 2 — In-process pipeline ✅
-  ├─ Created @keel/core bundle entry point (keel-core.mjs)
+  ├─ Created @get-keel/core bundle entry point (keel-core.mjs)
   ├─ Discovered correct plugin format: export default { id, server }
   ├─ Plugin self-contained (no bundle dependency) — simpler and more reliable
   └─ State survives within session (plugin memory) and across sessions (StateManager)

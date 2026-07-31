@@ -126,10 +126,10 @@ launchd (macOS) or cron (Linux).
 
 ```bash
 npm run build                           # Build all packages
-npm run test -w @keel/core              # 55 tests
+npm run test -w @get-keel/core              # 55 tests
 node packages/cli/bin/keel.js validate  # Run locally
 ```
 
 The OpenCode plugin has a single canonical source:
 `packages/cli/templates/keel-enforce.js` — installed plugin files and the
-`@keel/opencode-plugin` npm package are built from it verbatim.
+`@get-keel/opencode-plugin` npm package are built from it verbatim.

@@ -3,7 +3,7 @@
 // CANONICAL SOURCE. This single file is used by:
 //   1. `keel install --opencode`  — copied to ~/.opencode/plugins/keel-enforce.js
 //   2. `keel install --project`   — copied to <project>/.opencode/plugins/keel-enforce.js
-//   3. @keel/opencode-plugin npm  — built to dist/index.js verbatim
+//   3. @get-keel/opencode-plugin npm  — built to dist/index.js verbatim
 //
 // Hooks (SPEC.md §6):
 //   tool.execute.before                — deny/warn/fix every tool call (involuntary)

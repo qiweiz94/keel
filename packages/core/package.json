@@ -1,5 +1,5 @@
 {
-  "name": "@keel/core",
+  "name": "@get-keel/core",
   "version": "0.1.2",
   "description": "Core enforcement engine for Keel — policy engine, signing, receipts, enforce pipeline",
   "type": "module",

@@ -8,11 +8,11 @@
 #
 # Packages (publish order matters — nothing depends on a published package,
 # but the plugin build copies the canonical template from this repo):
-#   1. @keel/core              — enforcement engine
+#   1. @get-keel/core              — enforcement engine
 #   2. keel-cli                — CLI (binary name: keel)
-#   3. @keel/opencode-plugin   — OpenCode plugin (builds from templates/)
+#   3. @get-keel/opencode-plugin   — OpenCode plugin (builds from templates/)
 #
-# @keel/mcp-server is intentionally NOT published — it is deprecated
+# @get-keel/mcp-server is intentionally NOT published — it is deprecated
 # (use `keel serve` instead) and not part of the v1 launch.
 set -euo pipefail
 
@@ -38,12 +38,12 @@ publish() {
   fi
 }
 
-publish packages/core "@keel/core"
+publish packages/core "@get-keel/core"
 publish packages/cli "keel-cli"
-publish packages/opencode-plugin "@keel/opencode-plugin"
+publish packages/opencode-plugin "@get-keel/opencode-plugin"
 
 echo ""
 echo "✅ All packages published!"
 echo ""
 echo "Test: npm install -g keel-cli && keel --version"
-echo "Plugin: add \"@keel/opencode-plugin\" to opencode.json, or run: keel install --opencode"
+echo "Plugin: add \"@get-keel/opencode-plugin\" to opencode.json, or run: keel install --opencode"
