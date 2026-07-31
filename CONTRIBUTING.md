@@ -1,10 +1,10 @@
-# Contributing to ai-enforce
+# Contributing to Keel
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/nanoclaw/ai-enforce.git
-cd ai-enforce
+git clone https://github.com/qiweiz94/keel.git
+cd keel
 npm install
 npm run build
 ```

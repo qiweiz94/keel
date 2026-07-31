@@ -1,195 +1,135 @@
-# ai-enforce
+# Keel
 
-**Pre-commit hooks for AI coding assistants.** Stop AI agents from making the same mistakes twice.
-
-[![npm version](https://img.shields.io/npm/v/ai-enforce)](https://www.npmjs.com/package/ai-enforce)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![CI](https://github.com/qiweiz94/ai-enforce/actions/workflows/ci.yml/badge.svg)](https://github.com/qiweiz94/ai-enforce/actions)
+Enforce rules on AI coding agents — rules that survive context rot, compaction, and agent amnesia.
 
 ```bash
-npm install -g ai-enforce
-cd my-project
-ai-enforce init --hooks
+keel install --opencode   # Wire the OpenCode plugin
+keel validate             # Check your rules
 ```
-
-That's it. Your AI coding assistant now has enforceable guardrails.
-
----
 
 ## The Problem
 
-AI coding assistants (Cline, Claude Code, Cursor, Copilot) are incredibly powerful — but they have a dangerous flaw: **they don't reliably follow instructions.**
-
-- Tell an AI "never modify .env files" — it will modify .env files.
-- Tell it "never use --no-verify" — it will use --no-verify to bypass your pre-commit hooks.
-- Tell it "don't run destructive commands" — it will run `rm -rf`.
-
-This isn't a bug in the AI. It's a fundamental limitation of prompt-based governance. Every AI coding assistant has rules files (CLAUDE.md, .cursorrules, .clinerules, AGENTS.md) — but these are **suggestions, not enforcement.** The model can and will override them when under pressure, as context grows, or when it decides "being helpful" matters more than following rules.
+AI agents follow your rules at turn 1, ignore them at turn 20+. The "Lost in the Middle" (Liu et al. 2023) effect causes degradation starting at 8K-16K tokens. Every existing approach (CLAUDE.md, AGENTS.md, .cursorrules) is advisory-only — none enforce.
 
 ## The Solution
 
-ai-enforce provides **hard enforcement** at the operating system level:
+Keel enforces rules OUTSIDE the agent's context window. Three layers:
 
-- **Git hook protection**: Prevents AI agents from using `--no-verify`, `core.hooksPath` overrides, or MCP API writes to bypass your quality gates.
-- **File protection**: Blocks writes to `.env`, secrets, credentials, and other sensitive files.
-- **Command protection**: Prevents destructive commands (`rm -rf /`, force-push, etc.).
-- **Secret detection**: Catches API keys, tokens, and credentials before they're committed.
-- **MCP enforcement server**: Real-time policy evaluation that works with any MCP-compatible AI coding assistant.
+1. **OpenCode permissions** — pattern matching in `opencode.json`. Always enforced.
+2. **Keel plugin** — hooks `tool.execute.before` in OpenCode. Warns on first violation, denies on repeat; state survives restarts.
+3. **Standing requirements** — injected into the system prompt every turn via `experimental.chat.system.transform`, and embedded in compaction context.
 
-And it works **across all AI coding assistants** — because governance shouldn't depend on which tool you use.
+Verified in `opencode run` (headless), `opencode serve`, and the TUI.
 
 ## Quick Start
 
-### 1. Install
-
 ```bash
-npm install -g ai-enforce
+# Global install (all projects)
+keel install --opencode
+
+# Project install (committed to the repo, shared with your team)
+keel install --project
+
+# Restart OpenCode — rules are enforced immediately.
+
+# Manage rules
+keel validate              # Check for conflicts
+keel evaluate --tool Bash --args '{"command":"git push --force"}'   # Test a rule
+keel suggest               # Analyze audit trail
+
+# Self-improvement
+keel lessons               # Extract lessons from violations
+keel gather                # Distill audit history into standing requirements
+keel gather --apply-and-save  # Append proposed rules (review first!)
+keel schedule daily        # Automate gather via launchd/cron
+keel watch                 # Live audit monitor
+
+# Other agents
+keel install --claude-code # Claude Code hooks (true blocking)
+keel install --cline       # Cline (.clinerules + MCP check server)
+keel install --cursor      # Cursor (.cursor/rules advisory rules)
+keel install --codex       # Codex CLI (AGENTS.md instructions)
 ```
 
-Or using Homebrew (coming soon):
+## How It Works
 
-```bash
-brew install ai-enforce
+```
+Agent action → OpenCode permission check (Layer 1)
+             → Keel plugin tool.execute.before (Layer 2)
+               → Regex match against rules
+               → Fix rules mutate the command (e.g. add --signoff)
+               → Deny rules: warn first time, deny on repeat
+             → Allow / Warn / Deny / Fix
+             → Audit log (JSONL) → keel suggest / lessons / gather
 ```
 
-### 2. Initialize
+Standing requirements are injected into the system prompt on EVERY turn, so
+long sessions can't forget them:
 
-```bash
-cd your-project
-ai-enforce init --hooks
+```
+Agent turn → experimental.chat.system.transform → system prompt + requirements
+Compaction → experimental.session.compacting    → summary + requirements
 ```
 
-This creates an `.ai-enforce.yaml` policy file and installs git hooks.
+## Rules
 
-### 3. Customize
-
-Edit `.ai-enforce.yaml` to match your project's needs. Here's what's enabled by default:
+Rules go in `~/.keel/rules.yaml` (global) or `.keel/rules.yaml` (project).
+Project rules override global rules for the same rule id.
 
 ```yaml
-# Prevent AI from accessing secrets
-file_rules:
-  - paths: ["**/.env", "**/credentials*"]
-    actions: { read: block, write: block }
+version: 1
+level: balanced
+rules:
+  - id: no-force-push
+    type: command
+    match: "git push --force(?!-with-lease)"
+    action: deny
+    message: "Use --force-with-lease instead of --force."
 
-# Prevent AI from destroying things
-command_rules:
-  - patterns: [{ regex: "^rm -rf /" }]
-    action: block
-
-# Prevent AI from bypassing your hooks
-  - patterns: [{ regex: "git.*--no-verify" }]
-    action: block
-
-# Detect secrets before commit
-content_rules:
-  - patterns: [{ regex: "(api_key|secret|token)\\s*[:=]\\s*['\\"].+['\\"]" }]
-    action: block
+  - id: must-sign-commits
+    type: command
+    match: "git commit"
+    action: fix
+    fix:
+      - pattern: "git commit"
+        replace: "git commit --signoff"
+    message: "Auto-adding --signoff to commits."
 ```
 
-### 4. Verify
+Standing requirements go in `~/.keel/requirements.md` (and optionally
+`.keel/requirements.md` per project) — injected into the system prompt every turn.
+
+## Supported Agents
+
+| Agent | Integration | Enforced at | Status |
+|-------|------------|-------------|--------|
+| OpenCode | Plugin (3 hooks) | Tool-call time | ✅ Working |
+| Claude Code | PreToolUse/PostToolUse hooks | Tool-call time | ✅ Working |
+| Cline | `.clinerules` + MCP check server | Advisory | ✅ Installed |
+| Cursor | `.cursor/rules` declarative | Advisory | ✅ Installed |
+| Codex CLI | AGENTS.md instructions | Advisory | ✅ Installed |
+
+## The Self-Improvement Loop
+
+```
+Agent actions → Audit log → keel suggest / lessons → Pattern extraction
+                                                    ↓
+User approves ← Rule generation ← keel gather ←─────┘
+```
+
+The learning layer NEVER modifies rules automatically. It only suggests —
+`keel gather --apply` prints proposed rules, `--apply-and-save` appends them
+after your review. `keel schedule` runs the analysis automatically via
+launchd (macOS) or cron (Linux).
+
+## Development
 
 ```bash
-ai-enforce check --ci         # Check staged changes
-ai-enforce check --command "rm -rf /"  # Test a command
-ai-enforce audit              # View enforcement log
+npm run build                           # Build all packages
+npm run test -w @keel/core              # 55 tests
+node packages/cli/bin/keel.js validate  # Run locally
 ```
 
-## How Enforcement Works
-
-ai-enforce enforces policy at THREE levels, in order of effectiveness:
-
-### Level 1: PreToolUse Hook (Real-Time — RECOMMENDED)
-Intercepts tool calls BEFORE execution. The AI **cannot override** this. Currently supports:
-
-| Tool | Method | Setup |
-|------|--------|-------|
-| **Claude Code** | `PreToolUse` hook | `bash docs/hooks/claude-code-setup.sh` |
-| **Cline** | `tool.execute.before` plugin | `cp docs/hooks/cline-plugin.mjs .opencode/plugins/` |
-| **Cursor, Windsurf, Copilot** | Git hooks (Level 2) | `ai-enforce init --hooks` |
-
-```bash
-# Example: Claude Code blocked in real-time
-claude -p "delete the .env file"
-# → BLOCKED: Protected file: use a secrets manager instead.
-```
-
-### Level 2: Git Hooks (Commit-Time)
-Catches violations when the AI commits changes. Works with ANY AI coding assistant.
-
-```bash
-ai-enforce init --hooks
-```
-
-### Level 3: CLI / CI (Manual / Pipeline)
-For ad-hoc checks and CI enforcement.
-
-```bash
-ai-enforce check --command "rm -rf /"    # Check a command
-ai-enforce check --file .env              # Check a file
-ai-enforce check --ci                      # Check staged changes
-```
-
-## Policy File Reference
-
-The `.ai-enforce.yaml` file supports these rule types:
-
-| Rule Type | Purpose | Example |
-|-----------|---------|---------|
-| `file_rules` | Control file access | Block reads/writes to `.env` |
-| `command_rules` | Control shell commands | Block `rm -rf`, force-push |
-| `content_rules` | Scan file content | Detect secrets in code |
-| `env_rules` | Control env vars | Block production credentials |
-| `network_rules` | Control network access | Block data exfiltration |
-| `rate_limits` | Rate limit operations | Max 10 commits per 5 min |
-| `time_rules` | Time-based restrictions | Block deploys after hours |
-
-Each rule has an action: `block`, `warn`, `prompt`, `allow`, or `mask`.
-
-## Why Not Just Use CLAUDE.md / .cursorrules?
-
-Because those are **suggestions, not enforcement.** Anthropic's own documentation states:
-
-> *"Claude reads it and tries to follow it, but there's no guarantee of strict compliance."*
-
-And their recommendation:
-
-> *"To block an action regardless of what Claude decides, use a PreToolUse hook instead."*
-
-That's exactly what ai-enforce does — it operates at the hook/tool level where the AI cannot override it.
-
-## Architecture
-
-```
-AI Assistant → ai-enforce MCP server → Policy Engine → Allowed/Blocked
-                    ↓
-            Git hooks → pre-commit/pre-push checks
-                    ↓
-            Audit log (JSONL)
-```
-
-- **CLI**: `ai-enforce init`, `check`, `audit` commands
-- **MCP Server**: Real-time enforcement via Model Context Protocol
-- **Git Hooks**: Pre-commit and pre-push enforcement
-- **Policy Engine**: YAML-based rules with pattern matching
-- **Audit Log**: Append-only JSONL for compliance
-
-## Roadmap
-
-- **Week 1-2**: Core CLI with git hooks, file/command protection
-- **Week 3-4**: MCP enforcement server, Cline/Claude Code/Cursor integration
-- **Week 5-6**: Secret scanning, CI/CD integration (GitHub Action)
-- **Week 7-8**: Team features, policy sharing, audit dashboard
-- **Future**: SSO, RBAC, compliance reporting, self-hosted enterprise
-
-## License
-
-Apache 2.0 — free for personal and commercial use. Enterprise features planned for future release.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). All contributions welcome.
-
-## Related Projects
-
-- [block-no-verify](https://github.com/tupe12334/block-no-verify) — Blocks git --no-verify (inspiration for our git protection)
-- [Polyhook](https://github.com/polyhook/polyhook) — Multi-tool hook SDK
+The OpenCode plugin has a single canonical source:
+`packages/cli/templates/keel-enforce.js` — installed plugin files and the
+`@keel/opencode-plugin` npm package are built from it verbatim.

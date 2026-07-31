@@ -1,43 +1,39 @@
 # Cline Integration
 
-## Option 1: Cline Plugin (Recommended — Real-Time Enforcement)
+Cline has no tool-interception hook, so Keel's Cline integration is
+**advisory**: it injects standing requirements into every session and exposes
+an MCP check server the agent can call before risky actions.
 
-This plugin intercepts EVERY tool call BEFORE Cline executes it using `tool.execute.before`.
-Blocked actions never reach the filesystem. The AI cannot override this.
-
-**Install:**
-
-```bash
-mkdir -p .opencode/plugins/
-cp docs/hooks/cline-plugin.mjs .opencode/plugins/ai-enforce.mjs
-```
-
-Cline auto-discovers plugins from `.opencode/plugins/`.
-
-**How it works:**
-- Every time Cline tries to run a command or write a file, `tool.execute.before` fires
-- The plugin calls `ai-enforce check --command "<cmd>"` to check the policy
-- If blocked, it throws an error — Cline respects this and blocks the action
-- The plugin uses `fail_open` — if ai-enforce is not installed, it allows the action
-
-## Option 2: MCP Server
-
-Add to your `.cline/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "ai-enforce": {
-      "command": "npx",
-      "args": ["-y", "@ai-enforce/mcp-server"]
-    }
-  }
-}
-```
-
-## Option 3: Git Hooks
+## Install
 
 ```bash
-cd your-project
-ai-enforce init --hooks
+keel install --cline
 ```
+
+This creates in your project:
+
+- `.clinerules` — standing requirements (read by Cline at session start).
+- `.cline/cline_mcp_settings.json` — registers the `keel` MCP server
+  (`keel serve`), which exposes:
+
+| Tool | Purpose |
+|------|---------|
+| `ai_enforce_check` | Check an action against rules before executing it |
+| `ai_enforce_audit` | View recent enforcement entries |
+
+Restart Cline after installing.
+
+## How it works
+
+```
+Session start → .clinerules (standing requirements)
+Risky action  → agent calls ai_enforce_check → allow/warn/deny decision
+```
+
+The agent is *expected* to check before dangerous operations — Cline cannot
+force it. For hard enforcement use OpenCode (plugin) or Claude Code (hooks).
+
+## Requirements
+
+- `keel` on PATH (`npm install -g keel-cli`)
+- Rules in `~/.keel/rules.yaml` / `.keel/rules.yaml`

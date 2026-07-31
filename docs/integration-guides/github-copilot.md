@@ -1,28 +1,33 @@
 # GitHub Copilot Integration
 
-## Via Git Hooks
+GitHub Copilot has no tool-interception hook, so Keel's Copilot integration is
+**advisory**: instructions files remind the agent of your standing
+requirements.
 
-```bash
-cd your-project
-ai-enforce init --hooks
+## Install
+
+Copilot reads `.github/copilot-instructions.md` at session start. Point it at
+your Keel standing requirements:
+
+```markdown
+<!-- .github/copilot-instructions.md -->
+Follow the standing requirements in ~/.keel/requirements.md at all times:
+- Before claiming completion, run the project's tests and include the output as evidence.
+- Build success does not mean tests pass.
+- Ask the user before choosing formats/configs. Never default.
+- Re-check standing requirements in long sessions — early instructions degrade from context.
 ```
 
-GitHub Copilot's agent mode generates code that goes through your normal git workflow. The pre-commit hooks catch any violations before code is committed.
+## How it works
 
-## Via GitHub Action
-
-Add to your `.github/workflows/ai-enforce.yml`:
-
-```yaml
-name: AI Enforce
-on: [pull_request]
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: AI Enforce Check
-        uses: nanoclaw/ai-enforce-action@v1
+```
+Session start → .github/copilot-instructions.md → Keel standing requirements
 ```
 
-This checks every PR for policy violations in the diff.
+Copilot cannot block tool calls. For hard enforcement use OpenCode (plugin) or
+Claude Code (hooks).
+
+## Requirements
+
+- Rules in `~/.keel/rules.yaml` / `.keel/rules.yaml`
+- Full standing requirements in `~/.keel/requirements.md`

@@ -1,93 +1,45 @@
 # Claude Code Integration
 
-## Option 1: PreToolUse Hook (Recommended — Real-Time Enforcement)
+Keel enforces rules on Claude Code via [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks).
 
-This is the most effective method. It intercepts EVERY tool call BEFORE Claude Code executes it.
-Blocked actions never reach the filesystem. The AI cannot override this.
-
-**Install the hook in your project:**
+## Install (Recommended)
 
 ```bash
-bash docs/hooks/claude-code-setup.sh
+keel install --claude-code
 ```
 
-This creates `.ai-enforce/hooks/pre-tool-use.sh` and configures `.claude/settings.json`.
+This creates in your project:
 
-**Or install manually:**
+- `.claude/hooks/PreToolUse/keel-enforce` — evaluates every tool call with
+  `keel evaluate`; exit code 2 blocks the action and shows the rule message.
+- `.claude/hooks/PostToolUse/keel-reinject` — re-injects standing requirements
+  after every tool call so long sessions don't lose them.
+- Registers both hooks in `.claude/settings.json` (matcher `*`).
 
-1. Create `.ai-enforce/hooks/` and copy the [pre-tool-use.sh](../hooks/claude-code-pre-tool-use.sh) script
-2. Add this to your `.claude/settings.json`:
+Restart Claude Code after installing.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash(*)",
-        "hooks": [
-          { "type": "command", "command": "bash .ai-enforce/hooks/pre-tool-use.sh", "timeout": 5000 }
-        ]
-      },
-      {
-        "matcher": "Edit(*)",
-        "hooks": [
-          { "type": "command", "command": "bash .ai-enforce/hooks/pre-tool-use.sh", "timeout": 5000 }
-        ]
-      }
-    ]
-  }
-}
+## How it works
+
+```
+Tool call → PreToolUse hook → keel evaluate --tool <name> --args <json>
+                             → exit 0 = allow
+                             → exit 2 = deny (message shown to the model)
+         → PostToolUse hook  → standing requirements re-injected
 ```
 
-**How it works:**
-- Every time Claude Code tries to run a command or edit a file, the hook fires
-- The hook calls `ai-enforce check --command "$COMMAND"` to check the policy
-- If blocked, the hook returns `permissionDecision: "deny"` with the reason
-- Claude Code MUST respect this — it cannot bypass the PreToolUse hook
-- This is exactly what Anthropic recommends: *"To block an action regardless of what Claude decides, use a PreToolUse hook."*
+Deny rules warn on the first violation and block on repeat (state persists
+across calls via `~/.keel/state/`). Fix rules cannot mutate the tool input in
+Claude Code — the call is allowed and the fix is surfaced in the message.
 
-**Test it:**
+## Requirements
 
-```bash
-claude -p "try to run rm -rf /"
-```
+- `keel` on PATH (`npm install -g keel-cli`)
+- Rules in `~/.keel/rules.yaml` and/or `.keel/rules.yaml` (project rules
+  override global rules for the same id)
+- Standing requirements in `~/.keel/requirements.md` / `.keel/requirements.md`
 
-The command will be blocked immediately with a message like:
-```
-ai-enforce: Destructive command blocked by policy.
-```
+## Limitations
 
-## Option 2: MCP Server (Policy Checking)
-
-Add to your `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "ai-enforce": {
-      "command": "npx",
-      "args": ["-y", "@ai-enforce/mcp-server"],
-      "env": {
-        "AI_ENFORCE_POLICY": "${workspaceFolder}/.ai-enforce.yaml"
-      }
-    }
-  }
-}
-```
-
-Or using the CLI:
-
-```bash
-claude mcp add --transport stdio ai-enforce -- npx -y @ai-enforce/mcp-server
-```
-
-**Note:** The MCP server exposes `ai_enforce_check` and `ai_enforce_audit` tools that Claude *can* call before acting, but it requires voluntary compliance. For hard enforcement, use Option 1.
-
-## Option 3: Git Hooks (Post-Hoc Enforcement)
-
-```bash
-cd your-project
-ai-enforce init --hooks
-```
-
-Catches violations at commit time rather than preventing them in real-time.
+- Hook overhead is one `keel evaluate` subprocess per tool call (~50-200ms).
+- Rate-limit and sequence rules are per-process in the core pipeline; the
+  subprocess path applies command/content rules and warn-then-deny escalation.
