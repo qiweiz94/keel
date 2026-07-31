@@ -1,9 +1,10 @@
 #!/bin/bash
 # Publish Keel packages to npm.
 #
-# Usage:
-#   bash scripts/publish.sh                 # interactive OTP prompt
-#   KEEL_NPM_OTP=123456 bash scripts/publish.sh
+# Usage (choose ONE auth method):
+#   bash scripts/publish.sh                          # interactive OTP prompt
+#   KEEL_NPM_OTP=123456 bash scripts/publish.sh      # OTP via env
+#   NODE_AUTH_TOKEN=npm_xxx bash scripts/publish.sh  # granular token (bypass2FA or CI)
 #
 # Packages (publish order matters — nothing depends on a published package,
 # but the plugin build copies the canonical template from this repo):
@@ -16,7 +17,7 @@
 set -euo pipefail
 
 OTP="${KEEL_NPM_OTP:-}"
-if [ -z "$OTP" ]; then
+if [ -z "$OTP" ] && [ -z "${NODE_AUTH_TOKEN:-}" ]; then
   read -r -p "npm 2FA code: " OTP
 fi
 
@@ -28,7 +29,7 @@ publish() {
   local pkg="$2"
   echo ""
   echo "Publishing $pkg from $dir ..."
-  (cd "$dir" && npm publish --access public --otp="$OTP")
+  (cd "$dir" && npm publish --access public ${OTP:+--otp="$OTP"})
 }
 
 publish packages/core "@keel/core"
