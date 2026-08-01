@@ -5,7 +5,18 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "description": "Pre-commit hooks for AI coding assistants. Stop AI agents from making the same mistakes twice.",
+  "description": "Enforce rules on AI coding agents — rules that survive context rot, compaction, and agent amnesia.",
+  "keywords": [
+    "ai-agents",
+    "opencode",
+    "claude-code",
+    "enforcement",
+    "policy",
+    "llm",
+    "safety"
+  ],
+  "author": "qiweiz94",
+  "license": "Apache-2.0",
   "//workspaces": "Order matters: core builds first, since cli and mcp-server both consume it and `npm run build --workspaces` runs in declaration order.",
   "workspaces": [
     "packages/core",
@@ -16,8 +27,9 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces",
-    "lint": "npm run lint --workspaces",
-    "clean": "npm run clean --workspaces"
+    "lint": "npm run lint -w @get-keel/core -w @get-keel/cli -w @get-keel/mcp-server",
+    "clean": "npm run clean --workspaces",
+    "test:publish-check": "node scripts/check-published.test.mjs"
   },
   "devDependencies": {
     "@open-policy-agent/opa-wasm": "^1.10.0",
@@ -28,6 +40,15 @@
     "vite": "^8.2.0",
     "vite-node": "^6.0.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qiweiz94/keel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/qiweiz94/keel/issues"
+  },
+  "homepage": "https://github.com/qiweiz94/keel#readme",
+  "type": "commonjs",
   "main": "index.js",
   "directories": {
     "doc": "docs"
@@ -39,28 +60,25 @@
     "assertion-error": "^2.0.1",
     "body-parser": "^2.3.0",
     "bytes": "^3.1.2",
-    "cac": "^6.7.14",
     "call-bind-apply-helpers": "^1.0.2",
     "call-bound": "^1.0.4",
-    "chai": "^5.3.3",
     "chalk": "^5.6.2",
-    "check-error": "^2.1.3",
     "commander": "^12.1.0",
     "content-disposition": "^1.1.0",
     "content-type": "^1.0.5",
+    "convert-source-map": "^2.0.0",
     "cookie": "^0.7.2",
     "cookie-signature": "^1.2.2",
     "cors": "^2.8.6",
     "cross-spawn": "^7.0.6",
     "debug": "^4.4.3",
-    "deep-eql": "^5.0.2",
     "depd": "^2.0.0",
+    "detect-libc": "^2.1.2",
     "dunder-proto": "^1.0.1",
     "ee-first": "^1.1.1",
     "encodeurl": "^2.0.0",
     "es-define-property": "^1.0.1",
     "es-errors": "^1.3.0",
-    "es-module-lexer": "^1.7.0",
     "es-object-atoms": "^1.1.2",
     "escape-html": "^1.0.3",
     "estree-walker": "^3.0.3",
@@ -72,9 +90,11 @@
     "express-rate-limit": "^8.6.1",
     "fast-deep-equal": "^3.1.3",
     "fast-uri": "^3.1.4",
+    "fdir": "^6.5.0",
     "finalhandler": "^2.1.1",
     "forwarded": "^0.2.0",
     "fresh": "^2.0.0",
+    "fsevents": "^2.3.3",
     "function-bind": "^1.1.2",
     "get-intrinsic": "^1.3.0",
     "get-proto": "^1.0.1",
@@ -92,7 +112,8 @@
     "jose": "^6.2.4",
     "json-schema-traverse": "^1.0.0",
     "json-schema-typed": "^8.0.2",
-    "loupe": "^3.2.1",
+    "lightningcss": "^1.33.0",
+    "lightningcss-darwin-arm64": "^1.33.0",
     "magic-string": "^0.30.21",
     "math-intrinsics": "^1.1.0",
     "media-typer": "^1.1.1",
@@ -104,14 +125,14 @@
     "negotiator": "^1.0.0",
     "object-assign": "^4.1.1",
     "object-inspect": "^1.13.4",
+    "obug": "^2.1.4",
     "on-finished": "^2.4.1",
     "once": "^1.4.0",
     "parseurl": "^1.3.3",
     "path-key": "^3.1.1",
     "path-to-regexp": "^8.4.2",
-    "pathe": "^1.1.2",
-    "pathval": "^2.0.1",
     "picocolors": "^1.1.1",
+    "picomatch": "^4.0.5",
     "pkce-challenge": "^5.0.1",
     "postcss": "^8.5.23",
     "proxy-addr": "^2.0.7",
@@ -119,7 +140,7 @@
     "range-parser": "^1.3.0",
     "raw-body": "^3.0.2",
     "require-from-string": "^2.0.2",
-    "rollup": "^4.62.3",
+    "rolldown": "^1.2.1",
     "router": "^2.2.0",
     "safer-buffer": "^2.1.2",
     "send": "^1.2.1",
@@ -136,13 +157,10 @@
     "sprintf-js": "^1.1.3",
     "stackback": "^0.0.2",
     "statuses": "^2.0.2",
-    "std-env": "^3.10.0",
     "tinybench": "^2.9.0",
-    "tinyexec": "^0.3.2",
-    "tinypool": "^1.1.1",
-    "tinyrainbow": "^1.2.0",
-    "tinyspy": "^3.0.2",
+    "tinyglobby": "^0.2.17",
     "toidentifier": "^1.0.1",
+    "tslib": "^2.8.1",
     "type-is": "^2.1.0",
     "undici-types": "^6.21.0",
     "unpipe": "^1.0.0",
@@ -153,17 +171,5 @@
     "yaml": "^2.9.0",
     "zod": "^4.4.3",
     "zod-to-json-schema": "^3.25.2"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/qiweiz94/keel.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/qiweiz94/keel/issues"
-  },
-  "homepage": "https://github.com/qiweiz94/keel#readme"
+  }
 }
