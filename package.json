@@ -146,7 +146,7 @@
     "serve-static": "^2.2.1",
     "setprototypeof": "^1.2.0",
     "shebang-command": "^2.0.0",
-    "shebang-regex": "^3.0.0",
+    "shebang-regex": "^4.0.0",
     "side-channel": "^1.1.1",
     "side-channel-list": "^1.0.1",
     "side-channel-map": "^1.0.1",
