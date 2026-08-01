@@ -70,7 +70,7 @@
 ### Feature Gaps
 
 - [ ] PreToolUse hooks for Cursor, Windsurf, GitHub Copilot (only Claude Code + Cline currently)
-- [ ] Docker-based sandbox (`ai-enforce sandbox`)
+- [ ] Docker-based sandbox (`keel sandbox`)
 - [ ] Formally prove security properties (conformance tests)
 - [ ] 2,000+ community rules via Semgrep registry integration
 - [ ] Turn gate (pre-inference prompt screening from Doberman)
@@ -85,7 +85,7 @@
 - [ ] Add MCP gateway tests
 - [ ] Add receipt/signing tests
 - [ ] Add Rego/WASM engine tests
-- [ ] Add integration test for `ai-enforce init` + `ai-enforce check --ci`
+- [ ] Add integration test for `keel init` + `keel check --ci`
 - [ ] Add MCP server integration test
 
 ### Known Issues
@@ -93,5 +93,5 @@
 - `action: prompt` and `action: mask` are not supported in CLI (treated as `warn`)
 - MCP gateway only supports stdio upstream (no HTTP/SSE yet)
 - No CI/CD enforcement via native GitHub App
-- No Homebrew formula for `brew install ai-enforce`
+- No Homebrew formula for `brew install keel`
 - Package versions are coordinated by `scripts/check-release.mjs`

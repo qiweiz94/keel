@@ -7,7 +7,7 @@ Enforce rules on AI coding agents — rules that survive context rot, compaction
 [![npm](https://img.shields.io/npm/v/@get-keel/core?label=@get-keel/core&logo=npm)](https://www.npmjs.com/package/@get-keel/core)
 
 ```bash
-npm install -g @get-keel/cli   # or: keel install --opencode after install
+npm install -g @get-keel/cli
 keel install --opencode        # Wire the OpenCode plugin
 keel validate                  # Check your rules
 ```
@@ -138,5 +138,8 @@ node packages/cli/bin/keel.js validate  # Run locally
 ```
 
 The OpenCode plugin has a single canonical source:
-`packages/cli/templates/keel-enforce.js` — installed plugin files and the
-`@get-keel/opencode-plugin` npm package are built from it verbatim.
+`packages/opencode-plugin/src/plugin.ts`. The generated delivery files
+(`packages/cli/templates/keel-enforce.js` and the bundled
+`@get-keel/opencode-plugin/dist/index.js`) are built from it verbatim by
+`npm run build -w @get-keel/opencode-plugin`. Never edit generated artifacts
+directly — edit the source and re-run the build.

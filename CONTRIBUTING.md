@@ -26,12 +26,14 @@ npm run build
 
 ## Adding a Guard Rule
 
-1. Define the rule types in `packages/core/src/types.ts`
-2. Implement the evaluation logic in `packages/core/src/policy-engine.ts`
-3. Add default rules in `packages/core/src/policy-engine.ts` (defaultPolicy method)
-4. Add the new rule type to the CLI check command
-5. Write tests
-6. Update the README
+Rules are plain YAML (`.keel/rules.yaml` / `~/.keel/rules.yaml` — see the
+README "Rules" section for the schema).
+
+1. Extend rule parsing if you add a new rule field: `packages/core/src/enforce/rule-parser.ts`
+2. Implement evaluation in the enforcement pipeline: `packages/core/src/enforce/pipeline.ts`
+3. Add rule semantics/types in `packages/core/src/types.ts`
+4. Write tests in `packages/core/src/__tests__/` and `packages/cli/src/__tests__/`
+5. Update the README and docs/integration-guides/
 
 ## Adding an Integration
 

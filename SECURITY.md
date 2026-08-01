@@ -6,7 +6,7 @@ If you discover a security vulnerability in Keel, please report it privately.
 
 **Do not report security vulnerabilities through public GitHub issues or discussions.**
 
-Instead, please email [your-email] or open a GitHub Security Advisory at:
+Instead, open a GitHub Security Advisory at:
 https://github.com/qiweiz94/keel/security/advisories/new
 
 You should receive a response within 48 hours. If not, please follow up.

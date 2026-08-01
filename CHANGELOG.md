@@ -1,20 +1,16 @@
 # Changelog
 
-## 0.1.5 (2026-08-01)
-
-Public v1 release preparation:
-
-- Added deterministic enforcement coverage for the supported rule types.
-- Added persistent state, one-time overrides, live rule reload, kill-switch
-  safety, audit redaction, and release tarball verification.
-- Public packages are `@get-keel/core`, `@get-keel/cli`, and
-  `@get-keel/opencode-plugin`; the MCP server remains private and deprecated.
-
 ## Unreleased
 
-**Security release. Real-time enforcement did not work in any prior version.**
-If you installed the Claude Code PreToolUse hook or the Cline plugin from an
-earlier release, treat everything they reported as unverified — see
+## 0.1.5 (2026-08-01)
+
+First public release of the `@get-keel/*` packages (`@get-keel/core`,
+`@get-keel/cli`, `@get-keel/opencode-plugin`). Includes the enforcement
+security hardening below.
+
+**Security.** Real-time enforcement did not work in any prior (pre-public)
+version. If you installed the Claude Code PreToolUse hook or the Cline plugin
+from an earlier release, treat everything they reported as unverified — see
 [docs/enforcement-audit-2026-07-28.md](docs/enforcement-audit-2026-07-28.md).
 
 ### Fixed — enforcement
@@ -63,9 +59,9 @@ earlier release, treat everything they reported as unverified — see
 
 ### Changed
 
-- `@ai-enforce/core` is now the single source of truth; the CLI's forked engine
-  is a re-export. **`ai-enforce` therefore depends on `@ai-enforce/core`, which
-  must be published first** (`scripts/publish.sh` already does this).
+- `@get-keel/core` is now the single source of truth; the CLI's forked engine
+  is a re-export. **Publishing order matters: core first, then the CLI** — the
+  release workflow and `scripts/publish.sh` already do this.
 - `packages/mcp-server` added to workspaces — it previously could not build.
 - New `check --file <path> --write` evaluates write rules; the CLI could
   previously only ask about reads.
@@ -77,6 +73,13 @@ earlier release, treat everything they reported as unverified — see
   evidence chain, and detector evasion. CI's `npm test` step had been failing
   since tests were introduced, because the CLI path was resolved from
   `process.cwd()`.
+
+### Release hardening
+
+- Deterministic enforcement coverage for the supported rule types.
+- Persistent state, one-time overrides, live rule reload, kill-switch safety,
+  audit redaction, and release tarball verification.
+- The MCP server remains private and deprecated; it is not published.
 
 ## 0.1.0 (2026-07-28)
 
