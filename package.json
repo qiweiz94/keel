@@ -132,7 +132,7 @@
     "path-to-regexp": "^8.4.2",
     "picocolors": "^1.1.1",
     "picomatch": "^4.0.5",
-    "pkce-challenge": "^5.0.1",
+    "pkce-challenge": "^6.0.0",
     "postcss": "^8.5.23",
     "proxy-addr": "^2.0.7",
     "qs": "^6.15.3",
