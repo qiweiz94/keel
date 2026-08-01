@@ -16,9 +16,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf ./dist ./src/core && cp -r ../core/src ./src/core && tsc",
+    "build": "node -e \"const f=require('node:fs');f.rmSync('dist',{recursive:true,force:true});f.rmSync('src/core',{recursive:true,force:true});f.cpSync('../core/src','./src/core',{recursive:true})\" && tsc",
     "test": "vitest run",
-    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "postinstall": "node -e \"if (require('node:fs').existsSync('./dist/postinstall.js')) import('./dist/postinstall.js')\""
   },
   "dependencies": {

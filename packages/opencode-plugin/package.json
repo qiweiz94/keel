@@ -22,9 +22,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "rm -rf dist && mkdir -p dist && npx esbuild src/plugin.ts --bundle --format=esm --platform=node --external:node:* --alias:yaml=../../node_modules/yaml/browser/index.js --outfile=dist/index.js && cp dist/index.js ../../packages/cli/templates/keel-enforce.js && cp src/index.d.ts dist/index.d.ts",
+    "build": "node -e \"const f=require('node:fs');f.rmSync('dist',{recursive:true,force:true});f.mkdirSync('dist',{recursive:true})\" && npx esbuild src/plugin.ts --bundle --format=esm --platform=node --external:node:* --alias:yaml=../../node_modules/yaml/browser/index.js --outfile=dist/index.js && node -e \"const f=require('node:fs');f.copyFileSync('dist/index.js','../../packages/cli/templates/keel-enforce.js');f.copyFileSync('src/index.d.ts','dist/index.d.ts')\"",
     "test": "node ./scripts/load-test.js",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepublishOnly": "npm run build"
   },
   "license": "Apache-2.0",

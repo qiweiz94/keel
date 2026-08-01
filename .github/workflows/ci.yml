@@ -8,14 +8,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node-version: ['22.12.0']
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -28,3 +30,5 @@ jobs:
       - run: npx vitest run packages/cli/src/__tests__
         env:
           CI: true
+      - run: npm run lint
+      - run: npm run test:publish-check

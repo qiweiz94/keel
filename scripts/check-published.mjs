@@ -10,7 +10,8 @@ const packages = packageNames.map(name => JSON.parse(readFileSync(new URL(`../pa
 
 const sleepSync = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
-const maxAttempts = 10
+const maxAttempts = Number(process.env.KEEL_RETRY_MAX_ATTEMPTS || 10)
+const baseDelayMs = Number(process.env.KEEL_RETRY_BASE_MS || 5000)
 let confirmed = false
 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
   try {
@@ -22,7 +23,7 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     break
   } catch (err) {
     if (attempt === maxAttempts) throw err
-    const delay = Math.min(60_000, 5_000 * 2 ** (attempt - 1))
+    const delay = Math.min(60_000, baseDelayMs * 2 ** (attempt - 1))
     console.error(`npm registry propagation pending (attempt ${attempt}/${maxAttempts}); retrying in ${delay / 1000}s: ${err.message}`)
     sleepSync(delay)
   }

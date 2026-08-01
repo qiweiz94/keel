@@ -9,8 +9,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: '22.12.0'
       - run: npm ci
@@ -21,6 +21,7 @@ jobs:
       - run: node scripts/check-tarballs.mjs
       - run: npm test
       - run: npx vitest run packages/cli/src/__tests__/cli.test.ts
+      - run: npm run lint
       - run: node scripts/check-release.mjs "$GITHUB_REF_NAME"
 
   release:
@@ -30,8 +31,8 @@ jobs:
       id-token: write
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: '22.12.0'
           registry-url: 'https://registry.npmjs.org'
@@ -56,4 +57,6 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Verify published packages
         run: node scripts/check-published.mjs
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3.0.2
+        with:
+          generate_release_notes: true

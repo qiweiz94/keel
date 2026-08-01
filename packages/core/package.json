@@ -13,9 +13,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf ./dist && tsc && npx esbuild src/keel-core.ts --bundle --format=esm --outfile=dist/keel-core.mjs --external:yaml --packages=external",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && npx esbuild src/keel-core.ts --bundle --format=esm --outfile=dist/keel-core.mjs --external:yaml --packages=external",
     "test": "vitest run",
-    "clean": "rm -rf dist"
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
     "yaml": "^2.5.0"
