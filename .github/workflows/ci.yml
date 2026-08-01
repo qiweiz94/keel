@@ -21,7 +21,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      - name: npm diagnostics
+        run: |
+          node --version
+          npm --version
+          node -e "const l=require('./package-lock.json');const f=l.packages['node_modules/fsevents'];console.log('fsevents:',JSON.stringify(f&&{optional:f.optional,dev:f.dev,os:f.os}));console.log('root deps:',Object.keys(l.packages[''].dependencies||{}).length)"
       - run: npm ci
+        env:
+          npm_config_loglevel: verbose
       - run: npm audit --audit-level=moderate
       - run: npm run build
       - run: npm test
