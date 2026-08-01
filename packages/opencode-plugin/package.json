@@ -1,6 +1,6 @@
 {
   "name": "@get-keel/opencode-plugin",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Keel enforcement plugin for OpenCode — rules that survive context rot",
   "engines": {
     "node": ">=22.12.0"

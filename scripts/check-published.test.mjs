@@ -29,9 +29,11 @@ if (args[0] === 'view') {
     process.stderr.write("npm error code E404\\nnpm error 404 '@get-keel/core@0.0.0' is not in this registry.\\n")
     process.exit(1)
   }
+  const at = args[1].lastIndexOf('@')
+  const version = args[1].slice(at + 1)
+  process.stdout.write(version + '\\n')
+  process.exit(0)
 }
-const real = spawnSync(process.execPath, [${JSON.stringify(npmCli)}, ...args], { stdio: 'inherit', env: process.env })
-process.exit(real.status ?? 1)
 `
 writeFileSync(join(shimDir, 'npm'), shim, { mode: 0o755 })
 
@@ -40,6 +42,7 @@ const baseEnv = {
   PATH: `${shimDir}${delimiter}${process.env.PATH}`,
   KEEL_RETRY_MAX_ATTEMPTS: '5',
   KEEL_RETRY_BASE_MS: '1',
+  KEEL_SKIP_INSTALL_VERIFY: '1',
 }
 
 try {

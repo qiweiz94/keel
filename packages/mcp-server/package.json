@@ -2,7 +2,7 @@
   "name": "@get-keel/mcp-server",
   "version": "0.1.2",
   "private": true,
-  "description": "(DEPRECATED \u2014 use 'keel serve' instead) MCP enforcement server for real-time policy checking",
+  "description": "(DEPRECATED — use 'keel serve' instead) MCP enforcement server for real-time policy checking",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
@@ -21,7 +21,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@get-keel/core": "^0.1.3",
+    "@get-keel/core": "^0.1.4",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {

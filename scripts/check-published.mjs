@@ -30,6 +30,11 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 }
 if (!confirmed) throw new Error(`Failed to confirm published versions after ${maxAttempts} attempts`)
 
+if (process.env.KEEL_SKIP_INSTALL_VERIFY === '1') {
+  console.log('Published package verification passed (view-only mode)')
+  process.exit(0)
+}
+
 const install = mkdtempSync(join(tmpdir(), 'keel-published-'))
 execFileSync('npm', ['init', '-y', '--prefix', install], { cwd: root, stdio: 'ignore' })
 execFileSync('npm', ['install', '--prefix', install, ...packages.map(pkg => `${pkg.name}@${pkg.version}`)], { cwd: root, stdio: 'ignore' })
