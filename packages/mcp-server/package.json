@@ -1,6 +1,7 @@
 {
   "name": "@get-keel/mcp-server",
   "version": "0.1.2",
+  "private": true,
   "description": "(DEPRECATED \u2014 use 'keel serve' instead) MCP enforcement server for real-time policy checking",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,16 +16,16 @@
   "scripts": {
     "build": "tsc",
     "start": "node ./dist/index.js",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@get-keel/core": "^0.1.2",
+    "@get-keel/core": "^0.1.3",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0",
+    "vitest": "^4.1.10",
     "@types/node": "^22.0.0"
   },
   "license": "Apache-2.0",

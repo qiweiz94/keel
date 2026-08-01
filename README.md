@@ -12,6 +12,8 @@ keel install --opencode        # Wire the OpenCode plugin
 keel validate                  # Check your rules
 ```
 
+Keel public packages require Node.js 22.12.0 or newer.
+
 ## The Problem
 
 AI agents follow your rules at turn 1, ignore them at turn 20+. The "Lost in the Middle" (Liu et al. 2023) effect causes degradation starting at 8K-16K tokens. Every existing approach (CLAUDE.md, AGENTS.md, .cursorrules) is advisory-only — none enforce.
@@ -108,7 +110,7 @@ Standing requirements go in `~/.keel/requirements.md` (and optionally
 
 | Agent | Integration | Enforced at | Status |
 |-------|------------|-------------|--------|
-| OpenCode | Plugin (3 hooks) | Tool-call time | ✅ Working |
+| OpenCode | Plugin (4 hooks) | Tool-call time | ✅ Working |
 | Claude Code | PreToolUse/PostToolUse hooks | Tool-call time | ✅ Working |
 | Cline | `.clinerules` + MCP check server | Advisory | ✅ Installed |
 | Cursor | `.cursor/rules` declarative | Advisory | ✅ Installed |
@@ -131,7 +133,7 @@ launchd (macOS) or cron (Linux).
 
 ```bash
 npm run build                           # Build all packages
-npm run test -w @get-keel/core              # 55 tests
+npm run test -w @get-keel/core              # 82 tests
 node packages/cli/bin/keel.js validate  # Run locally
 ```
 

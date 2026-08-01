@@ -22,7 +22,13 @@ if [ -z "$OTP" ] && [ -z "${NODE_AUTH_TOKEN:-}" ]; then
 fi
 
 echo "Building all packages..."
+npm ci
+npm audit --audit-level=moderate
 npm run build
+npm test
+node scripts/check-packages.mjs
+node scripts/check-tarballs.mjs
+node scripts/check-release.mjs
 
 publish() {
   local dir="$1"
@@ -60,6 +66,8 @@ publish() {
 publish packages/core "@get-keel/core"
 publish packages/cli "@get-keel/cli"
 publish packages/opencode-plugin "@get-keel/opencode-plugin"
+
+node scripts/check-published.mjs
 
 echo ""
 echo "✅ All packages published!"

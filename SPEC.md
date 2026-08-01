@@ -82,9 +82,9 @@ Layer 2 is the differentiator. All existing tools (CLAUDE.md, AGENTS.md, .cursor
 | Component | Guarantee |
 |-----------|-----------|
 | Rule evaluation | Same tool + same args + same rules = same verdict. Always. |
-| Rule file format | CLAUDE.md YAML frontmatter. One schema. No hidden state. |
+| Rule file format | `.keel/rules.yaml` is primary; `AGENTS.md` and `CLAUDE.md` are supported frontmatter fallbacks. One schema. No hidden state. |
 | Protection levels | sprint/balanced/protect have fixed rule sets. No auto-escalation. |
-| Action cache | sha256(tool + args + rule_version) → same result every time. |
+| Action cache | SHA-256(tool + args + rule_version) → same result every time. |
 | `keel test` | Always returns the same result for the same input. Testable. |
 | `keel validate` | Always reports the same conflicts for the same rules. |
 | Tiered pipeline | Checks always run in the same order. Predictable performance. |
@@ -103,7 +103,7 @@ Status: ✅ = built, 🚧 = planned (spec'd but not implemented)
 | `keel enforce` | ✅ | Activate enforcement for current session |
 | `keel enforce --level=sprint|balanced|protect` | ✅ | Set protection level |
 | `keel enforce --learn` | ✅ | Learning mode (observe only, never block) |
-| `keel enforce init` | ✅ | Create sample CLAUDE.md with Keel rules |
+| `keel enforce init` | ✅ | Create sample `.keel/rules.yaml` with Keel rules |
 | `keel enforce --audit` | ✅ | Show recent violations |
 | `keel test "git push --force"` | ✅ | Dry-run an action against current rules |
 | `keel test --from-audit <path> --new-rule <yaml>` | 🚧 | Test new rule against past trace (stub) |
@@ -125,6 +125,28 @@ Status: ✅ = built, 🚧 = planned (spec'd but not implemented)
 | `keel gather --apply-and-save` | ✅ | Append gathered rules to rules.yaml (after review) |
 | `keel schedule daily\|weekly` | ✅ | Auto-run gather via launchd (macOS) / cron (Linux) |
 | `keel schedule --remove` | ✅ | Remove the scheduled job |
+
+### Public v1 Release Contract
+
+The public v1 release includes behavior implemented and tested in both the
+core engine and the OpenCode plugin. The plugin uses a bundled copy of the
+same enforcement semantics so it remains compatible with OpenCode's Bun
+runtime without requiring a separate process.
+
+| Capability | Public v1 status |
+|------------|------------------|
+| `command`, `filesystem`, `content`, `network`, `rate`, `time`, `sequence`, `verification`, `flow` rules | Supported |
+| Rule metadata: `level`, `scope`, `context`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
+| `.keel/rules.yaml` project rules | Supported and recommended |
+| `AGENTS.md` OpenCode rule frontmatter | Supported |
+| `CLAUDE.md` rule frontmatter | Supported as Claude Code compatibility fallback |
+| OpenCode before/after, system-transform, and compaction hooks | Supported |
+| Claude Code, Cline, Cursor, and Codex installation | Supported at documented integration level |
+| `mcp`, `session`, `inheritance`, and advanced context rules | Planned after v1 |
+| `keel test --from-audit` historical replay | Planned after v1 |
+
+Anything marked planned is not presented as available behavior in public v1
+documentation or package metadata.
 
 ### Protection Dial
 
@@ -151,9 +173,9 @@ Three knobs, independently adjustable:
 
 | Depth | Checks | Per-call overhead |
 |-------|--------|-------------------|
-| `fast` | Regex + allowlist cache + path check | ~0.01ms |
-| `full` | Fast + content scan + git diff scan | ~1-10ms |
-| `deep` | Full + LLM-based evaluation (rare) | ~1-10s (ambiguous cases only) |
+| `fast` | Cache, regex, command, path, and basic network checks | ~0.01ms |
+| `full` | Fast + content, rate/time, sequence, verification, and flow checks | ~1-10ms |
+| `deep` | Full + deterministic reasoning heuristics | ~1-10ms |
 
 **Default presets:**
 
@@ -163,13 +185,18 @@ balanced:  rule_set=standard action=deny     depth=full    (default)
 sprint:    rule_set=critical action=warn     depth=fast
 ```
 
+In sprint mode, rules whose declared action is `deny` or `block` are evaluated
+as warnings by default. Explicit `--action` overrides take precedence; an
+explicit `deny` or `block` override intentionally requests strict behavior,
+including on the first matching call.
+
 Overrides: `keel enforce --level=sprint --action=deny`
 
 ### Workflow
 
 ```
 # First time in a project:
-$ keel enforce init          # Creates CLAUDE.md with sample rules
+$ keel enforce init          # Creates .keel/rules.yaml with sample rules
 $ keel validate              # Check for conflicts
 $ keel test "git push --force"  # Verify rules work
 
@@ -260,7 +287,7 @@ rules:
 | `level` | No | `sprint` \| `balanced` \| `protect` (default: `balanced`) |
 | `scope` | No | `global` \| `user` \| `project` \| `folder` \| `session` |
 | `context` | No | `[local]` \| `[ci]` \| `[local, ci]` (default: both) |
-| `action` | Yes | `report` \| `warn` \| `deny` \| `fix` |
+| `action` | Yes for enforcing rules; optional for context/meta/session marker rules | `report` \| `warn` \| `deny` \| `fix` |
 | `message` | Yes | Human-readable description |
 | `priority` | No | Higher = evaluated first (default: 0) |
 | `unless_reasoning` | No | Regex — allow if agent's reasoning matches |
@@ -284,7 +311,9 @@ project/CLAUDE.local.md      ← Legacy local overrides (fallback)
 
 Priority: `.keel/rules.yaml` > `AGENTS.md` > `CLAUDE.md`. The system tries each path in order and uses the first one found. More specific scope wins for same rule id across levels.
 
-**AGENTS.md is the recommended format for OpenCode users.** CLAUDE.md is only supported for Claude Code backward compatibility.
+**`.keel/rules.yaml` is the recommended format for all users.** `AGENTS.md` is
+the preferred frontmatter format for OpenCode, and `CLAUDE.md` remains a
+compatibility fallback for Claude Code users.
 
 ### Conflict Detection
 
@@ -302,7 +331,10 @@ Conflicts are detected automatically on `keel validate` and shown as warnings du
 
 ### Versioning / Drift Detection
 
-Auto-detect CLAUDE.md changes on every tool call. If hash changed since last check, re-parse rules and flush cache. Log the change.
+Auto-detect all active rule sources on every tool call, including legacy global
+configuration. If a hash changes, re-parse and validate the hierarchy, replace
+the active rules and top-level configuration, refresh integration metadata, and
+flush the cache and stateful trackers. Invalid replacements fail closed.
 
 ```
 $ keel validate
@@ -353,7 +385,7 @@ Tiers 6-7 only run in `deep` mode (protect level) or for ambiguous cases.
 
 ### Caching
 
-**Session cache**: `sha256(tool + args + rule_version)` → verdict. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
+**Session cache**: `SHA-256(tool + recursively canonicalized args + cwd + level + context + depth + action + rule_fingerprint)` → verdict. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
 
 **Persistent cache**: Same mechanism, persisted to `~/.keel/cache/known-good.json`. Invalidated when rules change (detected by CLAUDE.md content hash).
 
@@ -382,9 +414,13 @@ Uses backward matching: current action = last step in sequence, walk backward th
 
 Simplified version of Microsoft Fides. Tags data as it flows through tools:
 
-1. When a tool reads a sensitive file (`.env`, `.ssh/`, `credentials`, `token`, etc.), tag the output data
-2. When a network tool receives tagged data, flag as IFC violation
+1. When a tool reads a sensitive file (`.env`, `.ssh/`, `credentials`, `token`, etc.), tag the session
+2. When a network tool receives session-tagged data, flag as IFC violation
 3. Tags are session-scoped, expire after 1000 entries
+
+Public v1 uses conservative session-level tagging because tool adapters do not
+expose byte-level provenance. This can block a sink after a sensitive read even
+when the exact bytes cannot be proven to have been passed onward.
 
 ```yaml
 - id: no-credential-egress
@@ -493,10 +529,11 @@ Plugin hooks:
 └─ audit trail                          → JSONL records for keel suggest/lessons/watch
 ```
 
-The plugin is **self-contained** (only node builtins) so it runs unmodified in
-OpenCode's Bun runtime. It does not import `@get-keel/core` — rule parsing and
-warn-then-deny state are implemented inline. Enforcement state persists across
-tool calls (in-memory closure) AND across processes (deny-first-time JSON in
+The plugin is **self-contained** at runtime (bundled core plus node builtins)
+so it runs unmodified in OpenCode's Bun runtime. Its implementation source is
+`packages/opencode-plugin/src/plugin.ts`; the published bundle and CLI install
+template are generated artifacts. Enforcement state persists across tool calls
+(in-memory closure) AND across processes (deny-first-time JSON in
 `~/.keel/state/`, 24h TTL).
 
 ```javascript
@@ -681,7 +718,7 @@ Based on 47 sessions across 3 projects:
 2. Learning layer analyzes all trace data
 3. Generates suggestions with confidence ratings
 4. User reviews — approves or rejects each
-5. Approved changes: user edits CLAUDE.md manually
+5. Approved changes: user edits the selected Keel rule file manually
 6. Rejected changes: reason recorded for future tuning
 7. Learning layer never bypasses step 5
 
@@ -723,7 +760,10 @@ $ keel disable --until=3600       # Disable for 1 hour
 $ keel enable                     # Re-enable manually
 ```
 
-Sentinel file at `~/.keel/DISABLED`. Expires automatically. Reset on restart.
+Sentinel file at `~/.keel/DISABLED`. It expires automatically. A restart-scoped
+sentinel is consumed only after a long-lived integration successfully starts;
+direct CLI subprocesses do not treat every invocation as an agent restart.
+Corrupt sentinel state fails closed and requires `keel enable` for recovery.
 
 ### Lockup Escape
 
@@ -757,6 +797,8 @@ From research: a single false deny erodes more trust than 100 correct denies bui
 ### Audit Log
 
 Format: JSONL, one entry per line. Stored at `~/.keel/traces/YYYY-MM-DD.jsonl`.
+Arguments use a safe projection: operational metadata may be retained, while
+unknown values, content payloads, credentials, and reasoning are redacted.
 
 Entry fields (see Section 7 for full schema). Each entry is emitted synchronously after each enforcement decision.
 
@@ -968,7 +1010,7 @@ All 21 gaps documented in Section 11 with P0-P3 priorities. Self-learning archit
 | 9 | 2026-07-29 | **Ed25519 deferred for local dev** | Signed receipts add compliance value for export, zero value for local debugging. |
 | 10 | 2026-07-29 | **Three protection levels, not one** | Different contexts need different strictness. Sprint for speed, protect for safety. |
 | 11 | 2026-07-29 | **Standing requirements ≠ Keel rules** | Requirements prevent wrong decisions (voluntary, system prompt). Rules catch wrong decisions (involuntary, tool dispatch). Both needed. |
-| 12 | 2026-07-29 | **Plugin imports @get-keel/core in-process** | Subprocess model breaks state-dependent features (first-time warning, circuit breaker, rate limiting, sequences, cache). In-process fixes all at once. |
+| 12 | 2026-07-29 | **Plugin bundles the shared enforcement engine in-process** | A subprocess model breaks state-dependent features. The published plugin bundles the same core semantics while remaining runnable in OpenCode's Bun runtime. |
 | 13 | 2026-07-29 | **Context hygiene via system.transform + session.compacting** | Proactive injection keeps requirements fresh every turn. Compaction survival prevents loss on context shrink. More effective than reactive re-injection at token thresholds. |
 | 14 | 2026-07-29 | **Bug fixes first, then new system** | Fix what's broken before building new features. Prerequisite for reliable foundation. |
 | 15 | 2026-07-29 | **AGENTS.md replaces CLAUDE.md as primary rule format** | OpenCode uses AGENTS.md. Rule parser hierarchy: `.keel/rules.yaml` > `AGENTS.md` > `CLAUDE.md` (CLAUDE.md kept as fallback for Claude Code users). |
@@ -1029,7 +1071,7 @@ Tier 3 — Reactive Enforcement (plugin → tool dispatch)
   Hook: tool.execute.before
   Effect: Blocks/warns/fixes violations at the tool call level
   Catches: Agent making wrong decision despite Tiers 1-2
-  Mechanism: In-process EnforcementPipeline from @get-keel/core bundle
+  Mechanism: In-process bundled EnforcementPipeline with the same semantics as @get-keel/core
 ```
 
 ### Standing Requirements File
@@ -1067,7 +1109,7 @@ The plugin reads this file, converts each line into a compact instruction, and i
 
 | | Standing Requirements | Keel Rules |
 |---|---|---|
-| Location | `.keil/requirements.md` | `.keil/rules.yaml` |
+| Location | `.keel/requirements.md` | `.keel/rules.yaml` |
 | Target | Agent's system prompt (voluntary) | Enforcement plugin (involuntary) |
 | Mechanism | Plugin → system prompt injection | Plugin → tool.execute.before pipeline |
 | Effect | Agent "remembers" what to do | Agent is blocked from doing wrong |
@@ -1143,7 +1185,7 @@ The loop closes. The system gets better over time.
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 11 | 2026-07-29 | **Standing requirements ≠ Keel rules** | Requirements prevent wrong decisions (voluntary). Rules catch wrong decisions (involuntary). Both needed. |
-| 12 | 2026-07-29 | **Plugin imports @get-keel/core in-process** | Subprocess model breaks all state-dependent features. In-process fixes all of them at once. |
+| 12 | 2026-07-29 | **Plugin bundles shared core semantics in-process** | Subprocess model breaks all state-dependent features. A Bun-safe bundle keeps the plugin and core behavior aligned. |
 | 13 | 2026-07-29 | **Context hygiene via system.transform + session.compacting** | Proactive injection keeps requirements fresh. Compaction survival prevents loss on context shrink. |
 | 14 | 2026-07-29 | **Bug fixes first, then new system** | Fix what's broken before building new features. Prerequisite for everything else. |
 | 15 | 2026-07-29 | **Self-improvement loop closes via keel suggest → user approval** | Learning layer never writes rules automatically. But the gap between detection and enforcement should be minimal. |

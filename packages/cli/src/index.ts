@@ -145,7 +145,7 @@ const enforceCmd = program.command('enforce')
 
 enforceCmd
   .command('init')
-  .description('Create a sample CLAUDE.md with Keel rules')
+  .description('Create .keel/rules.yaml with starter Keel rules')
   .action(createEnforceInit)
 
 program
@@ -254,78 +254,53 @@ program
 program.parse(process.argv)
 
 /**
- * Create sample CLAUDE.md with Keel enforce rules.
+ * Create standalone .keel/rules.yaml with Keel enforce rules.
  */
 async function createEnforceInit() {
-  const { writeFileSync } = await import('node:fs')
-  const sampleConfig = `---
-keel:
-  version: 1
-  level: balanced
-  rules:
-    - id: never-force-push
-      type: command
-      match: "git push --force"
-      action: deny
-      level: sprint
-      message: "Never force push to git branches"
-
-    - id: no-delete-outside-src
-      type: filesystem
-      paths: ["!/src/*"]
-      operations: [delete, overwrite]
-      action: deny
-      level: balanced
-      message: "Do not delete files outside /src"
-
-    - id: must-sign-commits
-      type: command
-      match: "git commit"
-      action: fix
-      level: sprint
-      fix:
-        - pattern: "git commit"
-          replace: "git commit --signoff"
-      message: "Auto-adding --signoff to commits"
-
-    - id: no-external-network
-      type: network
-      match: "."
-      except: [api.github.com, registry.npmjs.org]
-      action: deny
-      level: protect
-      message: "Block external network access except GitHub and npm"
-
-    - id: re-inject-rules
-      type: context
-      level: sprint
-      message: "Re-inject rules at 8K/16K/32K token thresholds"
----
-
-# CLAUDE.md — Keel enforced rules
-
-## Git
-- NEVER use \`git push --force\`
-- ALWAYS sign commits with \`--signoff\`
-
-## Filesystem
-- NEVER delete or overwrite files outside \`/src\`
-
-## Network
-- No external network access except GitHub and npm
+  const { existsSync, mkdirSync, writeFileSync: writeRulesFile } = await import('node:fs')
+  const { join } = await import('node:path')
+  const rulesPath = join(process.cwd(), '.keel', 'rules.yaml')
+  const rules = `version: 1
+level: balanced
+rules:
+  - id: never-force-push
+    type: command
+    match: "git push --force(?!-with-lease)"
+    action: deny
+    level: sprint
+    message: "Never force push to git branches"
+  - id: no-delete-outside-src
+    type: filesystem
+    paths: ["!/src/*"]
+    operations: [delete, overwrite]
+    action: deny
+    level: balanced
+    message: "Do not delete or overwrite files outside /src"
+  - id: must-sign-commits
+    type: command
+    match: "git commit"
+    action: fix
+    level: sprint
+    fix:
+      - pattern: "git commit"
+        replace: "git commit --signoff"
+    message: "Auto-adding --signoff to commits"
+  - id: no-external-network
+    type: network
+    match: "."
+    except: [api.github.com, registry.npmjs.org]
+    action: deny
+    level: protect
+    message: "Block external network access except GitHub and npm"
 `
-
-  const { existsSync } = await import('node:fs')
-  if (existsSync('CLAUDE.md')) {
-    console.log('CLAUDE.md already exists. Use `keel enforce init --force` to overwrite.')
+  if (existsSync(rulesPath)) {
+    console.log('.keel/rules.yaml already exists.')
     return
   }
+  mkdirSync(join(process.cwd(), '.keel'), { recursive: true })
+  writeRulesFile(rulesPath, rules, 'utf-8')
+  console.log('Created .keel/rules.yaml with Keel enforce rules.')
+  console.log('Review it, then run `keel enforce` to activate.')
+  return
 
-  writeFileSync('CLAUDE.md', sampleConfig, 'utf-8')
-  console.log('Created CLAUDE.md with Keel enforce rules.')
-  console.log()
-  console.log('Next steps:')
-  console.log('  1. Review rules in CLAUDE.md')
-  console.log('  2. Run `keel enforce` to activate')
-  console.log('  3. Run `keel test "git push --force"` to verify')
 }

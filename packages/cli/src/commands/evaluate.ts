@@ -52,16 +52,27 @@ export async function evaluateCommand(options: EvaluateOptions) {
     return
   }
 
-  const result = await evaluateToolCall(options.tool, args, {
-    cwd: dir,
-    turnNumber: options.turnNumber ? parseInt(options.turnNumber, 10) : 0,
-    contextTokens: options.contextTokens ? parseInt(options.contextTokens, 10) : 0,
-    level,
-    context: 'local',
-    agent: options.agent || 'opencode-plugin',
-    subagentOf: null,
-    reasoning: options.reasoning,
-  })
+  let result
+  try {
+    result = await evaluateToolCall(options.tool, args, {
+      cwd: dir,
+      turnNumber: options.turnNumber ? parseInt(options.turnNumber, 10) : 0,
+      contextTokens: options.contextTokens ? parseInt(options.contextTokens, 10) : 0,
+      level,
+      context: 'local',
+      agent: options.agent || 'opencode-plugin',
+      subagentOf: null,
+      reasoning: options.reasoning,
+    })
+  } catch (error) {
+    process.stdout.write(JSON.stringify({
+      action: 'error',
+      message: `Evaluation failed closed: ${(error as Error).message}`,
+      timestamp: new Date().toISOString(),
+    }) + '\n')
+    process.exit(2)
+    return
+  }
 
   process.stdout.write(JSON.stringify(result) + '\n')
 

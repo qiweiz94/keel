@@ -1,6 +1,7 @@
 import type { KeelRule, EnforceInput } from '../types.js'
 
 interface ActionRecord {
+  input: EnforceInput
   tool: string
   args: Record<string, unknown>
   timestamp: number
@@ -30,6 +31,7 @@ export class SequenceDetector {
    */
   record(input: EnforceInput): void {
     this.history.push({
+      input,
       tool: input.tool,
       args: input.args,
       timestamp: Date.now(),
@@ -49,7 +51,9 @@ export class SequenceDetector {
     const cutoff = Date.now() - windowSec * 1000
 
     // Get recent history within window
-    const recent = this.history.filter(r => r.timestamp >= cutoff)
+    // The pipeline records before checking so every action is retained. The
+    // exact current input must not also satisfy a preceding step.
+    const recent = this.history.filter(r => r.timestamp >= cutoff && r.input !== input)
 
     // Check if the sequence matches
     // The last step should match the current action

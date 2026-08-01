@@ -5,6 +5,6 @@
     "rootDir": "./src"
   },
   "include": ["src"],
-  "//": "package.json ships files:[dist]; without this, src/__tests__ compiles into dist/ and is published to npm.",
-  "exclude": ["src/__tests__"]
+  "//": "package.json ships files:[dist]; keep test sources out of the published build.",
+  "exclude": ["src/__tests__/**", "src/**/__tests__/**"]
 }

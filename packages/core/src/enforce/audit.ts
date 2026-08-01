@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, rea
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { AuditEntry, EnforceResult, ProtectionLevel, RuleContext } from '../types.js'
+import { projectAuditArgs, sanitizeReasoning } from './audit-redaction.js'
 
 export class AuditLog {
   private logDir: string
@@ -36,7 +37,7 @@ export class AuditLog {
       session_id: extra.session_id,
       turn_number: extra.turn_number,
       tool: extra.tool,
-      args: extra.args,
+      args: projectAuditArgs(extra.args),
       rule_id: result.rule_id,
       rule_name: result.rule_name || '',
       action: result.action,
@@ -49,7 +50,7 @@ export class AuditLog {
       duration_ms: result.duration_ms,
       tier: result.tier,
       context_tokens: extra.context_tokens,
-      reasoning: extra.reasoning,
+      reasoning: sanitizeReasoning(extra.reasoning),
       fix_applied: result.action === 'fix',
     }
 

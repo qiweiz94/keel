@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 export interface DenyState {
-  [ruleId: string]: number  // rule_id → first violation timestamp (ms)
+  [ruleId: string]: number | { timestamp: number; version?: string }  // legacy timestamp or versioned first warning
 }
 
 export interface CircuitBreakerState {
@@ -68,8 +68,9 @@ export class StateManager {
     // Load and clean denyFirstTime
     const rawDenies = this.loadFile<DenyState>('deny-first-time', {})
     this.denyFirstTime = {}
-    for (const [ruleId, ts] of Object.entries(rawDenies)) {
-      if (now - ts < TTL_MS) this.denyFirstTime[ruleId] = ts
+    for (const [ruleId, value] of Object.entries(rawDenies)) {
+      const timestamp = typeof value === 'number' ? value : value.timestamp
+      if (now - timestamp < TTL_MS) this.denyFirstTime[ruleId] = value
     }
 
     // Load and clean circuitBreaker
@@ -94,14 +95,19 @@ export class StateManager {
   }
 
   /** Mark a rule as having been violated (first time). */
-  markFirstTime(ruleId: string): void {
-    this.denyFirstTime[ruleId] = Date.now()
+  markFirstTime(ruleId: string, version?: string): void {
+    this.denyFirstTime[ruleId] = version
+      ? { timestamp: Date.now(), version }
+      : Date.now()
     this.saveFile('deny-first-time', this.denyFirstTime)
   }
 
   /** Check if a rule has been violated before. */
-  isFirstTime(ruleId: string): boolean {
-    return !(ruleId in this.denyFirstTime)
+  isFirstTime(ruleId: string, version?: string): boolean {
+    const value = this.denyFirstTime[ruleId]
+    if (value === undefined) return true
+    if (!version) return false
+    return typeof value === 'number' || value.version !== version
   }
 
   /** Record a circuit breaker event. Returns true if threshold (3+) reached. */

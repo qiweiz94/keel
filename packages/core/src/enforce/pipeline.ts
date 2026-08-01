@@ -1,17 +1,18 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type {
   KeelRule, EnforceInput, EnforceResult, EnforcementAction,
   ProtectionLevel, RuleContext, CacheEntry, AuditEntry,
 } from '../types.js'
-import { ActionCache, ContentTracker } from './cache.js'
+import { ActionCache, ContentTracker, type CacheContext } from './cache.js'
 import type { RuleHierarchy } from './rule-parser.js'
-import { mergeRules, detectConflicts, hashRulesFile } from './rule-parser.js'
+import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules } from './rule-parser.js'
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
+import { FileRuleOverrideStore } from './overrides.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -28,6 +29,11 @@ export interface PipelineConfig {
   allowedFixTransforms?: boolean
   enableReasoningCheck?: boolean
   stateManager?: StateManager
+  defaultAction?: EnforcementAction
+  overrideStore?: import('./overrides.js').RuleOverrideStore
+  reloadRules?: () => RuleHierarchy
+  ruleFingerprint?: () => string
+  onRulesReload?: (hierarchy: RuleHierarchy) => void
 }
 
 /**
@@ -53,10 +59,12 @@ export class EnforcementPipeline {
   private rateCounts: Map<string, { count: number; windowStart: number }> = new Map()
   private lastRulesHash: string = ''
   private previousRulesHash: string = ''
+  private readonly overrideStore
 
   constructor(config: PipelineConfig) {
     this.config = config
     this.verificationTracker = config.verificationTracker || new VerificationTracker(config.stateManager)
+    this.overrideStore = config.overrideStore || new FileRuleOverrideStore()
     this.lastRulesHash = this.computeRulesHash()
     this.loadState()
   }
@@ -67,7 +75,7 @@ export class EnforcementPipeline {
     if (!sm) return
 
     for (const ruleId of Object.keys(sm.denyFirstTime)) {
-      this.denyFirstTime.set(ruleId, true)
+      if (!sm.isFirstTime(ruleId, this.lastRulesHash)) this.denyFirstTime.set(ruleId, true)
     }
     for (const [key, val] of Object.entries(sm.circuitBreaker)) {
       this.circuitBreaker.set(key, { count: val.count, startTime: val.startTime })
@@ -78,6 +86,7 @@ export class EnforcementPipeline {
   }
 
   private computeRulesHash(): string {
+    if (this.config.ruleFingerprint) return this.config.ruleFingerprint()
     const h = this.config.ruleHierarchy
     return [
       h.global ? hashRulesFile(h.global.sourcePath) : '',
@@ -93,10 +102,22 @@ export class EnforcementPipeline {
   private checkRuleVersion(): boolean {
     const currentHash = this.computeRulesHash()
     if (currentHash !== this.lastRulesHash) {
+      const reloaded = this.config.reloadRules?.()
+      if (reloaded) {
+        const errors = [reloaded.global, reloaded.user, reloaded.project, reloaded.local]
+          .flatMap(source => source ? [...(source.errors || []), ...validateRules(source.rules)] : [])
+        if (errors.length) throw new Error(`Invalid Keel rules after reload: ${errors.join('; ')}`)
+        this.config.ruleHierarchy = reloaded
+        this.config.onRulesReload?.(reloaded)
+      }
       this.previousRulesHash = this.lastRulesHash
-      this.lastRulesHash = currentHash
+      this.lastRulesHash = this.computeRulesHash()
+      this.config.ruleVersion += 1
       this.config.cache.invalidate(this.config.ruleVersion)
       this.denyFirstTime.clear()
+      this.config.contentTracker.clear()
+      this.config.sequenceDetector.clear()
+      this.config.flowTracker.clear()
       return true  // rules changed
     }
     return false
@@ -107,25 +128,37 @@ export class EnforcementPipeline {
    */
   async evaluate(input: EnforceInput): Promise<EnforceResult> {
     const start = Date.now()
+    const depth = input.depth || (input.level === 'protect' ? 'deep' : input.level === 'sprint' ? 'fast' : 'full')
+    const deepChecks = depth !== 'fast'
+    const reasoningChecks = depth === 'deep'
 
     // Check global kill switch (sentinel file)
     const sentinelPath = join(homedir(), '.keel', 'DISABLED')
-    if (existsSync(sentinelPath)) {
-      try {
-        const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))
-        if (sentinel.expires_at && new Date(sentinel.expires_at) < new Date()) {
-          rmSync(sentinelPath)
-        } else {
-          return this.result('allow', '', 'Enforcement disabled via kill switch', start, false, 0)
+      if (existsSync(sentinelPath)) {
+        try {
+          const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))
+          if (sentinel.expires_at && new Date(sentinel.expires_at) < new Date()) {
+            rmSync(sentinelPath)
+          } else {
+            return this.result('allow', '', 'Enforcement disabled via kill switch', start, false, 0)
         }
-      } catch { /* ignore corrupt sentinel */ }
+      } catch {
+        throw new Error('Invalid Keel kill-switch state; run `keel enable` to recover')
+      }
     }
 
     this.checkRuleVersion()
 
+    // Flow tracking observes every action, not only actions that already
+    // violated another rule. This lets a later sink see sensitive reads.
+    this.config.flowTracker.record(input, '')
+
     // Get merged rules for current level and context
     const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context)
-    const statefulRules = rules.filter(rule => rule.type === 'sequence' || rule.type === 'verification')
+    const statefulRules = rules.filter(rule =>
+      ['verification', 'rate', 'time'].includes(rule.type)
+      || (deepChecks && ['sequence', 'flow'].includes(rule.type))
+    )
     if (statefulRules.length) {
       const maxWindow = Math.max(...statefulRules.map(rule => rule.sequence_window_seconds || rule.window_seconds || 60))
       this.config.sequenceDetector.setWindow(maxWindow * 1000)
@@ -136,25 +169,25 @@ export class EnforcementPipeline {
     for (const rule of statefulRules) {
       if (rule.type === 'verification') {
         const boundaryMessage = this.verificationTracker.boundary(rule, input)
-        if (boundaryMessage) {
-          const stateKey = `${rule.id}:${input.cwd}`
-          const isFirstTime = !this.denyFirstTime.has(stateKey)
-          const action = boundaryMessage.action || rule.action
-          if (isFirstTime && (action === 'deny' || action === 'warn')) {
-            this.denyFirstTime.set(stateKey, true)
-            const sm = this.config.stateManager
-            if (sm) sm.markFirstTime(stateKey)
-            return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, 6)
+          if (boundaryMessage) {
+            const stateKey = `${rule.id}:${input.cwd}`
+            const boundaryRule: KeelRule = boundaryMessage.action
+              ? { ...rule, action: boundaryMessage.action as KeelRule['action'] }
+              : rule
+            return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey)
           }
-          return this.block(input, rule, boundaryMessage.message, start, 6)
-        }
       }
     }
 
     // ── Tier 1: Cache check ──
-    const cached = statefulRules.length ? null : this.config.cache.get(input.tool, input.args, this.config.ruleVersion)
+    const cached = statefulRules.length || input.action_override ? null : this.config.cache.get(
+      input.tool, input.args, this.config.ruleVersion, this.cacheContext(input, depth),
+    )
     if (cached) {
       if (cached.verdict === 'deny' || cached.verdict === 'block') {
+        if (cached.rule_id && this.overrideStore.consume(cached.rule_id)) {
+          return this.result('allow', cached.rule_id, `One-time override consumed for "${cached.rule_id}"`, start, true, 1)
+        }
         return this.result('deny', cached.rule_id || '', 'Cached deny verdict', start, true, 1)
       }
       if (cached.verdict === 'allow') {
@@ -164,25 +197,32 @@ export class EnforcementPipeline {
 
     // ── Tier 2-3: Match rules against action ──
     for (const rule of rules) {
-      // Respect "never deny first time" — first violation of any rule = warn
-      const isFirstTime = !this.denyFirstTime.has(rule.id)
-
       // Check rate limit rules
       if (rule.type === 'rate') {
         const matchPattern = rule.match || input.tool
+        if (rule.match && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue
         const windowSec = rule.window_seconds || 60
         const maxCalls = rule.max_calls || 10
         const rateKey = `rate:${rule.id}:${matchPattern}`
         const now = Date.now()
         const existing = this.rateCounts.get(rateKey)
 
-        if (existing && (now - existing.windowStart) < windowSec * 1000) {
-          existing.count++
-          if (existing.count > maxCalls) {
-            return this.block(input, rule, `Rate limit: ${maxCalls} calls per ${windowSec}s for "${matchPattern}"`, start, 2)
-          }
-        } else {
-          this.rateCounts.set(rateKey, { count: 1, windowStart: now })
+        const exceeded = this.config.stateManager
+          ? this.config.stateManager.checkRateLimit(rule.id, matchPattern, windowSec, maxCalls)
+          : (() => {
+            if (existing && (now - existing.windowStart) < windowSec * 1000) {
+              existing.count++
+              return existing.count > maxCalls
+            }
+            this.rateCounts.set(rateKey, { count: 1, windowStart: now })
+            return false
+          })()
+        if (this.config.stateManager) {
+          const persisted = this.config.stateManager.rateCounts[rateKey]
+          if (persisted) this.rateCounts.set(rateKey, { ...persisted })
+        }
+        if (exceeded) {
+          return this.violation(input, rule, `Rate limit: ${maxCalls} calls per ${windowSec}s for "${matchPattern}"`, start, 2)
         }
         continue
       }
@@ -196,23 +236,26 @@ export class EnforcementPipeline {
 
         if (rule.schedule.days && !rule.schedule.days.some(d => d.toLowerCase() === currentDay)) {
           // Today is outside schedule
-          return this.block(input, rule, `Outside schedule: ${rule.schedule.days.join(', ')} ${rule.schedule.start}-${rule.schedule.end}`, start, 2)
+          return this.violation(input, rule, `Outside schedule: ${rule.schedule.days.join(', ')} ${rule.schedule.start}-${rule.schedule.end}`, start, 2)
         }
         if (rule.schedule.start && currentTime < rule.schedule.start) {
-          return this.block(input, rule, `Before schedule start: ${rule.schedule.start}`, start, 2)
+          return this.violation(input, rule, `Before schedule start: ${rule.schedule.start}`, start, 2)
         }
         if (rule.schedule.end && currentTime > rule.schedule.end) {
-          return this.block(input, rule, `After schedule end: ${rule.schedule.end}`, start, 2)
+          return this.violation(input, rule, `After schedule end: ${rule.schedule.end}`, start, 2)
         }
         continue
       }
 
       // Match against command patterns
-      if (rule.type === 'command' && rule.match) {
+      if (rule.type === 'command' && (rule.match || rule.match_regex || rule.match_prefix)) {
         const cmdStr = typeof input.args === 'string' ? input.args : JSON.stringify(input.args)
-        const regex = new RegExp(rule.match, 'i')
+        const pattern = rule.match_regex || rule.match
+        const matches = rule.match_prefix
+          ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase())
+          : !!pattern && this.matchesRulePattern(pattern, cmdStr)
 
-        if (regex.test(cmdStr)) {
+        if (matches) {
           // Check unless_reasoning
           if (rule.unless_reasoning && input.reasoning) {
             const unlessRegex = new RegExp(rule.unless_reasoning, 'i')
@@ -237,42 +280,29 @@ export class EnforcementPipeline {
           }
 
           // Fix action — mutate arguments
-          if (rule.action === 'fix' && rule.fix) {
+          if (this.effectiveAction(rule, input) === 'fix' && rule.fix) {
             return this.fixAction(input, rule, cmdStr, start)
           }
 
-          if (isFirstTime && rule.action === 'deny') {
-            this.denyFirstTime.set(rule.id, true)
-            // Persist to StateManager so future calls (even in new processes) know this isn't first time
-            const sm = this.config.stateManager
-            if (sm) sm.markFirstTime(rule.id)
-            return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, 2)
-          }
-
-          return this.block(input, rule, rule.message, start, 2)
+          return this.violation(input, rule, rule.message, start, 2)
         }
       }
 
       // Match against filesystem patterns
       if (rule.type === 'filesystem' && rule.paths) {
         const path = typeof input.args === 'object' && input.args !== null
-          ? (input.args as Record<string, unknown>).path || (input.args as Record<string, unknown>).file || ''
+          ? (input.args as Record<string, unknown>).path || (input.args as Record<string, unknown>).file || (input.args as Record<string, unknown>).filePath || ''
           : ''
 
         const pathStr = String(path)
-        for (const p of rule.paths) {
-          const isNegation = p.startsWith('!')
-          const pattern = isNegation ? p.slice(1) : p
-
-          if (isNegation && pathStr.startsWith(pattern.replace('*', '').replace('/*', ''))) {
-            // Path is in the negated (protected) zone
-            if (isFirstTime && rule.action === 'deny') {
-              this.denyFirstTime.set(rule.id, true)
-              return this.warn(input, rule, `First violation of "${rule.id}" — warning only.`, start, 3)
-            }
-            return this.block(input, rule, rule.message, start, 3)
-          }
-        }
+        const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
+        const operation = String((input.args as Record<string, unknown>).operation || '')
+        const excluded = (rule.exclude || []).some(p => this.pathMatches(resolvedPath, p))
+        const pathMatched = rule.paths.some(p => p.startsWith('!')
+          ? !this.pathMatches(resolvedPath, p.slice(1))
+          : this.pathMatches(resolvedPath, p))
+        const operationMatched = !rule.operations?.length || rule.operations.includes(operation as any)
+        if (pathMatched && operationMatched && !excluded) return this.violation(input, rule, rule.message, start, 3)
       }
 
       // Match against network patterns
@@ -291,52 +321,35 @@ export class EnforcementPipeline {
           if (isExcepted) continue
         }
 
-        const regex = new RegExp(rule.match, 'i')
-        if (regex.test(urlStr)) {
-          if (isFirstTime && rule.action === 'deny') {
-            this.denyFirstTime.set(rule.id, true)
-            return this.warn(input, rule, `First violation of "${rule.id}" — warning only.`, start, 3)
-          }
-          return this.block(input, rule, rule.message, start, 3)
-        }
+        if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3)
       }
 
       // Match against content patterns (Tier 5 — only if file changed)
-      if (rule.type === 'content' && rule.patterns && rule.paths) {
+      if (depth !== 'fast' && rule.type === 'content' && rule.patterns) {
         const path = typeof input.args === 'object' && input.args !== null
           ? (input.args as Record<string, unknown>).path || ''
           : ''
 
         const pathStr = String(path)
-        if (pathStr && existsSync(pathStr) && this.config.contentTracker.hasChanged(pathStr)) {
+        const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
+        const inlineContent = String((input.args as Record<string, unknown>).content || (input.args as Record<string, unknown>).text || '')
+        const isFile = resolvedPath && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
+        if ((inlineContent || isFile) && (!resolvedPath || !isFile || this.config.contentTracker.hasChanged(resolvedPath))) {
           for (const pattern of rule.patterns) {
-            if (pattern.regex) {
-              const content = readFileSync(pathStr, 'utf-8')
-              const regex = new RegExp(pattern.regex, 'i')
-              if (regex.test(content)) {
-                if (isFirstTime && rule.action === 'deny') {
-                  this.denyFirstTime.set(rule.id, true)
-                  return this.warn(input, rule, `First violation of "${rule.id}" — warning only.`, start, 5)
-                }
-                return this.block(input, rule, rule.message, start, 5)
-              }
+            const content = inlineContent || (isFile ? readFileSync(resolvedPath, 'utf-8') : '')
+            if ((pattern.regex && this.matchesRulePattern(pattern.regex, content)) || (pattern.prefix && content.startsWith(pattern.prefix))) {
+              return this.violation(input, rule, rule.message, start, 5)
             }
           }
-          this.config.contentTracker.markUnchanged(pathStr)
+          if (isFile) this.config.contentTracker.markUnchanged(resolvedPath)
         }
       }
 
       // Check sequence rules (Tier 6)
-      if (rule.type === 'sequence' && rule.steps) {
+      if (deepChecks && rule.type === 'sequence' && rule.steps) {
         const seqResult = this.config.sequenceDetector.check(input, rule)
         if (seqResult) {
-          if (isFirstTime && rule.action === 'deny') {
-            this.denyFirstTime.set(rule.id, true)
-            const sm = this.config.stateManager
-            if (sm) sm.markFirstTime(rule.id)
-            return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, 6)
-          }
-          return this.block(input, rule, seqResult, start, 6)
+          return this.violation(input, rule, seqResult, start, 6)
         }
       }
 
@@ -345,10 +358,12 @@ export class EnforcementPipeline {
       }
 
       // Check flow/IFC rules (Tier 6)
-      if (rule.type === 'flow' && rule.sources && rule.sinks) {
+      if (deepChecks && rule.type === 'flow' && rule.sources && rule.sinks) {
+        // Record successful reads before evaluating a later sink action.
+        this.config.flowTracker.record(input, rule)
         const flowResult = this.config.flowTracker.check(input, rule)
         if (flowResult) {
-          return this.block(input, rule, flowResult, start, 6)
+          return this.violation(input, rule, flowResult, start, 6)
         }
       }
 
@@ -360,7 +375,7 @@ export class EnforcementPipeline {
     }
 
     // ── Tier 7: Reasoning coherence check ──
-    if (this.config.enableReasoningCheck && input.reasoning) {
+    if (reasoningChecks && (this.config.enableReasoningCheck || input.level === 'protect') && input.reasoning) {
       // Simple heuristic: if agent is doing something it shouldn't
       const dangerSignals = [
         /ignore.*(rule|policy|restrict)/i,
@@ -384,7 +399,7 @@ export class EnforcementPipeline {
         rule_id: null,
         count: 0,
         timestamp: Date.now(),
-      })
+      }, this.cacheContext(input, depth))
     }
 
     return this.result('allow', '', 'Allowed (no matching rule)', start, false, 0)
@@ -435,14 +450,18 @@ export class EnforcementPipeline {
       cb.startTime = now
     }
 
-    cb.count++
-    this.circuitBreaker.set(cbKey, cb)
-
-    // Persist to StateManager
     const sm = this.config.stateManager
     if (sm) {
-      sm.circuitBreaker[cbKey] = { count: cb.count, startTime: cb.startTime }
+      sm.recordCircuitBreaker(rule.id, input.tool)
+      const persisted = sm.circuitBreaker[cbKey]
+      if (persisted) {
+        cb.count = persisted.count
+        cb.startTime = persisted.startTime
+      }
+    } else {
+      cb.count++
     }
+    this.circuitBreaker.set(cbKey, cb)
 
     // Cache the deny
     this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
@@ -450,7 +469,7 @@ export class EnforcementPipeline {
       rule_id: rule.id,
       count: 0,
       timestamp: Date.now(),
-    })
+    }, this.cacheContext(input, this.effectiveDepth(input)))
 
     // Track for flow analysis
     this.config.flowTracker.record(input, rule.id)
@@ -463,6 +482,69 @@ export class EnforcementPipeline {
     }
 
     return result
+  }
+
+  private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id): EnforceResult {
+    if (this.overrideStore.consume(rule.id)) {
+      return this.result('allow', rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier)
+    }
+    const action = this.effectiveAction(rule, input)
+    if (action === 'fix') {
+      if (rule.fix && rule.type === 'command') {
+        const cmdStr = typeof input.args === 'string' ? input.args : JSON.stringify(input.args)
+        return this.fixAction(input, rule, cmdStr, start)
+      }
+      return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier)
+    }
+    if (action === 'warn' || action === 'allow' || action === 'report') {
+      return action === 'warn' ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier)
+    }
+    if (action === 'deny' || action === 'block') {
+      const first = this.isFirstWarning(warningKey)
+      if (first && input.action_override !== 'deny' && input.action_override !== 'block') {
+        this.denyFirstTime.set(warningKey, true)
+        this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash)
+        return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, tier)
+      }
+      return this.block(input, rule, message, start, tier)
+    }
+    return this.warn(input, rule, `${message} (action "${action}" is not supported by this integration)`, start, tier)
+  }
+
+  private effectiveAction(rule: KeelRule, input: EnforceInput): EnforcementAction {
+    if (input.action_override) return input.action_override
+    if ((this.config.defaultAction === 'warn' || input.level === 'sprint') && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
+    return rule.action
+  }
+
+  private cacheContext(input: EnforceInput, depth: string): CacheContext {
+    return {
+      cwd: input.cwd,
+      level: input.level,
+      context: input.context,
+      depth,
+      action: input.action_override,
+      rules_hash: this.lastRulesHash,
+    }
+  }
+
+  private effectiveDepth(input: EnforceInput): string {
+    return input.depth || (input.level === 'protect' ? 'deep' : input.level === 'sprint' ? 'fast' : 'full')
+  }
+
+  private matchesRulePattern(pattern: string, value: string): boolean {
+    try { return new RegExp(pattern, 'i').test(value) } catch { return false }
+  }
+
+  private isFirstWarning(ruleId: string): boolean {
+    if (this.denyFirstTime.has(ruleId)) return false
+    return this.config.stateManager?.isFirstTime(ruleId, this.lastRulesHash) ?? true
+  }
+
+  private pathMatches(value: string, pattern: string): boolean {
+    const normalized = pattern
+    const prefix = normalized.replace(/\*\*/g, '').replace(/\*/g, '').replace(/\/$/, '')
+    return value === prefix || value.startsWith(prefix + '/') || value.includes(normalized.replace(/\*/g, ''))
   }
 
   private warn(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier): EnforceResult {

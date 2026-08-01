@@ -6,9 +6,9 @@ Keel enforces rules on AI coding agents OUTSIDE the agent's context window.
 
 ```bash
 npm run build                    # Build all packages
-npm run test -w @get-keel/core       # Core tests (expected: 55/55)
-npm run test -w @get-keel/cli        # CLI tests (8 pre-existing failures expected — legacy init/check/policy tests)
-npm run test -w @get-keel/opencode-plugin  # Plugin load tests (11 checks)
+npm run test -w @get-keel/core       # Core tests (82 passing)
+npm run test -w @get-keel/cli        # CLI tests (158 passing)
+npm run test -w @get-keel/opencode-plugin  # Plugin load tests
 keel validate                    # Check rules
 ```
 
@@ -33,10 +33,11 @@ After `npm link`: just `keel validate`.
 
 ## Plugin architecture
 
-The OpenCode plugin is ONE canonical file:
+The OpenCode plugin has one implementation source and generated delivery files:
 
 ```
-packages/cli/templates/keel-enforce.js   ← source of truth (V1 format, 3 hooks)
+packages/opencode-plugin/src/plugin.ts   ← implementation source
+packages/cli/templates/keel-enforce.js   ← generated install artifact
 ```
 
 It is consumed by:
@@ -44,8 +45,10 @@ It is consumed by:
 - `keel install --project`   → copies to `<project>/.opencode/plugins/keel-enforce.js`
 - `@get-keel/opencode-plugin`    → build script copies it to `dist/index.js` verbatim
 
-NEVER edit the installed plugin, the npm dist, or any other copy directly —
-edit `templates/keel-enforce.js` and re-run the build/install.
+The plugin build bundles the shared core semantics into both `dist/index.js`
+and the CLI template. NEVER edit generated artifacts directly; edit
+`packages/opencode-plugin/src/plugin.ts` or shared core sources and re-run the
+build.
 
 Hooks implemented (SPEC.md §6):
 - `tool.execute.before` — deny/warn/fix every tool call, plus sequence-rule
@@ -95,13 +98,9 @@ Auto-load gotchas:
 ## Publishing
 
 ```bash
-# @get-keel/core
-cd packages/core
-npm publish
-
-# @get-keel/opencode-plugin
-cd packages/opencode-plugin
-npm publish
+# Run the validated release workflow by pushing tag v<cli-version>.
+# Local preflight: npm ci && npm audit && npm run build && npm test
+# Never publish MCP; packages/mcp-server is private and deprecated.
 ```
 
 ## Standing requirements (for Keel itself)

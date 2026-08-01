@@ -1,10 +1,14 @@
 import type { KeelRule, EnforceInput } from '../types.js'
 import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 interface DataTag {
-  source: string     // which rule/source tagged this data
+  source: string     // matched source path or source tool
   value: string      // the sensitive content (truncated for privacy)
   timestamp: number
+  sessionId: string
+  originTool: string
+  path?: string
 }
 
 /**
@@ -25,19 +29,25 @@ export class FlowTracker {
    * Track a tool call — check if it reads sensitive data
    * or sends tagged data to a network sink.
    */
-  record(input: EnforceInput, ruleId: string): void {
+  record(input: EnforceInput, rule?: KeelRule | string): void {
     const args = input.args as Record<string, unknown>
 
     // Check if this tool reads a sensitive file
-    const path = String(args.path || args.file || '')
+    const rawPath = String(args.path || args.file || args.filePath || '')
+    const path = rawPath && !rawPath.startsWith('/') ? resolve(input.cwd, rawPath) : rawPath
     if (path && existsSync(path)) {
-      const matchedRule = this.matchesSensitivePath(path)
+      const configuredSources = typeof rule === 'object' ? rule.sources : undefined
+      const matchedRule = configuredSources?.find(source => this.pathMatches(path, source))
+        || (!configuredSources ? this.matchesSensitivePath(path) : null)
       if (matchedRule) {
         // Tag the output of this tool call
         const tag: DataTag = {
           source: matchedRule,
           value: `<redacted: ${path}>`,
           timestamp: Date.now(),
+          sessionId: input.session_id,
+          originTool: input.tool,
+          path,
         }
         const key = `flow:${input.session_id}:${input.turn_number}`
         const existing = this.taggedValues.get(key) || []
@@ -66,17 +76,18 @@ export class FlowTracker {
     const tool = input.tool
 
     // Check if this tool is a sink (network, write, etc.)
-    const isSink = rule.sinks.some(s => tool.includes(s) || (args.url && String(args.url).includes(s)))
+    const isSink = rule.sinks.some(sink => this.matchesSink(sink, tool, args))
 
     if (!isSink) return null
 
     // Check if there are any tagged values from source tools
-    const sourceTools = rule.sources
     let hasSourceData = false
 
     for (const [key, tags] of this.taggedValues) {
-      const originTool = this.tagOrigins.get(key) || ''
-      if (sourceTools.some(s => originTool.includes(s))) {
+      if (tags.some(tag => tag.sessionId === input.session_id && rule.sources!.some(source =>
+        tag.originTool.toLowerCase().includes(source.toLowerCase())
+        || (!!tag.path && this.pathMatches(tag.path, source))
+      ))) {
         hasSourceData = true
         break
       }
@@ -104,6 +115,26 @@ export class FlowTracker {
       if (path.includes(s)) return `sensitive-path:${s}`
     }
     return null
+  }
+
+  private pathMatches(value: string, pattern: string): boolean {
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+    try { return new RegExp(`^${escaped}$`, 'i').test(value) || new RegExp(escaped, 'i').test(value) } catch { return false }
+  }
+
+  private matchesSink(sink: string, tool: string, args: Record<string, unknown>): boolean {
+    const normalized = sink.toLowerCase()
+    const toolName = tool.toLowerCase()
+    if (toolName === normalized) return true
+
+    const url = String(args.url || args.uri || args.host || '')
+    if (url && (url.toLowerCase().includes(normalized) || normalized === 'network')) return true
+
+    if (normalized !== 'network') return false
+    const command = String(args.command || args.cmd || '').toLowerCase()
+    return /(?:curl|wget|fetch|http|https|nc|netcat|socat)\b/.test(`${toolName} ${command}`)
   }
 
   clear(): void {

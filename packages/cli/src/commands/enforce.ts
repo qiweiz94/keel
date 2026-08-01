@@ -1,4 +1,3 @@
-import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import chalk from 'chalk'
 import {
@@ -14,10 +13,11 @@ import {
   hashRulesFile,
   detectConflicts,
   mergeRules as mergeRulesFn,
+  validateRules,
   Suggester,
   StateManager,
 } from '../core/enforce/index.js'
-import type { ProtectionLevel, RuleContext, EnforceInput, EnforceResult } from '../core/types.js'
+import type { ProtectionLevel, RuleContext, EnforcementAction, EnforcementDepth, EnforceInput, EnforceResult } from '../core/types.js'
 
 export interface EnforceOptions {
   level?: ProtectionLevel
@@ -25,12 +25,18 @@ export interface EnforceOptions {
   agent?: string
   learn?: boolean
   watch?: boolean
+  action?: EnforcementAction
+  depth?: EnforcementDepth
 }
 
 let pipeline: EnforcementPipeline | null = null
 let auditLog: AuditLog | null = null
 let contextManager: ContextManager | null = null
 let currentSessionId = ''
+let currentLevel: ProtectionLevel = 'balanced'
+let learnMode = false
+let actionOverride: EnforcementAction | undefined
+let depthOverride: EnforcementDepth | undefined
 
 /**
  * Initialize the enforcement system.
@@ -43,19 +49,25 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
 } {
   const dir = projectDir || process.cwd()
   const level: ProtectionLevel = options?.level || 'balanced'
+  currentLevel = level
   const context: RuleContext = options?.context || detectContext()
+  learnMode = options?.learn === true
+  actionOverride = options?.action
+  depthOverride = options?.depth
 
   // Generate session ID
   currentSessionId = `ses_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 
   // Load rules
   const hierarchy = loadRuleHierarchy(dir)
+  const ruleErrors = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+    .flatMap(source => source ? [...(source.errors || []), ...validateRules(source.rules)] : [])
+  if (ruleErrors.length) throw new Error(`Invalid Keel rules: ${ruleErrors.join('; ')}`)
   const ruleVersion = hierarchy.project?.version || 1
 
   // Initialize cache
   const cache = new ActionCache({
     maxSize: 10000,
-    persistentPath: join(process.env.HOME || '~', '.keel', 'cache', 'known-good.json'),
   })
 
   // Initialize components
@@ -77,7 +89,18 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     ruleVersion,
     allowedFixTransforms: true,
     enableReasoningCheck: level === 'protect',
+    defaultAction: level === 'sprint' ? 'warn' : undefined,
     stateManager,
+    reloadRules: () => {
+      const next = loadRuleHierarchy(dir)
+      currentLevel = next.project?.config.level || next.global?.config.level || currentLevel
+      return next
+    },
+    ruleFingerprint: () => [
+      join(dir, '.keel', 'rules.yaml'), join(dir, 'AGENTS.md'), join(dir, 'CLAUDE.md'),
+      join(dir, '.keel.local.yaml'), join(dir, 'AGENTS.local.md'), join(dir, 'CLAUDE.local.md'),
+      join(process.env.HOME || '~', '.keel', 'rules.yaml'), join(process.env.HOME || '~', '.config', 'keel', 'rules.yaml'),
+    ].map(hashRulesFile).join(':'),
   })
 
   pipeline = p
@@ -103,6 +126,7 @@ export async function evaluateToolCall(
     agent?: string
     subagentOf?: string | null
     reasoning?: string
+    depth?: EnforcementDepth
   },
 ): Promise<EnforceResult> {
   if (!pipeline || !auditLog || !contextManager) {
@@ -116,14 +140,24 @@ export async function evaluateToolCall(
     session_id: currentSessionId,
     turn_number: extra?.turnNumber || 0,
     context_tokens: extra?.contextTokens || 0,
-    level: extra?.level || 'balanced',
+    level: extra?.level || currentLevel,
     context: extra?.context || 'local',
     agent: extra?.agent || 'unknown',
     subagent_of: extra?.subagentOf || null,
     reasoning: extra?.reasoning,
+    depth: extra?.depth || depthOverride,
+    action_override: actionOverride,
   }
 
-  const result = await pipeline.evaluate(input)
+  const evaluated = await pipeline.evaluate(input)
+  const result = learnMode && evaluated.rule_id && ['warn', 'deny', 'block', 'fix'].includes(evaluated.action)
+    ? {
+        ...evaluated,
+        action: 'warn' as const,
+        message: `[Learning mode] ${evaluated.message}`,
+        fix_result: undefined,
+      }
+    : evaluated
 
   // Record in audit log
   auditLog.record(result, {
@@ -161,6 +195,8 @@ export async function enforceCommand(options: {
   audit?: boolean
 }) {
   const level = (options.level || 'balanced') as ProtectionLevel
+  const action = options.action as EnforcementAction | undefined
+  const depth = options.depth as EnforcementDepth | undefined
   const dir = process.cwd()
 
   // Show audit trail if requested
@@ -188,32 +224,39 @@ export async function enforceCommand(options: {
     console.log(chalk.red(`Invalid level: "${level}". Use sprint, balanced, or protect.`))
     return
   }
+  if (action && !['report', 'warn', 'deny', 'fix'].includes(action)) {
+    console.log(chalk.red(`Invalid action: "${action}". Use report, warn, deny, or fix.`))
+    return
+  }
+  if (depth && !['fast', 'full', 'deep'].includes(depth)) {
+    console.log(chalk.red(`Invalid depth: "${depth}". Use fast, full, or deep.`))
+    return
+  }
 
-  // Check for CLAUDE.md
-  const claudeMdPath = join(dir, 'CLAUDE.md')
-  if (!existsSync(claudeMdPath)) {
-    console.log(chalk.yellow('No CLAUDE.md found in current directory.'))
-    console.log(chalk.cyan('  Run `keel enforce --init` to create one.'))
+  const hierarchy = loadRuleHierarchy(dir)
+  const rulesPath = hierarchy.project?.sourcePath
+  if (!rulesPath) {
+    console.log(chalk.yellow('No Keel rules found in the current directory.'))
+    console.log(chalk.cyan('  Run `keel enforce init` to create .keel/rules.yaml.'))
     return
   }
 
   // Initialize
-  initEnforce(dir, { level, learn: options.learn })
+  initEnforce(dir, { level, learn: options.learn, action, depth })
 
   console.log(chalk.bold.cyan('\n  ⚓ Keel Enforce'))
   console.log(chalk.dim(`  Level: ${chalk.white(level)}`))
-  console.log(chalk.dim(`  Config: ${claudeMdPath}`))
+  console.log(chalk.dim(`  Config: ${rulesPath}`))
   console.log()
 
   // Parse rules and show status
-  const parsed = parseRulesFile(claudeMdPath)
+  const parsed = parseRulesFile(rulesPath)
   if (parsed) {
     const activeRules = parsed.rules.length
     console.log(chalk.green(`  ✓ ${activeRules} rules loaded`))
 
     // Check conflicts
-    const hier = loadRuleHierarchy(dir)
-    const merged = mergeRulesFn(hier, level, 'local')
+    const merged = mergeRulesFn(hierarchy, level, 'local')
     const conflicts = detectConflicts(merged)
     if (conflicts.length > 0) {
       console.log(chalk.yellow(`  ⚠ ${conflicts.length} rule conflict(s) detected`))

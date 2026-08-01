@@ -37,4 +37,23 @@ rules:
     const parsed = parseRulesContent('rules: [', '/tmp/rules.yaml')
     expect(parsed.errors?.some(error => error.startsWith('Invalid YAML:'))).toBe(true)
   })
+
+  it('rejects malformed rule objects and unsupported values', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad
+    type: unknown
+    action: explode
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues).toContain('Rule "bad" has an unsupported type: unknown')
+    expect(issues).toContain('Rule "bad" has an unsupported action: explode')
+    expect(issues).toContain('Rule "bad" is missing a non-empty message')
+  })
+
+  it('rejects a non-array rules value', () => {
+    const parsed = parseRulesContent('version: 1\nrules: bad\n', '/tmp/rules.yaml')
+    expect(parsed.errors).toContain('Rules must be an array')
+  })
 })

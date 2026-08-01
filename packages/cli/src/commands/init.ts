@@ -28,7 +28,7 @@ export async function initCommand(options: { hooks?: boolean }) {
       console.log(chalk.cyan('  Add to .pre-commit-config.yaml:'))
       console.log(chalk.cyan('    repos:'))
       console.log(chalk.cyan('      - repo: https://github.com/qiweiz94/keel'))
-      console.log(chalk.cyan('        rev: v0.1.0'))
+      console.log(chalk.cyan('        rev: v0.1.5'))
       console.log(chalk.cyan('        hooks:'))
       console.log(chalk.cyan('          - id: keel-check'))
     }

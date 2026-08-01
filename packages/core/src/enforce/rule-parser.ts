@@ -39,7 +39,12 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
   try {
     const parsed = parseYaml(yamlSource)
     if (parsed && typeof parsed === 'object' && 'keel' in parsed) {
-      config = parsed.keel as KeelConfig
+      const candidate = parsed.keel
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+        config = candidate as KeelConfig
+      } else {
+        errors.push('Keel configuration must be an object')
+      }
     } else if (parsed && typeof parsed === 'object' && 'rules' in parsed) {
       // Direct rules object (standalone .keel.yaml or pure YAML)
       config = parsed as KeelConfig
@@ -50,9 +55,17 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
     errors.push(`Invalid YAML: ${error instanceof Error ? error.message : String(error)}`)
   }
 
+  if (config.rules !== undefined && !Array.isArray(config.rules)) {
+    errors.push('Rules must be an array')
+  }
+  if (typeof config.version !== 'number') errors.push('Keel version must be a number')
+  if (config.level !== undefined && !['sprint', 'balanced', 'protect'].includes(String(config.level))) {
+    errors.push(`Invalid protection level: ${String(config.level)}`)
+  }
+
   return {
     config,
-    rules: config.rules || [],
+    rules: Array.isArray(config.rules) ? config.rules : [],
     sourcePath,
     version: config.version || 1,
     markdown: markdown.trim(),
@@ -60,11 +73,39 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
   }
 }
 
-export function validateRules(rules: KeelRule[]): string[] {
+export function validateRules(rules: unknown): string[] {
   const errors: string[] = []
-  for (const rule of rules) {
-    if (rule.type === 'sequence' && (!rule.steps || rule.steps.length < 2)) {
-      errors.push(`Rule "${rule.id}" is a sequence rule but has fewer than two steps`)
+  if (!Array.isArray(rules)) return ['Rules must be an array']
+
+  const validTypes = new Set([
+    'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
+    'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
+    'verification', 'meta',
+  ])
+  const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report'])
+  const validLevels = new Set(['sprint', 'balanced', 'protect'])
+
+  for (const candidate of rules) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      errors.push('Rule entries must be objects')
+      continue
+    }
+    const rule = candidate as Partial<KeelRule>
+    const label = typeof rule.id === 'string' && rule.id ? rule.id : '<unnamed>'
+    if (typeof rule.id !== 'string' || !rule.id.trim()) errors.push('Rule is missing a non-empty id')
+    if (typeof rule.type !== 'string' || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`)
+    const actionOptional = rule.type === 'context' || rule.type === 'meta' || rule.type === 'session'
+    if ((!actionOptional && typeof rule.action !== 'string') || (typeof rule.action === 'string' && !validActions.has(rule.action))) {
+      errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`)
+    }
+    if (rule.level !== undefined && (typeof rule.level !== 'string' || !validLevels.has(rule.level))) errors.push(`Rule "${label}" has an invalid protection level`)
+    if (typeof rule.message !== 'string' || !rule.message.trim()) errors.push(`Rule "${label}" is missing a non-empty message`)
+    if (rule.type === 'filesystem' && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`)
+    if (rule.type === 'content' && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`)
+    if (rule.type === 'network' && typeof rule.match !== 'string') errors.push(`Rule "${label}" is a network rule but has no match`)
+    if (rule.type === 'flow' && (!Array.isArray(rule.sources) || !Array.isArray(rule.sinks))) errors.push(`Rule "${label}" is a flow rule but is missing sources or sinks`)
+    if (rule.type === 'sequence' && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {
+      errors.push(`Rule "${label}" is a sequence rule but has fewer than two steps`)
     }
     if (rule.type === 'verification') {
       if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing verification.trigger`)
@@ -82,9 +123,12 @@ export function validateRules(rules: KeelRule[]): string[] {
       rule.satisfy?.pattern,
       ...Object.values(rule.boundaries || {}).map(boundary => boundary.pattern),
     ]) {
-      if (pattern) {
+      if (typeof pattern === 'string' && pattern) {
         try { new RegExp(pattern) } catch { errors.push(`Rule "${rule.id}" contains invalid regex: ${pattern}`) }
       }
+    }
+    if (rule.fix && (!Array.isArray(rule.fix) || rule.fix.some(transform => !transform || typeof transform.pattern !== 'string' || typeof transform.replace !== 'string'))) {
+      errors.push(`Rule "${label}" has an invalid fix transform`)
     }
   }
   return errors
@@ -148,7 +192,7 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
       if (levelOrder[ruleLevel] > levelOrder[level]) continue
 
       // Filter by context
-      if (rule.context && !rule.context.includes(context)) continue
+      if (rule.context && !rule.context.includes(context) && !rule.context.includes('both')) continue
 
       all.push({ ...rule, scope: rule.scope || scope })
     }

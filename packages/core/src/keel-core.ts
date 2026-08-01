@@ -15,8 +15,11 @@ export {
   loadRuleHierarchy,
   mergeRules,
   detectConflicts,
+  validateRules,
   hashRulesFile,
 } from './enforce/rule-parser.js'
+export { FileRuleOverrideStore } from './enforce/overrides.js'
+export { projectAuditArgs, sanitizeAuditValue, sanitizeReasoning } from './enforce/audit-redaction.js'
 export type { ParsedRules, RuleHierarchy, RuleConflict } from './enforce/rule-parser.js'
 export { ContextManager } from './enforce/context-manager.js'
 export { StateManager } from './enforce/state-manager.js'

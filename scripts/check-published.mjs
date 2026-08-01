@@ -1,0 +1,29 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const root = new URL('..', import.meta.url)
+const packageNames = ['core', 'cli', 'opencode-plugin']
+const packages = packageNames.map(name => JSON.parse(readFileSync(new URL(`../packages/${name}/package.json`, import.meta.url), 'utf8')))
+
+for (const pkg of packages) {
+  const published = execFileSync('npm', ['view', `${pkg.name}@${pkg.version}`, 'version'], { encoding: 'utf8' }).trim()
+  if (published !== pkg.version) throw new Error(`${pkg.name}@${pkg.version} was not confirmed on npm`)
+}
+
+const install = mkdtempSync(join(tmpdir(), 'keel-published-'))
+execFileSync('npm', ['init', '-y', '--prefix', install], { cwd: root, stdio: 'ignore' })
+execFileSync('npm', ['install', '--prefix', install, ...packages.map(pkg => `${pkg.name}@${pkg.version}`)], { cwd: root, stdio: 'ignore' })
+
+const cli = execFileSync('node', [join(install, 'node_modules/@get-keel/cli/dist/index.js'), '--version'], { encoding: 'utf8' }).trim()
+const expectedCli = packages.find(pkg => pkg.name === '@get-keel/cli').version
+if (cli !== expectedCli) throw new Error(`Published CLI returned ${cli}; expected ${expectedCli}`)
+
+execFileSync('node', ['-e', "import('@get-keel/opencode-plugin').then(m => { if (m.default?.id !== 'keel-enforce') process.exit(1) })"], {
+  cwd: install,
+  encoding: 'utf8',
+})
+execFileSync('npm', ['audit', '--prefix', install, '--omit=dev'], { cwd: root, stdio: 'inherit' })
+console.log(`Published package verification passed: CLI ${cli}, plugin keel-enforce`)

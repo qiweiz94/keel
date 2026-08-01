@@ -35,6 +35,7 @@ export async function validateCommand() {
   ]
 
   let totalRules = 0
+  let hasErrors = false
   for (const file of files) {
     file.ok = existsSync(file.path)
     if (file.ok) {
@@ -42,7 +43,9 @@ export async function validateCommand() {
       const count = parsed?.rules.length || 0
       totalRules += count
       console.log(chalk.green(`  ✓ ${file.name}: ${chalk.white(file.path)} (${count} rules)`))
-      for (const issue of [...(parsed?.errors || []), ...validateRules(parsed?.rules || [])]) {
+      const issues = [...(parsed?.errors || []), ...validateRules(parsed?.rules || [])]
+      if (issues.length) hasErrors = true
+      for (const issue of issues) {
         console.log(chalk.yellow(`    ⚠ ${issue}`))
       }
       // Show version info
@@ -65,6 +68,7 @@ export async function validateCommand() {
   const conflicts = detectConflicts(merged)
 
   if (conflicts.length > 0) {
+    hasErrors = true
     console.log(chalk.yellow(`  ⚠ ${conflicts.length} conflict(s) detected:`))
     for (const c of conflicts) {
       console.log(chalk.yellow(`    ✗ ${c.reason}`))
@@ -84,4 +88,6 @@ export async function validateCommand() {
   console.log(chalk.cyan('  Current protection: balanced'))
   console.log(chalk.dim('  Change with: keel enforce --level=sprint|balanced|protect'))
   console.log()
+
+  if (hasErrors) process.exitCode = 1
 }

@@ -1,7 +1,10 @@
 {
   "name": "@get-keel/opencode-plugin",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Keel enforcement plugin for OpenCode — rules that survive context rot",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "mkdir -p dist && cp ../../packages/cli/templates/keel-enforce.js dist/index.js && cp src/index.d.ts dist/index.d.ts",
+    "build": "rm -rf dist && mkdir -p dist && npx esbuild src/plugin.ts --bundle --format=esm --platform=node --external:node:* --alias:yaml=../../node_modules/yaml/browser/index.js --outfile=dist/index.js && cp dist/index.js ../../packages/cli/templates/keel-enforce.js && cp src/index.d.ts dist/index.d.ts",
     "test": "node ./scripts/load-test.js",
     "prepublishOnly": "npm run build"
   },

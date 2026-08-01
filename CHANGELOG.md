@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5 (2026-08-01)
+
+Public v1 release preparation:
+
+- Added deterministic enforcement coverage for the supported rule types.
+- Added persistent state, one-time overrides, live rule reload, kill-switch
+  safety, audit redaction, and release tarball verification.
+- Public packages are `@get-keel/core`, `@get-keel/cli`, and
+  `@get-keel/opencode-plugin`; the MCP server remains private and deprecated.
+
 ## Unreleased
 
 **Security release. Real-time enforcement did not work in any prior version.**

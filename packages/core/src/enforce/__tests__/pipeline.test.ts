@@ -8,7 +8,43 @@ import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
-import { loadRuleHierarchy, parseRulesContent } from '../rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, parseRulesFile } from '../rule-parser.js'
+import type { StateManager } from '../state-manager.js'
+
+function sharedStateManager(): StateManager {
+  const state = {
+    denyFirstTime: {} as Record<string, number | { timestamp: number; version?: string }>,
+    circuitBreaker: {} as Record<string, { count: number; startTime: number }>,
+    rateCounts: {} as Record<string, { count: number; windowStart: number }>,
+    verification: {},
+    markFirstTime(ruleId: string, version?: string) {
+      this.denyFirstTime[ruleId] = version ? { timestamp: Date.now(), version } : Date.now()
+    },
+    isFirstTime(ruleId: string, version?: string) {
+      const value = this.denyFirstTime[ruleId]
+      return value === undefined || (!!version && (typeof value === 'number' || value.version !== version))
+    },
+    recordCircuitBreaker(ruleId: string, tool: string) {
+      const key = `${ruleId}:${tool}`
+      const now = Date.now()
+      const current = this.circuitBreaker[key]
+      this.circuitBreaker[key] = current && now - current.startTime < 60000
+        ? { count: current.count + 1, startTime: current.startTime }
+        : { count: 1, startTime: now }
+      return this.circuitBreaker[key].count >= 3
+    },
+    checkRateLimit(ruleId: string, match: string, windowSec: number, maxCalls: number) {
+      const key = `rate:${ruleId}:${match}`
+      const now = Date.now()
+      const current = this.rateCounts[key]
+      this.rateCounts[key] = current && now - current.windowStart < windowSec * 1000
+        ? { count: current.count + 1, windowStart: current.windowStart }
+        : { count: 1, windowStart: now }
+      return this.rateCounts[key].count > maxCalls
+    },
+  }
+  return state as unknown as StateManager
+}
 
 function makeSampleRules() {
   return parseRulesContent(`---
@@ -69,8 +105,8 @@ function makePipeline(level: ProtectionLevel = 'balanced'): EnforcementPipeline 
   return new EnforcementPipeline(config)
 }
 
-function makePipelineFromYaml(yaml: string): EnforcementPipeline {
-  const rules = parseRulesContent(yaml, '/tmp/test-rules.md')
+function makePipelineFromYaml(yaml: string, stateManager?: StateManager, sourcePath = '/tmp/test-rules.md'): EnforcementPipeline {
+  const rules = parseRulesContent(yaml, sourcePath)
   return new EnforcementPipeline({
     level: 'balanced',
     context: 'local' as RuleContext,
@@ -82,6 +118,7 @@ function makePipelineFromYaml(yaml: string): EnforcementPipeline {
     ruleVersion: 1,
     allowedFixTransforms: true,
     enableReasoningCheck: false,
+    stateManager,
   })
 }
 
@@ -101,6 +138,12 @@ function input(tool: string, args: Record<string, unknown>, session = 'sequence-
 }
 
 describe('EnforcementPipeline', () => {
+  beforeAll(() => {
+    // Do not let a developer's live kill switch affect unrelated unit tests.
+    const sentinelPath = join(homedir(), '.keel', 'DISABLED')
+    if (existsSync(sentinelPath)) rmSync(sentinelPath)
+  })
+
   describe('Stateful rules', () => {
     it('records allowed actions before evaluating a sequence', async () => {
       const pipeline = makePipelineFromYaml(`version: 1
@@ -120,6 +163,24 @@ rules:
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('edit', { filePath: 'src/a.ts' }))).action).toBe('warn')
       expect((await pipeline.evaluate(input('edit', { filePath: 'src/a.ts' }))).action).toBe('deny')
+    })
+
+    it('does not reuse the current action as a preceding repeated step', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: repeated-step
+    type: sequence
+    steps:
+      - tool: Bash
+        pattern: "same"
+      - tool: Bash
+        pattern: "same"
+    action: deny
+    message: "Repeated sequence"
+`)
+
+      expect((await pipeline.evaluate(input('Bash', { command: 'same' }, 'repeated'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'same' }, 'repeated'))).action).toBe('warn')
     })
 
     it('tracks and clears verification obligations at an explicit boundary', async () => {
@@ -146,6 +207,133 @@ rules:
       expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m x' }, 'obligation'))).action).toBe('warn')
       pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }, 'obligation'))
       expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m x' }, 'obligation'))).action).toBe('allow')
+    })
+  })
+
+  describe('public action and filesystem semantics', () => {
+    it('uses the integration action override inside the pipeline', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: override-me
+    type: command
+    match: "danger"
+    action: deny
+    message: "Dangerous command"
+`)
+      const first = await pipeline.evaluate({ ...input('Bash', { command: 'danger' }), action_override: 'warn' })
+      expect(first.action).toBe('warn')
+    })
+
+    it('warns when fix is requested without a transform', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: no-fix
+    type: command
+    match: "danger"
+    action: deny
+    message: "Dangerous command"
+`)
+      const result = await pipeline.evaluate({ ...input('Bash', { command: 'danger' }), action_override: 'fix' })
+      expect(result.action).toBe('warn')
+      expect(result.message).toContain('no automatic fix available')
+    })
+
+    it('treats a negated path as the complement of its pattern', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: protect-outside-src
+    type: filesystem
+    paths: ["!/src/*"]
+    operations: [delete]
+    action: warn
+    message: "Only delete source files"
+`)
+      const inside = await pipeline.evaluate({ ...input('Delete', { path: 'src/a.ts', operation: 'delete' }), cwd: '/tmp/project' })
+      const outside = await pipeline.evaluate({ ...input('Delete', { path: 'config.json', operation: 'delete' }), cwd: '/tmp/project' })
+      expect(inside.action).toBe('allow')
+      expect(outside.action).toBe('warn')
+    })
+
+    it('consumes a one-time rule override before first-warning escalation', async () => {
+      let available = true
+      const rules = parseRulesContent(`version: 1
+rules:
+  - id: overridable
+    type: command
+    match: "danger"
+    action: deny
+    message: "Dangerous command"
+`, '/tmp/override-rules.yaml')
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(), ruleHierarchy: { global: null, user: null, project: rules, local: null },
+        ruleVersion: 1,
+        overrideStore: { consume: () => {
+          const result = available
+          available = false
+          return result
+        } },
+      })
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('deny')
+    })
+
+    it('consumes an override before returning a cached deny', async () => {
+      let available = false
+      const rules = parseRulesContent(`version: 1
+rules:
+  - id: cached-overridable
+    type: command
+    match: "cached-danger"
+    action: deny
+    message: "Cached dangerous command"
+`, '/tmp/cached-override-rules.yaml')
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(), ruleHierarchy: { global: null, user: null, project: rules, local: null },
+        ruleVersion: 1, overrideStore: { consume: () => available && (available = false, true) },
+      })
+      const call = () => pipeline.evaluate(input('Bash', { command: 'cached-danger' }, 'cached-override'))
+      expect((await call()).action).toBe('warn')
+      expect((await call()).action).toBe('deny')
+      available = true
+      expect((await call()).action).toBe('allow')
+    })
+
+    it('reloads changed rules and fails closed for invalid replacements', async () => {
+      const sourcePath = '/tmp/keel-live-reload.yaml'
+      writeFileSync(sourcePath, `version: 1
+rules:
+  - id: live-rule
+    type: command
+    match: "before-reload"
+    action: deny
+    message: "Before reload"
+`)
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(), ruleHierarchy: { global: null, user: null, project: parseRulesFile(sourcePath), local: null },
+        ruleVersion: 1,
+        reloadRules: () => ({ global: null, user: null, project: parseRulesFile(sourcePath), local: null }),
+      })
+      expect((await pipeline.evaluate(input('Bash', { command: 'before-reload' }, 'reload'))).action).toBe('warn')
+      writeFileSync(sourcePath, `version: 1
+rules:
+  - id: live-rule
+    type: command
+    match: "after-reload"
+    action: deny
+    message: "After reload"
+`)
+      expect((await pipeline.evaluate(input('Bash', { command: 'before-reload' }, 'reload'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'after-reload' }, 'reload'))).action).toBe('warn')
+      writeFileSync(sourcePath, 'version: 1\nrules: [broken\n')
+      await expect(pipeline.evaluate(input('Bash', { command: 'after-reload' }, 'reload'))).rejects.toThrow('Invalid Keel rules after reload')
+      rmSync(sourcePath, { force: true })
     })
   })
 
@@ -215,6 +403,36 @@ rules:
       expect(result.message).toContain('kill switch')
       rmSync(sentinelPath)
     })
+
+    it('keeps a restart-only disable sentinel until an integration consumes it', async () => {
+      writeFileSync(sentinelPath, JSON.stringify({
+        disabled_at: new Date().toISOString(),
+        expires_at: null,
+        auto_enable_on_restart: true,
+      }))
+      const pipeline = makePipeline()
+      const result = await pipeline.evaluate({
+        tool: 'Bash',
+        args: { command: 'git push --force' },
+        cwd: '/tmp',
+        session_id: 'restart-test',
+        turn_number: 1,
+        context_tokens: 0,
+        level: 'balanced' as const,
+        context: 'local' as const,
+        agent: 'test',
+        subagent_of: null,
+      })
+      expect(result.action).toBe('allow')
+      expect(existsSync(sentinelPath)).toBe(true)
+      rmSync(sentinelPath)
+    })
+
+    it('fails closed when the kill-switch state is corrupt', async () => {
+      writeFileSync(sentinelPath, '{not-json')
+      await expect(makePipeline().evaluate(input('Bash', { command: 'echo safe' }))).rejects.toThrow('Invalid Keel kill-switch state')
+      rmSync(sentinelPath)
+    })
   })
 
   describe('Rate limiting', () => {
@@ -235,6 +453,121 @@ rules:
       })
       // Should not be denied by rate limit
       expect(result.action).toBe('allow')
+    })
+
+    it('warns before denying when a rate limit is exceeded', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: rate-test
+    type: rate
+    match: "rate-token"
+    window_seconds: 300
+    max_calls: 1
+    action: deny
+    message: "Too many calls"
+`)
+      expect((await pipeline.evaluate(input('Bash', { command: 'rate-token' }, 'rate'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'rate-token' }, 'rate'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'rate-token' }, 'rate'))).action).toBe('deny')
+    })
+
+    it('shares rate-limit and first-warning state between pipeline instances', async () => {
+      const state = sharedStateManager()
+      const yaml = `version: 1
+rules:
+  - id: cross-process-rate
+    type: rate
+    match: "rate-token"
+    window_seconds: 300
+    max_calls: 1
+    action: deny
+    message: "Too many calls"
+`
+      expect((await makePipelineFromYaml(yaml, state).evaluate(input('Bash', { command: 'rate-token' }, 'cross-rate'))).action).toBe('allow')
+      expect((await makePipelineFromYaml(yaml, state).evaluate(input('Bash', { command: 'rate-token' }, 'cross-rate'))).action).toBe('warn')
+      expect((await makePipelineFromYaml(yaml, state).evaluate(input('Bash', { command: 'rate-token' }, 'cross-rate'))).action).toBe('deny')
+    })
+
+    it('persists circuit-breaker mutations through the state API', async () => {
+      const state = sharedStateManager()
+      const yaml = `version: 1
+rules:
+  - id: cross-process-circuit
+    type: command
+    match: "danger"
+    action: deny
+    message: "Dangerous command"
+`
+      const call = (turn: number) => makePipelineFromYaml(yaml, state).evaluate(input('Bash', { command: `danger-${turn}` }, 'cross-circuit'))
+      expect((await call(1)).action).toBe('warn')
+      expect((await call(2)).action).toBe('deny')
+      expect((await call(3)).action).toBe('deny')
+      expect((await call(4)).message).toContain('times')
+    })
+  })
+
+  describe('Time and information flow', () => {
+    it('warns before denying outside a configured schedule', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: time-test
+    type: time
+    schedule:
+      start: "00:00"
+      end: "23:59"
+      days: [Neverday]
+    action: deny
+    message: "Outside schedule"
+`)
+      expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time'))).action).toBe('deny')
+    })
+
+    it('tracks a sensitive read before blocking a network sink', async () => {
+      const sensitivePath = '/tmp/keel-flow-test.env'
+      writeFileSync(sensitivePath, 'TOKEN=secret\n')
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: flow-test
+    type: flow
+    sources: [".env"]
+    sinks: [Bash]
+    action: deny
+    message: "Sensitive data cannot leave"
+`)
+      expect((await pipeline.evaluate(input('ReadFile', { filePath: sensitivePath }, 'flow'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'send' }, 'flow'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'send' }, 'flow'))).action).toBe('deny')
+      rmSync(sensitivePath, { force: true })
+    })
+
+    it('matches semantic network sinks without losing explicit tool sinks', async () => {
+      const sensitivePath = '/tmp/keel-flow-network.env'
+      writeFileSync(sensitivePath, 'TOKEN=secret\n')
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: network-flow
+    type: flow
+    sources: [".env"]
+    sinks: [network]
+    action: deny
+    message: "No network egress"
+`)
+      expect((await pipeline.evaluate(input('ReadFile', { filePath: sensitivePath }, 'network'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'curl https://example.test' }, 'network'))).action).toBe('warn')
+      rmSync(sensitivePath, { force: true })
+
+      const explicit = makePipelineFromYaml(`version: 1
+rules:
+  - id: explicit-tool-flow
+    type: flow
+    sources: [".env"]
+    sinks: [Bash]
+    action: deny
+    message: "No Bash egress"
+`)
+      expect((await explicit.evaluate(input('ReadFile', { filePath: '/tmp/does-not-exist.env' }, 'explicit'))).action).toBe('allow')
+      expect((await explicit.evaluate(input('BashScript', { command: 'send' }, 'explicit'))).action).toBe('allow')
     })
   })
 
@@ -262,6 +595,25 @@ rules:
       // Second time — should deny
       const second = await pipeline.evaluate(input)
       expect(second.action).toBe('deny')
+    })
+
+    it('does not carry a first-warning state across rule versions', async () => {
+      const sourcePath = '/tmp/keel-versioned-rules.md'
+      const state = sharedStateManager()
+      writeFileSync(sourcePath, 'version one')
+      const yaml = `version: 1
+rules:
+  - id: versioned-rule
+    type: command
+    match: "versioned-danger"
+    action: deny
+    message: "Versioned rule"
+`
+      expect((await makePipelineFromYaml(yaml, state, sourcePath).evaluate(input('Bash', { command: 'versioned-danger' }, 'versioned'))).action).toBe('warn')
+
+      writeFileSync(sourcePath, 'version two')
+      expect((await makePipelineFromYaml(yaml, state, sourcePath).evaluate(input('Bash', { command: 'versioned-danger' }, 'versioned'))).action).toBe('warn')
+      rmSync(sourcePath, { force: true })
     })
   })
 

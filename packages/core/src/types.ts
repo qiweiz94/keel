@@ -149,6 +149,8 @@ export interface EnforceInput {
   agent: string                     // 'opencode' | 'claude-code' | 'cline' | etc.
   subagent_of: string | null
   reasoning?: string                // agent's chain-of-thought, if available
+  depth?: EnforcementDepth          // fast | full | deep evaluation depth
+  action_override?: EnforcementAction // integration-level action override
 }
 
 export interface EnforceResult {

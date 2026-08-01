@@ -1,6 +1,16 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import type { CacheEntry, CacheStats } from '../types.js'
+
+export interface CacheContext {
+  cwd: string
+  level: string
+  context: string
+  depth: string
+  action?: string
+  rules_hash?: string
+}
 
 export class ActionCache {
   private session: Map<string, CacheEntry> = new Map()
@@ -24,18 +34,13 @@ export class ActionCache {
     }
   }
 
-  hash(tool: string, args: unknown, ruleVersion: number): string {
-    const raw = `${tool}:${JSON.stringify(args, Object.keys(args as object || {}).sort())}:${ruleVersion}`
-    let h = 0
-    for (let i = 0; i < raw.length; i++) {
-      h = ((h << 5) - h) + raw.charCodeAt(i)
-      h |= 0
-    }
-    return h.toString(36)
+  hash(tool: string, args: unknown, ruleVersion: number, context?: CacheContext): string {
+    const raw = `${tool}:${this.canonicalize(args)}:${ruleVersion}:${this.canonicalize(context || {})}`
+    return createHash('sha256').update(raw).digest('hex')
   }
 
-  get(tool: string, args: unknown, ruleVersion: number): CacheEntry | null {
-    const key = this.hash(tool, args, ruleVersion)
+  get(tool: string, args: unknown, ruleVersion: number, context?: CacheContext): CacheEntry | null {
+    const key = this.hash(tool, args, ruleVersion, context)
 
     // Check session cache first
     const sessionEntry = this.session.get(key)
@@ -59,8 +64,8 @@ export class ActionCache {
     return null
   }
 
-  set(tool: string, args: unknown, ruleVersion: number, entry: CacheEntry): void {
-    const key = this.hash(tool, args, ruleVersion)
+  set(tool: string, args: unknown, ruleVersion: number, entry: CacheEntry, context?: CacheContext): void {
+    const key = this.hash(tool, args, ruleVersion, context)
     this.session.set(key, entry)
 
     // Evict least-used if over max size
@@ -74,8 +79,8 @@ export class ActionCache {
     }
   }
 
-  setPersistent(tool: string, args: unknown, ruleVersion: number, entry: CacheEntry): void {
-    const key = this.hash(tool, args, ruleVersion)
+  setPersistent(tool: string, args: unknown, ruleVersion: number, entry: CacheEntry, context?: CacheContext): void {
+    const key = this.hash(tool, args, ruleVersion, context)
     this.persistent.set(key, entry)
     this.flush()
   }
@@ -118,6 +123,12 @@ export class ActionCache {
       misses: this.stats.misses,
       hit_rate: total > 0 ? this.stats.hits / total : 0,
     }
+  }
+
+  private canonicalize(value: unknown): string {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value)
+    if (Array.isArray(value)) return `[${value.map(item => this.canonicalize(item)).join(',')}]`
+    return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${this.canonicalize((value as Record<string, unknown>)[key])}`).join(',')}}`
   }
 }
 

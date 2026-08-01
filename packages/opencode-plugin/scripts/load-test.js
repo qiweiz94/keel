@@ -69,6 +69,80 @@ rules:
     verification_window_seconds: 300
     action: deny
     message: "Test required before commit or push."
+  - id: filesystem-protection
+    type: filesystem
+    paths: ["secrets"]
+    operations: [write]
+    action: deny
+    message: "Protected filesystem path"
+  - id: content-protection
+    type: content
+    patterns:
+      - regex: "PRIVATE_KEY"
+    action: deny
+    message: "Private key content"
+  - id: network-protection
+    type: network
+    match: 'evil\\.example'
+    action: deny
+    message: "Blocked network"
+  - id: rate-protection
+    type: rate
+    match: "rate-token"
+    max_calls: 1
+    window_seconds: 300
+    action: deny
+    message: "Rate limited"
+  - id: time-protection
+    type: time
+    schedule:
+      start: "00:00"
+      end: "23:59"
+    action: deny
+    message: "Outside schedule"
+  - id: flow-protection
+    type: flow
+    sources: [ReadFile]
+    sinks: [Bash]
+    action: deny
+    message: "Sensitive flow"
+  - id: protected-level
+    type: command
+    match: "level-protected"
+    level: protect
+    action: deny
+    message: "Should be inactive"
+  - id: ci-only
+    type: command
+    match: "ci-only"
+    context: [ci]
+    action: deny
+    message: "Should be inactive locally"
+  - id: priority-allow
+    type: command
+    match: "priority-check"
+    priority: 100
+    action: allow
+    message: "High priority allow"
+  - id: priority-deny
+    type: command
+    match: "priority-check"
+    priority: 1
+    action: deny
+    message: "Low priority deny"
+  - id: unless-command
+    type: command
+    match: "dangerous-action"
+    unless:
+      - regex: "safe"
+    action: deny
+    message: "Unless failed"
+  - id: unless-reasoning
+    type: command
+    match: "reasoned-action"
+    unless_reasoning: "approved"
+    action: deny
+    message: "Reasoning exemption"
 `)
 const hooks = await plugin.server({ directory: join(tmpHome, 'proj') })
 
@@ -77,6 +151,30 @@ check('all plugin hooks', expected.every(h => typeof hooks?.[h] === 'function'))
 
 // Self-bootstrap writes default rules.
 check('self-bootstrap rules.yaml', fs.existsSync(join(tmpHome, '.keel', 'rules.yaml')))
+
+// Invalid project rules must prevent startup rather than silently disabling enforcement.
+const malformedProject = join(tmpHome, 'malformed-project')
+fs.mkdirSync(join(malformedProject, '.keel'), { recursive: true })
+fs.writeFileSync(join(malformedProject, '.keel', 'rules.yaml'), 'version: 1\nrules: [broken\n')
+let malformedRejected = false
+try { await plugin.server({ directory: malformedProject }) } catch (error) { malformedRejected = error.message.startsWith('[Keel]') }
+check('malformed rules fail closed', malformedRejected)
+
+// A hook-boundary failure must also fail closed instead of allowing the tool call.
+let runtimeFailureClosed = false
+try {
+  const throwingOutput = {}
+  Object.defineProperty(throwingOutput, 'args', { get() { throw new Error('synthetic hook failure') } })
+  await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'runtime-failure' }, throwingOutput)
+} catch (error) {
+  runtimeFailureClosed = error.message.includes('Enforcement failed closed')
+}
+check('runtime hook failures fail closed', runtimeFailureClosed)
+
+await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'privacy' }, { args: { token: 'plugin-secret-value' } })
+const traceText = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .map(file => fs.readFileSync(join(tmpHome, '.keel', 'traces', file), 'utf8')).join('\n')
+check('plugin audit redacts sensitive arguments', !traceText.includes('plugin-secret-value') && traceText.includes('[redacted]'))
 
 // Warn-then-deny escalation within one process.
 const out1 = { args: { command: 'git push --force origin main' } }
@@ -129,26 +227,68 @@ try {
 }
 check('verification boundary warns then denies', boundaryDenied)
 
-await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 't4' }, { args: { filePath: 'src/verified.ts', content: 'x' } })
-await hooks['tool.execute.after'](
+// Core rule types and metadata are evaluated by the same bundled pipeline.
+const checkRule = async (tool, args, id) => {
+  await hooks['tool.execute.before']({ tool, sessionID: id }, { args })
+  let denied = false
+  try { await hooks['tool.execute.before']({ tool, sessionID: id }, { args }) } catch (e) { denied = e.message.startsWith('[Keel]') }
+  return denied
+}
+checkRule('WriteFile', { filePath: 'secrets/key', operation: 'write' }, 'types-1')
+let filesystemDenied = false
+try { await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 'types-1' }, { args: { filePath: 'secrets/key', operation: 'write' } }) } catch (e) { filesystemDenied = e.message.startsWith('[Keel]') }
+check('filesystem first warns then denies', filesystemDenied)
+let contentDenied = false
+await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 'types-2' }, { args: { content: 'PRIVATE_KEY' } })
+try { await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 'types-2' }, { args: { content: 'PRIVATE_KEY' } }) } catch (e) { contentDenied = e.message.startsWith('[Keel]') }
+check('content first warns then denies', contentDenied)
+let networkDenied = false
+await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-3' }, { args: { url: 'https://evil.example' } })
+try { await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-3' }, { args: { url: 'https://evil.example' } }) } catch (e) { networkDenied = e.message.startsWith('[Keel]') }
+check('network first warns then denies', networkDenied)
+await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } })
+let rateDenied = false
+await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } })
+try { await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } }) } catch (e) { rateDenied = e.message.startsWith('[Keel]') }
+check('rate first violation warns then denies', rateDenied)
+fs.writeFileSync(join(tmpHome, '.env'), 'PRIVATE_KEY=redacted\n')
+await hooks['tool.execute.before']({ tool: 'ReadFile', sessionID: 'types-5' }, { args: { filePath: join(tmpHome, '.env') } })
+let flowDenied = false
+await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-5' }, { args: { command: 'send' } })
+try { await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-5' }, { args: { command: 'send' } }) } catch (e) { flowDenied = e.message.startsWith('[Keel]') }
+check('flow first violation warns then denies', flowDenied)
+const cleanHooks = await plugin.server({ directory: join(tmpHome, 'clean') })
+let priorityAllowed = true
+try { await cleanHooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-6' }, { args: { command: 'priority-check' } }) } catch { priorityAllowed = false }
+check('priority metadata selects higher priority rule', priorityAllowed)
+let metadataAllowed = true
+for (const command of ['level-protected', 'ci-only', 'dangerous-action safe', 'reasoned-action']) {
+  try { await cleanHooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-7', reasoning: command === 'reasoned-action' ? 'approved' : '' }, { args: { command } }) } catch { metadataAllowed = false }
+}
+check('level context and unless metadata allow exemptions', metadataAllowed)
+
+const verificationHooks = await plugin.server({ directory: join(tmpHome, 'verification') })
+await verificationHooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 't4' }, { args: { filePath: 'src/verified.ts', content: 'x' } })
+await verificationHooks['tool.execute.after'](
   { tool: 'Bash', sessionID: 't4', callID: 'test-fail', args: { command: 'npm test' } },
   { title: 'npm test', output: 'failed', metadata: { exit: 1 } },
 )
 let failedTestStillPending = false
 try {
-  await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
+  await verificationHooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
+  await verificationHooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
 } catch (e) {
   failedTestStillPending = e.message.startsWith('[Keel]')
 }
 check('failed test does not satisfy obligation', failedTestStillPending)
 
-await hooks['tool.execute.after'](
+await verificationHooks['tool.execute.after'](
   { tool: 'Bash', sessionID: 't4', callID: 'test-pass', args: { command: 'npm test' } },
   { title: 'npm test', output: 'passed', metadata: { exit: 0 } },
 )
 let passedTestStillBlocked = false
 try {
-  await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
+  await verificationHooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
 } catch {
   passedTestStillBlocked = true
 }
@@ -192,6 +332,23 @@ check('session.compacting embedding', comp.context.some(c => c.includes('must ru
 
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))
+
+// When OpenCode is available, verify the actual global plugin auto-load path.
+// CI environments without OpenCode still retain the direct hook coverage above.
+const opencodeProbe = spawnSync('opencode', ['--version'], { encoding: 'utf8' })
+if (opencodeProbe.status === 0) {
+  const project = join(tmpHome, 'opencode-project')
+  fs.mkdirSync(join(tmpHome, '.opencode', 'plugins'), { recursive: true })
+  fs.mkdirSync(project, { recursive: true })
+  fs.copyFileSync(DIST, join(tmpHome, '.opencode', 'plugins', 'keel-enforce.js'))
+  const configProbe = spawnSync('opencode', ['debug', 'config'], {
+    cwd: project,
+    env: { ...process.env, HOME: tmpHome, XDG_CONFIG_HOME: join(tmpHome, '.config') },
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  check('OpenCode auto-load probe', configProbe.status === 0)
+}
 
 fs.rmSync(tmpHome, { recursive: true, force: true })
 if (failures > 0) {

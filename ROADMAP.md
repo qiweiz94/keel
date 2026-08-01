@@ -1,6 +1,6 @@
-# ai-enforce Roadmap
+# Keel Roadmap
 
-## Current State (v0.1.2)
+## Current State (v0.1.5)
 
 ### Implemented (10 CLI commands)
 
@@ -53,8 +53,8 @@
 
 ### Publish to npm
 
-- [ ] Fix npm 2FA publishing (current v0.1.0 on npm, need to publish v0.1.2)
-- [ ] Set up GitHub Actions for automated publishing
+- [x] Prepare public v1 package metadata, audits, tarball checks, and release workflow
+- [x] Set up GitHub Actions for automated publishing
 - [ ] Add semantic release workflow
 
 ### Community Launch Prep
@@ -79,7 +79,7 @@
 
 ### Testing
 
-- [ ] Add CLI package tests (currently 0 — only core package has tests)
+- [x] Add CLI package tests
 - [ ] Add reasoning trace analysis tests
 - [ ] Add anomaly detection tests
 - [ ] Add MCP gateway tests
@@ -94,4 +94,4 @@
 - MCP gateway only supports stdio upstream (no HTTP/SSE yet)
 - No CI/CD enforcement via native GitHub App
 - No Homebrew formula for `brew install ai-enforce`
-- Package.json version inconsistencies (0.1.0, 0.1.1, 0.1.2 across packages)
+- Package versions are coordinated by `scripts/check-release.mjs`
