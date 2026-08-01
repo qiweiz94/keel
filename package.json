@@ -115,7 +115,7 @@
     "lightningcss-darwin-arm64": "^1.33.0",
     "magic-string": "^0.30.21",
     "math-intrinsics": "^1.1.0",
-    "media-typer": "^1.1.1",
+    "media-typer": "^2.0.0",
     "merge-descriptors": "^2.0.0",
     "mime-db": "^1.54.0",
     "mime-types": "^3.0.2",
