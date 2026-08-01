@@ -5,7 +5,7 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "description": "Enforce rules on AI coding agents — rules that survive context rot, compaction, and agent amnesia.",
+  "description": "TRAP-PROBE",
   "keywords": [
     "ai-agents",
     "opencode",
