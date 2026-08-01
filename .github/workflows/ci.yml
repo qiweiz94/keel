@@ -35,4 +35,7 @@ jobs:
         env:
           CI: true
       - run: npm run lint
+      # The npm-shim retry test uses a POSIX shebang shim; the underlying
+      # check-published.mjs is what release.yml consumes (ubuntu-only).
       - run: npm run test:publish-check
+        if: matrix.os != 'windows-latest'
