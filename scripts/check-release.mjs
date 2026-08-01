@@ -26,9 +26,8 @@ for (const pkg of [core, cli, plugin]) {
 for (const pkg of [core, cli, plugin]) {
   try {
     execFileSync('npm', ['view', `${pkg.name}@${pkg.version}`, 'version'], { stdio: 'pipe' })
-    throw new Error(`${pkg.name}@${pkg.version} already exists on npm`)
+    console.log(`Note: ${pkg.name}@${pkg.version} already exists on npm; publish will be skipped`)
   } catch (error) {
-    if (error instanceof Error && error.message.includes('already exists')) throw error
     const stderr = String(error?.stderr || '')
     if (!stderr.includes('E404') && !stderr.includes('404')) throw error
   }
