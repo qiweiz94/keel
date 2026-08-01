@@ -86,6 +86,7 @@
 - [ ] Add receipt/signing tests
 - [ ] Add Rego/WASM engine tests
 - [ ] Add integration test for `keel init` + `keel check --ci`
+- [ ] Windows path semantics in core matcher (normalize path separators; negated-path rule tests currently fail on Windows)
 - [ ] Add MCP server integration test
 
 ### Known Issues
