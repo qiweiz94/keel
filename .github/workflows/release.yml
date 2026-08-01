@@ -43,15 +43,15 @@ jobs:
       - run: node scripts/check-tarballs.mjs
       - run: node scripts/check-release.mjs "$GITHUB_REF_NAME"
       - name: Publish core
-        run: npm publish --workspace=packages/core --access public --provenance
+        run: node scripts/publish-if-missing.mjs packages/core
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish CLI
-        run: npm publish --workspace=packages/cli --access public --provenance
+        run: node scripts/publish-if-missing.mjs packages/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish OpenCode plugin
-        run: npm publish --workspace=packages/opencode-plugin --access public --provenance
+        run: node scripts/publish-if-missing.mjs packages/opencode-plugin
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Verify published packages
