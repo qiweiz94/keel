@@ -19,7 +19,7 @@
     "build": "rm -rf ./dist ./src/core && cp -r ../core/src ./src/core && tsc",
     "test": "vitest run",
     "clean": "rm -rf dist",
-    "postinstall": "node ./dist/postinstall.js"
+    "postinstall": "node -e \"if (require('node:fs').existsSync('./dist/postinstall.js')) import('./dist/postinstall.js')\""
   },
   "dependencies": {
     "@get-keel/core": "^0.1.3",

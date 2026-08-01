@@ -24,6 +24,7 @@
   "scripts": {
     "build": "rm -rf dist && mkdir -p dist && npx esbuild src/plugin.ts --bundle --format=esm --platform=node --external:node:* --alias:yaml=../../node_modules/yaml/browser/index.js --outfile=dist/index.js && cp dist/index.js ../../packages/cli/templates/keel-enforce.js && cp src/index.d.ts dist/index.d.ts",
     "test": "node ./scripts/load-test.js",
+    "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },
   "license": "Apache-2.0",
