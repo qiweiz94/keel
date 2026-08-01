@@ -8,10 +8,26 @@ const root = new URL('..', import.meta.url)
 const packageNames = ['core', 'cli', 'opencode-plugin']
 const packages = packageNames.map(name => JSON.parse(readFileSync(new URL(`../packages/${name}/package.json`, import.meta.url), 'utf8')))
 
-for (const pkg of packages) {
-  const published = execFileSync('npm', ['view', `${pkg.name}@${pkg.version}`, 'version'], { encoding: 'utf8' }).trim()
-  if (published !== pkg.version) throw new Error(`${pkg.name}@${pkg.version} was not confirmed on npm`)
+const sleepSync = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+const maxAttempts = 10
+let confirmed = false
+for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  try {
+    for (const pkg of packages) {
+      const published = execFileSync('npm', ['view', `${pkg.name}@${pkg.version}`, 'version'], { encoding: 'utf8' }).trim()
+      if (published !== pkg.version) throw new Error(`${pkg.name}@${pkg.version} was not confirmed on npm`)
+    }
+    confirmed = true
+    break
+  } catch (err) {
+    if (attempt === maxAttempts) throw err
+    const delay = Math.min(60_000, 5_000 * 2 ** (attempt - 1))
+    console.error(`npm registry propagation pending (attempt ${attempt}/${maxAttempts}); retrying in ${delay / 1000}s: ${err.message}`)
+    sleepSync(delay)
+  }
 }
+if (!confirmed) throw new Error(`Failed to confirm published versions after ${maxAttempts} attempts`)
 
 const install = mkdtempSync(join(tmpdir(), 'keel-published-'))
 execFileSync('npm', ['init', '-y', '--prefix', install], { cwd: root, stdio: 'ignore' })
