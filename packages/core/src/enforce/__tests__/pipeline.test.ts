@@ -137,7 +137,19 @@ function input(tool: string, args: Record<string, unknown>, session = 'sequence-
   }
 }
 
+// Each test gets a private tmp file so this suite is safe to run in parallel
+// processes (the CLI package vendors a copy of these tests via the build).
+let tmpDir = ''
+function tmpFile(name: string): string {
+  if (!tmpDir) tmpDir = mkdtempSync(join(tmpdir(), 'keel-pipeline-'))
+  return join(tmpDir, name)
+}
+
 describe('EnforcementPipeline', () => {
+  afterAll(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+  })
+
   beforeAll(() => {
     // Do not let a developer's live kill switch affect unrelated unit tests.
     const sentinelPath = join(homedir(), '.keel', 'DISABLED')
@@ -405,7 +417,7 @@ rules:
     })
 
     it('reloads changed rules and fails closed for invalid replacements', async () => {
-      const sourcePath = '/tmp/keel-live-reload.yaml'
+      const sourcePath = tmpFile('live-reload.yaml')
       writeFileSync(sourcePath, `version: 1
 rules:
   - id: live-rule
@@ -639,7 +651,7 @@ rules:
     })
 
     it('tracks a sensitive read before blocking a network sink', async () => {
-      const sensitivePath = '/tmp/keel-flow-test.env'
+      const sensitivePath = tmpFile('flow-test.env')
       writeFileSync(sensitivePath, 'TOKEN=secret\n')
       const pipeline = makePipelineFromYaml(`version: 1
 rules:
@@ -657,7 +669,7 @@ rules:
     })
 
     it('matches semantic network sinks without losing explicit tool sinks', async () => {
-      const sensitivePath = '/tmp/keel-flow-network.env'
+      const sensitivePath = tmpFile('flow-network.env')
       writeFileSync(sensitivePath, 'TOKEN=secret\n')
       const pipeline = makePipelineFromYaml(`version: 1
 rules:
@@ -713,7 +725,7 @@ rules:
     })
 
     it('does not carry a first-warning state across rule versions', async () => {
-      const sourcePath = '/tmp/keel-versioned-rules.md'
+      const sourcePath = tmpFile('versioned-rules.md')
       const state = sharedStateManager()
       writeFileSync(sourcePath, 'version one')
       const yaml = `version: 1
