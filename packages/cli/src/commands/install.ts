@@ -116,7 +116,7 @@ rules:
     message: "Git history mutation — this rewrites shared history. Approval required."
   - id: publish-gate
     type: command
-    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
+    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer|git push.*[ \t](--delete|-d)( |$)"
     action: prompt
     level: sprint
     priority: 80

@@ -188,6 +188,7 @@ export async function evaluateToolCall(
  */
 export async function enforceCommand(options: {
   level?: string
+  persist?: boolean
   action?: string
   depth?: string
   learn?: boolean
@@ -223,6 +224,19 @@ export async function enforceCommand(options: {
   if (!['sprint', 'balanced', 'protect'].includes(level)) {
     console.log(chalk.red(`Invalid level: "${level}". Use sprint, balanced, or protect.`))
     return
+  }
+  if (options.persist) {
+    const { writeRulesLevel } = await import('./level.js')
+    const { join } = await import('node:path')
+    const { existsSync } = await import('node:fs')
+    const rulesPath = join(dir, '.keel', 'rules.yaml')
+    if (!existsSync(rulesPath)) {
+      console.log(chalk.yellow('No .keel/rules.yaml found in the current directory.'))
+      console.log(chalk.cyan('  Run `keel enforce init` to create it, then retry with --persist.'))
+      return
+    }
+    writeRulesLevel(rulesPath, level)
+    console.log(chalk.green(`  ✓ Persisted project level: ${level} (${rulesPath})`))
   }
   if (action && !['report', 'warn', 'deny', 'fix'].includes(action)) {
     console.log(chalk.red(`Invalid action: "${action}". Use report, warn, deny, or fix.`))

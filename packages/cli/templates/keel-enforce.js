@@ -6672,7 +6672,9 @@ var EnforcementPipeline = class {
    */
   async evaluate(input) {
     const start = Date.now();
-    const depth = input.depth || (input.level === "protect" ? "deep" : input.level === "sprint" ? "fast" : "full");
+    this.checkRuleVersion();
+    const level = this.effectiveLevel(input);
+    const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const deepChecks = depth !== "fast";
     const reasoningChecks = depth === "deep";
     const sentinelPath = join2(homedir2(), ".keel", "DISABLED");
@@ -6684,13 +6686,15 @@ var EnforcementPipeline = class {
         } else {
           return this.result("allow", "", "Enforcement disabled via kill switch", start, false, 0);
         }
-      } catch {
-        throw new Error("Invalid Keel kill-switch state; run `keel enable` to recover");
+      } catch (err) {
+        if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+        } else {
+          throw new Error("Invalid Keel kill-switch state; run `keel enable` to recover");
+        }
       }
     }
-    this.checkRuleVersion();
     this.config.flowTracker.record(input, "");
-    const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context);
+    const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const statefulRules = rules.filter(
       (rule) => ["verification", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
     );
@@ -6860,7 +6864,7 @@ var EnforcementPipeline = class {
         continue;
       }
     }
-    if (reasoningChecks && (this.config.enableReasoningCheck || input.level === "protect") && input.reasoning) {
+    if (reasoningChecks && (this.config.enableReasoningCheck || level === "protect") && input.reasoning) {
       const dangerSignals = [
         /ignore.*(rule|policy|restrict)/i,
         /bypass.*(check|guard|protect)/i,
@@ -6886,7 +6890,7 @@ var EnforcementPipeline = class {
     return this.result("allow", "", "Allowed (no matching rule)", start, false, 0);
   }
   markVerificationSatisfied(input) {
-    const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context);
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
     for (const rule of rules) {
       if (rule.type === "verification") this.verificationTracker.markSatisfied(rule, input);
     }
@@ -6994,15 +6998,19 @@ var EnforcementPipeline = class {
     }
     return this.warn(input, rule, `${message} (action "${action}" is not supported by this integration)`, start, tier);
   }
+  effectiveLevel(input) {
+    const h = this.config.ruleHierarchy;
+    return h.project?.config?.level || h.global?.config?.level || input.level;
+  }
   effectiveAction(rule, input) {
     if (input.action_override) return input.action_override;
-    if ((this.config.defaultAction === "warn" || input.level === "sprint") && (rule.action === "deny" || rule.action === "block")) return "warn";
+    if ((this.config.defaultAction === "warn" || this.effectiveLevel(input) === "sprint") && (rule.action === "deny" || rule.action === "block")) return "warn";
     return rule.action;
   }
   cacheContext(input, depth) {
     return {
       cwd: input.cwd,
-      level: input.level,
+      level: this.effectiveLevel(input),
       context: input.context,
       depth,
       action: input.action_override,
@@ -7010,7 +7018,7 @@ var EnforcementPipeline = class {
     };
   }
   effectiveDepth(input) {
-    return input.depth || (input.level === "protect" ? "deep" : input.level === "sprint" ? "fast" : "full");
+    return input.depth || (this.effectiveLevel(input) === "protect" ? "deep" : this.effectiveLevel(input) === "sprint" ? "fast" : "full");
   }
   matchesRulePattern(pattern, value) {
     try {
@@ -7028,7 +7036,7 @@ var EnforcementPipeline = class {
     if (normalized.includes("**")) {
       const regex = "^" + normalized.split("**").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[^/]*")).join(".*") + "$";
       try {
-        if (new RegExp(regex).test(value)) return true;
+        return new RegExp(regex).test(value);
       } catch {
         return false;
       }
@@ -7705,7 +7713,7 @@ rules:
     message: "Git history mutation \u2014 this rewrites shared history. Approval required."
   - id: publish-gate
     type: command
-    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
+    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer|git push.*[ 	](--delete|-d)( |$)"
     action: prompt
     level: sprint
     priority: 80

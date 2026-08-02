@@ -330,6 +330,61 @@ const comp = { context: [] }
 await hooks['experimental.session.compacting']({ sessionID: 't1' }, comp)
 check('session.compacting embedding', comp.context.some(c => c.includes('must run tests')))
 
+// Speed dial: config.level is picked up live on the next tool call, and
+// per-rule minimum levels gate activation (balanced default → inactive at
+// sprint; level: protect → active only at protect; deny downgraded to warn
+// at sprint).
+const dialHome = join(tmpHome, 'dial')
+fs.mkdirSync(join(dialHome, '.keel'), { recursive: true })
+const dialRules = (level, ids) => `version: 1
+level: ${level}
+rules:
+  - id: ${ids[0]}
+    type: command
+    match: "dial-balanced-token"
+    action: deny
+    message: "dial balanced token"
+  - id: ${ids[1]}
+    type: command
+    match: "dial-sprint-token"
+    level: sprint
+    action: deny
+    message: "dial sprint token"
+  - id: ${ids[2]}
+    type: command
+    match: "dial-protect-token"
+    level: protect
+    action: deny
+    message: "dial protect token"
+`
+const dialCall = async (sessionId, command) => {
+  try {
+    await dialHooks['tool.execute.before']({ tool: 'Bash', sessionID: sessionId }, { args: { command } })
+    return 'allowed'
+  } catch (e) {
+    return e.message.startsWith('[Keel]') ? 'denied' : 'allowed'
+  }
+}
+let dialHooks = await plugin.server({ directory: dialHome })
+
+fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('balanced', ['b-warn', 'b-sprint', 'b-protect']))
+const b1 = await dialCall('dial-b1', 'dial-balanced-token')
+const b2 = await dialCall('dial-b2', 'dial-balanced-token')
+check('balanced: deny warns then blocks', b1 === 'allowed' && b2 === 'denied')
+check('balanced: sprint-level rule stays active', (await dialCall('dial-b3', 'dial-sprint-token')) === 'allowed')
+check('balanced: protect-level rule inactive', (await dialCall('dial-b4', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-b5', 'dial-protect-token')) === 'allowed')
+
+fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('sprint', ['s-warn', 's-sprint', 's-protect']))
+check('sprint: unleveled deny rule inactive', (await dialCall('dial-s1', 'dial-balanced-token')) === 'allowed' && (await dialCall('dial-s2', 'dial-balanced-token')) === 'allowed')
+check('sprint: deny downgraded to warn', (await dialCall('dial-s3', 'dial-sprint-token')) === 'allowed' && (await dialCall('dial-s4', 'dial-sprint-token')) === 'allowed')
+
+fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect']))
+const p1 = await dialCall('dial-p1', 'dial-balanced-token')
+const p2 = await dialCall('dial-p2', 'dial-balanced-token')
+check('protect: deny warns then blocks', p1 === 'allowed' && p2 === 'denied')
+check('protect: protect-level rule active', (await dialCall('dial-p3', 'dial-protect-token')) === 'allowed')
+check('protect: protect-level rule blocks on repeat', (await dialCall('dial-p4', 'dial-protect-token')) === 'denied')
+
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))
 

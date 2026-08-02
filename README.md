@@ -147,6 +147,117 @@ receipts signed with the old key will no longer verify.
 Standing requirements go in `~/.keel/requirements.md` (and optionally
 `.keel/requirements.md` per project) — injected into the system prompt every turn.
 
+## Protection Levels (the speed dial)
+
+Three levels tune how much friction keel applies. Set the dial with:
+
+```bash
+keel level               # show the current level (global + project)
+keel level protect       # set the global dial (writes ~/.keel/rules.yaml)
+keel level sprint --project   # set the project dial (.keel/rules.yaml)
+keel enforce --level=protect --persist   # same, from the enforce command
+```
+
+The OpenCode plugin reads the level on every tool call, so the change takes
+effect immediately — no restart.
+
+| Level | deny/block rules | Depth of checks | Use when |
+|-------|------------------|-----------------|----------|
+| `sprint` | downgraded to warnings | fast — content/sequence/flow/reasoning skipped | iterating quickly, agent is trusted-ish |
+| `balanced` | warn once, then block on repeat (default) | full — content checks on | day-to-day work |
+| `protect` | block after a first warning | deep — sequence, flow, and reasoning checks on | irreversible or high-risk work |
+
+`prompt` approval gates (`git-history-rewrite`, `publish-gate`, ...) are
+**never downgraded** at any level — irreversible operations always require
+`keel allow <rule-id> --once`.
+
+Rules can declare their own minimum level:
+
+```yaml
+- id: my-strict-rule
+  type: command
+  match: "something"
+  action: deny
+  level: protect   # only active when the dial is at protect
+```
+
+Per-rule `level` is a **minimum**: `level: sprint` means "active at sprint and
+above" (i.e. everywhere), `level: protect` means "only at protect".
+
+## Writing Rules
+
+Rules are YAML in `~/.keel/rules.yaml` (global), `.keel/rules.yaml` (project),
+or local override files. Project rules override global rules with the same id.
+
+```yaml
+version: 1
+level: balanced
+rules:
+  - id: no-force-push
+    type: command
+    match: "git push --force(?!-with-lease)"
+    action: deny
+    message: "Use --force-with-lease instead of --force."
+```
+
+Common fields: `id` (unique), `type`, `action`, `message`, and optionally
+`level` (minimum dial level), `priority` (higher = evaluated first),
+`context` (`local`, `ci`, or both).
+
+| Type | What it matches | Key fields |
+|------|-----------------|------------|
+| `command` | tool command strings | `match` (regex), `match_prefix`, `match_regex` |
+| `filesystem` | file paths and operations | `paths`, `operations` (read/write/delete/overwrite/glob), `exclude` |
+| `content` | file contents (balanced+) | `patterns` (`regex`/`prefix`) |
+| `network` | outbound hosts | `match`, `except` (allowlisted domains) |
+| `env` | environment variables | `vars` |
+| `rate` | call frequency | `window_seconds`, `max_calls` |
+| `time` | scheduled windows | `schedule` |
+| `sequence` | step ordering (protect) | `steps` |
+| `flow` | data-flow sources→sinks (protect) | `sources`, `sinks` |
+| `session` | session duration | `max_duration_minutes` |
+| `verification` | evidence-before-action obligations | `trigger`, `satisfy`, `boundaries`, `verification_window_seconds` |
+| `context` | standing requirements | `message` |
+| `mcp` | MCP tool calls | `match` |
+
+Actions: `allow` (log), `warn` (first warn, then block), `deny` (warn once,
+block on repeat), `block` (always block), `prompt` (always block until
+`keel allow <id> --once`), `fix` (rewrite the command), `report` (log).
+
+Examples:
+
+```yaml
+# Block writes to secrets, allow reads
+- id: protect-env
+  type: filesystem
+  paths: ["**/.env", "**/*.pem"]
+  operations: [write, delete]
+  action: deny
+  message: "Secrets are read-only."
+
+# Require a successful test run before any commit
+- id: test-before-commit
+  type: verification
+  trigger: { tools: [WriteFile, edit], pattern: "src/" }
+  satisfy: { tools: [Bash], pattern: "(npm test|npm run test|vitest|jest)" }
+  boundaries:
+    commit: { pattern: "git commit", action: warn }
+  verification_window_seconds: 300
+  action: deny
+  message: "Source changes require a successful test run before commit."
+
+# Approve network egress, except known registries
+- id: no-external-network
+  type: network
+  match: "."
+  except: [api.github.com, registry.npmjs.org]
+  action: deny
+  message: "Block external network access except GitHub and npm."
+```
+
+After editing rules: `keel validate` checks syntax and conflicts. The plugin
+hot-reloads changed rules on the next tool call.
+
 ## Supported Agents
 
 | Agent | Integration | Enforced at | Status |

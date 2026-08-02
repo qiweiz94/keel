@@ -128,33 +128,43 @@ export class EnforcementPipeline {
    */
   async evaluate(input: EnforceInput): Promise<EnforceResult> {
     const start = Date.now()
-    const depth = input.depth || (input.level === 'protect' ? 'deep' : input.level === 'sprint' ? 'fast' : 'full')
+    // The hierarchy is reloaded below (checkRuleVersion); the active level is
+    // re-derived from the reloaded rules so the first call after a level change
+    // (keel level / enforce --persist) evaluates at the NEW level, not the
+    // stale caller-supplied one.
+    this.checkRuleVersion()
+    const level = this.effectiveLevel(input)
+    const depth = input.depth || (level === 'protect' ? 'deep' : level === 'sprint' ? 'fast' : 'full')
     const deepChecks = depth !== 'fast'
     const reasoningChecks = depth === 'deep'
 
     // Check global kill switch (sentinel file)
     const sentinelPath = join(homedir(), '.keel', 'DISABLED')
-      if (existsSync(sentinelPath)) {
-        try {
-          const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))
-          if (sentinel.expires_at && new Date(sentinel.expires_at) < new Date()) {
-            rmSync(sentinelPath)
-          } else {
-            return this.result('allow', '', 'Enforcement disabled via kill switch', start, false, 0)
+    if (existsSync(sentinelPath)) {
+      try {
+        const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))
+        if (sentinel.expires_at && new Date(sentinel.expires_at) < new Date()) {
+          rmSync(sentinelPath)
+        } else {
+          return this.result('allow', '', 'Enforcement disabled via kill switch', start, false, 0)
         }
-      } catch {
-        throw new Error('Invalid Keel kill-switch state; run `keel enable` to recover')
+      } catch (err) {
+        // ENOENT is a race: the sentinel was removed by another process between
+        // existsSync and readFileSync — treat as not-disabled, not as corruption.
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          // not disabled
+        } else {
+          throw new Error('Invalid Keel kill-switch state; run `keel enable` to recover')
+        }
       }
     }
-
-    this.checkRuleVersion()
 
     // Flow tracking observes every action, not only actions that already
     // violated another rule. This lets a later sink see sensitive reads.
     this.config.flowTracker.record(input, '')
 
     // Get merged rules for current level and context
-    const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context)
+    const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const statefulRules = rules.filter(rule =>
       ['verification', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow'].includes(rule.type))
@@ -379,7 +389,7 @@ export class EnforcementPipeline {
     }
 
     // ── Tier 7: Reasoning coherence check ──
-    if (reasoningChecks && (this.config.enableReasoningCheck || input.level === 'protect') && input.reasoning) {
+    if (reasoningChecks && (this.config.enableReasoningCheck || level === 'protect') && input.reasoning) {
       // Simple heuristic: if agent is doing something it shouldn't
       const dangerSignals = [
         /ignore.*(rule|policy|restrict)/i,
@@ -410,7 +420,7 @@ export class EnforcementPipeline {
   }
 
   markVerificationSatisfied(input: EnforceInput): void {
-    const rules = mergeRules(this.config.ruleHierarchy, input.level, input.context)
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
     for (const rule of rules) {
       if (rule.type === 'verification') this.verificationTracker.markSatisfied(rule, input)
     }
@@ -536,16 +546,21 @@ export class EnforcementPipeline {
     return this.warn(input, rule, `${message} (action "${action}" is not supported by this integration)`, start, tier)
   }
 
+  private effectiveLevel(input: EnforceInput): ProtectionLevel {
+    const h = this.config.ruleHierarchy
+    return (h.project?.config?.level || h.global?.config?.level || input.level) as ProtectionLevel
+  }
+
   private effectiveAction(rule: KeelRule, input: EnforceInput): EnforcementAction {
     if (input.action_override) return input.action_override
-    if ((this.config.defaultAction === 'warn' || input.level === 'sprint') && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
+    if ((this.config.defaultAction === 'warn' || this.effectiveLevel(input) === 'sprint') && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
     return rule.action
   }
 
   private cacheContext(input: EnforceInput, depth: string): CacheContext {
     return {
       cwd: input.cwd,
-      level: input.level,
+      level: this.effectiveLevel(input),
       context: input.context,
       depth,
       action: input.action_override,
@@ -554,7 +569,7 @@ export class EnforcementPipeline {
   }
 
   private effectiveDepth(input: EnforceInput): string {
-    return input.depth || (input.level === 'protect' ? 'deep' : input.level === 'sprint' ? 'fast' : 'full')
+    return input.depth || (this.effectiveLevel(input) === 'protect' ? 'deep' : this.effectiveLevel(input) === 'sprint' ? 'fast' : 'full')
   }
 
   private matchesRulePattern(pattern: string, value: string): boolean {
@@ -576,7 +591,7 @@ export class EnforcementPipeline {
         .split('**')
         .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '[^/]*'))
         .join('.*') + '$'
-      try { if (new RegExp(regex).test(value)) return true } catch { return false }
+      try { return new RegExp(regex).test(value) } catch { return false }
     }
     const prefix = normalized.replace(/\*\*/g, '').replace(/\*/g, '').replace(/\/$/, '')
     return value === prefix || value.startsWith(prefix + '/') || value.includes(normalized.replace(/\*/g, ''))

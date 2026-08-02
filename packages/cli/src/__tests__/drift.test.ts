@@ -74,6 +74,10 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     expect(history).toContain('git reset (--hard|--soft|--keep|--merge|HEAD~)')
     const publish = plugin.get('publish-gate')?.match ?? ''
     expect(publish).toContain('gh release delete')
+    expect(publish).toContain('git push.*')
+    expect(new RegExp(publish).test('git push -d origin old-branch')).toBe(true)
+    expect(new RegExp(publish).test('git push origin --delete old-branch')).toBe(true)
+    expect(new RegExp(publish).test('git push origin development')).toBe(false)
   })
 
   it('built template is regenerated with the same rules', () => {

@@ -20,6 +20,7 @@ import { validateCommand } from './commands/validate.js'
 import { disableCommand, enableCommand } from './commands/disable.js'
 import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
+import { levelCommand } from './commands/level.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
 import { gatherCommand } from './commands/gather.js'
@@ -136,6 +137,7 @@ policy
 const enforceCmd = program.command('enforce')
   .description('Enforce rules on AI agent behavior')
   .option('--level <level>', 'Protection level: sprint, balanced, or protect', 'balanced')
+  .option('--persist', 'Persist the --level into the project rules.yaml (the speed dial)')
   .option('--action <action>', 'Override action: report, warn, deny, or fix')
   .option('--depth <depth>', 'Override depth: fast, full, or deep')
   .option('--learn', 'Learning mode: observe only, never block')
@@ -250,6 +252,13 @@ program
   .argument('<rule-id>', 'Rule ID to override')
   .option('--once', 'Override for 5 minutes (default: 24 hours)')
   .action(allowCommand)
+
+program
+  .command('level')
+  .description('Show or set the protection level (the speed dial)')
+  .argument('[level]', 'sprint, balanced, or protect')
+  .option('--project', 'Set the project level (.keel/rules.yaml) instead of global')
+  .action((levelArg, options) => levelCommand(options, levelArg))
 
 program.parse(process.argv)
 
