@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased
+## 0.1.9 (2026-08-02)
+
+### Added
+
+- `keel level <sprint|balanced|protect>` and `keel enforce --persist` —
+  protection levels that rebalance rule severity and enforcement depth without
+  editing rules files. Levels compose with per-rule `level:` minimums.
+- Agentic threat-model test suite (21 tests) exercising the shipped default
+  rules end-to-end: destructive commands, git history rewrite, registry and
+  release actions, product identity, claimed-done-without-evidence, speed dial,
+  and custom filesystem/rate rules.
+
+### Fixed
+
+- Level changes now apply on the first evaluation after the change (the active
+  level was previously captured before rule reload, so the first call after
+  `keel level` still ran at the old level).
+- `publish-gate` now also blocks `git push --delete/-d` (backslash-free,
+  YAML-safe pattern).
+- `**` globs no longer fall through to legacy prefix matching after a failed
+  match (`.env` no longer matches `.env.example`).
+- Kill-switch sentinel read treats ENOENT (concurrent disable/removal) as
+  "not disabled" instead of throwing mid-evaluation.
+
+## 0.1.8 (2026-08-02)
 
 ### Fixed
 
