@@ -13,6 +13,7 @@ import {
   hashRulesFile,
   validateRules,
   projectAuditArgs,
+  createReceipt,
 } from '../../core/src/keel-core.js'
 
 const KEEL_DIR = path.join(os.homedir(), '.keel')
@@ -79,9 +80,23 @@ rules:
   - id: re-inject-at-thresholds
     type: context
     message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
+  - id: git-history-rewrite
+    type: command
+    match: "git filter-branch|git rebase (--onto|--root)|git reset --hard|git commit --amend|git stash (drop|clear)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Git history mutation — this rewrites shared history. Approval required."
+  - id: publish-gate
+    type: command
+    match: "npm publish|npm unpublish|gh release create|gh repo delete|gh repo transfer"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Publishing or deleting registry artifacts — approval required."
   - id: verify-before-irreversible
     type: command
-    match: "gh repo delete|gh repo transfer|npm unpublish|git push --force(?!-with-lease)|rm -rf (?!.*node_modules)"
+    match: "git push --force(?!-with-lease)|rm -rf (?!.*(node_modules|/tmp/|/var/tmp/|Trash))"
     action: warn
     message: "Irreversible action — verify inbound references before proceeding."
 `
@@ -236,7 +251,14 @@ export default {
         }
         verificationWarnings.add(key)
       }
-      if (result.action === 'deny' || result.action === 'block') throw new Error(`[Keel] ${result.rule_id}: ${result.message}`)
+      if (result.action === 'deny' || result.action === 'block' || result.action === 'prompt') {
+        // Signed-receipt ledger: every gated/blocked action emits an offline-
+        // verifiable, hash-chained receipt (`keel verify` reads the same dir).
+        try {
+          createReceipt('opencode-plugin', input?.tool || 'unknown', projectAuditArgs(args), result.action, result.rule_id || 'unknown', 'keel', input?.sessionID)
+        } catch {}
+        throw new Error(`[Keel] ${result.rule_id}: ${result.message}`)
+      }
     }
 
     return {

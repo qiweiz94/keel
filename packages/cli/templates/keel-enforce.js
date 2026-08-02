@@ -2490,8 +2490,8 @@ var float2 = {
 // ../../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
 function intResolve2(str, offset, radix, { intAsBigInt }) {
-  const sign = str[0];
-  if (sign === "-" || sign === "+")
+  const sign2 = str[0];
+  if (sign2 === "-" || sign2 === "+")
     offset += 1;
   str = str.substring(offset).replace(/_/g, "");
   if (intAsBigInt) {
@@ -2507,10 +2507,10 @@ function intResolve2(str, offset, radix, { intAsBigInt }) {
         break;
     }
     const n2 = BigInt(str);
-    return sign === "-" ? BigInt(-1) * n2 : n2;
+    return sign2 === "-" ? BigInt(-1) * n2 : n2;
   }
   const n = parseInt(str, radix);
-  return sign === "-" ? -1 * n : n;
+  return sign2 === "-" ? -1 * n : n;
 }
 function intStringify2(node, radix, prefix) {
   const { value } = node;
@@ -2637,11 +2637,11 @@ var set = {
 
 // ../../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
 function parseSexagesimal(str, asBigInt) {
-  const sign = str[0];
-  const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
+  const sign2 = str[0];
+  const parts = sign2 === "-" || sign2 === "+" ? str.substring(1) : str;
   const num = (n) => asBigInt ? BigInt(n) : Number(n);
   const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
-  return sign === "-" ? num(-1) * res : res;
+  return sign2 === "-" ? num(-1) * res : res;
 }
 function stringifySexagesimal(node) {
   let { value } = node;
@@ -2650,9 +2650,9 @@ function stringifySexagesimal(node) {
     num = (n) => BigInt(n);
   else if (isNaN(value) || !isFinite(value))
     return stringifyNumber(node);
-  let sign = "";
+  let sign2 = "";
   if (value < 0) {
-    sign = "-";
+    sign2 = "-";
     value *= num(-1);
   }
   const _60 = num(60);
@@ -2667,7 +2667,7 @@ function stringifySexagesimal(node) {
       parts.unshift(value);
     }
   }
-  return sign + parts.map((n) => String(n).padStart(2, "0")).join(":").replace(/000000\d*$/, "");
+  return sign2 + parts.map((n) => String(n).padStart(2, "0")).join(":").replace(/000000\d*$/, "");
 }
 var intTime = {
   identify: (value) => typeof value === "bigint" || Number.isInteger(value),
@@ -6694,6 +6694,7 @@ var EnforcementPipeline = class {
     const statefulRules = rules.filter(
       (rule) => ["verification", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
     );
+    const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
       const maxWindow = Math.max(...statefulRules.map((rule) => rule.sequence_window_seconds || rule.window_seconds || 60));
       this.config.sequenceDetector.setWindow(maxWindow * 1e3);
@@ -6709,7 +6710,7 @@ var EnforcementPipeline = class {
         }
       }
     }
-    const cached = statefulRules.length || input.action_override ? null : this.config.cache.get(
+    const cached = statefulRules.length || gatedRules.length || input.action_override ? null : this.config.cache.get(
       input.tool,
       input.args,
       this.config.ruleVersion,
@@ -6874,7 +6875,7 @@ var EnforcementPipeline = class {
         }
       }
     }
-    if (!statefulRules.length) {
+    if (!statefulRules.length && !gatedRules.length) {
       this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
         verdict: "allow",
         rule_id: null,
@@ -6948,6 +6949,22 @@ var EnforcementPipeline = class {
     }
     return result;
   }
+  /**
+   * Approval gate (`action: prompt`). Behaves like a deny (blocks, tracks the
+   * circuit breaker, caches a deny verdict for override consumption) but is
+   * reported as `prompt` and always requires explicit user approval via
+   * `keel allow <id> --once`. Never escalates from warn-once — the first
+   * violation is already gated.
+   */
+  gate(input, rule, message, start, tier) {
+    const blocked = this.block(input, rule, message, start, tier);
+    return {
+      ...blocked,
+      action: "prompt",
+      message: `${blocked.message}
+   \u2192 Approval required: run \`keel allow ${rule.id} --once\` to approve this action.`
+    };
+  }
   violation(input, rule, message, start, tier, warningKey = rule.id) {
     if (this.overrideStore.consume(rule.id)) {
       return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
@@ -6962,6 +6979,9 @@ var EnforcementPipeline = class {
     }
     if (action === "warn" || action === "allow" || action === "report") {
       return action === "warn" ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier);
+    }
+    if (action === "prompt") {
+      return this.gate(input, rule, message, start, tier);
     }
     if (action === "deny" || action === "block") {
       const first = this.isFirstWarning(warningKey);
@@ -7005,6 +7025,14 @@ var EnforcementPipeline = class {
   }
   pathMatches(value, pattern) {
     const normalized = pattern;
+    if (normalized.includes("**")) {
+      const regex = "^" + normalized.split("**").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[^/]*")).join(".*") + "$";
+      try {
+        if (new RegExp(regex).test(value)) return true;
+      } catch {
+        return false;
+      }
+    }
     const prefix = normalized.replace(/\*\*/g, "").replace(/\*/g, "").replace(/\/$/, "");
     return value === prefix || value.startsWith(prefix + "/") || value.includes(normalized.replace(/\*/g, ""));
   }
@@ -7389,11 +7417,112 @@ function projectAuditArgs(args) {
   ]));
 }
 
-// ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync7, writeFileSync as writeFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync4, renameSync as renameSync2 } from "node:fs";
+// ../core/src/receipts.ts
+import {
+  sign,
+  verify,
+  generateKeyPairSync,
+  createPrivateKey,
+  createPublicKey,
+  createHash as createHash2,
+  randomUUID
+} from "node:crypto";
+import { existsSync as existsSync7, readFileSync as readFileSync7, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, appendFileSync as appendFileSync2 } from "node:fs";
 import { join as join4 } from "node:path";
+var signingKey = null;
+function initReceiptKey() {
+  if (signingKey) return signingKey;
+  const envKey = process.env.AI_ENFORCE_RECEIPT_KEY;
+  if (envKey) {
+    try {
+      const parsed = JSON.parse(envKey);
+      if (parsed && parsed.kid) {
+        signingKey = parsed;
+        return parsed;
+      }
+    } catch {
+    }
+  }
+  const keyDir = join4(process.cwd(), ".ai-enforce");
+  const keyPath = join4(keyDir, "receipt-key.json");
+  if (existsSync7(keyPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync7(keyPath, "utf-8"));
+      if (parsed && parsed.kid) {
+        signingKey = parsed;
+        return parsed;
+      }
+    } catch {
+    }
+  }
+  const kp = generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "der" },
+    privateKeyEncoding: { type: "pkcs8", format: "der" }
+  });
+  const privJwk = createPrivateKey({ key: kp.privateKey, format: "der", type: "pkcs8" }).export({ format: "jwk" });
+  const pubJwk = createPublicKey({ key: kp.publicKey, format: "der", type: "spki" }).export({ format: "jwk" });
+  const kid = createHash2("sha256").update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: pubJwk.x })).digest("base64url");
+  const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
+  signingKey = newKey;
+  try {
+    if (!existsSync7(keyDir)) mkdirSync4(keyDir, { recursive: true });
+    writeFileSync4(keyPath, JSON.stringify(newKey), { mode: 384 });
+  } catch {
+  }
+  return signingKey;
+}
+var receiptChain = /* @__PURE__ */ new Map();
+function receiptsLogPath() {
+  return join4(process.cwd(), ".ai-enforce", "receipts", "receipts.log");
+}
+function loadReceiptChainHead(session) {
+  try {
+    const lines = readFileSync7(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const r = JSON.parse(lines[i]);
+      if ((r.session ?? "default") !== session) continue;
+      return r.receipt_hash ?? null;
+    }
+  } catch {
+  }
+  return null;
+}
+function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, sessionName) {
+  initReceiptKey();
+  const session = sessionName || process.env.KEEL_SESSION_ID || "default";
+  if (!receiptChain.has(session)) receiptChain.set(session, loadReceiptChainHead(session));
+  const argsHash = createHash2("sha256").update(JSON.stringify(args)).digest("hex");
+  const receipt = {
+    version: "action-receipt/v1",
+    id: randomUUID(),
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    agent_id: agentId,
+    session,
+    action: { tool: toolName, args_hash: argsHash },
+    decision: { verdict, rule_name: ruleName, policy_name: policyName },
+    previous_receipt_hash: receiptChain.get(session),
+    receipt_hash: ""
+  };
+  const { receipt_hash: _, signature: _s, ...toHash } = receipt;
+  receipt.receipt_hash = createHash2("sha256").update(JSON.stringify(toHash)).digest("hex");
+  const key = signingKey;
+  const privateKey = createPrivateKey({ key: key.privateJwk, format: "jwk" });
+  receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
+  receiptChain.set(session, receipt.receipt_hash);
+  try {
+    const dir = join4(process.cwd(), ".ai-enforce", "receipts");
+    if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
+    appendFileSync2(join4(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+  } catch {
+  }
+  return receipt;
+}
+
+// ../core/src/enforce/state-manager.ts
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync2 } from "node:fs";
+import { join as join5 } from "node:path";
 import { homedir as homedir4 } from "node:os";
-var STATE_DIR = join4(homedir4(), ".keel", "state");
+var STATE_DIR = join5(homedir4(), ".keel", "state");
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -7404,13 +7533,13 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join4(STATE_DIR, `${name}.json`);
+    return join5(STATE_DIR, `${name}.json`);
   }
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
-      if (existsSync7(p)) {
-        return JSON.parse(readFileSync7(p, "utf-8"));
+      if (existsSync8(p)) {
+        return JSON.parse(readFileSync8(p, "utf-8"));
       }
     } catch {
     }
@@ -7418,10 +7547,10 @@ var StateManager = class {
   }
   saveFile(name, data) {
     try {
-      mkdirSync4(STATE_DIR, { recursive: true });
+      mkdirSync5(STATE_DIR, { recursive: true });
       const p = this.statePath(name);
       const tmp = p + ".tmp";
-      writeFileSync4(tmp, JSON.stringify(data));
+      writeFileSync5(tmp, JSON.stringify(data));
       renameSync2(tmp, p);
     } catch {
     }
@@ -7567,9 +7696,23 @@ rules:
   - id: re-inject-at-thresholds
     type: context
     message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
+  - id: git-history-rewrite
+    type: command
+    match: "git filter-branch|git rebase (--onto|--root)|git reset --hard|git commit --amend|git stash (drop|clear)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Git history mutation \u2014 this rewrites shared history. Approval required."
+  - id: publish-gate
+    type: command
+    match: "npm publish|npm unpublish|gh release create|gh repo delete|gh repo transfer"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Publishing or deleting registry artifacts \u2014 approval required."
   - id: verify-before-irreversible
     type: command
-    match: "gh repo delete|gh repo transfer|npm unpublish|git push --force(?!-with-lease)|rm -rf (?!.*node_modules)"
+    match: "git push --force(?!-with-lease)|rm -rf (?!.*(node_modules|/tmp/|/var/tmp/|Trash))"
     action: warn
     message: "Irreversible action \u2014 verify inbound references before proceeding."
 `;
@@ -7750,7 +7893,13 @@ var plugin_default = {
         }
         verificationWarnings.add(key);
       }
-      if (result.action === "deny" || result.action === "block") throw new Error(`[Keel] ${result.rule_id}: ${result.message}`);
+      if (result.action === "deny" || result.action === "block" || result.action === "prompt") {
+        try {
+          createReceipt("opencode-plugin", input?.tool || "unknown", projectAuditArgs(args), result.action, result.rule_id || "unknown", "keel", input?.sessionID);
+        } catch {
+        }
+        throw new Error(`[Keel] ${result.rule_id}: ${result.message}`);
+      }
     };
     return {
       "tool.execute.before": async (input, output) => {

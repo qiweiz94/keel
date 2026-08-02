@@ -9,6 +9,7 @@ export { SequenceDetector } from './enforce/sequencer.js'
 export { FlowTracker } from './enforce/flow-tracker.js'
 export { AuditLog } from './enforce/audit.js'
 export { Suggester } from './enforce/suggester.js'
+export { createReceipt } from './receipts.js'
 export {
   parseRulesFile,
   parseRulesContent,

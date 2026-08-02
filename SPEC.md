@@ -167,6 +167,7 @@ Three knobs, independently adjustable:
 | `report` | Log only, no user-visible feedback |
 | `warn` | Show warning, do not block |
 | `deny` | Block action, agent retries |
+| `prompt` | Approval gate — always blocks and requires explicit approval (`keel allow <id> --once`). Never warns-once; never downgraded by protection level. Intended for structurally irreversible operations. |
 | `fix` | Modify arguments to make action safe (e.g., strip `--force`) |
 
 **Knob 3: Enforcement Depth**
@@ -287,7 +288,7 @@ rules:
 | `level` | No | `sprint` \| `balanced` \| `protect` (default: `balanced`) |
 | `scope` | No | `global` \| `user` \| `project` \| `folder` \| `session` |
 | `context` | No | `[local]` \| `[ci]` \| `[local, ci]` (default: both) |
-| `action` | Yes for enforcing rules; optional for context/meta/session marker rules | `report` \| `warn` \| `deny` \| `fix` |
+| `action` | Yes for enforcing rules; optional for context/meta/session marker rules | `report` \| `warn` \| `deny` \| `prompt` \| `fix` |
 | `message` | Yes | Human-readable description |
 | `priority` | No | Higher = evaluated first (default: 0) |
 | `unless_reasoning` | No | Regex — allow if agent's reasoning matches |

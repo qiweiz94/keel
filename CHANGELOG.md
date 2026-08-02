@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- `action: prompt` — first-class approval gate. Always blocks (no warn-once
+  escalation, never downgraded by protection level) and requires explicit
+  approval via `keel allow <rule-id> --once`. Reported as `prompt` in audit
+  and CLI output; cached verdicts are skipped so overrides are honored on
+  every attempt.
+- Default rules (plugin + `keel enforce init` template): `git-history-rewrite`
+  and `publish-gate` gate structurally irreversible operations
+  (`git filter-branch`, `git rebase --onto/--root`, `git reset --hard`,
+  `git commit --amend`, `git stash drop/clear`, `npm publish/unpublish`,
+  `gh release create`, `gh repo delete/transfer`) behind `prompt`.
+- The OpenCode plugin emits signed, hash-chained receipts (`keel verify`) for
+  every gated or blocked action.
+- Core path matcher supports `**` multi-segment globs (e.g. `**/*.log`).
+
+### Changed
+
+- `verify-before-irreversible` default rule no longer fires on `rm -rf` of
+  temp/cache/trash paths (`/tmp/`, `/var/tmp/`, `Trash`, `node_modules`) —
+  fixes a common false positive on disposable directories. `rm -rf /` and
+  `rm -rf ~` remain hard denies.
+
 ## 0.1.6 (2026-08-01)
 
 Public-readiness hardening: docs, licensing, tooling, and cross-platform CI.

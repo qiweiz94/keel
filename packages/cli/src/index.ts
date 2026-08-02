@@ -292,6 +292,20 @@ rules:
     action: deny
     level: protect
     message: "Block external network access except GitHub and npm"
+  - id: git-history-rewrite
+    type: command
+    match: "git filter-branch|git rebase (--onto|--root)|git reset --hard|git commit --amend|git stash (drop|clear)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Git history mutation — this rewrites shared history. Approval required."
+  - id: publish-gate
+    type: command
+    match: "npm publish|npm unpublish|gh release create|gh repo delete|gh repo transfer"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Publishing or deleting registry artifacts — approval required."
 `
   if (existsSync(rulesPath)) {
     console.log('.keel/rules.yaml already exists.')

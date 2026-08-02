@@ -159,6 +159,10 @@ export class EnforcementPipeline {
       ['verification', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow'].includes(rule.type))
     )
+    // Approval-gated rules are re-evaluated on every call: the user may grant
+    // a one-time override (`keel allow <id> --once`) between attempts, so a
+    // cached verdict would bypass fresh override checks.
+    const gatedRules = rules.filter(rule => this.effectiveAction(rule, input) === 'prompt')
     if (statefulRules.length) {
       const maxWindow = Math.max(...statefulRules.map(rule => rule.sequence_window_seconds || rule.window_seconds || 60))
       this.config.sequenceDetector.setWindow(maxWindow * 1000)
@@ -180,7 +184,7 @@ export class EnforcementPipeline {
     }
 
     // ── Tier 1: Cache check ──
-    const cached = statefulRules.length || input.action_override ? null : this.config.cache.get(
+    const cached = statefulRules.length || gatedRules.length || input.action_override ? null : this.config.cache.get(
       input.tool, input.args, this.config.ruleVersion, this.cacheContext(input, depth),
     )
     if (cached) {
@@ -393,7 +397,7 @@ export class EnforcementPipeline {
     }
 
     // ── Allowed — cache and return ──
-    if (!statefulRules.length) {
+    if (!statefulRules.length && !gatedRules.length) {
       this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
         verdict: 'allow',
         rule_id: null,
@@ -484,6 +488,22 @@ export class EnforcementPipeline {
     return result
   }
 
+  /**
+   * Approval gate (`action: prompt`). Behaves like a deny (blocks, tracks the
+   * circuit breaker, caches a deny verdict for override consumption) but is
+   * reported as `prompt` and always requires explicit user approval via
+   * `keel allow <id> --once`. Never escalates from warn-once — the first
+   * violation is already gated.
+   */
+  private gate(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier): EnforceResult {
+    const blocked = this.block(input, rule, message, start, tier)
+    return {
+      ...blocked,
+      action: 'prompt',
+      message: `${blocked.message}\n   → Approval required: run \`keel allow ${rule.id} --once\` to approve this action.`,
+    }
+  }
+
   private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id): EnforceResult {
     if (this.overrideStore.consume(rule.id)) {
       return this.result('allow', rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier)
@@ -498,6 +518,11 @@ export class EnforcementPipeline {
     }
     if (action === 'warn' || action === 'allow' || action === 'report') {
       return action === 'warn' ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier)
+    }
+    if (action === 'prompt') {
+      // Approval gate: always blocks, no first-warn escalation. Never auto-
+      // downgraded by sprint level — irreversible operations stay gated.
+      return this.gate(input, rule, message, start, tier)
     }
     if (action === 'deny' || action === 'block') {
       const first = this.isFirstWarning(warningKey)
@@ -543,6 +568,16 @@ export class EnforcementPipeline {
 
   private pathMatches(value: string, pattern: string): boolean {
     const normalized = pattern
+    // `**` matches across any number of segments; `*` matches one segment.
+    // Only engaged for patterns that use `**`, keeping the legacy prefix and
+    // includes semantics for simple patterns (existing rules depend on them).
+    if (normalized.includes('**')) {
+      const regex = '^' + normalized
+        .split('**')
+        .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '[^/]*'))
+        .join('.*') + '$'
+      try { if (new RegExp(regex).test(value)) return true } catch { return false }
+    }
     const prefix = normalized.replace(/\*\*/g, '').replace(/\*/g, '').replace(/\/$/, '')
     return value === prefix || value.startsWith(prefix + '/') || value.includes(normalized.replace(/\*/g, ''))
   }

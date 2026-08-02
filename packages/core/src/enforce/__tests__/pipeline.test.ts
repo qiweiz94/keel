@@ -303,6 +303,107 @@ rules:
       expect((await call()).action).toBe('allow')
     })
 
+    it('gates a prompt action on first and every attempt (no warn-once)', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: gate-history
+    type: command
+    match: "filter-branch"
+    action: prompt
+    message: "History mutation"
+`)
+      const first = await pipeline.evaluate(input('Bash', { command: 'git filter-branch' }))
+      expect(first.action).toBe('prompt')
+      expect(first.message).toContain('keel allow gate-history --once')
+      const second = await pipeline.evaluate(input('Bash', { command: 'git filter-branch' }))
+      expect(second.action).toBe('prompt')
+    })
+
+    it('consumes a one-time override for a prompt-gated action', async () => {
+      let available = true
+      const rules = parseRulesContent(`version: 1
+rules:
+  - id: gate-overridable
+    type: command
+    match: "filter-branch"
+    action: prompt
+    message: "History mutation"
+`, '/tmp/override-prompt-rules.yaml')
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(), ruleHierarchy: { global: null, user: null, project: rules, local: null },
+        ruleVersion: 1,
+        overrideStore: { consume: () => {
+          const result = available
+          available = false
+          return result
+        } },
+      })
+      expect((await pipeline.evaluate(input('Bash', { command: 'git filter-branch' }))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git filter-branch' }))).action).toBe('prompt')
+    })
+
+    it('does not downgrade prompt to warn at sprint level', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: gate-sprint
+    type: command
+    match: "filter-branch"
+    action: prompt
+    level: sprint
+    message: "History mutation"
+`)
+      const result = await pipeline.evaluate({ ...input('Bash', { command: 'git filter-branch' }), level: 'sprint' })
+      expect(result.action).toBe('prompt')
+    })
+
+    it('honors action_override for prompt-gated actions', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: gate-override
+    type: command
+    match: "filter-branch"
+    action: prompt
+    message: "History mutation"
+`)
+      const result = await pipeline.evaluate({ ...input('Bash', { command: 'git filter-branch' }), action_override: 'warn' })
+      expect(result.action).toBe('warn')
+    })
+
+    it('excludes temp paths from filesystem rules', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: guard-delete
+    type: filesystem
+    paths: ["*"]
+    operations: [delete]
+    exclude: ["/tmp/*"]
+    action: warn
+    message: "No deletions"
+`)
+      const temp = await pipeline.evaluate(input('Delete', { path: '/tmp/hooks-test', operation: 'delete' }))
+      expect(temp.action).toBe('allow')
+      const live = await pipeline.evaluate(input('Delete', { path: '/home/user/data', operation: 'delete' }))
+      expect(live.action).toBe('warn')
+    })
+
+    it('matches multi-segment globs with **', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: log-guard
+    type: filesystem
+    paths: ["**/*.log"]
+    operations: [delete]
+    action: warn
+    message: "Do not delete logs"
+`)
+      const nested = await pipeline.evaluate(input('Delete', { path: 'src/deep/x.log', operation: 'delete' }))
+      expect(nested.action).toBe('warn')
+      const source = await pipeline.evaluate(input('Delete', { path: 'src/x.ts', operation: 'delete' }))
+      expect(source.action).toBe('allow')
+    })
+
     it('reloads changed rules and fails closed for invalid replacements', async () => {
       const sourcePath = '/tmp/keel-live-reload.yaml'
       writeFileSync(sourcePath, `version: 1
