@@ -6677,7 +6677,7 @@ var EnforcementPipeline = class {
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const deepChecks = depth !== "fast";
     const reasoningChecks = depth === "deep";
-    const sentinelPath = join2(homedir2(), ".keel", "DISABLED");
+    const sentinelPath = this.config.disableFile || join2(homedir2(), ".keel", "DISABLED");
     if (existsSync3(sentinelPath)) {
       try {
         const sentinel = JSON.parse(readFileSync3(sentinelPath, "utf-8"));

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -439,16 +439,30 @@ rules:
   })
 
   describe('Kill switch', () => {
-    const sentinelPath = join(homedir(), '.keel', 'DISABLED')
+    const sentinelDir = mkdtempSync(join(tmpdir(), 'keel-killswitch-'))
+    const sentinelPath = join(sentinelDir, 'DISABLED')
+    const killSwitchPipeline = (): EnforcementPipeline =>
+      new EnforcementPipeline({
+        level: 'balanced',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: null, user: null, project: makeSampleRules(), local: null },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        enableReasoningCheck: false,
+        disableFile: sentinelPath,
+      })
 
-    beforeAll(() => {
-      const dir = join(homedir(), '.keel')
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    afterAll(() => {
+      rmSync(sentinelDir, { recursive: true, force: true })
     })
 
     it('enforces rules normally when no sentinel file exists', async () => {
       if (existsSync(sentinelPath)) rmSync(sentinelPath)
-      const pipeline = makePipeline()
+      const pipeline = killSwitchPipeline()
       // First call warns (never-deny-first-time)
       const first = await pipeline.evaluate({
         tool: 'Bash',
@@ -486,7 +500,7 @@ rules:
         expires_at: null,
         reason: 'Test disable',
       }))
-      const pipeline = makePipeline()
+      const pipeline = killSwitchPipeline()
       // Even a clear violation should be allowed
       const result = await pipeline.evaluate({
         tool: 'Bash',
@@ -511,7 +525,7 @@ rules:
         expires_at: null,
         auto_enable_on_restart: true,
       }))
-      const pipeline = makePipeline()
+      const pipeline = killSwitchPipeline()
       const result = await pipeline.evaluate({
         tool: 'Bash',
         args: { command: 'git push --force' },
@@ -531,7 +545,7 @@ rules:
 
     it('fails closed when the kill-switch state is corrupt', async () => {
       writeFileSync(sentinelPath, '{not-json')
-      await expect(makePipeline().evaluate(input('Bash', { command: 'echo safe' }))).rejects.toThrow('Invalid Keel kill-switch state')
+      await expect(killSwitchPipeline().evaluate(input('Bash', { command: 'echo safe' }))).rejects.toThrow('Invalid Keel kill-switch state')
       rmSync(sentinelPath)
     })
   })

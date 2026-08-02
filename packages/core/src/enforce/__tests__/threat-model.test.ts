@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync, rmSync, readFileSync } from 'node:fs'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { existsSync, rmSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -19,6 +19,10 @@ import { parseRulesContent } from '../rule-parser.js'
  */
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
+
+// Kill-switch sentinel for the test pipelines lives in a private tmp dir so
+// this suite never touches (or is touched by) the developer's real ~/.keel.
+const SENTINEL = join(mkdtempSync(join(tmpdir(), 'keel-threat-sentinel-')), 'DISABLED')
 
 // The CLI vendors core sources (packages/cli/src/core) at build time, so the
 // plugin source must be located from the nearest repo root upward.
@@ -57,6 +61,7 @@ function makeDefaultsPipeline(level: ProtectionLevel = 'balanced'): EnforcementP
     ruleVersion: 1,
     allowedFixTransforms: true,
     enableReasoningCheck: false,
+    disableFile: SENTINEL,
   }
   return new EnforcementPipeline(config)
 }
@@ -81,6 +86,10 @@ describe('agentic threat model (shipped defaults)', () => {
     // Do not let a developer's live kill switch affect unrelated unit tests.
     const sentinelPath = join(homedir(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) rmSync(sentinelPath)
+  })
+
+  afterAll(() => {
+    rmSync(join(SENTINEL, '..'), { recursive: true, force: true })
   })
 
   describe('destructive commands (BUG 1 regression)', () => {

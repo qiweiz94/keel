@@ -38,6 +38,7 @@ rules:
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
       flowTracker: new FlowTracker(), ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
       allowedFixTransforms: true, stateManager: new StateManager(),
+      disableFile: join(home, '.keel', 'DISABLED'),
       reloadRules: () => loadRuleHierarchy(dir),
       ruleFingerprint: () => [
         rulesPath, join(dir, 'AGENTS.md'), join(dir, 'CLAUDE.md'),

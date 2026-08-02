@@ -34,6 +34,7 @@ export interface PipelineConfig {
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
   onRulesReload?: (hierarchy: RuleHierarchy) => void
+  disableFile?: string
 }
 
 /**
@@ -139,7 +140,7 @@ export class EnforcementPipeline {
     const reasoningChecks = depth === 'deep'
 
     // Check global kill switch (sentinel file)
-    const sentinelPath = join(homedir(), '.keel', 'DISABLED')
+    const sentinelPath = this.config.disableFile || join(homedir(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) {
       try {
         const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))
