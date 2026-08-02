@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Fixed
+
+- `no-destructive-commands` deny rule no longer fires on `rm -rf /tmp/...` or
+  `rm -rf /var/tmp/...` (substring regex false positive) — the pattern is now
+  `rm -rf /(?!tmp|var/tmp)` in the plugin defaults, `keel install` defaults,
+  and the legacy policy templates. Real destructive paths (`/etc`, `/usr`,
+  `/home`, ...) and `~` remain hard denies.
+- `keel install` default rules now match the plugin's canonical rule set
+  (was missing the `git-history-rewrite` and `publish-gate` approval gates and
+  shipped a stale `verify-before-irreversible`). A new drift test
+  (`packages/cli/src/__tests__/drift.test.ts`) fails on any future divergence
+  of rule ids, patterns, or actions between the two copies.
+
+### Changed
+
+- `git-history-rewrite` gate now also covers plain `git rebase` (including
+  mid-rebase `--continue`/`--skip`), `git reset --soft/--keep/--merge/HEAD~`,
+  and `git push --delete/-d` via the publish gate.
+- `publish-gate` now also gates `gh release delete`.
+
+## 0.1.7 (2026-08-02)
+
 ### Added
 
 - `action: prompt` — first-class approval gate. Always blocks (no warn-once

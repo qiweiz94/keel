@@ -22,7 +22,7 @@ const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
 const TRACES_DIR = path.join(KEEL_DIR, 'traces')
 const LEGACY_PRODUCT_NAME = 'ai-' + 'enforce'
-const DEFAULT_RULES_YAML = `version: 1
+export const DEFAULT_RULES_YAML = `version: 1
 level: balanced
 rules:
   - id: product-name-is-keel
@@ -65,7 +65,7 @@ rules:
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /|rm -rf ~"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~"
     action: deny
     level: sprint
     message: "Destructive commands are blocked."
@@ -82,14 +82,14 @@ rules:
     message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
   - id: git-history-rewrite
     type: command
-    match: "git filter-branch|git rebase (--onto|--root)|git reset --hard|git commit --amend|git stash (drop|clear)"
+    match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
     action: prompt
     level: sprint
     priority: 80
     message: "Git history mutation — this rewrites shared history. Approval required."
   - id: publish-gate
     type: command
-    match: "npm publish|npm unpublish|gh release create|gh repo delete|gh repo transfer"
+    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
     action: prompt
     level: sprint
     priority: 80

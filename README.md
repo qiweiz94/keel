@@ -64,10 +64,11 @@ keel install --codex       # Codex CLI (AGENTS.md instructions)
 Agent action → OpenCode permission check (Layer 1)
              → Keel plugin tool.execute.before (Layer 2)
                → Regex match against rules
-               → Fix rules mutate the command (e.g. add --signoff)
-               → Deny rules: warn first time, deny on repeat
-             → Allow / Warn / Deny / Fix
-             → Audit log (JSONL) → keel suggest / lessons / gather
+                → Fix rules mutate the command (e.g. add --signoff)
+                → Deny rules: warn first time, deny on repeat
+                → Prompt rules: always block until `keel allow <id> --once`
+              → Allow / Warn / Deny / Prompt / Fix
+              → Audit log (JSONL) → keel suggest / lessons / gather
 ```
 
 Standing requirements are injected into the system prompt on EVERY turn, so
@@ -101,7 +102,47 @@ rules:
       - pattern: "git commit"
         replace: "git commit --signoff"
     message: "Auto-adding --signoff to commits."
+
+  - id: git-history-rewrite
+    type: command
+    match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
+    action: prompt
+    message: "Git history mutation — this rewrites shared history. Approval required."
 ```
+
+### Actions
+
+| Action | Behaviour |
+|--------|-----------|
+| `allow` | Log only, no enforcement |
+| `warn` | Warns on first violation, blocks on repeat |
+| `deny` | Warns first, denies on repeat |
+| `block` | Always blocks immediately |
+| `prompt` | Always blocks and requires `keel allow <rule-id> --once` (approval gate for irreversible operations) |
+| `fix` | Rewrites the command (e.g. adds `--signoff`) |
+| `report` | Logs only, no enforcement |
+
+### Approving gated actions
+
+`action: prompt` rules (and repeated deny blocks) require an explicit
+one-time approval:
+
+```bash
+keel allow git-history-rewrite --once   # 5-minute one-time override
+keel allow no-force-push                # persistent override (24h)
+```
+
+Overrides are stored in `~/.keel/overrides.json` and are consumed by the next
+violation of the rule.
+
+### Receipts and the signing key
+
+Every gated or blocked action is written to `<project>/.ai-enforce/receipts/`
+as a signed, hash-chained entry (verify with `keel verify`). The Ed25519
+signing keypair is created at `<project>/.ai-enforce/receipt-key.json` on
+first use — **add `.ai-enforce/` to your project's `.gitignore`** so the
+private key is never committed. The key can be rotated by deleting the file;
+receipts signed with the old key will no longer verify.
 
 Standing requirements go in `~/.keel/requirements.md` (and optionally
 `.keel/requirements.md` per project) — injected into the system prompt every turn.

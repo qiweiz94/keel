@@ -15,7 +15,7 @@ settings:
 command_rules:
   - name: "Block destructive commands"
     patterns:
-      - regex: '^rm -rf /'
+      - regex: '^rm -rf /(?!tmp|var/tmp)'
       - regex: '^rm -rf ~'
       - regex: 'pkill.*-f.*python'
     action: block
@@ -103,7 +103,7 @@ settings:
 command_rules:
   - name: "Block truly dangerous commands"
     patterns:
-      - regex: '^rm -rf /'
+      - regex: '^rm -rf /(?!tmp|var/tmp)'
       - regex: '^rm -rf ~'
     action: block
     message: "This command is too dangerous."

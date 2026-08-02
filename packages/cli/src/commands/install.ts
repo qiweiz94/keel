@@ -39,7 +39,7 @@ async function findRequirementsSource(): Promise<string | null> {
   return findTemplateSource('requirements.md')
 }
 
-const DEFAULT_RULES_YAML = `# Keel rules — enforced OUTSIDE agent context (via OpenCode plugin)
+export const DEFAULT_RULES_YAML = `# Keel rules — enforced OUTSIDE agent context (via OpenCode plugin)
 # These rules cannot be forgotten, overridden, or degraded by context rot.
 # Layer 3 enforcement (semantic) — runs before every tool dispatch.
 version: 1
@@ -89,7 +89,7 @@ rules:
 
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /|rm -rf ~"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~"
     action: deny
     level: sprint
     message: "Destructive commands are blocked."
@@ -107,9 +107,23 @@ rules:
     type: context
     message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
 
+  - id: git-history-rewrite
+    type: command
+    match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Git history mutation — this rewrites shared history. Approval required."
+  - id: publish-gate
+    type: command
+    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Publishing or deleting registry artifacts — approval required."
   - id: verify-before-irreversible
     type: command
-    match: "gh repo delete|gh repo transfer|npm unpublish|git push --force(?!-with-lease)|rm -rf (?!.*node_modules)"
+    match: "git push --force(?!-with-lease)|rm -rf (?!.*(node_modules|/tmp/|/var/tmp/|Trash))"
     action: warn
     message: "Irreversible action — verify inbound references (npm metadata, badges, forks, links) and state what was checked vs assumed before proceeding."
 `

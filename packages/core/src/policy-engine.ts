@@ -742,7 +742,7 @@ export const DEFAULT_POLICY: PolicyFile = {
     {
       name: 'Block destructive commands',
       patterns: [
-        { regex: '^rm -rf /' },
+        { regex: '^rm -rf /(?!tmp|var/tmp)' },
         { regex: '^rm -rf ~' },
         { regex: '^(>\\s*>\\s*)+/dev/' },
         { regex: '\\| sudo bash' },

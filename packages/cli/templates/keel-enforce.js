@@ -7681,7 +7681,7 @@ rules:
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /|rm -rf ~"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~"
     action: deny
     level: sprint
     message: "Destructive commands are blocked."
@@ -7698,14 +7698,14 @@ rules:
     message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
   - id: git-history-rewrite
     type: command
-    match: "git filter-branch|git rebase (--onto|--root)|git reset --hard|git commit --amend|git stash (drop|clear)"
+    match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
     action: prompt
     level: sprint
     priority: 80
     message: "Git history mutation \u2014 this rewrites shared history. Approval required."
   - id: publish-gate
     type: command
-    match: "npm publish|npm unpublish|gh release create|gh repo delete|gh repo transfer"
+    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
     action: prompt
     level: sprint
     priority: 80
@@ -7945,5 +7945,6 @@ ${lines.map((line) => `- ${line}`).join("\n")}`);
   }
 };
 export {
+  DEFAULT_RULES_YAML,
   plugin_default as default
 };
