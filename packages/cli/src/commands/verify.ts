@@ -42,7 +42,7 @@ export async function verifyCommand(target?: string, options?: { key?: string; r
   }
 
   // Batch verify all receipts in the default directory
-  const receiptsDir = join(process.cwd(), '.ai-enforce', 'receipts')
+  const receiptsDir = join(process.cwd(), '.keel', 'receipts')
   if (!existsSync(receiptsDir)) {
     console.log(chalk.yellow('No receipts directory found at ' + receiptsDir))
     console.log(chalk.cyan('Run `keel check` to generate receipts.'))

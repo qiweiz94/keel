@@ -7440,7 +7440,7 @@ import { join as join4 } from "node:path";
 var signingKey = null;
 function initReceiptKey() {
   if (signingKey) return signingKey;
-  const envKey = process.env.AI_ENFORCE_RECEIPT_KEY;
+  const envKey = process.env.KEEL_RECEIPT_KEY;
   if (envKey) {
     try {
       const parsed = JSON.parse(envKey);
@@ -7451,7 +7451,7 @@ function initReceiptKey() {
     } catch {
     }
   }
-  const keyDir = join4(process.cwd(), ".ai-enforce");
+  const keyDir = join4(process.cwd(), ".keel", "receipts");
   const keyPath = join4(keyDir, "receipt-key.json");
   if (existsSync7(keyPath)) {
     try {
@@ -7481,7 +7481,7 @@ function initReceiptKey() {
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join4(process.cwd(), ".ai-enforce", "receipts", "receipts.log");
+  return join4(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
@@ -7518,7 +7518,7 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join4(process.cwd(), ".ai-enforce", "receipts");
+    const dir = join4(process.cwd(), ".keel", "receipts");
     if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
     appendFileSync2(join4(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
@@ -7651,7 +7651,7 @@ level: balanced
 rules:
   - id: product-name-is-keel
     type: command
-    match: "(sed|replaceAll|rename).*(keel|product).*(${LEGACY_PRODUCT_NAME})"
+    match: "(sed|replaceAll|rename).{0,80}(keel|product).{0,40}(${LEGACY_PRODUCT_NAME})"
     action: deny
     level: sprint
     priority: 100
@@ -7695,7 +7695,7 @@ rules:
     message: "Destructive commands are blocked."
   - id: must-sign-commits
     type: command
-    match: "git commit"
+    match: "git commit(?!.*--signoff)"
     action: fix
     fix:
       - pattern: "git commit"

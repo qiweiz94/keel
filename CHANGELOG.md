@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.0 (2026-08-02)
+
+### Breaking
+
+- Runtime paths moved under `.keel/` — audit log is now
+  `<project>/.keel/audit/audit.log`, receipts and the signing key live in
+  `<project>/.keel/receipts/`, custom templates in `<project>/.keel/templates/`
+  (was `.ai-enforce/`). Add `.keel/audit/`, `.keel/receipts/`, and
+  `.keel/templates/` to `.gitignore`. Existing `.ai-enforce/` directories are
+  not migrated automatically; re-run gated actions to write new evidence.
+- Environment variables renamed: `AI_ENFORCE_RECEIPT_KEY` →
+  `KEEL_RECEIPT_KEY`, `AI_ENFORCE_SIGNING_KEY_JWK` → `KEEL_SIGNING_KEY_JWK`,
+  `AI_ENFORCE_UPSTREAM_SERVERS` → `KEEL_UPSTREAM_SERVERS`,
+  `AI_ENFORCE_PORT` → `KEEL_PORT`.
+- MCP tools renamed: `ai_enforce_check` → `keel_check`,
+  `ai_enforce_audit` → `keel_audit`.
+- Policy-protected paths updated to the new `.keel/audit/` and
+  `.keel/receipts/` locations.
+
+### Changed
+
+- `product-name-is-keel` now matches only explicit rename pairs
+  (`s/keel/ai-enforce`, `replaceAll`/`rename` substitutions within a bounded
+  window). Version-bump seds mentioning `@get-keel/*` while running in a
+  directory whose path contains the legacy name no longer false-positive.
+- `must-sign-commits` skips the `--signoff` fix when the commit command
+  already passes `--signoff`.
+
 ## 0.1.9 (2026-08-02)
 
 ### Added

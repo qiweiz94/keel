@@ -1,6 +1,6 @@
 {
   "name": "@get-keel/core",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Core enforcement engine for Keel — policy engine, signing, receipts, enforce pipeline",
   "engines": {
     "node": ">=22.12.0"

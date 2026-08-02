@@ -9,10 +9,10 @@ export async function serveCommand(options: { port?: string; transport?: string 
   if (transport === 'http') {
     console.log(chalk.cyan(`  Listening on http://localhost:${port}`))
     console.log(chalk.yellow('  Note: HTTP proxy forwarding is experimental.'))
-    console.log(chalk.yellow('  Set AI_ENFORCE_UPSTREAM_SERVERS env var for upstream tool forwarding.'))
+    console.log(chalk.yellow('  Set KEEL_UPSTREAM_SERVERS env var for upstream tool forwarding.'))
   } else {
     console.log(chalk.cyan('  Reading JSON-RPC from stdin, writing to stdout'))
-    console.log(chalk.yellow('  Stdio mode: provides ai_enforce_check and ai_enforce_audit tools.'))
+    console.log(chalk.yellow('  Stdio mode: provides keel_check and keel_audit tools.'))
     console.log(chalk.yellow('  AI agents call these to check actions against policy.'))
   }
 

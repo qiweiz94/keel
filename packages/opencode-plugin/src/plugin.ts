@@ -27,7 +27,7 @@ level: balanced
 rules:
   - id: product-name-is-keel
     type: command
-    match: "(sed|replaceAll|rename).*(keel|product).*(${LEGACY_PRODUCT_NAME})"
+    match: "(sed|replaceAll|rename).{0,80}(keel|product).{0,40}(${LEGACY_PRODUCT_NAME})"
     action: deny
     level: sprint
     priority: 100
@@ -71,7 +71,7 @@ rules:
     message: "Destructive commands are blocked."
   - id: must-sign-commits
     type: command
-    match: "git commit"
+    match: "git commit(?!.*--signoff)"
     action: fix
     fix:
       - pattern: "git commit"

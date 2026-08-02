@@ -2,12 +2,12 @@
  * keel MCP enforcement server.
  *
  * Two modes:
- *   1. POLICY CHECK (stdio, default) — Exposes ai_enforce_check and ai_enforce_audit tools
+ *   1. POLICY CHECK (stdio, default) — Exposes keel_check and keel_audit tools
  *      that AI agents can call to check actions against policy.
  *
  *   2. FORWARDING PROXY (HTTP, experimental) — Sits between AI agent and tools,
  *      forwarding approved calls and blocking policy violations.
- *      Requires AI_ENFORCE_UPSTREAM_SERVERS env var for upstream forwarding.
+ *      Requires KEEL_UPSTREAM_SERVERS env var for upstream forwarding.
  *
  * Usage via CLI:
  *   keel serve                    # Stdio mode (default)
@@ -130,8 +130,8 @@ function evaluateToolCall(
   toolName: string,
   args: Record<string, unknown>
 ): { content: Array<{ type: string; text: string }>; isError?: boolean } {
-  // Internal: ai_enforce_check — check an action against policy
-  if (toolName === 'ai_enforce_check') {
+  // Internal: keel_check — check an action against policy
+  if (toolName === 'keel_check') {
     const action = String(args.action || '')
     const target = String(args.target || '')
     const results = engine.evaluate({
@@ -152,8 +152,8 @@ function evaluateToolCall(
     return { content: [{ type: 'text', text: 'POLICY OK: Action is allowed by project policy.' }] }
   }
 
-  // Internal: ai_enforce_audit — view audit log
-  if (toolName === 'ai_enforce_audit') {
+  // Internal: keel_audit — view audit log
+  if (toolName === 'keel_audit') {
     const limit = Number(args.limit) || 10
     const log = engine.getAuditLog().slice(-limit)
     return {
@@ -184,7 +184,7 @@ function evaluateToolCall(
 function getToolDefinitions() {
   return [
     {
-      name: 'ai_enforce_check',
+      name: 'keel_check',
       title: 'Check action against policy',
       description: 'Check if an action is allowed by project policy. Call this BEFORE executing any potentially dangerous operation.',
       inputSchema: {
@@ -197,7 +197,7 @@ function getToolDefinitions() {
       },
     },
     {
-      name: 'ai_enforce_audit',
+      name: 'keel_audit',
       title: 'View policy audit log',
       description: 'Retrieve recent policy enforcement actions.',
       inputSchema: {

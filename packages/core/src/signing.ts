@@ -48,7 +48,7 @@ const sessionHashChains = new Map<string, string | null>()
 
 /** Where audit entries land; the chain head is recovered from this file. */
 export function auditLogPath(): string {
-  return join(process.cwd(), '.ai-enforce', 'audit.log')
+  return join(process.cwd(), '.keel', 'audit', 'audit.log')
 }
 
 /**
@@ -82,7 +82,7 @@ export function initSigning(): SigningKey {
   if (currentKey) return currentKey
 
   // Check for env var override first
-  const envKey = process.env.AI_ENFORCE_SIGNING_KEY_JWK
+  const envKey = process.env.KEEL_SIGNING_KEY_JWK
   if (envKey) {
     try {
       const parsed = JSON.parse(envKey) as SigningKey
@@ -92,7 +92,7 @@ export function initSigning(): SigningKey {
   }
 
   // Try loading from disk (persisted across sessions)
-  const keyDir = join(process.cwd(), '.ai-enforce')
+  const keyDir = join(process.cwd(), '.keel', 'audit')
   const keyPath = join(keyDir, 'signing-key.json')
   if (existsSync(keyPath)) {
     try {

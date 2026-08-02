@@ -18,8 +18,8 @@ This creates in your project:
 
 | Tool | Purpose |
 |------|---------|
-| `ai_enforce_check` | Check an action against rules before executing it |
-| `ai_enforce_audit` | View recent enforcement entries |
+| `keel_check` | Check an action against rules before executing it |
+| `keel_audit` | View recent enforcement entries |
 
 Restart Cline after installing.
 
@@ -27,7 +27,7 @@ Restart Cline after installing.
 
 ```
 Session start → .clinerules (standing requirements)
-Risky action  → agent calls ai_enforce_check → allow/warn/deny decision
+Risky action  → agent calls keel_check → allow/warn/deny decision
 ```
 
 The agent is *expected* to check before dangerous operations — Cline cannot

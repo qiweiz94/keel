@@ -27,9 +27,9 @@ function cli(args: string) {
 }
 
 const auditLines = () =>
-  readFileSync(join(dir, '.ai-enforce', 'audit.log'), 'utf-8').split('\n').filter(Boolean)
+  readFileSync(join(dir, '.keel', 'audit', 'audit.log'), 'utf-8').split('\n').filter(Boolean)
 const receiptLines = () =>
-  readFileSync(join(dir, '.ai-enforce', 'receipts', 'receipts.log'), 'utf-8').split('\n').filter(Boolean)
+  readFileSync(join(dir, '.keel', 'receipts', 'receipts.log'), 'utf-8').split('\n').filter(Boolean)
 
 beforeEach(() => {
   dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
@@ -60,7 +60,7 @@ describe('audit log', () => {
   it('detects a deleted entry', () => {
     const lines = auditLines()
     writeFileSync(
-      join(dir, '.ai-enforce', 'audit.log'),
+      join(dir, '.keel', 'audit', 'audit.log'),
       [lines[0], ...lines.slice(2)].join('\n') + '\n',
       'utf-8'
     )
@@ -80,7 +80,7 @@ describe('audit log', () => {
         return JSON.stringify(e)
       })
       .join('\n')
-    writeFileSync(join(dir, '.ai-enforce', 'audit.log'), legacy + '\n', 'utf-8')
+    writeFileSync(join(dir, '.keel', 'audit', 'audit.log'), legacy + '\n', 'utf-8')
     const out = cli('verify')
     expect(out).toContain('chain: intact')
     expect(out).not.toContain('BROKEN')
@@ -89,7 +89,7 @@ describe('audit log', () => {
   it('detects a reordered log', () => {
     const lines = auditLines()
     const swapped = [lines[0], lines[2], lines[1], ...lines.slice(3)]
-    writeFileSync(join(dir, '.ai-enforce', 'audit.log'), swapped.join('\n') + '\n', 'utf-8')
+    writeFileSync(join(dir, '.keel', 'audit', 'audit.log'), swapped.join('\n') + '\n', 'utf-8')
     expect(cli('verify')).toContain('BROKEN')
   })
 
@@ -98,7 +98,7 @@ describe('audit log', () => {
     const tampered = JSON.parse(lines[1])
     tampered.action = 'allow'
     writeFileSync(
-      join(dir, '.ai-enforce', 'audit.log'),
+      join(dir, '.keel', 'audit', 'audit.log'),
       [lines[0], JSON.stringify(tampered), ...lines.slice(2)].join('\n') + '\n',
       'utf-8'
     )
@@ -112,7 +112,7 @@ describe('action receipts', () => {
     // createReceipt used createSign("ed25519"), which throws "Invalid digest"
     // because Ed25519 takes no digest name. audit() swallowed it, so the
     // feature produced zero receipts while appearing to be wired up.
-    expect(existsSync(join(dir, '.ai-enforce', 'receipts', 'receipts.log'))).toBe(true)
+    expect(existsSync(join(dir, '.keel', 'receipts', 'receipts.log'))).toBe(true)
     expect(receiptLines().length).toBeGreaterThanOrEqual(3)
   })
 
@@ -132,7 +132,7 @@ describe('action receipts', () => {
     const r = JSON.parse(lines[0])
     r.decision.verdict = 'allow'
     writeFileSync(
-      join(dir, '.ai-enforce', 'receipts', 'receipts.log'),
+      join(dir, '.keel', 'receipts', 'receipts.log'),
       [JSON.stringify(r), ...lines.slice(1)].join('\n') + '\n',
       'utf-8'
     )

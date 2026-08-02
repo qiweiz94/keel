@@ -3,19 +3,19 @@
  * keel MCP enforcement server.
  *
  * Two modes:
- *   1. POLICY CHECK (stdio, default) — Exposes ai_enforce_check and ai_enforce_audit tools
+ *   1. POLICY CHECK (stdio, default) — Exposes keel_check and keel_audit tools
  *      that AI agents can call to check actions against policy. Run via stdio transport.
  *
  *   2. FORWARDING PROXY (HTTP, experimental) — Sits between AI agent and tools,
  *      forwarding approved calls and blocking policy violations.
- *      Requires AI_ENFORCE_UPSTREAM_SERVERS env var.
+ *      Requires KEEL_UPSTREAM_SERVERS env var.
  *
  * Usage:
  *   # Policy check mode (stdio):
  *   npx @get-keel/mcp-server
  *
  *   # Forwarding proxy mode (HTTP):
- *   AI_ENFORCE_UPSTREAM_SERVERS='{"fs":{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}' \
+ *   KEEL_UPSTREAM_SERVERS='{"fs":{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}' \
  *   npx @get-keel/mcp-server --transport http
  */
 
@@ -33,7 +33,7 @@ if (existsSync(policyPath)) {
 // Parse transport mode
 const transport = process.argv.includes('--transport http') ? 'http' : 'stdio'
 
-const PORT = parseInt(process.env.AI_ENFORCE_PORT || '3100', 10)
+const PORT = parseInt(process.env.KEEL_PORT || '3100', 10)
 
 if (transport === 'http') {
   startHttpServer()
@@ -163,8 +163,8 @@ function handleToolCallCommon(
   args: Record<string, unknown>,
   _id: number | string | null
 ): { content: Array<{ type: string; text: string }>; isError?: boolean } {
-  // Internal: ai_enforce_check — check an action against policy
-  if (toolName === 'ai_enforce_check') {
+  // Internal: keel_check — check an action against policy
+  if (toolName === 'keel_check') {
     const action = String(args.action || '')
     const target = String(args.target || '')
     const results = engine.evaluate({
@@ -190,8 +190,8 @@ function handleToolCallCommon(
     return { content: [{ type: 'text', text: 'POLICY OK: Action is allowed by project policy.' }] }
   }
 
-  // Internal: ai_enforce_audit — view audit log
-  if (toolName === 'ai_enforce_audit') {
+  // Internal: keel_audit — view audit log
+  if (toolName === 'keel_audit') {
     const limit = Number(args.limit) || 10
     const log = engine.getAuditLog().slice(-limit)
     return {
@@ -220,7 +220,7 @@ function handleToolCallCommon(
   }
 
   // If in HTTP mode with upstream configured, forward to upstream
-  if (transport === 'http' && process.env.AI_ENFORCE_UPSTREAM_SERVERS) {
+  if (transport === 'http' && process.env.KEEL_UPSTREAM_SERVERS) {
     return {
       content: [{ type: 'text', text: `FORWARD: ${toolName} allowed by policy (proxy forwarding not yet implemented in this version).` }],
     }
@@ -233,7 +233,7 @@ function handleToolCallCommon(
 function getToolDefinitions() {
   return [
     {
-      name: 'ai_enforce_check',
+      name: 'keel_check',
       title: 'Check action against policy',
       description: 'Check if an action (file write, command, git operation) is allowed by project policy. Call this BEFORE executing any potentially dangerous operation.',
       inputSchema: {
@@ -246,7 +246,7 @@ function getToolDefinitions() {
       },
     },
     {
-      name: 'ai_enforce_audit',
+      name: 'keel_audit',
       title: 'View policy audit log',
       description: 'Retrieve recent policy enforcement actions and violations.',
       inputSchema: {

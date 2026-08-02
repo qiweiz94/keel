@@ -165,7 +165,7 @@ export async function templateCommand(
   if (options.list || !action) {
     // List available templates
     console.log(chalk.cyan('\nkeel policy templates:\n'))
-    const customDir = join(process.cwd(), '.ai-enforce', 'templates')
+    const customDir = join(process.cwd(), '.keel', 'templates')
     const customTemplates: string[] = []
     if (existsSync(customDir)) {
       for (const f of readdirSync(customDir)) {
@@ -191,7 +191,7 @@ export async function templateCommand(
   const template = BUILTIN_TEMPLATES[action]
   if (!template) {
     // Check custom templates
-    const customPath = join(process.cwd(), '.ai-enforce', 'templates', `${action}.yaml`)
+    const customPath = join(process.cwd(), '.keel', 'templates', `${action}.yaml`)
     if (existsSync(customPath)) {
       const content = readFileSync(customPath, 'utf-8')
       console.log(chalk.cyan(`\nTemplate: ${action} (custom)\n`))

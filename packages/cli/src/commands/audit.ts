@@ -4,7 +4,7 @@ import chalk from 'chalk'
 import type { AuditEntry } from '../types.js'
 
 export async function auditCommand(options: { json?: boolean; tail?: string }) {
-  const logPath = join(process.cwd(), '.ai-enforce', 'audit.log')
+  const logPath = join(process.cwd(), '.keel', 'audit', 'audit.log')
   if (!existsSync(logPath)) {
     console.log(chalk.yellow('No audit log found. Run keel check to generate one.'))
     return

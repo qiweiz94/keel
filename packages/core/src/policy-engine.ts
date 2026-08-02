@@ -702,7 +702,7 @@ export class PolicyEngine {
     this.auditLog.push(entry)
     // Persist to disk (signed)
     try {
-      const dir = join(process.cwd(), '.ai-enforce')
+      const dir = join(process.cwd(), '.keel', 'audit')
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       appendFileSync(join(dir, 'audit.log'), JSON.stringify(signed) + '\n')
     } catch { /* best-effort disk write */ }
@@ -806,8 +806,8 @@ export const DEFAULT_POLICY: PolicyFile = {
       name: 'Protect enforcement configuration',
       paths: [
         '**/.keel.yaml',
-        '**/.ai-enforce.yml',
-        '**/.ai-enforce/**',
+        '**/.keel/audit/**',
+        '**/.keel/receipts/**',
         '**/.claude/settings.json',
         '**/.git/hooks/**',
       ],
@@ -821,7 +821,7 @@ export const DEFAULT_POLICY: PolicyFile = {
 }
 
 /**
- * The file "ai-enforce init" writes.
+ * The file "keel init" writes.
  *
  * GENERATED from DEFAULT_POLICY rather than hand-maintained. The two were
  * previously independent copies of the same policy and had already drifted:
@@ -830,6 +830,6 @@ export const DEFAULT_POLICY: PolicyFile = {
  * no policy file at all. Edit DEFAULT_POLICY; this follows.
  */
 export const DEFAULT_POLICY_YAML = `# keel policy file
-# Generated from ai-enforce's built-in defaults. Edit freely — this file is
+# Generated from keel's built-in defaults. Edit freely — this file is
 # authoritative once it exists.
 ${stringifyYaml(DEFAULT_POLICY)}`

@@ -31,7 +31,7 @@ export function initReceiptKey(): { kid: string; privateJwk: object; publicJwk: 
   if (signingKey) return signingKey
 
   // Try loading existing key from env or disk
-  const envKey = process.env.AI_ENFORCE_RECEIPT_KEY
+  const envKey = process.env.KEEL_RECEIPT_KEY
   if (envKey) {
     try {
       const parsed = JSON.parse(envKey) as { kid: string; privateJwk: object; publicJwk: object }
@@ -39,7 +39,7 @@ export function initReceiptKey(): { kid: string; privateJwk: object; publicJwk: 
     } catch { /* fall through */ }
   }
 
-  const keyDir = join(process.cwd(), '.ai-enforce')
+  const keyDir = join(process.cwd(), '.keel', 'receipts')
   const keyPath = join(keyDir, 'receipt-key.json')
   if (existsSync(keyPath)) {
     try {
@@ -99,7 +99,7 @@ export interface ActionReceipt {
 const receiptChain = new Map<string, string | null>()
 
 export function receiptsLogPath(): string {
-  return join(process.cwd(), '.ai-enforce', 'receipts', 'receipts.log')
+  return join(process.cwd(), '.keel', 'receipts', 'receipts.log')
 }
 
 /** Recover the chain head for `session` from the last receipt on disk. */
@@ -168,7 +168,7 @@ export function createReceipt(
 
   // Persist
   try {
-    const dir = join(process.cwd(), '.ai-enforce', 'receipts')
+    const dir = join(process.cwd(), '.keel', 'receipts')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     appendFileSync(join(dir, 'receipts.log'), JSON.stringify(receipt) + '\n')
   } catch { /* best effort */ }

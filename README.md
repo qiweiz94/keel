@@ -137,12 +137,12 @@ violation of the rule.
 
 ### Receipts and the signing key
 
-Every gated or blocked action is written to `<project>/.ai-enforce/receipts/`
+Every gated or blocked action is written to `<project>/.keel/receipts/`
 as a signed, hash-chained entry (verify with `keel verify`). The Ed25519
-signing keypair is created at `<project>/.ai-enforce/receipt-key.json` on
-first use — **add `.ai-enforce/` to your project's `.gitignore`** so the
-private key is never committed. The key can be rotated by deleting the file;
-receipts signed with the old key will no longer verify.
+signing keypair is created at `<project>/.keel/receipt-key.json` on
+first use — **add `.keel/receipts/` and `.keel/audit/` to your project's
+`.gitignore`** so the private key is never committed. The key can be rotated
+by deleting the file; receipts signed with the old key will no longer verify.
 
 Standing requirements go in `~/.keel/requirements.md` (and optionally
 `.keel/requirements.md` per project) — injected into the system prompt every turn.

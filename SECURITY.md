@@ -19,9 +19,10 @@ Security vulnerabilities include:
 - Injection attacks through the MCP server
 - Disclosure of secrets audit log
 - **Commit of the Ed25519 receipt signing key** — the plugin writes
-  `<project>/.ai-enforce/receipt-key.json` (private key) on first gated
-  action. Projects must gitignore `.ai-enforce/`; a committed key lets
-  attackers forge verified receipts. Rotate by deleting the file.
+  `<project>/.keel/receipt-key.json` (private key) on first gated
+  action. Projects must gitignore `.keel/receipts/` and `.keel/audit/`; a
+  committed key lets attackers forge verified receipts. Rotate by deleting
+  the file.
 
 ## Supported Versions
 

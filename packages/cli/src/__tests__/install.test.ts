@@ -135,7 +135,7 @@ describe('policy loading fails closed', () => {
 describe('the policy protects its own configuration', () => {
   const protectedPaths = [
     '.keel.yaml',
-    '.ai-enforce/audit.log',
+    '.keel/audit/audit.log',
     '.claude/settings.json',
     '.git/hooks/pre-commit',
   ]

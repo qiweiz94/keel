@@ -47,7 +47,7 @@ level: balanced
 rules:
   - id: product-name-is-keel
     type: command
-    match: "(sed|replaceAll|rename).*(keel|product).*(ai-enforce)"
+    match: "(sed|replaceAll|rename).{0,80}(keel|product).{0,40}(ai-enforce)"
     action: deny
     level: sprint
     priority: 100
@@ -96,7 +96,7 @@ rules:
 
   - id: must-sign-commits
     type: command
-    match: "git commit"
+    match: "git commit(?!.*--signoff)"
     action: fix
     fix:
       - pattern: "git commit"

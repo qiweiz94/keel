@@ -1,6 +1,8 @@
 node_modules/
 dist/
-.ai-enforce/
+**/.keel/audit/
+**/.keel/receipts/
+**/.keel/templates/
 *.log
 .env
 .env.*

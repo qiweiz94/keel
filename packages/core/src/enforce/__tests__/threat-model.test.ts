@@ -175,6 +175,11 @@ describe('agentic threat model (shipped defaults)', () => {
       expect(commit.fix_result?.fixed).toContain('git commit --signoff')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('allow')
     })
+    it('does not double-append --signoff when already present', async () => {
+      pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }))
+      const commit = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done" --signoff' }))
+      expect(commit.action).toBe('allow')
+    })
   })
 
   describe('speed dial over the defaults', () => {
