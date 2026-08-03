@@ -214,6 +214,32 @@ keel level sprint --project   # set the project dial (.keel/rules.yaml)
 keel enforce --level=protect --persist   # same, from the enforce command
 ```
 
+### The dashboard (human-owned control surfaces)
+
+`keel dashboard` opens an interactive panel for the dial and enforcement
+state — run it in your own terminal:
+
+```
+[1] sprint  [2] balanced  [3] protect   [p] target global/project   [r] refresh   [q] quit
+```
+
+`keel dashboard --web` is the same panel as a browser UI (dial buttons,
+live auto-refresh, kill switch, overrides, rule counts, recent blocks).
+It binds 127.0.0.1, requires a TTY to start, and authenticates with a
+one-time token printed on the terminal screen (never written to disk, kept
+out of query strings via a URL hash fragment). Both surfaces are human-only
+by construction — an agent cannot start the web server (no TTY) and cannot
+read a token that is never stored. Non-interactive: `keel dashboard --once`
+(panel once) and `keel dashboard --json` (machine-readable state).
+
+### How the dials differ
+
+| Dial | Deny rules | Checks | Use |
+|------|-----------|--------|-----|
+| `sprint` | warn only | fast (no content/sequence/flow) | quick prototyping |
+| `balanced` | warn once, then block | full | default |
+| `protect` | **block on first violation** | full + reasoning heuristics | before deploy, high-stakes work |
+
 The OpenCode plugin reads the level on every tool call, so the change takes
 effect immediately — no restart.
 

@@ -9,6 +9,21 @@
 
 ### Added
 
+- `keel dashboard` — interactive TTY dial panel (1/2/3 switch, project target, refresh, quit).
+- `keel dashboard --web` — browser UI with the same controls; 127.0.0.1 only, TTY required to start, one-time token printed on the terminal (never stored; passed as a URL hash fragment).
+- New default rules: `no-after-hours-publish` (time, warn) and `bash-rate-limit` (rate, warn) — both last-resort priority so they never preempt deny/prompt gates.
+
+### Changed
+
+- **protect is now block-first**: deny rules block on the FIRST violation (previously warn-then-block at every dial). sprint = warn-only, balanced = warn-then-block, protect = block-first + reasoning checks.
+- Time rules support an optional command `match` (previously they fired on every action) and overnight windows (start > end).
+
+### Fixed
+
+- Flow sink detection matched the substring "nc" inside unrelated words (e.g. "sync"); sink verbs now require full-word boundaries.
+
+### Added
+
 - `keel status` — enforcement health overview (dial, kill switch, overrides, rule counts, recent blocks).
 - `keel receipts rotate` — rotates receipt + signing keys, archiving the old keys; archived keys still verify old receipts.
 - Fork-bomb (`:(){ :|:& };:`) detection in the destructive-commands rule.

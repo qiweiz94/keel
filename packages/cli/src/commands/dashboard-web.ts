@@ -17,9 +17,15 @@ import type { ProtectionLevel } from '../core/types.js'
  *   terminal dashboard has, without the keyboard-only interaction.
  *
  * Endpoints:
- *   GET  /?token=…          → the UI page
- *   GET  /api/state         → dashboard state (same shape as --json)
- *   POST /api/dial          → { level, target? } → switches the dial
+ *   GET  /                 → the UI page (static shell, no data)
+ *   GET  /api/state        → dashboard state (same shape as --json)
+ *   POST /api/dial         → { level, target? } → switches the dial
+ *
+ * The token is handed to the browser as a URL hash fragment (#token=…):
+ * fragments are never sent to servers and never leak through referrer
+ * headers, and the page re-sends the token as a Bearer header on every API
+ * call. The server still accepts a query-string token for tooling that
+ * cannot carry headers.
  */
 
 const VALID_LEVELS: ProtectionLevel[] = ['sprint', 'balanced', 'protect']
@@ -124,7 +130,10 @@ function pageHtml(): string {
   <div id="toast"></div>
 
 <script>
-const token = new URLSearchParams(location.search).get('token') || ''
+// The token travels in the URL hash fragment (#token=...): fragments are
+// never sent to servers and never leak through referrer headers. The API
+// calls below carry it as a Bearer header instead.
+const token = new URLSearchParams(location.hash.slice(1)).get('token') || ''
 let target = 'global'
 let dial = null
 
@@ -230,7 +239,9 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
       return
     }
     if (url.pathname === '/' || url.pathname === '/index.html') {
-      if (!authed) return send(401, 'unauthorized')
+      // The page is a static shell with no data; the token lives in the URL
+      // HASH fragment (never sent to the server, never in referrer headers),
+      // so the page itself needs no auth. Every API call carries the token.
       return send(200, pageHtml(), 'text/html')
     }
     return send(404, JSON.stringify({ error: 'not found' }))
@@ -238,10 +249,20 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
 
   await new Promise<void>((resolve) => server.listen(options.port || 0, '127.0.0.1', resolve))
   const actual = (server.address() as { port: number }).port
+  const url = `http://127.0.0.1:${actual}/#token=${token}`
   console.log(chalk.bold.cyan('\n  ⚓ keel dashboard — web UI'))
   console.log()
-  console.log(`  ${chalk.dim('Open in your browser:')} ${chalk.green(`http://127.0.0.1:${actual}/?token=${token}`)}`)
+  console.log(`  ${chalk.dim('Open in your browser:')} ${chalk.green(url)}`)
   console.log(chalk.dim('  The token authenticates this session only and is never stored.'))
   console.log(chalk.dim('  Press Ctrl+C to stop the server.'))
   console.log()
+
+  // Convenience: open the browser automatically (macOS). The token is in the
+  // hash fragment, so it is not sent anywhere by the browser.
+  if (process.platform === 'darwin') {
+    try {
+      const { spawn } = await import('node:child_process')
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
+    } catch {}
+  }
 }

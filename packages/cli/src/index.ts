@@ -24,6 +24,7 @@ import { levelCommand } from './commands/level.js'
 import { statusCommand } from './commands/status.js'
 import { dashboardCommand } from './commands/dashboard.js'
 import { dashboardWebCommand } from './commands/dashboard-web.js'
+import { daemonCommand } from './commands/daemon.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
@@ -260,6 +261,12 @@ program
   .command('status')
   .description('Show the current enforcement state: dial, kill switch, overrides, rules, recent blocks')
   .action(statusCommand)
+
+program
+  .command('daemon')
+  .description('Start the local enforcement daemon (one engine, thin clients: /v1/check · /v1/requirements · /v1/health)')
+  .option('--port <port>', 'Port to listen on (default 31990)')
+  .action((options: { port?: number }) => { void daemonCommand({ port: options.port }) })
 
 program
   .command('dashboard')

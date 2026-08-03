@@ -242,10 +242,17 @@ work or stalling the workflow.
 
 **User side (human-owned, terminal):**
 
-- `keel dashboard` — interactive panel: dial switch (1/2/3), project
-  target (p), refresh (r), quit (q). Runs only on a TTY, which makes level
-  switching human-only BY CONSTRUCTION: a localhost web UI could be curled
-  by an agent, the TTY cannot.
+- `keel dashboard` — keyboard panel: dial switch (1/2/3), project
+  target (p), refresh (r), quit (q). Runs only on a TTY, so level switching
+  is human-only BY CONSTRUCTION.
+- `keel dashboard --web` — browser UI with the same controls (dial buttons,
+  target toggle, live 2s auto-refresh). Equally human-only: the server
+  binds 127.0.0.1, refuses to start without a TTY, and requires a one-time
+  bearer token that is printed on the terminal screen and never written to
+  disk (handed to the browser as a URL hash fragment so it never appears in
+  history-triggering query strings, server logs, or referrer headers).
+  An agent cannot start the server (no TTY) and cannot read the token
+  (nothing on disk to read).
 - `keel status` / `keel validate` — read-only health and conflict checks.
 - `keel level` — set the dial directly (global or --project).
 - `keel allow <id> [--once]` — approvals; unknown ids are refused.

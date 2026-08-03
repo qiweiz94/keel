@@ -46,7 +46,7 @@ function startServer(): Promise<{ port: number; token: string; kill: () => void 
     const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 10000)
     child.stdout.on('data', (chunk: Buffer) => {
       out += chunk.toString()
-      const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)\/\?token=([a-f0-9]+)/)
+      const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)\/#token=([a-f0-9]+)/)
       if (m) {
         clearTimeout(timer)
         resolve({ port: Number(m[1]), token: m[2], kill: () => child.kill() })
@@ -74,10 +74,14 @@ describe('keel dashboard --web', () => {
       expect(noAuth.status).toBe(401)
       const badAuth = await fetch(`http://127.0.0.1:${server.port}/api/state`, { headers: { Authorization: 'Bearer wrong' } })
       expect(badAuth.status).toBe(401)
-      const good = await fetch(`http://127.0.0.1:${server.port}/api/state?token=${server.token}`)
+      const good = await fetch(`http://127.0.0.1:${server.port}/api/state`, { headers: { Authorization: `Bearer ${server.token}` } })
       expect(good.status).toBe(200)
       const state = await good.json()
       expect(state.dial).toBe('balanced')
+      // The page itself is a static shell and needs no token (it carries
+      // the hash-fragment token on API calls instead).
+      const page = await fetch(`http://127.0.0.1:${server.port}/`)
+      expect(page.status).toBe(200)
     } finally {
       server.kill()
     }
