@@ -37,7 +37,7 @@ interface DashboardState {
   pluginInstalled: boolean
 }
 
-function collectState(dir: string, home: string): DashboardState {
+export function collectState(dir: string, home: string): DashboardState {
   const hierarchy = loadRuleHierarchy(dir)
   const dialProject = hierarchy.project?.config?.level ?? null
   const dialGlobal = hierarchy.global?.config?.level ?? null
@@ -159,7 +159,7 @@ function renderPanel(state: DashboardState, target: 'global' | 'project'): strin
   return out.join('\n')
 }
 
-function switchLevel(target: 'global' | 'project', level: ProtectionLevel): { ok: boolean; message: string } {
+export function switchLevel(target: 'global' | 'project', level: ProtectionLevel): { ok: boolean; message: string } {
   const home = homedir()
   const path = target === 'global' ? join(home, '.keel', 'rules.yaml') : join(process.cwd(), '.keel', 'rules.yaml')
   if (!existsSync(path)) {

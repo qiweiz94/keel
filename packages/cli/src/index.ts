@@ -23,6 +23,7 @@ import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
 import { statusCommand } from './commands/status.js'
 import { dashboardCommand } from './commands/dashboard.js'
+import { dashboardWebCommand } from './commands/dashboard-web.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
@@ -265,7 +266,12 @@ program
   .description('Interactive dial control panel (run in your own terminal — level switches are human-only)')
   .option('--once', 'Print the panel once and exit (non-interactive)')
   .option('--json', 'Dump the panel state as JSON')
-  .action((options: { once?: boolean; json?: boolean }) => dashboardCommand(options))
+  .option('--web', 'Start the browser UI (127.0.0.1 only, one-time token, TTY required)')
+  .option('--port <port>', 'Port for --web (default: random free port)')
+  .action((options: { once?: boolean; json?: boolean; web?: boolean; port?: number }) => {
+    if (options.web) return dashboardWebCommand({ port: options.port })
+    return dashboardCommand(options)
+  })
 
 const receiptsCmd = program.command('receipts')
   .description('Manage signed receipt keys')
