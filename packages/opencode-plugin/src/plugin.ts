@@ -34,10 +34,109 @@ rules:
     message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
   - id: no-force-push
     type: command
-    match: "git push --force(?!-with-lease)"
+    match: "git push.*--force(?!-with-lease)( |$)|git push.*(^| )-f( |$)"
     action: deny
     level: sprint
     message: "Use --force-with-lease instead of --force."
+  - id: no-verify-bypass
+    type: command
+    match: "git (commit|push|merge) --no-verify( |$)|git -c ['\"]?core[.]hooksPath"
+    action: deny
+    level: sprint
+    priority: 90
+    message: "Never bypass git hooks with --no-verify or core.hooksPath."
+  - id: no-curl-pipe-shell
+    type: command
+    match: "(curl|wget)[^|;&]*[|] *(sudo )*(ba)?sh( |$)|bash <[(]curl"
+    action: deny
+    level: sprint
+    message: "Piping a remote script into a shell executes arbitrary code — blocked."
+  - id: no-db-destructive
+    type: command
+    match: "(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)( |$)[^|;&]*(DROP TABLE|TRUNCATE( |$)|DROP DATABASE|DELETE FROM)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Destructive database operation — approval required."
+  - id: no-push-to-main
+    type: command
+    match: "git push( [^ ]+){0,3} (main|master)( |$)|git push.*[:](main|master)( |$)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Pushing directly to a protected branch — approval required."
+  - id: no-remote-exec
+    type: command
+    match: "(npx|bunx|npm exec|pipx)( |$)|(pnpm|yarn) dlx( |$)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "On-the-fly package execution downloads and runs remote code — approval required."
+  - id: no-skip-tests
+    type: command
+    match: "(npm|pnpm|yarn)( run)? test[^|;&]*--(passWithNoTests|skipTests|no-run)( |$)"
+    action: deny
+    level: sprint
+    message: "Faking a green test run is not verification — run the suite."
+  - id: no-secrets-in-code
+    type: content
+    patterns:
+      - regex: "AKIA[0-9A-Z]{16}"
+      - regex: "ghp_[A-Za-z0-9]{36}"
+      - regex: "github_pat_[A-Za-z0-9_]{22,}"
+      - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
+      - regex: "sk-[A-Za-z0-9_-]{24,}"
+      - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
+      - regex: "-----BEGIN PRIVATE KEY-----"
+      - regex: "aws_secret_access_key[\t ]*[:=]"
+    action: deny
+    level: sprint
+    message: "Hardcoded credentials must not be written to files."
+  - id: no-secret-files
+    type: filesystem
+    paths:
+      - "**/.env*"
+      - "**/.npmrc"
+      - "**/.git-credentials"
+      - "**/.netrc"
+      - "**/.pgpass"
+      - "**/*.pem"
+      - "**/*.pfx"
+      - "**/*.p12"
+      - "**/.ssh/**"
+      - "**/id_rsa*"
+      - "**/id_ed25519*"
+    exclude:
+      - "**/.env.example"
+      - "**/.env.sample"
+      - "**/.env.test"
+    action: deny
+    level: sprint
+    message: "Writing or modifying credential files is blocked."
+  - id: no-credential-echo
+    type: env
+    vars:
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_ACCESS_KEY_ID
+      - GITHUB_TOKEN
+      - NPM_TOKEN
+      - NODE_AUTH_TOKEN
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      - CLOUDFLARE_API_TOKEN
+    action: deny
+    level: sprint
+    message: "Exposing environment credentials in commands is blocked."
+  - id: no-exfil-flow
+    type: flow
+    sources:
+      - "**/.env*"
+      - "**/.ssh/**"
+      - "**/*.pem"
+      - "**/.git-credentials"
+    sinks: [network]
+    action: deny
+    message: "Data read from sensitive files must not be sent over the network."
   - id: source-change-requires-test
     type: verification
     trigger:
@@ -65,7 +164,7 @@ rules:
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+"
     action: deny
     level: sprint
     message: "Destructive commands are blocked."
@@ -209,8 +308,7 @@ export default {
       level, context: 'local', cache: new ActionCache({ maxSize: 1000 }),
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
       flowTracker: new FlowTracker(), ruleHierarchy: hierarchy, ruleVersion: 1,
-      allowedFixTransforms: true, enableReasoningCheck: level === 'protect',
-      defaultAction: level === 'sprint' ? 'warn' : undefined,
+      allowedFixTransforms: true,
       stateManager: new StateManager(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [

@@ -6348,6 +6348,7 @@ function validateRules(rules) {
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
+  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session"]);
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       errors.push("Rule entries must be objects");
@@ -6356,8 +6357,12 @@ function validateRules(rules) {
     const rule = candidate;
     const label = typeof rule.id === "string" && rule.id ? rule.id : "<unnamed>";
     if (typeof rule.id !== "string" || !rule.id.trim()) errors.push("Rule is missing a non-empty id");
+    if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
+      errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine \u2014 remove it or use a supported type`);
+      continue;
+    }
     if (typeof rule.type !== "string" || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`);
-    const actionOptional = rule.type === "context" || rule.type === "meta" || rule.type === "session";
+    const actionOptional = rule.type === "context" || rule.type === "meta";
     if (!actionOptional && typeof rule.action !== "string" || typeof rule.action === "string" && !validActions.has(rule.action)) {
       errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`);
     }
@@ -6366,6 +6371,7 @@ function validateRules(rules) {
     if (rule.type === "filesystem" && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`);
     if (rule.type === "content" && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`);
     if (rule.type === "network" && typeof rule.match !== "string") errors.push(`Rule "${label}" is a network rule but has no match`);
+    if (rule.type === "env" && (!Array.isArray(rule.vars) || rule.vars.length === 0)) errors.push(`Rule "${label}" is an env rule but has no vars`);
     if (rule.type === "flow" && (!Array.isArray(rule.sources) || !Array.isArray(rule.sinks))) errors.push(`Rule "${label}" is a flow rule but is missing sources or sinks`);
     if (rule.type === "sequence" && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {
       errors.push(`Rule "${label}" is a sequence rule but has fewer than two steps`);
@@ -6416,9 +6422,6 @@ function mergeRules(hierarchy, level, context) {
   const pushRules = (source, scope) => {
     if (!source) return;
     for (const rule of source.rules) {
-      const ruleLevel = rule.level || "balanced";
-      const levelOrder = { sprint: 0, balanced: 1, protect: 2 };
-      if (levelOrder[ruleLevel] > levelOrder[level]) continue;
       if (rule.context && !rule.context.includes(context) && !rule.context.includes("both")) continue;
       all.push({ ...rule, scope: rule.scope || scope });
     }
@@ -6451,6 +6454,57 @@ function hashRulesFile(filePath) {
     hash |= 0;
   }
   return hash.toString(36);
+}
+
+// ../core/src/enforce/arg-utils.ts
+var CONTENT_KEYS = /* @__PURE__ */ new Set(["content", "text", "fileContent", "code"]);
+function isContentKey(key) {
+  return CONTENT_KEYS.has(key) || key.toLowerCase().includes("content") || key.toLowerCase().includes("filecontent");
+}
+function stripContentArgs(args) {
+  if (typeof args !== "object" || args === null) return args;
+  const out = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (isContentKey(key)) continue;
+    if (Array.isArray(value)) {
+      out[key] = value.map((item) => item && typeof item === "object" ? stripContentArgs(item) : item);
+    } else if (value && typeof value === "object") {
+      out[key] = stripContentArgs(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+function isMcpCall(input) {
+  return input.tool.toLowerCase().includes("mcp__");
+}
+function mcpCallString(input) {
+  if (!isMcpCall(input)) return null;
+  const args = input.args;
+  const nested = args.args && typeof args.args === "object" ? JSON.stringify(stripContentArgs(args.args)) : "";
+  return `${mcpToolString(input)} ${nested}`.toLowerCase();
+}
+function mcpToolString(input) {
+  if (!isMcpCall(input)) return null;
+  const args = input.args;
+  const segments = input.tool.split("__").map((seg) => seg.replace(/_/g, " ")).join(" ");
+  const toolName = typeof args.tool === "string" ? args.tool : "";
+  const direct = commandArrayString(args.command ?? args.cmd);
+  return `${segments} ${toolName} ${direct}`.toLowerCase();
+}
+function commandArrayString(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(String).join(" ");
+  return "";
+}
+function commandString(input) {
+  const args = input.args;
+  if (typeof args === "string") return args;
+  const mcp = mcpCallString(input);
+  if (mcp) return mcp;
+  const direct = commandArrayString(args.command ?? args.cmd);
+  return direct || JSON.stringify(stripContentArgs(args));
 }
 
 // ../core/src/enforce/verification.ts
@@ -6499,8 +6553,22 @@ var VerificationTracker = class {
   }
   markSatisfied(rule, input) {
     if (rule.type !== "verification" || !matches(rule.satisfy, input)) return;
+    if (this.isFakeSatisfy(input)) return;
     this.pending.delete(this.key(rule, input));
     this.stateManager?.clearVerification(this.key(rule, input));
+  }
+  /**
+   * A satisfy command that only prints help or lists tests is not evidence:
+   * `npm test --help`, `npm run test -- --list`, `vitest --dry-run`,
+   * `vitest --list-files` exit 0 without running the suite, so they must not
+   * clear the obligation. Case-insensitive and tolerant of `=json` suffixes;
+   * MCP-shaped shells (`mcp__shell__run`) carry the command in nested args.
+   */
+  isFakeSatisfy(input) {
+    const args = input.args || {};
+    const nested = args.args && typeof args.args === "object" ? args.args.command : void 0;
+    const command = String(args.command || args.cmd || nested || "");
+    return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)/i.test(command);
   }
   isPending(rule, input) {
     if (rule.type !== "verification") return false;
@@ -6517,13 +6585,21 @@ var VerificationTracker = class {
   }
   boundary(rule, input) {
     if (!this.isPending(rule, input) || !rule.boundaries) return null;
-    const args = JSON.stringify(input.args || {});
+    const args = JSON.stringify(stripContentArgs(input.args || {}));
+    const mcp = mcpToolString(input);
     for (const boundary of Object.values(rule.boundaries)) {
       try {
         if (boundary.pattern && new RegExp(boundary.pattern, "i").test(args)) {
           return { message: rule.message, action: boundary.action };
         }
       } catch {
+      }
+      if (mcp && boundary.pattern) {
+        const words = boundary.pattern.replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+        const verbs = words.slice(1);
+        if (verbs.length && verbs.every((word) => new RegExp(`\\b${word}\\b`, "i").test(mcp))) {
+          return { message: rule.message, action: boundary.action };
+        }
       }
     }
     return null;
@@ -6675,7 +6751,7 @@ var EnforcementPipeline = class {
     this.checkRuleVersion();
     const level = this.effectiveLevel(input);
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
-    const deepChecks = depth !== "fast";
+    const protectFloor = (rules2) => rules2.some((rule) => rule.level === "protect" && (rule.type === "content" || rule.type === "sequence" || rule.type === "flow"));
     const reasoningChecks = depth === "deep";
     const sentinelPath = this.config.disableFile || join2(homedir2(), ".keel", "DISABLED");
     if (existsSync3(sentinelPath)) {
@@ -6695,6 +6771,7 @@ var EnforcementPipeline = class {
     }
     this.config.flowTracker.record(input, "");
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
+    const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
       (rule) => ["verification", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
     );
@@ -6774,7 +6851,7 @@ var EnforcementPipeline = class {
         continue;
       }
       if (rule.type === "command" && (rule.match || rule.match_regex || rule.match_prefix)) {
-        const cmdStr = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
+        const cmdStr = commandString(input);
         const pattern = rule.match_regex || rule.match;
         const matches2 = rule.match_prefix ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase()) : !!pattern && this.matchesRulePattern(pattern, cmdStr);
         if (matches2) {
@@ -6803,7 +6880,7 @@ var EnforcementPipeline = class {
           return this.violation(input, rule, rule.message, start, 2);
         }
       }
-      if (rule.type === "filesystem" && rule.paths) {
+      if (rule.type === "filesystem" && rule.paths && !/^read/i.test(input.tool)) {
         const path2 = typeof input.args === "object" && input.args !== null ? input.args.path || input.args.file || input.args.filePath || "" : "";
         const pathStr = String(path2);
         const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
@@ -6828,8 +6905,13 @@ var EnforcementPipeline = class {
         }
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3);
       }
-      if (depth !== "fast" && rule.type === "content" && rule.patterns) {
-        const path2 = typeof input.args === "object" && input.args !== null ? input.args.path || "" : "";
+      if (rule.type === "env" && rule.vars?.length) {
+        const cmdStr = commandString(input);
+        const varHit = rule.vars.some((v) => cmdStr.toLowerCase().includes(String(v).toLowerCase()));
+        if (varHit) return this.violation(input, rule, rule.message, start, 3);
+      }
+      if (deepChecks && rule.type === "content" && rule.patterns && !/^read/i.test(input.tool)) {
+        const path2 = typeof input.args === "object" && input.args !== null ? input.args.path || input.args.filePath || input.args.file || "" : "";
         const pathStr = String(path2);
         const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
         const inlineContent = String(input.args.content || input.args.text || "");
@@ -6864,7 +6946,7 @@ var EnforcementPipeline = class {
         continue;
       }
     }
-    if (reasoningChecks && (this.config.enableReasoningCheck || level === "protect") && input.reasoning) {
+    if (reasoningChecks && level === "protect" && input.reasoning) {
       const dangerSignals = [
         /ignore.*(rule|policy|restrict)/i,
         /bypass.*(check|guard|protect)/i,
@@ -6976,8 +7058,9 @@ var EnforcementPipeline = class {
     const action = this.effectiveAction(rule, input);
     if (action === "fix") {
       if (rule.fix && rule.type === "command") {
-        const cmdStr = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
-        return this.fixAction(input, rule, cmdStr, start);
+        const args = input.args;
+        const raw = typeof input.args === "string" ? input.args : typeof args.command === "string" ? args.command : typeof args.cmd === "string" ? args.cmd : "";
+        if (raw) return this.fixAction(input, rule, raw, start);
       }
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier);
     }
@@ -7004,7 +7087,8 @@ var EnforcementPipeline = class {
   }
   effectiveAction(rule, input) {
     if (input.action_override) return input.action_override;
-    if ((this.config.defaultAction === "warn" || this.effectiveLevel(input) === "sprint") && (rule.action === "deny" || rule.action === "block")) return "warn";
+    if (rule.level === "protect") return rule.action;
+    if (this.effectiveLevel(input) === "sprint" && (rule.action === "deny" || rule.action === "block")) return "warn";
     return rule.action;
   }
   cacheContext(input, depth) {
@@ -7316,6 +7400,24 @@ var FlowTracker = class {
         this.tagOrigins.set(key, input.tool);
       }
     }
+    const command = String(args.command || args.cmd || "");
+    if (command && /(?:^|[\s;&|(])(?:cat|less|more|head|tail|grep|awk|sed|strings|xxd|base64|tac|tail)\b/.test(command)) {
+      const configuredSources = typeof rule === "object" ? rule.sources : void 0;
+      const commandSource = configuredSources ? configuredSources.find((source) => this.commandSourceMatches(command, source)) : this.matchesSensitivePath(command);
+      if (commandSource) {
+        const key = `flow:${input.session_id}:${input.turn_number}`;
+        const existing = this.taggedValues.get(key) || [];
+        existing.push({
+          source: commandSource,
+          value: `<redacted: command read of sensitive path>`,
+          timestamp: Date.now(),
+          sessionId: input.session_id,
+          originTool: input.tool
+        });
+        this.taggedValues.set(key, existing);
+        this.tagOrigins.set(key, input.tool);
+      }
+    }
     if (this.taggedValues.size > 1e3) {
       const oldest = Array.from(this.taggedValues.keys()).sort()[0];
       this.taggedValues.delete(oldest);
@@ -7335,7 +7437,7 @@ var FlowTracker = class {
     let hasSourceData = false;
     for (const [key, tags] of this.taggedValues) {
       if (tags.some((tag) => tag.sessionId === input.session_id && rule.sources.some(
-        (source) => tag.originTool.toLowerCase().includes(source.toLowerCase()) || !!tag.path && this.pathMatches(tag.path, source)
+        (source) => tag.originTool.toLowerCase().includes(source.toLowerCase()) || !!tag.path && this.pathMatches(tag.path, source) || !!tag.source && this.sourceMatches(source, tag.source)
       ))) {
         hasSourceData = true;
         break;
@@ -7347,6 +7449,23 @@ var FlowTracker = class {
       return `Data flow violation: data from ${sources} flowing to ${sinks} (rule: ${rule.id})`;
     }
     return null;
+  }
+  /** Does a read command reference a configured source pattern? */
+  commandSourceMatches(command, pattern) {
+    const stripped = pattern.replace(/\*\*/g, "").replace(/\*/g, "");
+    const base = stripped.split("/").filter(Boolean).pop() || stripped;
+    return command.includes(stripped) || base.length > 2 && command.includes(base);
+  }
+  /**
+   * Does a tag's recorded source satisfy a rule source pattern? Path patterns
+   * match as globs; rule-less eager tags carry pseudo-sources like
+   * `sensitive-path:.env` that are compared by basename instead.
+   */
+  sourceMatches(pattern, value) {
+    if (this.pathMatches(value, pattern)) return true;
+    const pBase = pattern.replace(/\*\*/g, "").replace(/\*/g, "").split("/").filter(Boolean).pop() || "";
+    const vBase = value.replace(/^sensitive-path:/, "").split(/[/.]/).filter(Boolean).pop() || "";
+    return pBase.length > 2 && vBase.length > 2 && (pBase === vBase || value.includes(pBase));
   }
   matchesSensitivePath(path2) {
     const sensitivePaths = [
@@ -7658,10 +7777,109 @@ rules:
     message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
   - id: no-force-push
     type: command
-    match: "git push --force(?!-with-lease)"
+    match: "git push.*--force(?!-with-lease)( |$)|git push.*(^| )-f( |$)"
     action: deny
     level: sprint
     message: "Use --force-with-lease instead of --force."
+  - id: no-verify-bypass
+    type: command
+    match: "git (commit|push|merge) --no-verify( |$)|git -c ['"]?core[.]hooksPath"
+    action: deny
+    level: sprint
+    priority: 90
+    message: "Never bypass git hooks with --no-verify or core.hooksPath."
+  - id: no-curl-pipe-shell
+    type: command
+    match: "(curl|wget)[^|;&]*[|] *(sudo )*(ba)?sh( |$)|bash <[(]curl"
+    action: deny
+    level: sprint
+    message: "Piping a remote script into a shell executes arbitrary code \u2014 blocked."
+  - id: no-db-destructive
+    type: command
+    match: "(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)( |$)[^|;&]*(DROP TABLE|TRUNCATE( |$)|DROP DATABASE|DELETE FROM)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Destructive database operation \u2014 approval required."
+  - id: no-push-to-main
+    type: command
+    match: "git push( [^ ]+){0,3} (main|master)( |$)|git push.*[:](main|master)( |$)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "Pushing directly to a protected branch \u2014 approval required."
+  - id: no-remote-exec
+    type: command
+    match: "(npx|bunx|npm exec|pipx)( |$)|(pnpm|yarn) dlx( |$)"
+    action: prompt
+    level: sprint
+    priority: 80
+    message: "On-the-fly package execution downloads and runs remote code \u2014 approval required."
+  - id: no-skip-tests
+    type: command
+    match: "(npm|pnpm|yarn)( run)? test[^|;&]*--(passWithNoTests|skipTests|no-run)( |$)"
+    action: deny
+    level: sprint
+    message: "Faking a green test run is not verification \u2014 run the suite."
+  - id: no-secrets-in-code
+    type: content
+    patterns:
+      - regex: "AKIA[0-9A-Z]{16}"
+      - regex: "ghp_[A-Za-z0-9]{36}"
+      - regex: "github_pat_[A-Za-z0-9_]{22,}"
+      - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
+      - regex: "sk-[A-Za-z0-9_-]{24,}"
+      - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
+      - regex: "-----BEGIN PRIVATE KEY-----"
+      - regex: "aws_secret_access_key[	 ]*[:=]"
+    action: deny
+    level: sprint
+    message: "Hardcoded credentials must not be written to files."
+  - id: no-secret-files
+    type: filesystem
+    paths:
+      - "**/.env*"
+      - "**/.npmrc"
+      - "**/.git-credentials"
+      - "**/.netrc"
+      - "**/.pgpass"
+      - "**/*.pem"
+      - "**/*.pfx"
+      - "**/*.p12"
+      - "**/.ssh/**"
+      - "**/id_rsa*"
+      - "**/id_ed25519*"
+    exclude:
+      - "**/.env.example"
+      - "**/.env.sample"
+      - "**/.env.test"
+    action: deny
+    level: sprint
+    message: "Writing or modifying credential files is blocked."
+  - id: no-credential-echo
+    type: env
+    vars:
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_ACCESS_KEY_ID
+      - GITHUB_TOKEN
+      - NPM_TOKEN
+      - NODE_AUTH_TOKEN
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      - CLOUDFLARE_API_TOKEN
+    action: deny
+    level: sprint
+    message: "Exposing environment credentials in commands is blocked."
+  - id: no-exfil-flow
+    type: flow
+    sources:
+      - "**/.env*"
+      - "**/.ssh/**"
+      - "**/*.pem"
+      - "**/.git-credentials"
+    sinks: [network]
+    action: deny
+    message: "Data read from sensitive files must not be sent over the network."
   - id: source-change-requires-test
     type: verification
     trigger:
@@ -7689,7 +7907,7 @@ rules:
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+"
     action: deny
     level: sprint
     message: "Destructive commands are blocked."
@@ -7856,8 +8074,6 @@ var plugin_default = {
       ruleHierarchy: hierarchy,
       ruleVersion: 1,
       allowedFixTransforms: true,
-      enableReasoningCheck: level === "protect",
-      defaultAction: level === "sprint" ? "warn" : void 0,
       stateManager: new StateManager(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [

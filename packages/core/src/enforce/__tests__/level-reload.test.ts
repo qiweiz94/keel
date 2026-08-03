@@ -69,8 +69,10 @@ rules:
     const p2 = await call()
     expect(b1.action).toBe('warn')
     expect(b2.action).toBe('deny')
-    expect(s1.action).toBe('allow')
-    expect(s2.action).toBe('allow')
+    // Floor semantics: a plain deny rule stays visible at sprint (deny→warn
+    // downgrade), it is no longer filtered out of the merged rule set.
+    expect(s1.action).toBe('warn')
+    expect(s2.action).toBe('warn')
     expect(p1.action).toBe('warn')
     expect(p2.action).toBe('deny')
   })

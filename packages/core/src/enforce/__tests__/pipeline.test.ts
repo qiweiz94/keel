@@ -99,7 +99,6 @@ function makePipeline(level: ProtectionLevel = 'balanced'): EnforcementPipeline 
     ruleHierarchy: hierarchy,
     ruleVersion: 1,
     allowedFixTransforms: true,
-    enableReasoningCheck: false,
   }
 
   return new EnforcementPipeline(config)
@@ -117,7 +116,6 @@ function makePipelineFromYaml(yaml: string, stateManager?: StateManager, sourceP
     ruleHierarchy: { global: null, user: null, project: rules, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
-    enableReasoningCheck: false,
     stateManager,
   })
 }
@@ -464,7 +462,6 @@ rules:
         ruleHierarchy: { global: null, user: null, project: makeSampleRules(), local: null },
         ruleVersion: 1,
         allowedFixTransforms: true,
-        enableReasoningCheck: false,
         disableFile: sentinelPath,
       })
 

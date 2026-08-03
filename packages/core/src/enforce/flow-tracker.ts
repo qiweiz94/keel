@@ -57,6 +57,34 @@ export class FlowTracker {
       }
     }
 
+    // Bash-native reads: `cat .env`, `base64 .env`, `grep -r SECRET .env` —
+    // the file never appears in a path argument, only inside the command
+    // string, so the classic `cat .env | curl …` exfil was invisible.
+    // Download/sink verbs (curl, wget, dd) are deliberately NOT read verbs:
+    // a sink command that merely references a sensitive path (uploading a
+    // file, or downloading one) must not tag itself as a source — the flow
+    // violation has to come from an actual prior read.
+    const command = String(args.command || args.cmd || '')
+    if (command && /(?:^|[\s;&|(])(?:cat|less|more|head|tail|grep|awk|sed|strings|xxd|base64|tac|tail)\b/.test(command)) {
+      const configuredSources = typeof rule === 'object' ? rule.sources : undefined
+      const commandSource = configuredSources
+        ? configuredSources.find(source => this.commandSourceMatches(command, source))
+        : this.matchesSensitivePath(command)
+      if (commandSource) {
+        const key = `flow:${input.session_id}:${input.turn_number}`
+        const existing = this.taggedValues.get(key) || []
+        existing.push({
+          source: commandSource,
+          value: `<redacted: command read of sensitive path>`,
+          timestamp: Date.now(),
+          sessionId: input.session_id,
+          originTool: input.tool,
+        })
+        this.taggedValues.set(key, existing)
+        this.tagOrigins.set(key, input.tool)
+      }
+    }
+
     // Clean up old tags (keep last 1000)
     if (this.taggedValues.size > 1000) {
       const oldest = Array.from(this.taggedValues.keys()).sort()[0]
@@ -87,6 +115,7 @@ export class FlowTracker {
       if (tags.some(tag => tag.sessionId === input.session_id && rule.sources!.some(source =>
         tag.originTool.toLowerCase().includes(source.toLowerCase())
         || (!!tag.path && this.pathMatches(tag.path, source))
+        || (!!tag.source && this.sourceMatches(source, tag.source))
       ))) {
         hasSourceData = true
         break
@@ -100,6 +129,25 @@ export class FlowTracker {
     }
 
     return null
+  }
+
+  /** Does a read command reference a configured source pattern? */
+  private commandSourceMatches(command: string, pattern: string): boolean {
+    const stripped = pattern.replace(/\*\*/g, '').replace(/\*/g, '')
+    const base = stripped.split('/').filter(Boolean).pop() || stripped
+    return command.includes(stripped) || (base.length > 2 && command.includes(base))
+  }
+
+  /**
+   * Does a tag's recorded source satisfy a rule source pattern? Path patterns
+   * match as globs; rule-less eager tags carry pseudo-sources like
+   * `sensitive-path:.env` that are compared by basename instead.
+   */
+  private sourceMatches(pattern: string, value: string): boolean {
+    if (this.pathMatches(value, pattern)) return true
+    const pBase = pattern.replace(/\*\*/g, '').replace(/\*/g, '').split('/').filter(Boolean).pop() || ''
+    const vBase = value.replace(/^sensitive-path:/, '').split(/[/.]/).filter(Boolean).pop() || ''
+    return pBase.length > 2 && vBase.length > 2 && (pBase === vBase || value.includes(pBase))
   }
 
   private matchesSensitivePath(path: string): string | null {

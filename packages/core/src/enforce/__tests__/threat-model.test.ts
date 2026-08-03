@@ -60,8 +60,10 @@ function makeDefaultsPipeline(level: ProtectionLevel = 'balanced'): EnforcementP
     ruleHierarchy: { global: rules, user: null, project: null, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
-    enableReasoningCheck: false,
     disableFile: SENTINEL,
+    // Never read the developer's real ~/.keel/overrides.json — a live
+    // `keel allow <id> --once` grant would be consumed by these tests.
+    overrideStore: { consume: () => false },
   }
   return new EnforcementPipeline(config)
 }
@@ -121,11 +123,13 @@ describe('agentic threat model (shipped defaults)', () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git reset --merge' }))).action).toBe('prompt')
     })
     it('denies force push without lease', async () => {
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))).action).toBe('deny')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('deny')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))).action).toBe('prompt')
     })
-    it('allows force-with-lease', async () => {
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force-with-lease origin main' }))).action).toBe('allow')
+    it('allows force-with-lease; force-with-lease to main still prompts', async () => {
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force-with-lease origin feature' }))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force-with-lease origin main' }))).action).toBe('prompt')
     })
     it('prompt-gates deleting a remote branch', async () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git push origin --delete old-branch' }))).action).toBe('prompt')
@@ -173,7 +177,8 @@ describe('agentic threat model (shipped defaults)', () => {
       const commit = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
       expect(commit.action).toBe('fix')
       expect(commit.fix_result?.fixed).toContain('git commit --signoff')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin feature' }))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('prompt')
     })
     it('does not double-append --signoff when already present', async () => {
       pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }))

@@ -88,8 +88,6 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     ruleHierarchy: hierarchy,
     ruleVersion,
     allowedFixTransforms: true,
-    enableReasoningCheck: level === 'protect',
-    defaultAction: level === 'sprint' ? 'warn' : undefined,
     stateManager,
     reloadRules: () => {
       const next = loadRuleHierarchy(dir)

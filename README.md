@@ -110,6 +110,53 @@ rules:
     message: "Git history mutation — this rewrites shared history. Approval required."
 ```
 
+The shipped defaults (`~/.keel/rules.yaml`) cover the classes the community
+red-teams converged on: destructive commands (`rm -rf` variants, disk
+destroyers, `chmod -R 777`, fork bombs), `curl | sh` pipe-exec, hardcoded
+secrets and credential files (`.env*`, `.ssh`, `*.pem`, `.npmrc`), env-var
+credential exposure, secret exfiltration (read-then-curl), force-push /
+hook-bypass / test-faking, and approval gates for DB destruction, pushes to
+protected branches, and on-the-fly package execution (`npx`/`bunx`/`dlx` —
+the slopsquatting vector).
+
+### Optional rules (documented examples, not shipped)
+
+These are judgment-call rules with real false-positive tradeoffs, so they ship
+as examples instead of defaults. Copy them into `~/.keel/rules.yaml` if they
+fit your workflow:
+
+```yaml
+  # Staging everything can commit .env and build artifacts by accident.
+  - id: no-git-add-all
+    type: command
+    match: "git add -A( |$)|git add [.]( |$)"
+    action: warn
+    message: "Stage files explicitly to avoid committing unwanted files."
+
+  # Unpinned installs are how hallucinated package names (slopsquatting) land.
+  - id: no-unpinned-install
+    type: command
+    match: "(npm|yarn|pnpm) (install|add) [^@]*( |$)|pip install [^=]* ( |$)"
+    action: warn
+    message: "Pin exact versions (--save-exact) and verify the package exists."
+
+  # Reading a file and then deleting it is how agents delete the wrong thing.
+  - id: no-delete-after-read
+    type: sequence
+    steps:
+      - tool: ReadFile
+      - tool: Bash
+        pattern: "rm "
+    action: warn
+    message: "You read this file then deleted it — verify the target."
+
+  - id: no-gpg-bypass
+    type: command
+    match: "git commit --no-gpg-sign"
+    action: warn
+    message: "Fix GPG issues, don't bypass signing."
+```
+
 ### Actions
 
 | Action | Behaviour |
@@ -164,25 +211,25 @@ effect immediately — no restart.
 | Level | deny/block rules | Depth of checks | Use when |
 |-------|------------------|-----------------|----------|
 | `sprint` | downgraded to warnings | fast — content/sequence/flow/reasoning skipped | iterating quickly, agent is trusted-ish |
-| `balanced` | warn once, then block on repeat (default) | full — content checks on | day-to-day work |
-| `protect` | block after a first warning | deep — sequence, flow, and reasoning checks on | irreversible or high-risk work |
+| `balanced` | warn once, then block on repeat (default) | full — content, sequence, and flow checks on | day-to-day work |
+| `protect` | block after a first warning | deep — sequence, flow, and reasoning checks at full strength | irreversible or high-risk work |
 
-`prompt` approval gates (`git-history-rewrite`, `publish-gate`, ...) are
-**never downgraded** at any level — irreversible operations always require
-`keel allow <rule-id> --once`.
+`prompt` approval gates are **never downgraded** at any level — irreversible
+operations always require `keel allow <rule-id> --once`.
 
-Rules can declare their own minimum level:
+Rules can declare `level: protect` to make them **floors**:
 
 ```yaml
 - id: my-strict-rule
   type: command
   match: "something"
   action: deny
-  level: protect   # only active when the dial is at protect
+  level: protect   # always enforced — never downgraded by the sprint dial
 ```
 
-Per-rule `level` is a **minimum**: `level: sprint` means "active at sprint and
-above" (i.e. everywhere), `level: protect` means "only at protect".
+Every rule is active at every dial. The dial softens enforcement globally
+(sprint downgrades deny/block to warn), and `level: protect` exempts a rule
+from that downgrade — it is never silently disabled when the dial is low.
 
 ## Writing Rules
 
@@ -201,8 +248,8 @@ rules:
 ```
 
 Common fields: `id` (unique), `type`, `action`, `message`, and optionally
-`level` (minimum dial level), `priority` (higher = evaluated first),
-`context` (`local`, `ci`, or both).
+`level` (strictness floor — `protect` = never downgraded by the dial),
+`priority` (higher = evaluated first), `context` (`local`, `ci`, or both).
 
 | Type | What it matches | Key fields |
 |------|-----------------|------------|
@@ -213,12 +260,11 @@ Common fields: `id` (unique), `type`, `action`, `message`, and optionally
 | `env` | environment variables | `vars` |
 | `rate` | call frequency | `window_seconds`, `max_calls` |
 | `time` | scheduled windows | `schedule` |
-| `sequence` | step ordering (protect) | `steps` |
-| `flow` | data-flow sources→sinks (protect) | `sources`, `sinks` |
+| `sequence` | step ordering (balanced+) | `steps` |
+| `flow` | data-flow sources→sinks (balanced+) | `sources`, `sinks` |
 | `session` | session duration | `max_duration_minutes` |
 | `verification` | evidence-before-action obligations | `trigger`, `satisfy`, `boundaries`, `verification_window_seconds` |
 | `context` | standing requirements | `message` |
-| `mcp` | MCP tool calls | `match` |
 
 Actions: `allow` (log), `warn` (first warn, then block), `deny` (warn once,
 block on repeat), `block` (always block), `prompt` (always block until

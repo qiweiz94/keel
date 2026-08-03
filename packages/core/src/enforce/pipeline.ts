@@ -13,6 +13,7 @@ import { FlowTracker } from './flow-tracker.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
 import { FileRuleOverrideStore } from './overrides.js'
+import { commandString } from './arg-utils.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -27,9 +28,7 @@ export interface PipelineConfig {
   ruleHierarchy: RuleHierarchy
   ruleVersion: number
   allowedFixTransforms?: boolean
-  enableReasoningCheck?: boolean
   stateManager?: StateManager
-  defaultAction?: EnforcementAction
   overrideStore?: import('./overrides.js').RuleOverrideStore
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
@@ -136,7 +135,10 @@ export class EnforcementPipeline {
     this.checkRuleVersion()
     const level = this.effectiveLevel(input)
     const depth = input.depth || (level === 'protect' ? 'deep' : level === 'sprint' ? 'fast' : 'full')
-    const deepChecks = depth !== 'fast'
+    // `level: protect` rules are floors: even at sprint (fast depth) they must
+    // stay fully enforced, so their check classes cannot be skipped.
+    const protectFloor = (rules: ReturnType<typeof mergeRules>) =>
+      rules.some(rule => rule.level === 'protect' && (rule.type === 'content' || rule.type === 'sequence' || rule.type === 'flow'))
     const reasoningChecks = depth === 'deep'
 
     // Check global kill switch (sentinel file)
@@ -166,6 +168,7 @@ export class EnforcementPipeline {
 
     // Get merged rules for current level and context
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
+    const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
       ['verification', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow'].includes(rule.type))
@@ -264,7 +267,7 @@ export class EnforcementPipeline {
 
       // Match against command patterns
       if (rule.type === 'command' && (rule.match || rule.match_regex || rule.match_prefix)) {
-        const cmdStr = typeof input.args === 'string' ? input.args : JSON.stringify(input.args)
+        const cmdStr = commandString(input)
         const pattern = rule.match_regex || rule.match
         const matches = rule.match_prefix
           ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase())
@@ -304,7 +307,10 @@ export class EnforcementPipeline {
       }
 
       // Match against filesystem patterns
-      if (rule.type === 'filesystem' && rule.paths) {
+      // Reads are skipped (mirroring content rules): reading a secret file
+      // for legitimate config work must not double-flag, and exfiltration of
+      // read data is the flow rules' job. Filesystem rules police writes.
+      if (rule.type === 'filesystem' && rule.paths && !/^read/i.test(input.tool)) {
         const path = typeof input.args === 'object' && input.args !== null
           ? (input.args as Record<string, unknown>).path || (input.args as Record<string, unknown>).file || (input.args as Record<string, unknown>).filePath || ''
           : ''
@@ -339,10 +345,23 @@ export class EnforcementPipeline {
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3)
       }
 
+      // Match against environment variable names appearing in the command
+      // (echo $VAR, printenv VAR, export VAR=...) — the pipeline has no
+      // access to the agent's process environment, so matching is on the
+      // command/args text. Never on file content (commandString strips it).
+      if (rule.type === 'env' && rule.vars?.length) {
+        const cmdStr = commandString(input)
+        const varHit = rule.vars.some(v => cmdStr.toLowerCase().includes(String(v).toLowerCase()))
+        if (varHit) return this.violation(input, rule, rule.message, start, 3)
+      }
+
       // Match against content patterns (Tier 5 — only if file changed)
-      if (depth !== 'fast' && rule.type === 'content' && rule.patterns) {
+      // Content rules police writes: a read of an already-written file would
+      // double-flag content the write rule already accepted, and pure reads
+      // (e.g. reading .env to detect exfiltration via flow rules) must pass.
+      if (deepChecks && rule.type === 'content' && rule.patterns && !/^read/i.test(input.tool)) {
         const path = typeof input.args === 'object' && input.args !== null
-          ? (input.args as Record<string, unknown>).path || ''
+          ? (input.args as Record<string, unknown>).path || (input.args as Record<string, unknown>).filePath || (input.args as Record<string, unknown>).file || ''
           : ''
 
         const pathStr = String(path)
@@ -390,7 +409,7 @@ export class EnforcementPipeline {
     }
 
     // ── Tier 7: Reasoning coherence check ──
-    if (reasoningChecks && (this.config.enableReasoningCheck || level === 'protect') && input.reasoning) {
+    if (reasoningChecks && level === 'protect' && input.reasoning) {
       // Simple heuristic: if agent is doing something it shouldn't
       const dangerSignals = [
         /ignore.*(rule|policy|restrict)/i,
@@ -522,8 +541,12 @@ export class EnforcementPipeline {
     const action = this.effectiveAction(rule, input)
     if (action === 'fix') {
       if (rule.fix && rule.type === 'command') {
-        const cmdStr = typeof input.args === 'string' ? input.args : JSON.stringify(input.args)
-        return this.fixAction(input, rule, cmdStr, start)
+        const args = input.args as Record<string, unknown>
+        const raw = typeof input.args === 'string'
+          ? input.args
+          : typeof args.command === 'string' ? args.command
+            : typeof args.cmd === 'string' ? args.cmd : ''
+        if (raw) return this.fixAction(input, rule, raw, start)
       }
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier)
     }
@@ -554,7 +577,12 @@ export class EnforcementPipeline {
 
   private effectiveAction(rule: KeelRule, input: EnforceInput): EnforcementAction {
     if (input.action_override) return input.action_override
-    if ((this.config.defaultAction === 'warn' || this.effectiveLevel(input) === 'sprint') && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
+    // `level: protect` rules are floors: always enforced at their declared
+    // action, never softened by the sprint dial's deny→warn downgrade.
+    if (rule.level === 'protect') return rule.action
+    // The sprint downgrade is derived from the LIVE level (reloaded with the
+    // rules), so `keel level` takes effect without a plugin restart.
+    if (this.effectiveLevel(input) === 'sprint' && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
     return rule.action
   }
 

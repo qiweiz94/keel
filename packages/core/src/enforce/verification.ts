@@ -1,5 +1,6 @@
 import type { EnforceInput, KeelRule, VerificationMatcher } from '../types.js'
 import type { StateManager } from './state-manager.js'
+import { stripContentArgs, mcpToolString } from './arg-utils.js'
 
 interface PendingVerification {
   ruleId: string
@@ -56,8 +57,25 @@ export class VerificationTracker {
 
   markSatisfied(rule: KeelRule, input: EnforceInput): void {
     if (rule.type !== 'verification' || !matches(rule.satisfy, input)) return
+    if (this.isFakeSatisfy(input)) return
     this.pending.delete(this.key(rule, input))
     this.stateManager?.clearVerification(this.key(rule, input))
+  }
+
+  /**
+   * A satisfy command that only prints help or lists tests is not evidence:
+   * `npm test --help`, `npm run test -- --list`, `vitest --dry-run`,
+   * `vitest --list-files` exit 0 without running the suite, so they must not
+   * clear the obligation. Case-insensitive and tolerant of `=json` suffixes;
+   * MCP-shaped shells (`mcp__shell__run`) carry the command in nested args.
+   */
+  private isFakeSatisfy(input: EnforceInput): boolean {
+    const args = input.args || {}
+    const nested = args.args && typeof args.args === 'object'
+      ? (args.args as Record<string, unknown>).command
+      : undefined
+    const command = String(args.command || args.cmd || nested || '')
+    return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)/i.test(command)
   }
 
   isPending(rule: KeelRule, input: EnforceInput): boolean {
@@ -76,13 +94,28 @@ export class VerificationTracker {
 
   boundary(rule: KeelRule, input: EnforceInput): { message: string; action?: string } | null {
     if (!this.isPending(rule, input) || !rule.boundaries) return null
-    const args = JSON.stringify(input.args || {})
+    const args = JSON.stringify(stripContentArgs(input.args || {}))
+    const mcp = mcpToolString(input)
     for (const boundary of Object.values(rule.boundaries)) {
       try {
         if (boundary.pattern && new RegExp(boundary.pattern, 'i').test(args)) {
           return { message: rule.message, action: boundary.action }
         }
       } catch {}
+      // MCP-shaped calls (`mcp__github__create_commit`) don't carry a shell
+      // command string, so match the boundary's words against the tool name
+      // and direct command. Only the pattern's VERB words ("git commit" →
+      // commit, "git push" → push) are required, with word boundaries so
+      // `github` never satisfies `git` and `list_commits` never satisfies
+      // `commit`. Nested arg VALUES are excluded entirely — they cannot
+      // inject a false boundary hit.
+      if (mcp && boundary.pattern) {
+        const words = boundary.pattern.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean)
+        const verbs = words.slice(1)
+        if (verbs.length && verbs.every(word => new RegExp(`\\b${word}\\b`, 'i').test(mcp))) {
+          return { message: rule.message, action: boundary.action }
+        }
+      }
     }
     return null
   }

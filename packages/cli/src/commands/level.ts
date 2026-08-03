@@ -12,18 +12,29 @@ const LEVEL_EFFECTS: Record<ProtectionLevel, string[]> = {
     'deny/block rules are downgraded to warnings (least friction)',
     'fast depth: content, sequence, flow, and reasoning checks are skipped',
     'prompt approval gates still block irreversible operations',
+    'rules marked `level: protect` are floors — never downgraded, never hidden',
   ],
   balanced: [
     'deny rules warn once, then block on repeat (default)',
-    'full depth: content checks enabled',
+    'full depth: content, sequence, and flow checks are enabled',
     'prompt approval gates still block irreversible operations',
+    'rules marked `level: protect` are floors — never downgraded, never hidden',
   ],
   protect: [
-    'deep depth: sequence and flow checks enabled',
-    'reasoning checks enabled (unless_reasoning exemptions honored)',
+    'deep depth: content, sequence, and flow checks plus reasoning checks are enabled',
     'deny rules block immediately after a first warning',
+    'prompt approval gates still block irreversible operations',
+    'rules marked `level: protect` are floors — never downgraded, never hidden',
   ],
 }
+
+/**
+ * Rule `level` is a strictness hint, not a dial filter: every rule is active
+ * at every dial. The dial softens enforcement globally (sprint downgrades
+ * deny→block to warn via effectiveAction), and rules marked `level: protect`
+ * are exempt from that downgrade — a floor that is never silently disabled
+ * when the dial is low.
+ */
 
 /**
  * The "speed dial" — how much enforcement keel applies.

@@ -142,7 +142,7 @@ runtime without requiring a separate process.
 | `CLAUDE.md` rule frontmatter | Supported as Claude Code compatibility fallback |
 | OpenCode before/after, system-transform, and compaction hooks | Supported |
 | Claude Code, Cline, Cursor, and Codex installation | Supported at documented integration level |
-| `mcp`, `session`, `inheritance`, and advanced context rules | Planned after v1 |
+| `mcp`, `session`, `inheritance`, and advanced context rules | Not implemented — rejected at `keel validate` (never silently accepted) |
 | `keel test --from-audit` historical replay | Planned after v1 |
 
 Anything marked planned is not presented as available behavior in public v1
@@ -150,15 +150,15 @@ documentation or package metadata.
 
 ### Protection Dial
 
-Three knobs, independently adjustable:
+Three knobs, independently adjustable. The dial SOFTENS enforcement; it does
+not filter which rules are active — every rule is active at every level.
 
-**Knob 1: Rule Set**
+**Knob 1: Rule activation**
 
-| Level | Active rules |
-|-------|-------------|
-| `sprint` | Critical only (destructive commands, secrets, force push) |
-| `balanced` | Standard (critical + file ops, network, git hygiene) |
-| `protect` | All (everything + anomaly detection + behavioral patterns) |
+All rules are active at all levels. `level` on a rule is a strictness hint:
+`level: protect` rules are floors — exempt from the sprint deny→warn
+downgrade, never silently disabled. Unleveled deny rules downgrade to warn at
+sprint.
 
 **Knob 2: Action on match**
 
@@ -181,9 +181,9 @@ Three knobs, independently adjustable:
 **Default presets:**
 
 ```
-protect:   rule_set=all      action=deny     depth=deep
-balanced:  rule_set=standard action=deny     depth=full    (default)
-sprint:    rule_set=critical action=warn     depth=fast
+protect:   action=deny     depth=deep
+balanced:  action=deny     depth=full    (default)
+sprint:    action=warn     depth=fast
 ```
 
 In sprint mode, rules whose declared action is `deny` or `block` are evaluated
@@ -274,9 +274,9 @@ rules:
 | `sequence` | Forbidden multi-step action patterns | `steps: [{tool: ReadFile}, {tool: HttpRequest}]` |
 | `verification` | A source-change obligation satisfied by a successful test before a concrete boundary | `trigger`, `satisfy`, `boundaries` |
 | `flow` | Information flow control | `sources: [".env"]`, `sinks: ["network"]` |
-| `mcp` | MCP-specific threats | `mcp_check: tool_descriptions` |
+| `mcp` | MCP-specific threats | `mcp_check: tool_descriptions` — **not implemented**: rejected at `keel validate` |
 | `session` | Session-level rules | `max_duration_minutes: 120` |
-| `inheritance` | Subagent rule propagation | `propagate_rules: all` |
+| `inheritance` | Subagent rule propagation | `propagate_rules: all` — **not implemented**: rejected at `keel validate` |
 | `context` | Context management | Re-injection thresholds |
 
 ### Rule Fields (all rule types)
@@ -636,10 +636,15 @@ Detected violations are logged and alerted. Agent actions cannot be blocked — 
 
 Rules apply to MCP tool calls. MCP tool descriptions are treated as untrusted input — scanned for hidden instructions. Tool result changes mid-session detected and flagged.
 
+> **Status**: the `mcp` rule type is NOT implemented and is rejected by
+> `keel validate`. Enforcement of MCP-shaped calls (the `mcp__<server>__<tool>`
+> form used by OpenCode) happens via regular `command` rules and verification
+> `boundaries`, which now match MCP tool names and nested `args`.
+
 ```yaml
 - id: no-mcp-injection
-  type: mcp
-  mcp_check: tool_descriptions
+  type: command
+  match: "mcp__.*__(execute|run|write)"
   action: warn
 ```
 

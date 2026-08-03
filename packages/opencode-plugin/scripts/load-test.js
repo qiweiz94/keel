@@ -330,10 +330,11 @@ const comp = { context: [] }
 await hooks['experimental.session.compacting']({ sessionID: 't1' }, comp)
 check('session.compacting embedding', comp.context.some(c => c.includes('must run tests')))
 
-// Speed dial: config.level is picked up live on the next tool call, and
-// per-rule minimum levels gate activation (balanced default → inactive at
-// sprint; level: protect → active only at protect; deny downgraded to warn
-// at sprint).
+// Speed dial: config.level is picked up live on the next tool call.
+// Floor semantics: every rule is active at every dial; the dial softens
+// enforcement globally (sprint downgrades deny to warn), and rules marked
+// `level: protect` are exempt from the downgrade — never hidden, never
+// softened.
 const dialHome = join(tmpHome, 'dial')
 fs.mkdirSync(join(dialHome, '.keel'), { recursive: true })
 const dialRules = (level, ids) => `version: 1
@@ -372,11 +373,12 @@ const b1 = await dialCall('dial-b1', 'dial-balanced-token')
 const b2 = await dialCall('dial-b2', 'dial-balanced-token')
 check('balanced: deny warns then blocks', b1 === 'allowed' && b2 === 'denied')
 check('balanced: sprint-level rule stays active', (await dialCall('dial-b3', 'dial-sprint-token')) === 'allowed')
-check('balanced: protect-level rule inactive', (await dialCall('dial-b4', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-b5', 'dial-protect-token')) === 'allowed')
+check('balanced: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-b4', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-b5', 'dial-protect-token')) === 'denied')
 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('sprint', ['s-warn', 's-sprint', 's-protect']))
-check('sprint: unleveled deny rule inactive', (await dialCall('dial-s1', 'dial-balanced-token')) === 'allowed' && (await dialCall('dial-s2', 'dial-balanced-token')) === 'allowed')
+check('sprint: unleveled deny rule downgraded to warn', (await dialCall('dial-s1', 'dial-balanced-token')) === 'allowed' && (await dialCall('dial-s2', 'dial-balanced-token')) === 'allowed')
 check('sprint: deny downgraded to warn', (await dialCall('dial-s3', 'dial-sprint-token')) === 'allowed' && (await dialCall('dial-s4', 'dial-sprint-token')) === 'allowed')
+check('sprint: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-s5', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-s6', 'dial-protect-token')) === 'denied')
 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect']))
 const p1 = await dialCall('dial-p1', 'dial-balanced-token')

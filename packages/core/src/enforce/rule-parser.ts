@@ -84,6 +84,9 @@ export function validateRules(rules: unknown): string[] {
   ])
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
+  // Declared in the type system but with no handler in the enforcement
+  // pipeline — accepting them silently gave users a false sense of security.
+  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session'])
 
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
@@ -93,8 +96,12 @@ export function validateRules(rules: unknown): string[] {
     const rule = candidate as Partial<KeelRule>
     const label = typeof rule.id === 'string' && rule.id ? rule.id : '<unnamed>'
     if (typeof rule.id !== 'string' || !rule.id.trim()) errors.push('Rule is missing a non-empty id')
+    if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
+      errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine — remove it or use a supported type`)
+      continue
+    }
     if (typeof rule.type !== 'string' || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`)
-    const actionOptional = rule.type === 'context' || rule.type === 'meta' || rule.type === 'session'
+    const actionOptional = rule.type === 'context' || rule.type === 'meta'
     if ((!actionOptional && typeof rule.action !== 'string') || (typeof rule.action === 'string' && !validActions.has(rule.action))) {
       errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`)
     }
@@ -103,6 +110,7 @@ export function validateRules(rules: unknown): string[] {
     if (rule.type === 'filesystem' && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`)
     if (rule.type === 'content' && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`)
     if (rule.type === 'network' && typeof rule.match !== 'string') errors.push(`Rule "${label}" is a network rule but has no match`)
+    if (rule.type === 'env' && (!Array.isArray(rule.vars) || rule.vars.length === 0)) errors.push(`Rule "${label}" is an env rule but has no vars`)
     if (rule.type === 'flow' && (!Array.isArray(rule.sources) || !Array.isArray(rule.sinks))) errors.push(`Rule "${label}" is a flow rule but is missing sources or sinks`)
     if (rule.type === 'sequence' && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {
       errors.push(`Rule "${label}" is a sequence rule but has fewer than two steps`)
@@ -186,11 +194,11 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
   const pushRules = (source: ParsedRules | null, scope: KeelRule['scope']) => {
     if (!source) return
     for (const rule of source.rules) {
-      // Filter by protection level
-      const ruleLevel = rule.level || 'balanced'
-      const levelOrder: Record<ProtectionLevel, number> = { sprint: 0, balanced: 1, protect: 2 }
-      if (levelOrder[ruleLevel] > levelOrder[level]) continue
-
+      // Rule `level` is a strictness hint, NOT a dial filter: every rule is
+      // active at every dial. The dial softens enforcement globally (sprint
+      // downgrades deny→warn via effectiveAction), and rules marked
+      // `level: protect` are exempt from that downgrade — a "floor" that is
+      // never silently disabled when the dial is low.
       // Filter by context
       if (rule.context && !rule.context.includes(context) && !rule.context.includes('both')) continue
 
