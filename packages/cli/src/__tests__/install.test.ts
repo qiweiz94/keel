@@ -18,13 +18,13 @@ const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 let dir: string
 let shim: string
 
-function run(args: string, opts: { cwd?: string; path?: string } = {}) {
+function run(args: string, opts: { cwd?: string; path?: string; home?: string } = {}) {
   try {
     const stdout = execSync(`node "${CLI}" ${args}`, {
       encoding: 'utf-8',
       cwd: opts.cwd ?? dir,
       timeout: 10000,
-      env: { ...process.env, PATH: opts.path ?? `${shim}:${process.env.PATH}` },
+      env: { ...process.env, HOME: opts.home ?? process.env.HOME, PATH: opts.path ?? `${shim}:${process.env.PATH}` },
     })
     return { stdout, code: 0 }
   } catch (err: any) {
@@ -153,5 +153,34 @@ describe('the policy protects its own configuration', () => {
     const { stdout, code } = run('check --file "src/index.ts" --write')
     expect(stdout).not.toContain('BLOCKED')
     expect(code).toBe(0)
+  })
+})
+
+describe('install --opencode creates the global rules', () => {
+  let home: string
+
+  beforeEach(() => {
+    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+  })
+
+  afterEach(() => {
+    execSync(`rm -rf "${home}"`)
+  })
+
+  it('creates ~/.keel/rules.yaml with the current defaults', () => {
+    const out = run('install --opencode', { home })
+    expect(out.stdout).toContain('Created ~/.keel/rules.yaml')
+    const rules = readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')
+    expect(rules).toContain('keel-control-gate')
+    expect(rules).toContain('no-destructive-commands')
+    expect(rules).not.toContain('verify-before-irreversible')
+  })
+
+  it('leaves an existing rules.yaml untouched', () => {
+    run('install --opencode', { home })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), '# custom\nversion: 1\n', 'utf-8')
+    const out = run('install --opencode', { home })
+    expect(out.stdout).toContain('already exists (skipping)')
+    expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).toBe('# custom\nversion: 1\n')
   })
 })

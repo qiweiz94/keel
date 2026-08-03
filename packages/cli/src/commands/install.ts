@@ -263,21 +263,21 @@ export async function installCommand(options: {
   const keelDir = join(homedir(), '.keel')
   const rulesPath = join(keelDir, 'rules.yaml')
 
-  if (options.all || (!options.opencode && !options.project && !options.claudeCode && !options.cline && !options.cursor && !options.codex)) {
-    // Create ~/.keel/rules.yaml
-    mkdirSync(keelDir, { recursive: true })
-    if (!existsSync(rulesPath)) {
-      writeFileSync(rulesPath, DEFAULT_RULES_YAML, 'utf-8')
-      console.log(chalk.green('  ✓ Created ~/.keel/rules.yaml'))
-    } else {
-      console.log(chalk.dim('  ~/.keel/rules.yaml already exists (skipping)'))
-    }
-
-    // Create audit traces dir
-    const tracesDir = join(keelDir, 'traces')
-    mkdirSync(tracesDir, { recursive: true })
-    console.log(chalk.dim('  ✓ Ensured ~/.keel/traces/ exists'))
+  // Rules are the base layer: EVERY install mode ensures ~/.keel/rules.yaml
+  // exists (keel install --opencode must not leave "Next steps: review
+  // rules.yaml" pointing at a file it never created). Idempotent when present.
+  mkdirSync(keelDir, { recursive: true })
+  if (!existsSync(rulesPath)) {
+    writeFileSync(rulesPath, DEFAULT_RULES_YAML, 'utf-8')
+    console.log(chalk.green('  ✓ Created ~/.keel/rules.yaml'))
+  } else {
+    console.log(chalk.dim('  ~/.keel/rules.yaml already exists (skipping)'))
   }
+
+  // Create audit traces dir
+  const tracesDir = join(keelDir, 'traces')
+  mkdirSync(tracesDir, { recursive: true })
+  console.log(chalk.dim('  ✓ Ensured ~/.keel/traces/ exists'))
 
   if (options.opencode || options.all) {
     await installOpenCodePlugin()
