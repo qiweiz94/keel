@@ -6382,6 +6382,9 @@ function validateRules(rules) {
     if (rule.type === "verification") {
       if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing verification.trigger`);
       if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing verification.satisfy`);
+      if (rule.trigger?.paths !== void 0 && (!Array.isArray(rule.trigger.paths) || rule.trigger.paths.some((p) => typeof p !== "string" || !p))) {
+        errors.push(`Rule "${rule.id}" has an invalid verification.trigger.paths (expected an array of non-empty strings)`);
+      }
       for (const boundary of Object.values(rule.boundaries || {})) {
         if (!boundary.pattern) errors.push(`Rule "${rule.id}" has a boundary without a pattern`);
       }
@@ -6422,9 +6425,15 @@ function loadRuleHierarchy(projectDir) {
 }
 function mergeRules(hierarchy, level, context) {
   const all = [];
+  const dialRank = { sprint: 0, balanced: 1, protect: 2 };
+  const currentRank = dialRank[level] ?? 1;
   const pushRules = (source, scope) => {
     if (!source) return;
     for (const rule of source.rules) {
+      if (rule.level === "protect") {
+      } else if (rule.level !== void 0 && (dialRank[rule.level] ?? 0) > currentRank) {
+        continue;
+      }
       if (rule.context && !rule.context.includes(context) && !rule.context.includes("both")) continue;
       all.push({ ...rule, scope: rule.scope || scope });
     }
@@ -6544,9 +6553,10 @@ function matches(matcher, input) {
   const tools = matcher.tools || (matcher.tool ? [matcher.tool] : []);
   if (tools.length && !matchesToolList(tools, input)) return false;
   const args = input.args || {};
-  if (matcher.path) {
+  const pathTargets = matcher.paths?.length ? [...matcher.paths, ...matcher.path ? [matcher.path] : []] : matcher.path ? [matcher.path] : [];
+  if (pathTargets.length) {
     const value = argPath(args);
-    if (!value.includes(matcher.path)) return false;
+    if (!pathTargets.some((target) => value.includes(target))) return false;
   }
   if (matcher.pattern) {
     try {
@@ -6594,12 +6604,17 @@ var VerificationTracker = class {
    * `vitest --list-files` exit 0 without running the suite, so they must not
    * clear the obligation. Case-insensitive and tolerant of `=json` suffixes;
    * MCP-shaped shells (`mcp__shell__run`) carry the command in nested args.
+   *
+   * Exit-code swallowing is equally fake: `npm test || true`,
+   * `npm test; exit 0`, `npm test | cat` all exit 0 even when the suite
+   * failed (or never ran), so they must not count as evidence either. The
+   * command string is visible to the hook — the swallow is detectable.
    */
   isFakeSatisfy(input) {
     const args = input.args || {};
     const nested = args.args && typeof args.args === "object" ? args.args.command : void 0;
     const command = String(args.command || args.cmd || nested || "");
-    return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)/i.test(command);
+    return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)|(\|\||;)\s*(true|exit(\s+0)?|:)(\s|$)|(^|\s)\|\s*(cat|tee|head|tail|grep|true)(\s|$)/i.test(command);
   }
   isPending(rule, input) {
     if (rule.type !== "verification") return false;
@@ -7811,6 +7826,33 @@ rules:
     level: sprint
     priority: 100
     message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
+  - id: keel-control-gate
+    type: command
+    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
+    action: deny
+    level: protect
+    priority: 100
+    message: "keel controls are user-owned \u2014 run keel disable|allow|level|install in your own terminal, not through the agent."
+  - id: no-rules-tampering
+    type: filesystem
+    paths:
+      - "**/.keel/rules.yaml"
+      - "**/.keel.local.yaml"
+      - "**/.config/keel/rules.yaml"
+      - "**/.keel/DISABLED"
+      - "**/.opencode/plugins/**"
+      - "**/.keel/plugins/**"
+    action: deny
+    level: protect
+    priority: 90
+    message: "Modifying keel's own rules, state, or plugin files is blocked."
+  - id: no-enforcer-removal
+    type: command
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)"
+    action: deny
+    level: protect
+    priority: 90
+    message: "Removing keel's enforcement files is blocked."
   - id: no-force-push
     type: command
     match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)"
@@ -7921,7 +7963,8 @@ rules:
     trigger:
       tools: [write, edit, apply_patch, WriteFile]
       path: "src/"
-      pattern: "src/"
+      paths: ["package.json"]
+      pattern: "(src/|package[.]json)"
     satisfy:
       tools: [Bash]
       pattern: "(npm test|npm run test|vitest|jest)"
@@ -8175,6 +8218,7 @@ var plugin_default = {
     consumeRestartDisable();
     const before = async (input, output) => {
       if (isDisabled()) return;
+      if (level === "sprint") surfaceWarn("dial-sprint", "Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.", input?.sessionID);
       await refreshExternalChanges();
       const args = output?.args || {};
       const result = await pipeline.evaluate(toEnforceInput(input?.tool || "unknown", args, input, level, directory));

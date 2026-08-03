@@ -46,6 +46,13 @@ reasoning text. They are a gate, not an anti-virus engine:
   rejected at load time; the last-known-good rule set stays in force (never a
   silent fail-open). `keel validate` reports invalid rules before they reach
   the enforcement path.
+- **Keel controls are user-owned.** The default rules hard-deny agents from
+  running `keel disable|allow|level|enforce|install|uninstall`
+  (`keel-control-gate`), from modifying keel's rules, state, or plugin files
+  (`no-rules-tampering`), and from deleting enforcement files
+  (`no-enforcer-removal`). A compromised agent cannot turn keel off, approve
+  its own overrides, or rewrite its own rules — only the user can, in their
+  own terminal. These are `level: protect` floors, active at every dial.
 - **The agent's own process is the boundary.** In-process enforcement can be
   bypassed if the agent process itself is compromised. Git hook bypass
   (`--no-verify`, `core.hooksPath`) is blocked at the command level; see

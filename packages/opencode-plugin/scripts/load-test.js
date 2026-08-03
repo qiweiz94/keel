@@ -81,6 +81,26 @@ rules:
       - regex: "PRIVATE_KEY"
     action: deny
     message: "Private key content"
+  - id: keel-control-gate
+    type: command
+    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
+    action: deny
+    level: protect
+    message: "keel controls are user-owned"
+  - id: no-rules-tampering
+    type: filesystem
+    paths:
+      - "**/.keel/rules.yaml"
+      - "**/.opencode/plugins/**"
+    action: deny
+    level: protect
+    message: "tampering blocked"
+  - id: no-enforcer-removal
+    type: command
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)"
+    action: deny
+    level: protect
+    message: "enforcer removal blocked"
   - id: network-protection
     type: network
     match: 'evil\\.example'
@@ -249,6 +269,37 @@ try {
 }
 check('verification boundary warns then denies', boundaryDenied)
 
+// Self-protection: keel controls are user-owned — agents cannot disable,
+// self-approve, turn down the dial, or remove the enforcer itself.
+const controlGated = async (sessionId, command) => {
+  // First violation warns, repeat denies — but the rule may already be
+  // escalated by an earlier check in this session, so accept either a warn
+  // on the first call or an immediate deny; the SECOND call must deny.
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
+  } catch (e) {
+    if (e.message.startsWith('[Keel]')) return true
+  }
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
+    return false
+  } catch (e) {
+    return e.message.startsWith('[Keel]')
+  }
+}
+check('keel disable is blocked for agents', await controlGated('control-1', 'keel disable'))
+check('keel allow self-approval is blocked', await controlGated('control-2', 'keel allow no-force-push --once'))
+check('keel level dial-down is blocked', await controlGated('control-3', 'keel level sprint --project'))
+check('rm of the plugin file is blocked', await controlGated('control-4', `rm ${join(tmpHome, '.opencode', 'plugins', 'keel-enforce.js')}`))
+let rulesWriteBlocked = false
+await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
+try {
+  await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
+} catch (e) {
+  rulesWriteBlocked = e.message.startsWith('[Keel]')
+}
+check('rules.yaml writes are blocked', rulesWriteBlocked)
+
 // Core rule types and metadata are evaluated by the same bundled pipeline.
 const checkRule = async (tool, args, id) => {
   await hooks['tool.execute.before']({ tool, sessionID: id }, { args })
@@ -387,6 +438,12 @@ rules:
     level: protect
     action: deny
     message: "dial protect token"
+  - id: ${ids[3]}
+    type: command
+    match: "dial-filtered-token"
+    level: balanced
+    action: deny
+    message: "dial filtered token"
 `
 const dialCall = async (sessionId, command) => {
   try {
@@ -398,24 +455,27 @@ const dialCall = async (sessionId, command) => {
 }
 let dialHooks = await plugin.server({ directory: dialHome })
 
-fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('balanced', ['b-warn', 'b-sprint', 'b-protect']))
+fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('balanced', ['b-warn', 'b-sprint', 'b-protect', 'b-filter']))
 const b1 = await dialCall('dial-b1', 'dial-balanced-token')
 const b2 = await dialCall('dial-b2', 'dial-balanced-token')
 check('balanced: deny warns then blocks', b1 === 'allowed' && b2 === 'denied')
 check('balanced: sprint-level rule stays active', (await dialCall('dial-b3', 'dial-sprint-token')) === 'allowed')
 check('balanced: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-b4', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-b5', 'dial-protect-token')) === 'denied')
+check('balanced: balanced-level rule fires (warns)', (await dialCall('dial-b6', 'dial-filtered-token')) === 'allowed')
 
-fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('sprint', ['s-warn', 's-sprint', 's-protect']))
+fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('sprint', ['s-warn', 's-sprint', 's-protect', 's-filter']))
 check('sprint: unleveled deny rule downgraded to warn', (await dialCall('dial-s1', 'dial-balanced-token')) === 'allowed' && (await dialCall('dial-s2', 'dial-balanced-token')) === 'allowed')
 check('sprint: deny downgraded to warn', (await dialCall('dial-s3', 'dial-sprint-token')) === 'allowed' && (await dialCall('dial-s4', 'dial-sprint-token')) === 'allowed')
 check('sprint: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-s5', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-s6', 'dial-protect-token')) === 'denied')
+check('sprint: balanced-level rule is filtered out', (await dialCall('dial-s7', 'dial-filtered-token')) === 'allowed' && (await dialCall('dial-s8', 'dial-filtered-token')) === 'allowed')
 
-fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect']))
+fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect', 'p-filter']))
 const p1 = await dialCall('dial-p1', 'dial-balanced-token')
 const p2 = await dialCall('dial-p2', 'dial-balanced-token')
 check('protect: deny warns then blocks', p1 === 'allowed' && p2 === 'denied')
 check('protect: protect-level rule active', (await dialCall('dial-p3', 'dial-protect-token')) === 'allowed')
 check('protect: protect-level rule blocks on repeat', (await dialCall('dial-p4', 'dial-protect-token')) === 'denied')
+check('protect: balanced-level rule fires', (await dialCall('dial-p5', 'dial-filtered-token')) === 'allowed')
 
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))

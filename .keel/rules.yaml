@@ -8,7 +8,8 @@ rules:
     trigger:
       tools: [WriteFile, edit]
       path: "src/"
-      pattern: "src/"
+      paths: ["package.json"]
+      pattern: "(src/|package[.]json)"
     satisfy:
       tools: [Bash]
       pattern: "(npm test|npm run test|vitest|jest)"

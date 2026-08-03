@@ -6,8 +6,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadRuleHierarchy } from '../rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent } from '../rule-parser.js'
 import { StateManager } from '../state-manager.js'
+import type { ProtectionLevel } from '../../types.js'
 
 function hashRulesFile(p: string): string {
   if (!existsSync(p)) return ''
@@ -97,5 +98,85 @@ rules:
       { label: 'sprint-second', action: 'warn' },
       { label: 'protect-second', action: 'deny' },
     ])
+  })
+})
+
+describe('rule level is a minimum-dial filter', () => {
+  const DIAL_RULES = `version: 1
+rules:
+  - id: unleveled-rule
+    type: command
+    match: "tok-unleveled"
+    action: deny
+    message: "unleveled"
+  - id: sprint-rule
+    type: command
+    match: "tok-sprint"
+    level: sprint
+    action: deny
+    message: "sprint"
+  - id: balanced-rule
+    type: command
+    match: "tok-balanced"
+    level: balanced
+    action: deny
+    message: "balanced"
+  - id: protect-rule
+    type: command
+    match: "tok-protect"
+    level: protect
+    action: deny
+    message: "protect"
+`
+
+  function dialPipeline(dial: ProtectionLevel): EnforcementPipeline {
+    const rules = parseRulesContent(DIAL_RULES, '/tmp/dial.yaml')
+    rules.config.level = dial
+    return new EnforcementPipeline({
+      level: dial, context: 'local', cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+      flowTracker: new FlowTracker(),
+      ruleHierarchy: { global: rules, user: null, project: null, local: null },
+      ruleVersion: 1, allowedFixTransforms: true,
+    })
+  }
+
+  function dialCall(p: EnforcementPipeline, dial: ProtectionLevel, token: string) {
+    return p.evaluate({
+      tool: 'Bash', args: { command: token }, cwd: '/tmp/dial', session_id: 'dial',
+      turn_number: 1, context_tokens: 0, level: dial, context: 'local', agent: 't', subagent_of: null,
+    } as any)
+  }
+
+  it('at sprint, balanced-level rules are filtered out; sprint/protect/unleveled fire', async () => {
+    const p = dialPipeline('sprint')
+    expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn')
+    expect((await dialCall(p, 'sprint', 'tok-sprint')).action).toBe('warn')
+    expect((await dialCall(p, 'sprint', 'tok-balanced')).action).toBe('allow')
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('warn')
+  })
+
+  it('at balanced, every level fires', async () => {
+    const p = dialPipeline('balanced')
+    expect((await dialCall(p, 'balanced', 'tok-unleveled')).action).toBe('warn')
+    expect((await dialCall(p, 'balanced', 'tok-sprint')).action).toBe('warn')
+    expect((await dialCall(p, 'balanced', 'tok-balanced')).action).toBe('warn')
+    expect((await dialCall(p, 'balanced', 'tok-protect')).action).toBe('warn')
+  })
+
+  it('at protect, every level fires', async () => {
+    const p = dialPipeline('protect')
+    expect((await dialCall(p, 'protect', 'tok-unleveled')).action).toBe('warn')
+    expect((await dialCall(p, 'protect', 'tok-sprint')).action).toBe('warn')
+    expect((await dialCall(p, 'protect', 'tok-balanced')).action).toBe('warn')
+    expect((await dialCall(p, 'protect', 'tok-protect')).action).toBe('warn')
+  })
+
+  it('protect-level rules deny at every dial on repeat (floors never soften)', async () => {
+    for (const dial of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
+      const p = dialPipeline(dial)
+      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('warn')
+      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+    }
   })
 })

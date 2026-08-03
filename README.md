@@ -215,21 +215,40 @@ effect immediately — no restart.
 | `protect` | block after a first warning | deep — sequence, flow, and reasoning checks at full strength | irreversible or high-risk work |
 
 `prompt` approval gates are **never downgraded** at any level — irreversible
-operations always require `keel allow <rule-id> --once`.
+operations always require a human-run `keel allow <rule-id> --once`. Agents
+are hard-blocked from running keel's control commands (see "Self-protection"
+below).
 
-Rules can declare `level: protect` to make them **floors**:
+A rule's `level` is a **minimum dial** — below that dial the rule does not
+participate at all:
 
 ```yaml
 - id: my-strict-rule
   type: command
   match: "something"
   action: deny
-  level: protect   # always enforced — never downgraded by the sprint dial
+  level: protect   # floor — active at every dial, never downgraded
 ```
 
-Every rule is active at every dial. The dial softens enforcement globally
-(sprint downgrades deny/block to warn), and `level: protect` exempts a rule
-from that downgrade — it is never silently disabled when the dial is low.
+| Declared level | Active at dials |
+|----------------|-----------------|
+| `sprint` (or none) | all |
+| `balanced` | balanced, protect |
+| `protect` | all — a floor, exempt from both the filter and the sprint deny→warn downgrade |
+
+The dial softens enforcement globally: at `sprint`, deny/block rules fire as
+warnings. `level: protect` floors are exempt from that downgrade and are
+never silently disabled when the dial is low.
+
+### Self-protection
+
+Keel's control surface is user-owned. The default rules hard-deny agents from
+running `keel disable|allow|level|enforce|install|uninstall`, from editing
+keel's own rules or state files (`~/.keel/rules.yaml`, `.keel/rules.yaml`,
+`~/.config/keel/rules.yaml`, `DISABLED` markers), and from deleting
+enforcement files (plugins, `rules.yaml`). An agent cannot disable, downgrade,
+or re-configure keel — only the user can. These rules (`keel-control-gate`,
+`no-rules-tampering`, `no-enforcer-removal`) are `level: protect` floors.
 
 ## Writing Rules
 

@@ -33,6 +33,33 @@ rules:
     level: sprint
     priority: 100
     message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
+  - id: keel-control-gate
+    type: command
+    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
+    action: deny
+    level: protect
+    priority: 100
+    message: "keel controls are user-owned — run keel disable|allow|level|install in your own terminal, not through the agent."
+  - id: no-rules-tampering
+    type: filesystem
+    paths:
+      - "**/.keel/rules.yaml"
+      - "**/.keel.local.yaml"
+      - "**/.config/keel/rules.yaml"
+      - "**/.keel/DISABLED"
+      - "**/.opencode/plugins/**"
+      - "**/.keel/plugins/**"
+    action: deny
+    level: protect
+    priority: 90
+    message: "Modifying keel's own rules, state, or plugin files is blocked."
+  - id: no-enforcer-removal
+    type: command
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)"
+    action: deny
+    level: protect
+    priority: 90
+    message: "Removing keel's enforcement files is blocked."
   - id: no-force-push
     type: command
     match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)"
@@ -143,7 +170,8 @@ rules:
     trigger:
       tools: [write, edit, apply_patch, WriteFile]
       path: "src/"
-      pattern: "src/"
+      paths: ["package.json"]
+      pattern: "(src/|package[.]json)"
     satisfy:
       tools: [Bash]
       pattern: "(npm test|npm run test|vitest|jest)"
@@ -374,6 +402,10 @@ export default {
 
     const before = async (input: any, output: any) => {
       if (isDisabled()) return
+      // The dial is user-owned; surface once per session what it actually
+      // means at sprint so "fewer checks" is a visible choice, not a silent
+      // weakening (content/sequence/flow checks are skipped at sprint).
+      if (level === 'sprint') surfaceWarn('dial-sprint', 'Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.', input?.sessionID)
       await refreshExternalChanges()
       const args = output?.args || {}
       const result = await pipeline.evaluate(toEnforceInput(input?.tool || 'unknown', args, input, level, directory))

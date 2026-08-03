@@ -252,4 +252,103 @@ rules:
       expect((await pipeline.evaluate(input('Bash', { command: 'call api-token' }))).action).toBe('deny')
     })
   })
+
+  describe('self-protection (keel must police its own enforcement)', () => {
+    it('keel-control-gate denies keel disable/allow/level/install at every dial', async () => {
+      for (const level of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
+        for (const command of [
+          'keel disable',
+          'keel allow no-force-push --once',
+          'keel level sprint --project',
+          'keel install --opencode',
+        ]) {
+          // First violation warns, second denies (fresh pipeline per case so
+          // escalation state never leaks across assertions).
+          const p = makeDefaultsPipeline(level)
+          expect((await p.evaluate(input('Bash', { command }, `self-${level}`, level))).action).toBe('warn')
+          const second = await p.evaluate(input('Bash', { command }, `self-${level}`, level))
+          expect(second.action).toBe('deny')
+          expect(second.rule_id).toBe('keel-control-gate')
+        }
+      }
+    })
+
+    it('no-rules-tampering blocks writes to rules, sentinel, and plugin files at every dial', async () => {
+      for (const level of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
+        for (const target of [
+          '/Users/tester/.keel/rules.yaml',
+          '/Users/tester/code/keel/.keel/rules.yaml',
+          '/Users/tester/code/keel/.keel.local.yaml',
+          '/Users/tester/.config/keel/rules.yaml',
+          '/Users/tester/.keel/DISABLED',
+          '/Users/tester/.opencode/plugins/keel-enforce.js',
+        ]) {
+          const p = makeDefaultsPipeline(level)
+          expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe('warn')
+          const second = await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))
+          expect(second.action).toBe('deny')
+          expect(second.rule_id).toBe('no-rules-tampering')
+        }
+      }
+    })
+
+    it('plugin file deletes are blocked even without -rf', async () => {
+      const p = makeDefaultsPipeline('balanced')
+      const target = '/Users/tester/.opencode/plugins/keel-enforce.js'
+      expect((await p.evaluate(input('bash', { command: `rm ${target}` }, 'rm-plugin'))).action).toBe('warn')
+      const second = await p.evaluate(input('bash', { command: `rm ${target}` }, 'rm-plugin'))
+      expect(second.action).toBe('deny')
+      expect(second.rule_id).toBe('no-enforcer-removal')
+      expect((await p.evaluate(input('bash', { command: `rm -rf ${target}` }, 'rm-plugin'))).action).toBe('deny')
+    })
+
+    it('keel allow no longer grants a one-time override', async () => {
+      const p = makeDefaultsPipeline('balanced')
+      // A prior override grant exists, but the agent cannot self-approve via
+      // the CLI — the command itself is denied before the store is consulted.
+      expect((await p.evaluate(input('Bash', { command: 'keel allow no-verify-bypass --once' }, 'self-allow'))).action).toBe('warn')
+      const second = await p.evaluate(input('Bash', { command: 'keel allow no-verify-bypass --once' }, 'self-allow'))
+      expect(second.action).toBe('deny')
+      expect(second.rule_id).toBe('keel-control-gate')
+    })
+  })
+
+  describe('verification honesty (satisfy must be real evidence)', () => {
+    it('exit-code swallowing never satisfies the obligation', async () => {
+      for (const fake of [
+        'npm test || true',
+        'npm test; exit 0',
+        'npm run test | cat',
+        'vitest --silent | grep PASS || true',
+        'npm test ||:',
+      ]) {
+        const p = makeDefaultsPipeline('balanced')
+        await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }, 'swallow'))
+        p.markVerificationSatisfied(input('Bash', { command: fake }, 'swallow'))
+        // The obligation must still be pending: the push boundary (deny)
+        // first violation warns, repeat denies.
+        expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))).action).toBe('warn')
+        expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))).action).toBe('deny')
+      }
+      // A real run clears it.
+      const p = makeDefaultsPipeline('balanced')
+      await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }, 'swallow'))
+      p.markVerificationSatisfied(input('Bash', { command: 'npm test -- --runInBand' }, 'swallow'))
+      expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))).action).toBe('allow')
+    })
+
+    it('package.json edits re-arm the obligation (test-script tampering is gated)', async () => {
+      const p = makeDefaultsPipeline('balanced')
+      await p.evaluate(input('write', { filePath: 'package.json', content: '{"scripts":{"test":"echo ok"}}' }, 'pkg'))
+      // The tampered package.json write itself creates the obligation.
+      expect((await p.evaluate(input('Bash', { command: 'git commit -m "x"', cwd: '/tmp/keel-threat-model' }, 'pkg'))).action).toBe('warn')
+      // A swallowed "npm test" must not clear it.
+      p.markVerificationSatisfied(input('Bash', { command: 'npm test || true' }, 'pkg'))
+      expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))).action).toBe('deny')
+      // A genuine run clears it.
+      p.markVerificationSatisfied(input('Bash', { command: 'npm test' }, 'pkg'))
+      expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))).action).toBe('allow')
+    })
+  })
 })

@@ -121,6 +121,9 @@ export function validateRules(rules: unknown): string[] {
     if (rule.type === 'verification') {
       if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing verification.trigger`)
       if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing verification.satisfy`)
+      if (rule.trigger?.paths !== undefined && (!Array.isArray(rule.trigger.paths) || rule.trigger.paths.some(p => typeof p !== 'string' || !p))) {
+        errors.push(`Rule "${rule.id}" has an invalid verification.trigger.paths (expected an array of non-empty strings)`)
+      }
       for (const boundary of Object.values(rule.boundaries || {})) {
         if (!boundary.pattern) errors.push(`Rule "${rule.id}" has a boundary without a pattern`)
       }
@@ -194,14 +197,26 @@ export function loadRuleHierarchy(projectDir: string): RuleHierarchy {
 export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext): KeelRule[] {
   const all: KeelRule[] = []
 
+  // Rule `level` is a minimum-dial filter AND a floor marker:
+  //   - `level: sprint` rules are active at every dial (sprint is the
+  //     lowest dial, so they always fire).
+  //   - `level: balanced` rules fire only when the dial is balanced/protect.
+  //   - `level: protect` rules are floors: active at EVERY dial and exempt
+  //     from the sprint downgrade (effectiveAction) — never silently
+  //     disabled when the dial is low.
+  // The dial itself softens enforcement (sprint downgrades deny→warn); a
+  // rule-level filter would let a user scope a rule to the stricter dials.
+  const dialRank: Record<string, number> = { sprint: 0, balanced: 1, protect: 2 }
+  const currentRank = dialRank[level] ?? 1
+
   const pushRules = (source: ParsedRules | null, scope: KeelRule['scope']) => {
     if (!source) return
     for (const rule of source.rules) {
-      // Rule `level` is a strictness hint, NOT a dial filter: every rule is
-      // active at every dial. The dial softens enforcement globally (sprint
-      // downgrades deny→warn via effectiveAction), and rules marked
-      // `level: protect` are exempt from that downgrade — a "floor" that is
-      // never silently disabled when the dial is low.
+      if (rule.level === 'protect') {
+        // floor — active at every dial
+      } else if (rule.level !== undefined && (dialRank[rule.level] ?? 0) > currentRank) {
+        continue
+      }
       // Filter by context
       if (rule.context && !rule.context.includes(context) && !rule.context.includes('both')) continue
 

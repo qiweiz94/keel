@@ -26,9 +26,14 @@ function matches(matcher: VerificationMatcher | undefined, input: EnforceInput):
   const tools = matcher.tools || (matcher.tool ? [matcher.tool] : [])
   if (tools.length && !matchesToolList(tools, input)) return false
   const args = input.args || {}
-  if (matcher.path) {
+  // `paths` is additive: the single `path` (or its absence) still applies,
+  // so the worktree-fingerprint fake input ({ path: "src/" }) keeps working.
+  const pathTargets = matcher.paths?.length
+    ? [...matcher.paths, ...(matcher.path ? [matcher.path] : [])]
+    : (matcher.path ? [matcher.path] : [])
+  if (pathTargets.length) {
     const value = argPath(args)
-    if (!value.includes(matcher.path)) return false
+    if (!pathTargets.some(target => value.includes(target))) return false
   }
   if (matcher.pattern) {
     try {
@@ -87,6 +92,11 @@ export class VerificationTracker {
    * `vitest --list-files` exit 0 without running the suite, so they must not
    * clear the obligation. Case-insensitive and tolerant of `=json` suffixes;
    * MCP-shaped shells (`mcp__shell__run`) carry the command in nested args.
+   *
+   * Exit-code swallowing is equally fake: `npm test || true`,
+   * `npm test; exit 0`, `npm test | cat` all exit 0 even when the suite
+   * failed (or never ran), so they must not count as evidence either. The
+   * command string is visible to the hook — the swallow is detectable.
    */
   private isFakeSatisfy(input: EnforceInput): boolean {
     const args = input.args || {}
@@ -94,7 +104,7 @@ export class VerificationTracker {
       ? (args.args as Record<string, unknown>).command
       : undefined
     const command = String(args.command || args.cmd || nested || '')
-    return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)/i.test(command)
+    return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)|(\|\||;)\s*(true|exit(\s+0)?|:)(\s|$)|(^|\s)\|\s*(cat|tee|head|tail|grep|true)(\s|$)/i.test(command)
   }
 
   isPending(rule: KeelRule, input: EnforceInput): boolean {

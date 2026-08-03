@@ -110,6 +110,8 @@ export interface VerificationMatcher {
   tools?: string[]
   tool?: string
   path?: string
+  /** Any-of additional path targets (e.g. package.json re-arms the obligation). */
+  paths?: string[]
   pattern?: string
 }
 
