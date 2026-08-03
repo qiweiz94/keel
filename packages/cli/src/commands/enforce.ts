@@ -24,7 +24,6 @@ export interface EnforceOptions {
   context?: RuleContext
   agent?: string
   learn?: boolean
-  watch?: boolean
   action?: EnforcementAction
   depth?: EnforcementDepth
 }
@@ -190,7 +189,6 @@ export async function enforceCommand(options: {
   action?: string
   depth?: string
   learn?: boolean
-  watch?: boolean
   audit?: boolean
 }) {
   const level = (options.level || 'balanced') as ProtectionLevel
@@ -221,6 +219,19 @@ export async function enforceCommand(options: {
 
   if (!['sprint', 'balanced', 'protect'].includes(level)) {
     console.log(chalk.red(`Invalid level: "${level}". Use sprint, balanced, or protect.`))
+    process.exitCode = 1
+    return
+  }
+  // `--level` without `--persist` used to print "Level: protect" and then
+  // exit — the level only lived in the ephemeral process and never reached
+  // the plugin. The dial must be persisted (or set with `keel level`).
+  if (options.level && !options.persist) {
+    console.log(chalk.red(`  --level=${options.level} has no effect without --persist.`))
+    console.log(chalk.cyan('  Use one of:'))
+    console.log(chalk.white('    keel level <sprint|balanced|protect>            # global dial (~/.keel/rules.yaml)'))
+    console.log(chalk.white('    keel level <sprint|balanced|protect> --project  # project dial (.keel/rules.yaml)'))
+    console.log(chalk.white('    keel enforce --level=X --persist                # persist into the project rules'))
+    process.exitCode = 1
     return
   }
   if (options.persist) {
@@ -230,7 +241,19 @@ export async function enforceCommand(options: {
     const rulesPath = join(dir, '.keel', 'rules.yaml')
     if (!existsSync(rulesPath)) {
       console.log(chalk.yellow('No .keel/rules.yaml found in the current directory.'))
-      console.log(chalk.cyan('  Run `keel enforce init` to create it, then retry with --persist.'))
+      console.log(chalk.cyan('  Run `keel enforce init` to create it, or use `keel level <level>` for the global dial.'))
+      return
+    }
+    // Refuse to persist a level into rules that have parse or validation
+    // issues — otherwise the level is written into a file the plugin
+    // rejects, and the change silently never takes effect.
+    const { parseRulesFile, validateRules } = await import('../core/enforce/rule-parser.js')
+    const parsed = parseRulesFile(rulesPath)
+    const issues = [...(parsed?.errors || []), ...validateRules(parsed?.rules || [])]
+    if (issues.length) {
+      console.log(chalk.red(`  Refusing to persist level — ${rulesPath} has issues:`))
+      for (const issue of issues) console.log(chalk.yellow(`    ⚠ ${issue}`))
+      process.exitCode = 1
       return
     }
     writeRulesLevel(rulesPath, level)
@@ -287,7 +310,6 @@ export async function enforceCommand(options: {
   console.log(chalk.dim('  Ready. Connect your agent:'))
   console.log(chalk.dim('    OpenCode:   built-in (auto-detected)'))
   console.log(chalk.dim('    Claude Code:  add hooks (see docs)'))
-  console.log(chalk.dim('    Other agents: keel enforce --watch'))
   console.log()
 }
 

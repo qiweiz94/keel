@@ -7,15 +7,26 @@ const DISABLE_FILE = join(process.env.HOME || '~', '.keel', 'DISABLED')
 /**
  * Kill switch — disables all enforcement immediately.
  */
-export async function disableCommand(options: { until?: number; reason?: string }) {
+export async function disableCommand(options: { until?: number | string; reason?: string }) {
+  let untilSeconds: number | null = null
+  if (options.until !== undefined && options.until !== '') {
+    const parsed = typeof options.until === 'number' ? options.until : parseInt(String(options.until), 10)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      console.log(chalk.red(`  Invalid --until: "${options.until}". Use a positive number of seconds.`))
+      process.exitCode = 1
+      return
+    }
+    untilSeconds = parsed
+  }
+
+  const until = untilSeconds
+    ? Date.now() + untilSeconds * 1000
+    : null
+
   const disableDir = join(process.env.HOME || '~', '.keel')
   if (!existsSync(disableDir)) {
     mkdirSync(disableDir, { recursive: true })
   }
-
-  const until = options.until
-    ? Date.now() + options.until * 1000
-    : null
 
   const state = {
     disabled_at: new Date().toISOString(),
@@ -31,7 +42,7 @@ export async function disableCommand(options: { until?: number; reason?: string 
   console.log()
 
   if (until) {
-    const minutes = Math.round(options.until! / 60)
+    const minutes = Math.round(untilSeconds! / 60)
     console.log(chalk.dim(`  Will auto-enable in ${minutes} minute(s)`))
   } else {
     console.log(chalk.dim('  Will auto-enable on next agent restart.'))
@@ -58,7 +69,10 @@ export async function enableCommand() {
 }
 
 /**
- * Check if Keel is currently disabled (used by enforcement pipeline).
+ * Check if Keel is currently disabled (used by the CLI paths).
+ *
+ * A CORRUPT sentinel fails CLOSED: enforcement stays on (matches the plugin
+ * behavior). A corrupt kill-switch must never silently keep enforcement off.
  */
 export function isDisabled(): boolean {
   if (!existsSync(DISABLE_FILE)) return false

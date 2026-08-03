@@ -97,4 +97,41 @@ describe('keel level (the speed dial)', () => {
     expect(out.stdout).toContain('Persisted project level: protect')
     expect(readFileSync(join(dir, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: protect$/m)
   })
+
+  it('enforce --level without --persist refuses instead of silently doing nothing', () => {
+    const out = run('enforce --level=protect')
+    expect(out.stdout).toMatch(/without --persist|--persist/i)
+    expect(out.code).toBe(1)
+  })
+})
+
+describe('keel status (enforcement health)', () => {
+  it('reports the dial, kill switch, and rule counts', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES)
+    const out = run('status')
+    expect(out.stdout).toMatch(/Speed dial:\s*balanced/i)
+    expect(out.stdout).toMatch(/Kill switch:\s*enabled/i)
+    expect(out.stdout).toMatch(/rules/)
+  })
+
+  it('reflects the dial set in the global rules', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES.replace('level: balanced', 'level: protect'))
+    const out = run('status')
+    expect(out.stdout).toMatch(/Speed dial:\s*protect/i)
+  })
+
+  it('flags a corrupt kill-switch sentinel instead of treating it as armed', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'DISABLED'), 'not-json', 'utf-8')
+    const out = run('status')
+    expect(out.stdout).toMatch(/corrupt|invalid/i)
+  })
+
+  it('keel allow refuses an unknown rule id', () => {
+    const out = run('allow no-such-rule --once')
+    expect(out.stdout).toMatch(/Unknown rule|unknown/i)
+    expect(out.code).toBe(1)
+  })
 })

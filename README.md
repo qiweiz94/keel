@@ -179,17 +179,26 @@ keel allow git-history-rewrite --once   # 5-minute one-time override
 keel allow no-force-push                # persistent override (24h)
 ```
 
-Overrides are stored in `~/.keel/overrides.json` and are consumed by the next
-violation of the rule.
+Overrides are stored in `~/.keel/overrides.json`.
+
+- `--once`: consumed by the next violation that would actually **block** the action
+  (a first-time warning does not consume it), so a grant is never wasted on a
+  warning-only pass. Expires after 5 minutes if unused.
+- plain `keel allow <id>`: a 24-hour **window** — every violation of the rule is
+  allowed (and audited) until the window expires.
+- Unknown rule ids are refused; the command is a human-run control, so agents
+  cannot grant themselves approvals (`keel-control-gate`).
 
 ### Receipts and the signing key
 
 Every gated or blocked action is written to `<project>/.keel/receipts/`
 as a signed, hash-chained entry (verify with `keel verify`). The Ed25519
-signing keypair is created at `<project>/.keel/receipt-key.json` on
-first use — **add `.keel/receipts/` and `.keel/audit/` to your project's
-`.gitignore`** so the private key is never committed. The key can be rotated
-by deleting the file; receipts signed with the old key will no longer verify.
+signing keypair is created in **machine scope** at `~/.keel/receipt-key.json`
+on first use (legacy project-tree keys are still read). `keel install
+--project` writes `.keel/.gitignore` covering `receipts/`, `audit/`, and
+the key files so keys are never committed. Rotate keys with `keel receipts
+rotate` — old receipts stay verifiable because verification tries the
+archived keys too.
 
 Standing requirements go in `~/.keel/requirements.md` (and optionally
 `.keel/requirements.md` per project) — injected into the system prompt every turn.

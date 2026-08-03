@@ -145,6 +145,19 @@ export function validateRules(rules: unknown): string[] {
       errors.push(`Rule "${label}" has an invalid fix transform`)
     }
   }
+
+  // Duplicate ids within ONE file are always a mistake (cross-scope overrides
+  // are legal and handled by mergeRules, but a duplicated id in a single
+  // scope silently drops one of the two rules).
+  const ids = rules.map(rule => typeof (rule as Partial<KeelRule>)?.id === 'string' ? (rule as Partial<KeelRule>).id as string : '')
+  const seen = new Set<string>()
+  const dups = new Set<string>()
+  for (const id of ids) {
+    if (id && seen.has(id)) dups.add(id)
+    seen.add(id)
+  }
+  if (dups.size) errors.push(`Duplicate rule id(s) in the same file: ${[...dups].join(', ')}`)
+
   return errors
 }
 

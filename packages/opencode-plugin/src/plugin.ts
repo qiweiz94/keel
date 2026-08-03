@@ -21,6 +21,7 @@ const KEEL_DIR = path.join(os.homedir(), '.keel')
 const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
 const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
+let sentinelCorrupted = false
 const TRACES_DIR = path.join(KEEL_DIR, 'traces')
 const LEGACY_PRODUCT_NAME = 'ai-' + 'enforce'
 export const DEFAULT_RULES_YAML = `version: 1
@@ -194,10 +195,10 @@ rules:
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+|[; ][:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&|^[:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&"
     action: deny
     level: sprint
-    message: "Destructive commands are blocked."
+    message: "Destructive commands (including fork bombs) are blocked."
   - id: must-sign-commits
     type: command
     match: "git commit(?!.*--signoff)"
@@ -220,11 +221,6 @@ rules:
     level: sprint
     priority: 80
     message: "Publishing or deleting registry artifacts — approval required."
-  - id: verify-before-irreversible
-    type: command
-    match: "git push --force(?!-with-lease)|rm -rf (?!.*(node_modules|/tmp/|/var/tmp/|Trash))"
-    action: warn
-    message: "Irreversible action — verify inbound references before proceeding."
 `
 
 function ensureRules(): void {
@@ -245,7 +241,14 @@ function isDisabled(): boolean {
       return false
     }
     return true
-  } catch { return true }
+  } catch {
+    // A corrupt kill-switch must never silently keep enforcement off: fail
+    // CLOSED (enforcement stays on) and record the corruption for `keel
+    // status` and the audit trace.
+    sentinelCorrupted = true
+    try { record({ event: 'corrupt-kill-switch-fail-closed', message: 'Invalid keel kill-switch state; enforcement stays ON until ' + DISABLED_PATH + ' is fixed or removed' }) } catch {}
+    return false
+  }
 }
 
 function consumeRestartDisable(): void {
@@ -402,6 +405,10 @@ export default {
 
     const before = async (input: any, output: any) => {
       if (isDisabled()) return
+      if (sentinelCorrupted) {
+        sentinelCorrupted = false
+        surfaceWarn('corrupt-kill-switch', 'Invalid keel kill-switch state (DISABLED) detected — enforcement stays ON. Fix or delete ~/.keel/DISABLED to clear this.', input?.sessionID)
+      }
       // The dial is user-owned; surface once per session what it actually
       // means at sprint so "fewer checks" is a visible choice, not a silent
       // weakening (content/sequence/flow checks are skipped at sprint).

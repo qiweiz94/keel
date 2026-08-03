@@ -138,4 +138,37 @@ describe('action receipts', () => {
     )
     expect(cli('verify')).toContain('INVALID')
   })
+
+  it('rotation keeps old receipts verifiable (archived keys still verify)', () => {
+    const home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    try {
+      const core = JSON.stringify(join(HERE, '..', '..', '..', 'core', 'dist', 'index.js'))
+      const scriptFile = join(home, 'rotate-test.cjs')
+      const script = [
+        `const { initReceiptKey, createReceipt, rotateReceiptKey, receiptPublicKeyCandidates, verifyReceiptFromJson } = require(${core})`,
+        `const fs = require('node:fs')`,
+        `const path = require('node:path')`,
+        `process.env.HOME = ${JSON.stringify(home)}`,
+        `process.chdir(${JSON.stringify(home)})`,
+        `delete process.env.KEEL_RECEIPT_KEY`,
+        `initReceiptKey()`,
+        `const before = receiptPublicKeyCandidates().map(k => k.kid)`,
+        `createReceipt('test-agent', 'Bash', { command: 'x' }, 'deny', 'no-force-push', 'default')`,
+        `const rotated = rotateReceiptKey()`,
+        `if (!rotated.moved.length) throw new Error('rotate moved nothing')`,
+        `const lines = fs.readFileSync(path.join(${JSON.stringify(home)}, '.keel', 'receipts', 'receipts.log'), 'utf-8').split('\\n').filter(Boolean)`,
+        `const oldReceipt = lines[0]`,
+        `const after = receiptPublicKeyCandidates().map(k => k.kid)`,
+        `if (!before.every(kid => after.includes(kid))) throw new Error('rotated key not in candidates')`,
+        `const check = verifyReceiptFromJson(oldReceipt)`,
+        `if (!check.ok) throw new Error('old receipt no longer verifies: ' + JSON.stringify(check))`,
+        `console.log('OK rotated-kids', after.length, 'verify', check.ok)`,
+      ].join('\n')
+      writeFileSync(scriptFile, script, 'utf-8')
+      const out = execSync(`node "${scriptFile}"`, { encoding: 'utf-8', timeout: 10000 })
+      expect(out).toContain('OK rotated-kids')
+    } finally {
+      execSync(`rm -rf "${home}"`)
+    }
+  })
 })

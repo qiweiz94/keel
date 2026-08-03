@@ -6410,6 +6410,14 @@ function validateRules(rules) {
       errors.push(`Rule "${label}" has an invalid fix transform`);
     }
   }
+  const ids = rules.map((rule) => typeof rule?.id === "string" ? rule.id : "");
+  const seen = /* @__PURE__ */ new Set();
+  const dups = /* @__PURE__ */ new Set();
+  for (const id of ids) {
+    if (id && seen.has(id)) dups.add(id);
+    seen.add(id);
+  }
+  if (dups.size) errors.push(`Duplicate rule id(s) in the same file: ${[...dups].join(", ")}`);
   return errors;
 }
 function loadRuleHierarchy(projectDir) {
@@ -6692,6 +6700,7 @@ var FileRuleOverrideStore = class {
         this.write(overrides);
         return false;
       }
+      if (override.mode === "window") return true;
       delete overrides[ruleId];
       this.write(overrides);
       return true;
@@ -6705,6 +6714,22 @@ var FileRuleOverrideStore = class {
         } catch {
         }
       }
+    }
+  }
+  peek(ruleId) {
+    try {
+      const override = this.read()[ruleId];
+      if (!override || override.expires_at <= Date.now()) return null;
+      return override;
+    } catch {
+      return null;
+    }
+  }
+  list() {
+    try {
+      return this.read();
+    } catch {
+      return {};
     }
   }
   read() {
@@ -7103,9 +7128,6 @@ var EnforcementPipeline = class {
     };
   }
   violation(input, rule, message, start, tier, warningKey = rule.id) {
-    if (this.overrideStore.consume(rule.id)) {
-      return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
-    }
     const action = this.effectiveAction(rule, input);
     if (action === "fix") {
       if (rule.fix && rule.type === "command") {
@@ -7119,6 +7141,9 @@ var EnforcementPipeline = class {
       return action === "warn" ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier);
     }
     if (action === "prompt") {
+      if (this.overrideStore.consume(rule.id)) {
+        return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
+      }
       return this.gate(input, rule, message, start, tier);
     }
     if (action === "deny" || action === "block") {
@@ -7127,6 +7152,9 @@ var EnforcementPipeline = class {
         this.denyFirstTime.set(warningKey, true);
         this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash);
         return this.warn(input, rule, `First violation of "${rule.id}" \u2014 warning only. Next time will be blocked.`, start, tier);
+      }
+      if (this.overrideStore.consume(rule.id)) {
+        return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
       }
       return this.block(input, rule, message, start, tier);
     }
@@ -7605,9 +7633,24 @@ import {
   createHash as createHash2,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync7, readFileSync as readFileSync7, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, appendFileSync as appendFileSync2 } from "node:fs";
+import { existsSync as existsSync7, readFileSync as readFileSync7, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync2 } from "node:fs";
 import { join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 var signingKey = null;
+function keyPath() {
+  return join4(homedir4(), ".keel", "receipt-key.json");
+}
+function legacyKeyPath() {
+  return join4(process.cwd(), ".keel", "receipts", "receipt-key.json");
+}
+function parseKeyFile(filePath) {
+  try {
+    const parsed = JSON.parse(readFileSync7(filePath, "utf-8"));
+    return parsed && parsed.kid ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 function initReceiptKey() {
   if (signingKey) return signingKey;
   const envKey = process.env.KEEL_RECEIPT_KEY;
@@ -7621,17 +7664,10 @@ function initReceiptKey() {
     } catch {
     }
   }
-  const keyDir = join4(process.cwd(), ".keel", "receipts");
-  const keyPath = join4(keyDir, "receipt-key.json");
-  if (existsSync7(keyPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync7(keyPath, "utf-8"));
-      if (parsed && parsed.kid) {
-        signingKey = parsed;
-        return parsed;
-      }
-    } catch {
-    }
+  const loaded = parseKeyFile(keyPath()) || parseKeyFile(legacyKeyPath());
+  if (loaded) {
+    signingKey = loaded;
+    return loaded;
   }
   const kp = generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "der" },
@@ -7643,8 +7679,9 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    if (!existsSync7(keyDir)) mkdirSync4(keyDir, { recursive: true });
-    writeFileSync4(keyPath, JSON.stringify(newKey), { mode: 384 });
+    const dir = join4(homedir4(), ".keel");
+    if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
+    writeFileSync4(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
@@ -7697,10 +7734,10 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
 }
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync2 } from "node:fs";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync3 } from "node:fs";
 import { join as join5 } from "node:path";
-import { homedir as homedir4 } from "node:os";
-var STATE_DIR = join5(homedir4(), ".keel", "state");
+import { homedir as homedir5 } from "node:os";
+var STATE_DIR = join5(homedir5(), ".keel", "state");
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -7729,7 +7766,7 @@ var StateManager = class {
       const p = this.statePath(name);
       const tmp = p + ".tmp";
       writeFileSync5(tmp, JSON.stringify(data));
-      renameSync2(tmp, p);
+      renameSync3(tmp, p);
     } catch {
     }
   }
@@ -7814,6 +7851,7 @@ var KEEL_DIR = path.join(os.homedir(), ".keel");
 var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
 var DISABLED_PATH = path.join(KEEL_DIR, "DISABLED");
+var sentinelCorrupted = false;
 var TRACES_DIR = path.join(KEEL_DIR, "traces");
 var LEGACY_PRODUCT_NAME = "ai-enforce";
 var DEFAULT_RULES_YAML = `version: 1
@@ -7987,10 +8025,10 @@ rules:
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+"
+    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+|[; ][:][ 	]*[()][ 	]*[()][ 	]*[{][ 	]*[:][ 	]*[|]:&|^[:][ 	]*[()][ 	]*[()][ 	]*[{][ 	]*[:][ 	]*[|]:&"
     action: deny
     level: sprint
-    message: "Destructive commands are blocked."
+    message: "Destructive commands (including fork bombs) are blocked."
   - id: must-sign-commits
     type: command
     match: "git commit(?!.*--signoff)"
@@ -8013,11 +8051,6 @@ rules:
     level: sprint
     priority: 80
     message: "Publishing or deleting registry artifacts \u2014 approval required."
-  - id: verify-before-irreversible
-    type: command
-    match: "git push --force(?!-with-lease)|rm -rf (?!.*(node_modules|/tmp/|/var/tmp/|Trash))"
-    action: warn
-    message: "Irreversible action \u2014 verify inbound references before proceeding."
 `;
 function ensureRules() {
   try {
@@ -8038,7 +8071,12 @@ function isDisabled() {
     }
     return true;
   } catch {
-    return true;
+    sentinelCorrupted = true;
+    try {
+      record({ event: "corrupt-kill-switch-fail-closed", message: "Invalid keel kill-switch state; enforcement stays ON until " + DISABLED_PATH + " is fixed or removed" });
+    } catch {
+    }
+    return false;
   }
 }
 function consumeRestartDisable() {
@@ -8218,6 +8256,10 @@ var plugin_default = {
     consumeRestartDisable();
     const before = async (input, output) => {
       if (isDisabled()) return;
+      if (sentinelCorrupted) {
+        sentinelCorrupted = false;
+        surfaceWarn("corrupt-kill-switch", "Invalid keel kill-switch state (DISABLED) detected \u2014 enforcement stays ON. Fix or delete ~/.keel/DISABLED to clear this.", input?.sessionID);
+      }
       if (level === "sprint") surfaceWarn("dial-sprint", "Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.", input?.sessionID);
       await refreshExternalChanges();
       const args = output?.args || {};

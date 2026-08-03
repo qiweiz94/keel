@@ -285,8 +285,8 @@ rules:
           return result
         } },
       })
-      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('deny')
     })
 

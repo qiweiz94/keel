@@ -114,7 +114,7 @@ Status: ✅ = built, 🚧 = planned (spec'd but not implemented)
 | `keel allow <rule-id> --once` | ✅ | One-time override for a blocked action |
 | `keel evaluate --tool <name> --args <json>` | ✅ | JSON-in/JSON-out for programmatic use |
 | `keel lessons` | ✅ | Extract self-improvement lessons from audit logs |
-| `keel watch` | ✅ | Live audit trail monitor |
+| `keel status` | ✅ | Enforcement health overview (dial, kill switch, overrides, rule counts, recent blocks) |
 | `keel install --opencode` | ✅ | Wire OpenCode plugin (global) + create default rules |
 | `keel install --project` | ✅ | Wire OpenCode plugin + rules in current project |
 | `keel install --claude-code` | ✅ | Wire Claude Code PreToolUse/PostToolUse hooks |
@@ -388,7 +388,7 @@ Tiers 6-7 only run in `deep` mode (protect level) or for ambiguous cases.
 
 **Session cache**: `SHA-256(tool + recursively canonicalized args + cwd + level + context + depth + action + rule_fingerprint)` → verdict. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
 
-**Persistent cache**: Same mechanism, persisted to `~/.keel/cache/known-good.json`. Invalidated when rules change (detected by CLAUDE.md content hash).
+**No persistent cache**: verdicts are session-scoped (LRU, in-memory). Rules are re-validated and re-hashed on every evaluation via the rule fingerprint (hashes of rules.yaml, AGENTS.md, CLAUDE.md, and .keel.local.yaml), so changes take effect without a watcher.
 
 **Content tracker**: Tracks file content hashes. Only re-scans files that changed since last check.
 
@@ -626,9 +626,9 @@ No blocking hooks available. Enforcement is detection-based:
 
 | Watcher | Detection method |
 |---------|-----------------|
-| Filesystem | fswatch (macOS) / inotify (Linux) |
-| Process | ps output / /proc scanning |
-| Git | .git directory monitoring + gitleaks |
+| None (not implemented) |
+| None (not implemented) |
+| None (not implemented) — rules re-hash on every call |
 
 Detected violations are logged and alerted. Agent actions cannot be blocked — only caught after the fact.
 
@@ -852,7 +852,7 @@ $ keel validate
 | `packages/cli/src/commands/audit.ts` | — | Existing audit command (extend for enforce) |
 | `packages/cli/src/commands/evaluate.ts` | 71 | JSON-in/JSON-out enforcement evaluation |
 | `packages/cli/src/commands/lessons.ts` | 350 | Self-improvement lesson extraction |
-| `packages/cli/src/commands/watch.ts` | 100 | Live audit trail monitoring |
+| `packages/cli/src/commands/status.ts` | 140 | Enforcement health overview |
 | `packages/cli/src/commands/install.ts` | 350 | Environment setup and plugin wiring |
 | `packages/core/src/enforce/state-manager.ts` | 120 | Cross-process state persistence |
 | `packages/core/src/keel-core.ts` | 27 | Bundle entry point for plugin |
@@ -934,7 +934,7 @@ $ keel validate
 
 | Day | Focus | Deliverables |
 |-----|-------|-------------|
-| 7 | Watchers | Filesystem (fswatch), process, git |
+| 7 | (dropped) |
 | 7 | MCP | MCP threat model rules |
 | 8 | Notifications | Desktop alerts on violations |
 
@@ -950,7 +950,7 @@ $ keel validate
 | 2 | Anthropic engineering blog | Context rot acknowledged. CLAUDE.md injected as user message. Compaction drops governance. | Rules re-read from disk after compaction. Code hooks for enforcement. |
 | 3 | OpenAI Model Spec, IH-Challenge paper | Chain of command. Instruction hierarchy training (+10%). Reasoning models improve rule following. | Agent reasoning awareness (Gap 13). |
 | 4 | Google Gemini 1.5 report, MMMT-IF | >99% NIAH retrieval at 10M. 22 point improvement when instructions at END. | Dual injection. Re-inject at end of context. |
-| 5 | Greywall, Fence, Sandlock, seccomp, Landlock | OS-level sandboxing for AI agents exists (Linux). macOS has Seatbelt. | Hooks for OpenCode + Claude Code. Filesystem/process/git watchers. |
+| 5 | Greywall, Fence, Sandlock, seccomp, Landlock | OS-level sandboxing for AI agents exists (Linux). macOS has Seatbelt. | Hooks for OpenCode + Claude Code (rule re-hash instead of filesystem watchers). |
 | 6 | Guardrails AI, NeMo, LangFuse | No tool combines sandboxing + enforcement + attestations. | Keel is the only tool doing tool-call-level enforcement. |
 | 7 | MemGPT/Letta, re-prompting research | Non-evictable rule tier. Periodic re-injection. CoT with rule-checking. | Rich rule hierarchy. Rules never evicted from enforcement layer. |
 | 8 | Claude Code GitHub issues, Reddit | ALL tools treat rules as advisory. No conflict detection. Compaction drops governance. | Machine-enforceable rules. Conflict detection (Gap 2). |
@@ -1228,7 +1228,7 @@ Phase 4 — StateManager (cross-session state) ✅
 Phase 5 — Self-improvement loop (implemented 2026-07-30)
   ├─ keel lessons works (fixed in Phase 1)
   ├─ keel suggest works with lesson extraction integrated
-  ├─ keel watch — live audit monitor
+  ├─ keel status — enforcement health overview (replaces keel watch)
   ├─ keel gather — BUILT: distills audit history into requirements.md between
   │   keel:gather markers (user-authored sections preserved). --apply prints
   │   proposed rules; --apply-and-save appends after review.

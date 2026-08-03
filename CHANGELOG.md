@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- Receipt and signing keys moved to machine scope (`~/.keel/receipt-key.json`, `~/.keel/signing-key.json`); legacy project-tree keys are still read so existing receipts keep verifying.
+- `keel allow <id>` now means a 24-hour window (all violations allowed, audited); `--once` is consumed only by a violation that would actually block (first-time warnings do not consume it). Unknown rule ids are refused.
+
+### Added
+
+- `keel status` — enforcement health overview (dial, kill switch, overrides, rule counts, recent blocks).
+- `keel receipts rotate` — rotates receipt + signing keys, archiving the old keys; archived keys still verify old receipts.
+- Fork-bomb (`:(){ :|:& };:`) detection in the destructive-commands rule.
+- `keel install --project` writes `.keel/.gitignore` covering receipts/audit/key files.
+
+### Fixed
+
+- Corrupt kill-switch sentinel now fails CLOSED (enforcement stays on) in the plugin and CLI.
+- `keel enforce --level` without `--persist` errors instead of silently doing nothing.
+- `keel disable --until` validates its argument instead of silently ignoring bad values.
+- `keel verify` reports a missing key as a diagnostic instead of a false `TAMPERED` verdict, and never generates keys.
+- Duplicate rule ids in one rules file are rejected.
+- Removed the duplicate `verify-before-irreversible` default rule (superseded by `no-force-push` + `no-destructive-commands`).
+
+
 ## 0.2.0 (2026-08-02)
 
 ### Breaking

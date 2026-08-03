@@ -13,8 +13,9 @@ import {
   createHash,
   randomUUID,
 } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 export interface SigningKey {
   kid: string
@@ -91,15 +92,14 @@ export function initSigning(): SigningKey {
     } catch { /* fall through to disk or generate */ }
   }
 
-  // Try loading from disk (persisted across sessions)
-  const keyDir = join(process.cwd(), '.keel', 'audit')
-  const keyPath = join(keyDir, 'signing-key.json')
-  if (existsSync(keyPath)) {
-    try {
-      const stored = JSON.parse(readFileSync(keyPath, 'utf-8')) as SigningKey
-      currentKey = stored
-      return stored
-    } catch { /* fall through to generate */ }
+  // Try loading from disk (persisted across sessions). Keys live in ~/.keel/
+  // (machine scope) so committing a project can never leak them; legacy keys
+  // written into <project>/.keel/audit/ by older versions are still READ so
+  // existing audit logs keep verifying.
+  const loaded = parseKeyFile(keyPath()) || parseKeyFile(legacyKeyPath())
+  if (loaded) {
+    currentKey = loaded
+    return loaded
   }
 
   // Generate a new Ed25519 key pair
@@ -125,17 +125,90 @@ export function initSigning(): SigningKey {
 
   // Persist to disk so signatures can be verified across sessions
   try {
-    if (!existsSync(keyDir)) mkdirSync(keyDir, { recursive: true })
-    // 0600: this is a PRIVATE key sitting beside the log it signs. Default
-    // permissions (0644 under a typical umask) let any local user read it and
-    // forge entries that verify cleanly, which would defeat the whole trail.
-    writeFileSync(keyPath, JSON.stringify(currentKey, null, 2), { mode: 0o600 })
+    const dir = join(homedir(), '.keel')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    // 0600: this is a PRIVATE key. Default permissions (0644 under a typical
+    // umask) let any local user read it and forge entries that verify
+    // cleanly, which would defeat the whole trail.
+    writeFileSync(keyPath(), JSON.stringify(currentKey, null, 2), { mode: 0o600 })
   } catch { /* best-effort persistence */ }
 
   return currentKey
 }
 
+function keyPath(): string {
+  return join(homedir(), '.keel', 'signing-key.json')
+}
+
+function legacyKeyPath(): string {
+  return join(process.cwd(), '.keel', 'audit', 'signing-key.json')
+}
+
+function archiveDir(): string {
+  return join(homedir(), '.keel', 'receipts-archive')
+}
+
+function parseKeyFile(filePath: string): SigningKey | null {
+  try {
+    const stored = JSON.parse(readFileSync(filePath, 'utf-8')) as SigningKey
+    return stored && stored.kid ? stored : null
+  } catch { return null }
+}
+
+/**
+ * Load a public key WITHOUT generating one. Verification must never create
+ * keys — a missing key is a diagnostic, not an invitation to forge.
+ * Checks: env → current key → rotated archive → legacy project location.
+ */
+export function loadPublicKeyJwk(): object | null {
+  const envKey = process.env.KEEL_SIGNING_KEY_JWK
+  if (envKey) {
+    try {
+      const parsed = JSON.parse(envKey) as SigningKey
+      if (parsed?.kid) return parsed.publicKeyJwk
+    } catch {}
+  }
+  const current = parseKeyFile(keyPath())
+  if (current) return current.publicKeyJwk
+  try {
+    const archive = join(homedir(), '.keel', 'receipts-archive')
+    if (existsSync(archive)) {
+      for (const file of readdirSync(archive).sort()) {
+        const rotated = parseKeyFile(join(archive, file))
+        if (rotated) return rotated.publicKeyJwk
+      }
+    }
+  } catch {}
+  return parseKeyFile(legacyKeyPath())?.publicKeyJwk || null
+}
+
+/**
+ * Rotate the machine's signing key: archive the current key (so existing
+ * audit entries still verify) and forget the in-memory copy so the next
+ * signed entry generates a fresh one. Legacy project-tree keys are not
+ * touched.
+ */
+export function rotateSigningKey(): { moved: string[] } {
+  const moved: string[] = []
+  const current = keyPath()
+  if (existsSync(current)) {
+    try {
+      mkdirSync(archiveDir(), { recursive: true })
+      const target = join(archiveDir(), `signing-key-${Date.now()}.json`)
+      renameSync(current, target)
+      moved.push(target)
+    } catch { /* best effort */ }
+  }
+  currentKey = null
+  return { moved }
+}
+
 export function getPublicKeyJwk(): object {
+  // Load-only; falls back to generating ONLY for the signing path, where a
+  // key is required to write. Verification callers should use
+  // loadPublicKeyJwk() so a missing key is a diagnostic, not a new key.
+  const loaded = loadPublicKeyJwk()
+  if (loaded) return loaded
   if (!currentKey) initSigning()
   return currentKey!.publicKeyJwk
 }
@@ -233,7 +306,9 @@ export function verifyChain(logPath?: string, publicKeyJwk?: object): ChainRepor
     return report
   }
 
-  const pub = publicKeyJwk || getPublicKeyJwk()
+  // Load-only: verification must never generate a key (a missing key is a
+  // diagnostic, not an invitation to forge).
+  const pub: object | undefined = publicKeyJwk || loadPublicKeyJwk() || undefined
   const prevBySession = new Map<string, string | null>()
 
   lines.forEach((line, index) => {
@@ -246,7 +321,7 @@ export function verifyChain(logPath?: string, publicKeyJwk?: object): ChainRepor
     }
     report.entries++
 
-    if (verifySignedEntry(entry, pub)) report.signaturesValid++
+    if (pub && verifySignedEntry(entry, pub)) report.signaturesValid++
     else report.signaturesInvalid++
 
     const session = entry.session ?? 'default'

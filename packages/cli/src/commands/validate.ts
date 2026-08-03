@@ -30,6 +30,7 @@ export async function validateCommand() {
   // Check for rules files
   const files = [
     { path: `${home}/.keel/rules.yaml`, name: 'Global rules', ok: false },
+    { path: `${home}/.config/keel/rules.yaml`, name: 'Legacy global rules', ok: false },
     { path: projectFile.path, name: 'Project rules', ok: false },
     { path: localFile.path, name: 'Local rules', ok: false },
   ]
@@ -83,10 +84,15 @@ export async function validateCommand() {
     console.log(chalk.dim(`  Cache: ${cachePath} (exists, will be invalidated on rule change)`))
   }
 
-  // Protection level recommendation
+  // Protection level — the ACTUAL merged dial, not a hardcoded value.
+  // `keel validate` used to print "balanced" even when the dial was
+  // sprint or protect, which made it useless for checking the dial.
+  const dial = hierarchy.project?.config?.level || hierarchy.global?.config?.level || 'balanced'
   console.log()
-  console.log(chalk.cyan('  Current protection: balanced'))
-  console.log(chalk.dim('  Change with: keel enforce --level=sprint|balanced|protect'))
+  console.log(chalk.cyan(`  Current protection: ${chalk.white(dial)}`))
+  console.log(chalk.dim('  Change with: keel level sprint|balanced|protect [--project]'))
+  console.log()
+  console.log(chalk.dim('  Status overview: keel status'))
   console.log()
 
   if (hasErrors) process.exitCode = 1

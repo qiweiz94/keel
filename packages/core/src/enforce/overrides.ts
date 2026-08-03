@@ -2,12 +2,32 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, s
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+export type OverrideMode = 'once' | 'window'
+
 export interface RuleOverride {
   expires_at: number
+  /** `once`: consumed on the first matching violation. `window`: all
+   *  violations are allowed until expiry. Absent/legacy entries are treated
+   *  as `once` (the conservative reading). */
+  mode?: OverrideMode
 }
 
 export interface RuleOverrideStore {
+  /**
+   * Returns true when a matching violation is covered by an override.
+   *
+   * Semantics:
+   *   - `once`  — the override is deleted on first match (single use).
+   *   - `window` — the override is kept until `expires_at` (all violations
+   *     allowed, every one still audited by the pipeline).
+   *   - expired — deleted, returns false.
+   * Never throws: enforcement must not depend on the override store.
+   */
   consume(ruleId: string): boolean
+  /** Non-destructive check — does an unexpired override exist? */
+  peek(ruleId: string): RuleOverride | null
+  /** Snapshot of all overrides (for `keel status`). */
+  list(): Record<string, RuleOverride>
 }
 
 export class FileRuleOverrideStore implements RuleOverrideStore {
@@ -43,6 +63,7 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
         this.write(overrides)
         return false
       }
+      if (override.mode === 'window') return true
       delete overrides[ruleId]
       this.write(overrides)
       return true
@@ -53,6 +74,24 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
       if (acquired) {
         try { unlinkSync(this.lock) } catch {}
       }
+    }
+  }
+
+  peek(ruleId: string): RuleOverride | null {
+    try {
+      const override = this.read()[ruleId]
+      if (!override || override.expires_at <= Date.now()) return null
+      return override
+    } catch {
+      return null
+    }
+  }
+
+  list(): Record<string, RuleOverride> {
+    try {
+      return this.read()
+    } catch {
+      return {}
     }
   }
 

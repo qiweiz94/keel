@@ -5,5 +5,8 @@ export {
   verifyReceipt,
   verifyReceiptFromJson,
   getReceiptPublicKey,
+  loadReceiptPublicKey,
+  receiptPublicKeyCandidates,
+  rotateReceiptKey,
   receiptsLogPath,
 } from '@get-keel/core'

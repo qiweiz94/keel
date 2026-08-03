@@ -19,10 +19,12 @@ export {
 export {
   initSigning,
   getPublicKeyJwk,
+  loadPublicKeyJwk,
   createSignedEntry,
   verifySignedEntry,
   verifyChain,
   resetHashChain,
+  rotateSigningKey,
   auditLogPath,
 } from './signing.js'
 export type { SigningKey, Signature, SignedEntry, ChainReport } from './signing.js'
@@ -33,6 +35,9 @@ export {
   verifyReceipt,
   verifyReceiptFromJson,
   getReceiptPublicKey,
+  loadReceiptPublicKey,
+  receiptPublicKeyCandidates,
+  rotateReceiptKey,
   receiptsLogPath,
 } from './receipts.js'
 

@@ -547,9 +547,6 @@ export class EnforcementPipeline {
   }
 
   private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id): EnforceResult {
-    if (this.overrideStore.consume(rule.id)) {
-      return this.result('allow', rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier)
-    }
     const action = this.effectiveAction(rule, input)
     if (action === 'fix') {
       if (rule.fix && rule.type === 'command') {
@@ -568,14 +565,24 @@ export class EnforcementPipeline {
     if (action === 'prompt') {
       // Approval gate: always blocks, no first-warn escalation. Never auto-
       // downgraded by sprint level — irreversible operations stay gated.
+      // A human-run `keel allow <id> --once` covers the next violation.
+      if (this.overrideStore.consume(rule.id)) {
+        return this.result('allow', rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier)
+      }
       return this.gate(input, rule, message, start, tier)
     }
     if (action === 'deny' || action === 'block') {
       const first = this.isFirstWarning(warningKey)
       if (first && input.action_override !== 'deny' && input.action_override !== 'block') {
+        // The first violation only warns — never consume an armed override
+        // for it, or the approval is wasted on a call that would not have
+        // been blocked (the next one would then be blocked anyway).
         this.denyFirstTime.set(warningKey, true)
         this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash)
         return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, tier)
+      }
+      if (this.overrideStore.consume(rule.id)) {
+        return this.result('allow', rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier)
       }
       return this.block(input, rule, message, start, tier)
     }

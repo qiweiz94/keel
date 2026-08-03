@@ -21,6 +21,8 @@ import { disableCommand, enableCommand } from './commands/disable.js'
 import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
+import { statusCommand } from './commands/status.js'
+import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
 import { gatherCommand } from './commands/gather.js'
@@ -141,7 +143,6 @@ const enforceCmd = program.command('enforce')
   .option('--action <action>', 'Override action: report, warn, deny, or fix')
   .option('--depth <depth>', 'Override depth: fast, full, or deep')
   .option('--learn', 'Learning mode: observe only, never block')
-  .option('--watch', 'Watch filesystem for agent activity')
   .option('--audit', 'Show recent violations')
   .action(enforceCommand)
 
@@ -173,7 +174,7 @@ program
 program
   .command('disable')
   .description('Disable all enforcement (kill switch)')
-  .option('--until <seconds>', 'Disable for N seconds', parseInt)
+  .option('--until <seconds>', 'Disable for N seconds (positive integer)')
   .option('--reason <text>', 'Reason for disabling')
   .action(disableCommand)
 
@@ -248,10 +249,23 @@ program
 
 program
   .command('allow')
-  .description('Override a rule temporarily')
+  .description('Override a rule temporarily (user-owned — run this yourself, not through the agent)')
   .argument('<rule-id>', 'Rule ID to override')
-  .option('--once', 'Override for 5 minutes (default: 24 hours)')
+  .option('--once', 'Allow the NEXT violation only (5 minutes if unused)')
   .action(allowCommand)
+
+program
+  .command('status')
+  .description('Show the current enforcement state: dial, kill switch, overrides, rules, recent blocks')
+  .action(statusCommand)
+
+const receiptsCmd = program.command('receipts')
+  .description('Manage signed receipt keys')
+
+receiptsCmd
+  .command('rotate')
+  .description('Rotate the receipt/signing private keys (old keys stay readable for verification)')
+  .action(() => receiptsCommand('rotate'))
 
 program
   .command('level')

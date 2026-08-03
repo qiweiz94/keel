@@ -116,7 +116,7 @@ describe('agentic adversarial harness', () => {
     })
     it('no false positives on dot-directories and node_modules', async () => {
       const pipeline = makePipeline('balanced')
-      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf .cache' }))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf .cache' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf ./node_modules' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf node_modules' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /tmp/build-cache' }))).action).toBe('allow')
@@ -671,8 +671,8 @@ rules:
       writeFileSync(join(home, '.keel', 'overrides.json'), JSON.stringify({
         'no-destructive-commands': { expires_at: Date.now() + 300000 },
       }))
-      expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('deny')
       rmSync(home, { recursive: true, force: true })
     })

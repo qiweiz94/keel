@@ -20,12 +20,37 @@ import {
   sign, verify, generateKeyPairSync, createPrivateKey, createPublicKey,
   createHash, randomUUID,
 } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 // ===== Key Management =====
+//
+// Private keys live OUTSIDE the project tree (~/.keel/), so committing the
+// project can never leak them. Receipts (public data) stay in
+// <project>/.keel/receipts/. Legacy keys written into the project tree by
+// older versions are still READ (so old receipts verify) but never re-written.
 
 let signingKey: { kid: string; privateJwk: object; publicJwk: object } | null = null
+
+function keyPath(): string {
+  return join(homedir(), '.keel', 'receipt-key.json')
+}
+
+function legacyKeyPath(): string {
+  return join(process.cwd(), '.keel', 'receipts', 'receipt-key.json')
+}
+
+function archiveDir(): string {
+  return join(homedir(), '.keel', 'receipts-archive')
+}
+
+function parseKeyFile(filePath: string): { kid: string; privateJwk: object; publicJwk: object } | null {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, 'utf-8'))
+    return parsed && parsed.kid ? parsed : null
+  } catch { return null }
+}
 
 export function initReceiptKey(): { kid: string; privateJwk: object; publicJwk: object } {
   if (signingKey) return signingKey
@@ -39,14 +64,8 @@ export function initReceiptKey(): { kid: string; privateJwk: object; publicJwk: 
     } catch { /* fall through */ }
   }
 
-  const keyDir = join(process.cwd(), '.keel', 'receipts')
-  const keyPath = join(keyDir, 'receipt-key.json')
-  if (existsSync(keyPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(keyPath, 'utf-8')) as { kid: string; privateJwk: object; publicJwk: object }
-      if (parsed && parsed.kid) { signingKey = parsed; return parsed }
-    } catch { /* fall through */ }
-  }
+  const loaded = parseKeyFile(keyPath()) || parseKeyFile(legacyKeyPath())
+  if (loaded) { signingKey = loaded; return loaded }
 
   // Generate
   const kp = generateKeyPairSync('ed25519', {
@@ -60,22 +79,65 @@ export function initReceiptKey(): { kid: string; privateJwk: object; publicJwk: 
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } }
   signingKey = newKey
   try {
-    if (!existsSync(keyDir)) mkdirSync(keyDir, { recursive: true })
+    const dir = join(homedir(), '.keel')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     // 0600 — private key; see the same note in signing.ts.
-    writeFileSync(keyPath, JSON.stringify(newKey), { mode: 0o600 })
+    writeFileSync(keyPath(), JSON.stringify(newKey), { mode: 0o600 })
   } catch { /* best effort */ }
 
   return signingKey!
 }
 
-export function getReceiptPublicKey(): object | null {
-  // Load the key on demand. `verify` runs in a fresh process that never calls
-  // createReceipt, so without this the module-level `signingKey` is still null
-  // and every receipt was reported "No public key available" — i.e. invalid.
-  if (!signingKey) {
-    try { initReceiptKey() } catch { return null }
+/**
+ * Load a public key WITHOUT generating one (verification must never create
+ * keys — a missing key is a diagnostic, not an invitation to forge).
+ * Checks: env → current key → rotated archive → legacy project location.
+ */
+export function loadReceiptPublicKey(): object | null {
+  const envKey = process.env.KEEL_RECEIPT_KEY
+  if (envKey) {
+    try {
+      const parsed = JSON.parse(envKey) as { kid: string; privateJwk: object; publicJwk: object }
+      if (parsed?.kid) return parsed.publicJwk
+    } catch {}
   }
-  return signingKey?.publicJwk || null
+  const current = parseKeyFile(keyPath())
+  if (current) return current.publicJwk
+  try {
+    const archive = join(homedir(), '.keel', 'receipts-archive')
+    if (existsSync(archive)) {
+      for (const file of readdirSync(archive).sort()) {
+        const rotated = parseKeyFile(join(archive, file))
+        if (rotated) return rotated.publicJwk
+      }
+    }
+  } catch {}
+  return parseKeyFile(legacyKeyPath())?.publicJwk || null
+}
+
+export function getReceiptPublicKey(): object | null {
+  // Load only — never generates. See loadReceiptPublicKey.
+  return loadReceiptPublicKey()
+}
+
+/**
+ * Rotate the machine's receipt key: archive the current key (so existing
+ * receipts still verify) and forget the in-memory copy so the next write
+ * generates a fresh one. Legacy project-tree keys are not touched.
+ */
+export function rotateReceiptKey(): { moved: string[] } {
+  const moved: string[] = []
+  const current = keyPath()
+  if (existsSync(current)) {
+    try {
+      mkdirSync(archiveDir(), { recursive: true })
+      const target = join(archiveDir(), `receipt-key-${Date.now()}.json`)
+      renameSync(current, target)
+      moved.push(target)
+    } catch { /* best effort */ }
+  }
+  signingKey = null
+  return { moved }
 }
 
 // ===== Receipt Types =====
@@ -178,9 +240,35 @@ export function createReceipt(
 
 // ===== Receipt Verification =====
 
+/** All public keys keel can verify against: env → current → archive → legacy. */
+export function receiptPublicKeyCandidates(): Array<{ kid: string; publicJwk: object }> {
+  const keys: Array<{ kid: string; publicJwk: object }> = []
+  const envKey = process.env.KEEL_RECEIPT_KEY
+  if (envKey) {
+    try {
+      const parsed = JSON.parse(envKey) as { kid: string; privateJwk: object; publicJwk: object }
+      if (parsed?.kid) keys.push({ kid: parsed.kid, publicJwk: parsed.publicJwk })
+    } catch {}
+  }
+  const current = parseKeyFile(keyPath())
+  if (current) keys.push({ kid: current.kid, publicJwk: current.publicJwk })
+  try {
+    const archive = join(homedir(), '.keel', 'receipts-archive')
+    if (existsSync(archive)) {
+      for (const file of readdirSync(archive).sort()) {
+        const rotated = parseKeyFile(join(archive, file))
+        if (rotated) keys.push({ kid: rotated.kid, publicJwk: rotated.publicJwk })
+      }
+    }
+  } catch {}
+  const legacy = parseKeyFile(legacyKeyPath())
+  if (legacy) keys.push({ kid: legacy.kid, publicJwk: legacy.publicJwk })
+  return keys
+}
+
 export function verifyReceipt(receipt: ActionReceipt, publicKeyJwk?: object): { ok: boolean; reason?: string } {
-  const key = publicKeyJwk || getReceiptPublicKey()
-  if (!key) return { ok: false, reason: 'No public key available' }
+  const candidates = publicKeyJwk ? [{ kid: 'explicit', publicJwk: publicKeyJwk }] : receiptPublicKeyCandidates()
+  if (!candidates.length) return { ok: false, reason: 'No public key available — no key at ~/.keel/receipt-key.json (receipts may be from another machine; verify with --key <file>)' }
 
   const { signature, receipt_hash, ...toVerify } = receipt
 
@@ -193,17 +281,21 @@ export function verifyReceipt(receipt: ActionReceipt, publicKeyJwk?: object): { 
   }
 
   // Verify Ed25519 signature — one-shot form, matching createReceipt above.
-  const publicKey = createPublicKey({ key: key as any, format: 'jwk' })
-  const valid = verify(
-    null,
-    Buffer.from(JSON.stringify(toVerify), 'utf8'),
-    publicKey,
-    Buffer.from(signature, 'base64url')
-  )
+  // Try every candidate key: rotated keys must still verify old receipts.
+  for (const { publicJwk: key } of candidates) {
+    try {
+      const publicKey = createPublicKey({ key: key as any, format: 'jwk' })
+      const valid = verify(
+        null,
+        Buffer.from(JSON.stringify(toVerify), 'utf8'),
+        publicKey,
+        Buffer.from(signature, 'base64url')
+      )
+      if (valid) return { ok: true }
+    } catch { /* try the next key */ }
+  }
 
-  return valid
-    ? { ok: true }
-    : { ok: false, reason: 'Signature invalid — receipt has been tampered with' }
+  return { ok: false, reason: 'Signature invalid — receipt has been tampered with' }
 }
 
 export function verifyReceiptFromJson(jsonString: string, publicKeyJwk?: object): { ok: boolean; reason?: string } {

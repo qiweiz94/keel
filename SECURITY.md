@@ -18,11 +18,13 @@ Security vulnerabilities include:
 - Unauthorized access to protected files
 - Injection attacks through the MCP server
 - Disclosure of secrets audit log
-- **Commit of the Ed25519 receipt signing key** — the plugin writes
-  `<project>/.keel/receipt-key.json` (private key) on first gated
-  action. Projects must gitignore `.keel/receipts/` and `.keel/audit/`; a
-  committed key lets attackers forge verified receipts. Rotate by deleting
-  the file.
+- **Commit of the Ed25519 receipt signing key** — keys live in machine scope
+  (`~/.keel/receipt-key.json`, `~/.keel/signing-key.json`, mode 0600), never
+  in the project tree; `keel install --project` writes `.keel/.gitignore`
+  covering `receipts/`, `audit/`, and key files. Rotate with `keel receipts
+  rotate` (archives old keys to `~/.keel/receipts-archive/`; archived keys
+  still verify old receipts). Verification never generates keys — a missing
+  key is reported as a diagnostic, not forged.
 
 ## Enforcement limits
 
