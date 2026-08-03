@@ -77,9 +77,10 @@ rules:
     expect(b2.action).toBe('deny')
     // Floor semantics: a plain deny rule stays visible at sprint (deny→warn
     // downgrade), it is no longer filtered out of the merged rule set.
+    // At protect the deny blocks FIRST (block-first dial).
     expect(s1.action).toBe('warn')
     expect(s2.action).toBe('warn')
-    expect(p1.action).toBe('warn')
+    expect(p1.action).toBe('deny')
     expect(p2.action).toBe('deny')
     results.push({ label: 'balanced-second', action: b2.action }, { label: 'sprint-second', action: s2.action }, { label: 'protect-second', action: p2.action })
   })
@@ -164,19 +165,25 @@ rules:
     expect((await dialCall(p, 'balanced', 'tok-protect')).action).toBe('warn')
   })
 
-  it('at protect, every level fires', async () => {
+  it('at protect, every level fires — and deny rules block FIRST (block-first dial)', async () => {
     const p = dialPipeline('protect')
-    expect((await dialCall(p, 'protect', 'tok-unleveled')).action).toBe('warn')
-    expect((await dialCall(p, 'protect', 'tok-sprint')).action).toBe('warn')
-    expect((await dialCall(p, 'protect', 'tok-balanced')).action).toBe('warn')
-    expect((await dialCall(p, 'protect', 'tok-protect')).action).toBe('warn')
+    expect((await dialCall(p, 'protect', 'tok-unleveled')).action).toBe('deny')
+    expect((await dialCall(p, 'protect', 'tok-sprint')).action).toBe('deny')
+    expect((await dialCall(p, 'protect', 'tok-balanced')).action).toBe('deny')
+    expect((await dialCall(p, 'protect', 'tok-protect')).action).toBe('deny')
   })
 
   it('protect-level rules deny at every dial on repeat (floors never soften)', async () => {
     for (const dial of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
       const p = dialPipeline(dial)
-      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('warn')
-      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+      if (dial === 'protect') {
+        // Block-first: the floor blocks on the FIRST violation at protect.
+        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+      } else {
+        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('warn')
+        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+      }
     }
   })
 })

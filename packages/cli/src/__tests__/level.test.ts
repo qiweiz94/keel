@@ -105,6 +105,27 @@ describe('keel level (the speed dial)', () => {
   })
 })
 
+describe('keel dashboard', () => {
+  it('--once prints the dial panel', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES)
+    const out = run('dashboard --once')
+    expect(out.stdout).toMatch(/Speed dial:/)
+    expect(out.stdout).toMatch(/balanced/i)
+    expect(out.stdout).toMatch(/Kill switch:/)
+  })
+
+  it('--json dumps machine-readable state', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES.replace('level: balanced', 'level: protect'))
+    const out = run('dashboard --json')
+    const state = JSON.parse(out.stdout)
+    expect(state.dial).toBe('protect')
+    expect(Array.isArray(state.rules)).toBe(true)
+    expect(typeof state.killSwitch.state).toBe('string')
+  })
+})
+
 describe('keel status (enforcement health)', () => {
   it('reports the dial, kill switch, and rule counts', () => {
     mkdirSync(join(home, '.keel'), { recursive: true })

@@ -221,6 +221,62 @@ $ keel test "rm -rf /src"
 
 ---
 
+### Interaction model (user ↔ keel ↔ agent)
+
+keel sits between the user and the agent as a pre-execution gate. Its design
+goal is to stop bad behavior and warn the user WITHOUT slowing legitimate
+work or stalling the workflow.
+
+**Agent side (automatic, silent):**
+
+- Every tool call is checked before execution (tool.execute.before). No
+  matching rule → the call proceeds untouched; a violation costs ~1ms.
+- Deny rules: the FIRST violation warns (surfaced once per session, audit
+  logged); a repeat blocks. A first-time legitimate action is never slowed.
+- Prompt rules (structurally irreversible operations): always block until a
+  human runs `keel allow <id> --once`. The block message shows the exact
+  approval command — the agent surfaces it, never invents workarounds.
+- Fix rules auto-rewrite the call (e.g. `git commit` → `--signoff`).
+- Verification obligations (source-change-requires-test) are satisfied only
+  by real successful test runs — never by `|| true` swallows.
+
+**User side (human-owned, terminal):**
+
+- `keel dashboard` — interactive panel: dial switch (1/2/3), project
+  target (p), refresh (r), quit (q). Runs only on a TTY, which makes level
+  switching human-only BY CONSTRUCTION: a localhost web UI could be curled
+  by an agent, the TTY cannot.
+- `keel status` / `keel validate` — read-only health and conflict checks.
+- `keel level` — set the dial directly (global or --project).
+- `keel allow <id> [--once]` — approvals; unknown ids are refused.
+- `keel disable/enable` — kill switch; corrupt sentinel fails CLOSED.
+- `keel receipts rotate` — key rotation; old keys still verify.
+- The control gate (keel-control-gate) denies the AGENT from running any
+  of these — keel controls are user-owned.
+
+**Balance principles:**
+
+1. Friction scales with the DIAL, not with rule count. sprint = warn-only,
+   balanced = warn-then-block (default), protect = block-first + reasoning
+   heuristics.
+2. Nothing about a first-time legitimate action is slowed: warn-once
+   semantics, no wasted `--once` grants (consumed only by a violation that
+   would actually block), last-resort warn rules (after-hours, rate) never
+   preempt deny/prompt gates.
+3. Blocked actions always print the approval path. The agent never
+   self-approves.
+
+**Failure modes (all fail safe):**
+
+- Corrupt kill-switch sentinel → enforcement stays ON (fail closed) + once
+  per session surface.
+- Invalid rules file → defaults fall back with a loud log; mid-session
+  reloads keep the last known good rules.
+- Missing verification key → diagnostic, never a forged `TAMPERED` verdict
+  and never key generation on the verify path.
+
+---
+
 ## 4. Rule System
 
 ### Format: `.keel/rules.yaml` (standalone YAML)

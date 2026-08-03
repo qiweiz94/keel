@@ -260,16 +260,34 @@ export class EnforcementPipeline {
         const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
         const currentDay = dayNames[now.getDay()]
         const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
+        const { start: windowStart, end: windowEnd, days } = rule.schedule
 
-        if (rule.schedule.days && !rule.schedule.days.some(d => d.toLowerCase() === currentDay)) {
+        // Optional command match: without it the rule fires on EVERY action
+        // outside its schedule, which is almost never what a time rule wants.
+        if (rule.match) {
+          const cmdStr = commandString(input)
+          if (!this.matchesRulePattern(rule.match, cmdStr)) continue
+        }
+
+        if (days && !days.some(d => d.toLowerCase() === currentDay)) {
           // Today is outside schedule
-          return this.violation(input, rule, `Outside schedule: ${rule.schedule.days.join(', ')} ${rule.schedule.start}-${rule.schedule.end}`, start, 2)
+          return this.violation(input, rule, `Outside schedule: ${days.join(', ')} ${windowStart}-${windowEnd}`, start, 2)
         }
-        if (rule.schedule.start && currentTime < rule.schedule.start) {
-          return this.violation(input, rule, `Before schedule start: ${rule.schedule.start}`, start, 2)
-        }
-        if (rule.schedule.end && currentTime > rule.schedule.end) {
-          return this.violation(input, rule, `After schedule end: ${rule.schedule.end}`, start, 2)
+        if (windowStart && windowEnd) {
+          // The schedule is the ALLOWED window. A window with start > end
+          // spans midnight (e.g. 22:00-09:00 is allowed overnight): the naive
+          // "before start OR after end" test is then always true, so an
+          // overnight window needs the inverted comparison.
+          const inside = windowStart <= windowEnd
+            ? (currentTime >= windowStart && currentTime <= windowEnd)
+            : (currentTime >= windowStart || currentTime <= windowEnd)
+          if (!inside) {
+            return this.violation(input, rule, `Outside schedule window: ${windowStart}-${windowEnd}`, start, 2)
+          }
+        } else if (windowStart && currentTime < windowStart) {
+          return this.violation(input, rule, `Before schedule start: ${windowStart}`, start, 2)
+        } else if (windowEnd && currentTime > windowEnd) {
+          return this.violation(input, rule, `After schedule end: ${windowEnd}`, start, 2)
         }
         continue
       }
@@ -573,7 +591,11 @@ export class EnforcementPipeline {
     }
     if (action === 'deny' || action === 'block') {
       const first = this.isFirstWarning(warningKey)
-      if (first && input.action_override !== 'deny' && input.action_override !== 'block') {
+      // At protect the dial's promise is block-first: a deny violation is
+      // blocked immediately, with no warning pass. balanced/sprint keep the
+      // warn-once-then-block escalation.
+      const blockFirst = this.effectiveLevel(input) === 'protect'
+      if (first && !blockFirst && input.action_override !== 'deny' && input.action_override !== 'block') {
         // The first violation only warns — never consume an armed override
         // for it, or the approval is wasted on a call that would not have
         // been blocked (the next one would then be blocked anyway).
@@ -581,6 +603,7 @@ export class EnforcementPipeline {
         this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash)
         return this.warn(input, rule, `First violation of "${rule.id}" — warning only. Next time will be blocked.`, start, tier)
       }
+      this.denyFirstTime.set(warningKey, true)
       if (this.overrideStore.consume(rule.id)) {
         return this.result('allow', rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier)
       }

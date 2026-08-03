@@ -44,7 +44,12 @@ function loadDefaultRules(): ReturnType<typeof parseRulesContent> {
   const legacy = src.match(/const LEGACY_PRODUCT_NAME = '([^']+)' \+ '([^']+)'/)
   let yaml = m[1]
   if (legacy) yaml = yaml.replaceAll('${LEGACY_PRODUCT_NAME}', `${legacy[1]}${legacy[2]}`)
-  return parseRulesContent(yaml, 'default-rules')
+  const parsed = parseRulesContent(yaml, 'default-rules')
+  // Determinism: `time` and `rate` rules depend on the wall clock and call
+  // volume, so they are excluded from these fixtures (they are still tested
+  // directly in pipeline.test.ts and shipped in the defaults).
+  parsed.rules = parsed.rules.filter(rule => rule.type !== 'time' && rule.type !== 'rate')
+  return parsed
 }
 
 function makeDefaultsPipeline(level: ProtectionLevel = 'balanced'): EnforcementPipeline {
@@ -198,9 +203,9 @@ describe('agentic threat model (shipped defaults)', () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git rebase main' }, 'threat', 'sprint'))).action).toBe('prompt')
       expect((await pipeline.evaluate(input('Bash', { command: 'npm publish' }, 'threat', 'sprint'))).action).toBe('prompt')
     })
-    it('protect blocks deny rules after the first warning', async () => {
+    it('protect blocks deny rules on the FIRST violation (block-first dial)', async () => {
       const pipeline = makeDefaultsPipeline('protect')
-      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'protect'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'protect'))).action).toBe('deny')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'protect'))).action).toBe('deny')
     })
   })
@@ -262,10 +267,10 @@ rules:
           'keel level sprint --project',
           'keel install --opencode',
         ]) {
-          // First violation warns, second denies (fresh pipeline per case so
-          // escalation state never leaks across assertions).
+          // At balanced/sprint the first violation warns, the repeat denies;
+          // at protect the deny blocks FIRST (block-first dial).
           const p = makeDefaultsPipeline(level)
-          expect((await p.evaluate(input('Bash', { command }, `self-${level}`, level))).action).toBe('warn')
+          expect((await p.evaluate(input('Bash', { command }, `self-${level}`, level))).action).toBe(level === 'protect' ? 'deny' : 'warn')
           const second = await p.evaluate(input('Bash', { command }, `self-${level}`, level))
           expect(second.action).toBe('deny')
           expect(second.rule_id).toBe('keel-control-gate')
@@ -284,7 +289,7 @@ rules:
           '/Users/tester/.opencode/plugins/keel-enforce.js',
         ]) {
           const p = makeDefaultsPipeline(level)
-          expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe('warn')
+          expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe(level === 'protect' ? 'deny' : 'warn')
           const second = await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))
           expect(second.action).toBe('deny')
           expect(second.rule_id).toBe('no-rules-tampering')

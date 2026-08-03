@@ -62,7 +62,8 @@ rules:
     initEnforce(project, { level: 'protect' })
     const first = await evaluateToolCall('Bash', { command: 'protected-command' }, { cwd: project })
     const second = await evaluateToolCall('Bash', { command: 'protected-command' }, { cwd: project })
-    expect(first.action).toBe('warn')
+    // Block-first: at protect the deny blocks on the FIRST violation.
+    expect(first.action).toBe('deny')
     expect(second.action).toBe('deny')
   })
 

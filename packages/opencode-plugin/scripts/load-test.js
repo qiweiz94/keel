@@ -472,10 +472,10 @@ check('sprint: balanced-level rule is filtered out', (await dialCall('dial-s7', 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect', 'p-filter']))
 const p1 = await dialCall('dial-p1', 'dial-balanced-token')
 const p2 = await dialCall('dial-p2', 'dial-balanced-token')
-check('protect: deny warns then blocks', p1 === 'allowed' && p2 === 'denied')
-check('protect: protect-level rule active', (await dialCall('dial-p3', 'dial-protect-token')) === 'allowed')
+check('protect: deny blocks FIRST (block-first dial)', p1 === 'denied' && p2 === 'denied')
+check('protect: protect-level rule blocks FIRST', (await dialCall('dial-p3', 'dial-protect-token')) === 'denied')
 check('protect: protect-level rule blocks on repeat', (await dialCall('dial-p4', 'dial-protect-token')) === 'denied')
-check('protect: balanced-level rule fires', (await dialCall('dial-p5', 'dial-filtered-token')) === 'allowed')
+check('protect: balanced-level rule fires (blocks FIRST)', (await dialCall('dial-p5', 'dial-filtered-token')) === 'denied')
 
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))

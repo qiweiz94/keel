@@ -676,12 +676,83 @@ rules:
         vi.setSystemTime(new Date('2026-01-05T16:00:00'))
         const after = await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time-window'))
         expect(after.action).toBe('deny')
-        expect(after.message).toContain('After schedule end')
+        expect(after.message).toContain('Outside schedule window')
         vi.setSystemTime(new Date('2026-01-05T11:00:00'))
         expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time-window'))).action).toBe('allow')
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    it('fires only for matching commands when a match is present', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: publish-window
+    type: time
+    match: "npm publish"
+    schedule:
+      start: "09:00"
+      end: "22:00"
+    action: warn
+    message: "After hours"
+`)
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026-01-05T23:00:00'))
+        expect((await pipeline.evaluate(input('Bash', { command: 'npm publish' }, 'pw1'))).action).toBe('warn')
+        expect((await pipeline.evaluate(input('Bash', { command: 'npm publish' }, 'pw1'))).action).toBe('warn')
+        expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'pw1'))).action).toBe('allow')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('treats a start > end schedule as an overnight allowed window', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: overnight-window
+    type: time
+    schedule:
+      start: "22:00"
+      end: "09:00"
+    action: warn
+    message: "Overnight only"
+`)
+      vi.useFakeTimers()
+      try {
+        // 23:00 and 08:00 are INSIDE the overnight window (no violation).
+        vi.setSystemTime(new Date('2026-01-05T23:00:00'))
+        expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'ow1'))).action).toBe('allow')
+        vi.setSystemTime(new Date('2026-01-05T08:00:00'))
+        expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'ow1'))).action).toBe('allow')
+        // 15:00 is OUTSIDE it (violation).
+        vi.setSystemTime(new Date('2026-01-05T15:00:00'))
+        expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'ow1'))).action).toBe('warn')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('rate rules warn after exceeding the window limit without blocking', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: bash-storm
+    type: rate
+    match: "Bash"
+    window_seconds: 60
+    max_calls: 3
+    action: warn
+    message: "Too many calls"
+`)
+      const r1 = await pipeline.evaluate(input('Bash', { command: 'echo 1' }, 'rate1'))
+      const r2 = await pipeline.evaluate(input('Bash', { command: 'echo 2' }, 'rate1'))
+      const r3 = await pipeline.evaluate(input('Bash', { command: 'echo 3' }, 'rate1'))
+      const r4 = await pipeline.evaluate(input('Bash', { command: 'echo 4' }, 'rate1'))
+      expect(r1.action).toBe('allow')
+      expect(r2.action).toBe('allow')
+      expect(r3.action).toBe('allow')
+      expect(r4.action).toBe('warn')
+      expect(r4.rule_id).toBe('bash-storm')
     })
 
     it('tracks a sensitive read before blocking a network sink', async () => {

@@ -153,6 +153,29 @@ rules:
     level: sprint
     priority: 80
     message: "On-the-fly package execution downloads and runs remote code — approval required."
+
+
+  - id: no-after-hours-publish
+    type: time
+    match: "git push|npm publish|gh release create|gh release delete|gh repo delete|gh repo transfer"
+    schedule:
+      start: "09:00"
+      end: "22:00"
+    action: warn
+    level: sprint
+    priority: 0
+    message: "Publishing or pushing outside 09:00-22:00 — double-check the release is intentional."
+
+  - id: bash-rate-limit
+    type: rate
+    match: "Bash"
+    window_seconds: 60
+    max_calls: 30
+    action: warn
+    level: sprint
+    priority: 0
+    message: "More than 30 Bash calls in 60 seconds — possible runaway loop. Slow down."
+
   - id: no-skip-tests
     type: command
     match: "(npm|pnpm|yarn)( run)? test[^|;&]*--(passWithNoTests|skipTests|no-run)( |$)"

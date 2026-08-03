@@ -6913,14 +6913,23 @@ var EnforcementPipeline = class {
         const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
         const currentDay = dayNames[now.getDay()];
         const currentTime = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
-        if (rule.schedule.days && !rule.schedule.days.some((d) => d.toLowerCase() === currentDay)) {
-          return this.violation(input, rule, `Outside schedule: ${rule.schedule.days.join(", ")} ${rule.schedule.start}-${rule.schedule.end}`, start, 2);
+        const { start: windowStart, end: windowEnd, days } = rule.schedule;
+        if (rule.match) {
+          const cmdStr = commandString(input);
+          if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
         }
-        if (rule.schedule.start && currentTime < rule.schedule.start) {
-          return this.violation(input, rule, `Before schedule start: ${rule.schedule.start}`, start, 2);
+        if (days && !days.some((d) => d.toLowerCase() === currentDay)) {
+          return this.violation(input, rule, `Outside schedule: ${days.join(", ")} ${windowStart}-${windowEnd}`, start, 2);
         }
-        if (rule.schedule.end && currentTime > rule.schedule.end) {
-          return this.violation(input, rule, `After schedule end: ${rule.schedule.end}`, start, 2);
+        if (windowStart && windowEnd) {
+          const inside = windowStart <= windowEnd ? currentTime >= windowStart && currentTime <= windowEnd : currentTime >= windowStart || currentTime <= windowEnd;
+          if (!inside) {
+            return this.violation(input, rule, `Outside schedule window: ${windowStart}-${windowEnd}`, start, 2);
+          }
+        } else if (windowStart && currentTime < windowStart) {
+          return this.violation(input, rule, `Before schedule start: ${windowStart}`, start, 2);
+        } else if (windowEnd && currentTime > windowEnd) {
+          return this.violation(input, rule, `After schedule end: ${windowEnd}`, start, 2);
         }
         continue;
       }
@@ -7148,11 +7157,13 @@ var EnforcementPipeline = class {
     }
     if (action === "deny" || action === "block") {
       const first = this.isFirstWarning(warningKey);
-      if (first && input.action_override !== "deny" && input.action_override !== "block") {
+      const blockFirst = this.effectiveLevel(input) === "protect";
+      if (first && !blockFirst && input.action_override !== "deny" && input.action_override !== "block") {
         this.denyFirstTime.set(warningKey, true);
         this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash);
         return this.warn(input, rule, `First violation of "${rule.id}" \u2014 warning only. Next time will be blocked.`, start, tier);
       }
+      this.denyFirstTime.set(warningKey, true);
       if (this.overrideStore.consume(rule.id)) {
         return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
       }
@@ -7931,6 +7942,29 @@ rules:
     level: sprint
     priority: 80
     message: "On-the-fly package execution downloads and runs remote code \u2014 approval required."
+
+
+  - id: no-after-hours-publish
+    type: time
+    match: "git push|npm publish|gh release create|gh release delete|gh repo delete|gh repo transfer"
+    schedule:
+      start: "09:00"
+      end: "22:00"
+    action: warn
+    level: sprint
+    priority: 0
+    message: "Publishing or pushing outside 09:00-22:00 \u2014 double-check the release is intentional."
+
+  - id: bash-rate-limit
+    type: rate
+    match: "Bash"
+    window_seconds: 60
+    max_calls: 30
+    action: warn
+    level: sprint
+    priority: 0
+    message: "More than 30 Bash calls in 60 seconds \u2014 possible runaway loop. Slow down."
+
   - id: no-skip-tests
     type: command
     match: "(npm|pnpm|yarn)( run)? test[^|;&]*--(passWithNoTests|skipTests|no-run)( |$)"

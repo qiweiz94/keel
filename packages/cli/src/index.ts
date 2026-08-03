@@ -22,6 +22,7 @@ import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
 import { statusCommand } from './commands/status.js'
+import { dashboardCommand } from './commands/dashboard.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
@@ -258,6 +259,13 @@ program
   .command('status')
   .description('Show the current enforcement state: dial, kill switch, overrides, rules, recent blocks')
   .action(statusCommand)
+
+program
+  .command('dashboard')
+  .description('Interactive dial control panel (run in your own terminal — level switches are human-only)')
+  .option('--once', 'Print the panel once and exit (non-interactive)')
+  .option('--json', 'Dump the panel state as JSON')
+  .action((options: { once?: boolean; json?: boolean }) => dashboardCommand(options))
 
 const receiptsCmd = program.command('receipts')
   .description('Manage signed receipt keys')
