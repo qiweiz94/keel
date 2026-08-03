@@ -56,7 +56,7 @@ rules:
   - id: source-change-requires-test
     type: verification
     trigger:
-      tools: [WriteFile, edit]
+      tools: [write, edit, apply_patch, WriteFile]
       path: "src/"
       pattern: "src/"
     satisfy:
@@ -77,22 +77,23 @@ rules:
     type: command
     match: "(default|choose).*(format|config|rule)"
     action: warn
-    unless_reasoning: "user.*(said|asked|want|use|prefer)|verify|check|ask"
+    unless:
+      - regex: "git config|npm config|pnpm config|yarn config|bun config|npx( |$)|npm exec|pipx|dlx( |$)|init( |$)|-y( |$)|--yes"
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
 
   - id: no-force-push
     type: command
-    match: "git push.*--force(?!-with-lease)( |$)|git push.*(^| )-f( |$)"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)"
     action: deny
     level: sprint
     message: "Use --force-with-lease instead of --force."
   - id: no-verify-bypass
     type: command
-    match: "git (commit|push|merge) --no-verify( |$)|git -c ['\"]?core[.]hooksPath"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*(commit|push|merge)(( [^ ]+))*? --no-verify( |$)|git ((--no-pager )|(-C [^ ]+ ))*(commit|push|merge)(( [^ ]+))*? -c[ =][^ ]*?core[.]hooksPath(?![/0-9A-Za-z_])|git ((--no-pager )|(-C [^ ]+ ))*-c[ =][^ ]*?core[.]hooksPath(?![/0-9A-Za-z_])|git commit( [^ ]+)* -n( |$)"
     action: deny
     level: sprint
     priority: 90
-    message: "Never bypass git hooks with --no-verify or core.hooksPath."
+    message: "Never bypass git hooks with --no-verify, -n, or core.hooksPath."
 
   - id: no-curl-pipe-shell
     type: command
@@ -202,10 +203,6 @@ rules:
       - pattern: "git commit"
         replace: "git commit --signoff"
     message: "Auto-adding --signoff to commits."
-
-  - id: re-inject-at-thresholds
-    type: context
-    message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
 
   - id: git-history-rewrite
     type: command

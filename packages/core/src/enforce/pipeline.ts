@@ -13,7 +13,7 @@ import { FlowTracker } from './flow-tracker.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
 import { FileRuleOverrideStore } from './overrides.js'
-import { commandString } from './arg-utils.js'
+import { commandString, argPath } from './arg-utils.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -33,6 +33,8 @@ export interface PipelineConfig {
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
   onRulesReload?: (hierarchy: RuleHierarchy) => void
+  /** Called when a rules reload failed validation; the previous hierarchy is kept. */
+  onRulesError?: (errors: string[]) => void
   disableFile?: string
 }
 
@@ -106,7 +108,14 @@ export class EnforcementPipeline {
       if (reloaded) {
         const errors = [reloaded.global, reloaded.user, reloaded.project, reloaded.local]
           .flatMap(source => source ? [...(source.errors || []), ...validateRules(source.rules)] : [])
-        if (errors.length) throw new Error(`Invalid Keel rules after reload: ${errors.join('; ')}`)
+        if (errors.length) {
+          // Last known good: a typo mid-session must not silence the
+          // guardrails. Keep enforcing with the previous valid hierarchy,
+          // surface the errors, and leave the hash unchanged so the reload
+          // is retried (and the error re-surfaced) on the next call.
+          this.config.onRulesError?.(errors)
+          return false
+        }
         this.config.ruleHierarchy = reloaded
         this.config.onRulesReload?.(reloaded)
       }
@@ -311,13 +320,10 @@ export class EnforcementPipeline {
       // for legitimate config work must not double-flag, and exfiltration of
       // read data is the flow rules' job. Filesystem rules police writes.
       if (rule.type === 'filesystem' && rule.paths && !/^read/i.test(input.tool)) {
-        const path = typeof input.args === 'object' && input.args !== null
-          ? (input.args as Record<string, unknown>).path || (input.args as Record<string, unknown>).file || (input.args as Record<string, unknown>).filePath || ''
-          : ''
-
-        const pathStr = String(path)
+        const args = input.args as Record<string, unknown>
+        const pathStr = argPath(args)
         const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
-        const operation = String((input.args as Record<string, unknown>).operation || '')
+        const operation = String(args.operation || '')
         const excluded = (rule.exclude || []).some(p => this.pathMatches(resolvedPath, p))
         const pathMatched = rule.paths.some(p => p.startsWith('!')
           ? !this.pathMatches(resolvedPath, p.slice(1))
@@ -360,15 +366,21 @@ export class EnforcementPipeline {
       // double-flag content the write rule already accepted, and pure reads
       // (e.g. reading .env to detect exfiltration via flow rules) must pass.
       if (deepChecks && rule.type === 'content' && rule.patterns && !/^read/i.test(input.tool)) {
-        const path = typeof input.args === 'object' && input.args !== null
-          ? (input.args as Record<string, unknown>).path || (input.args as Record<string, unknown>).filePath || (input.args as Record<string, unknown>).file || ''
-          : ''
-
-        const pathStr = String(path)
+        const args = input.args as Record<string, unknown>
+        const pathStr = argPath(args)
         const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
-        const inlineContent = String((input.args as Record<string, unknown>).content || (input.args as Record<string, unknown>).text || '')
+        // apply_patch carries the new content in patchText and the target
+        // path only inside `*** Add File:` markers — both are honored here.
+        const patchText = String(args.patchText || '')
+        const inlineContent = String(args.content || args.text || patchText || '')
         const isFile = resolvedPath && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
-        if ((inlineContent || isFile) && (!resolvedPath || !isFile || this.config.contentTracker.hasChanged(resolvedPath))) {
+        // Inline content is ALWAYS checkable — it is what the agent is about
+        // to write. Only the disk-scan fallback is gated on the file having
+        // changed since the last scan; gating inline content on the file's
+        // disk hash let an overwrite of an already-scanned file smuggle
+        // secrets past the content rules.
+        const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath)
+        if (inlineContent || diskChanged) {
           for (const pattern of rule.patterns) {
             const content = inlineContent || (isFile ? readFileSync(resolvedPath, 'utf-8') : '')
             if ((pattern.regex && this.matchesRulePattern(pattern.regex, content)) || (pattern.prefix && content.startsWith(pattern.prefix))) {

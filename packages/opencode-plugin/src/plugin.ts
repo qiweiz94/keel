@@ -10,6 +10,7 @@ import {
   SequenceDetector,
   StateManager,
   loadRuleHierarchy,
+  parseRulesContent,
   hashRulesFile,
   validateRules,
   projectAuditArgs,
@@ -34,17 +35,17 @@ rules:
     message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
   - id: no-force-push
     type: command
-    match: "git push.*--force(?!-with-lease)( |$)|git push.*(^| )-f( |$)"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)"
     action: deny
     level: sprint
     message: "Use --force-with-lease instead of --force."
   - id: no-verify-bypass
     type: command
-    match: "git (commit|push|merge) --no-verify( |$)|git -c ['\"]?core[.]hooksPath"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*(commit|push|merge)(( [^ ]+))*? --no-verify( |$)|git ((--no-pager )|(-C [^ ]+ ))*(commit|push|merge)(( [^ ]+))*? -c[ =][^ ]*?core[.]hooksPath(?![/0-9A-Za-z_])|git ((--no-pager )|(-C [^ ]+ ))*-c[ =][^ ]*?core[.]hooksPath(?![/0-9A-Za-z_])|git commit( [^ ]+)* -n( |$)"
     action: deny
     level: sprint
     priority: 90
-    message: "Never bypass git hooks with --no-verify or core.hooksPath."
+    message: "Never bypass git hooks with --no-verify, -n, or core.hooksPath."
   - id: no-curl-pipe-shell
     type: command
     match: "(curl|wget)[^|;&]*[|] *(sudo )*(ba)?sh( |$)|bash <[(]curl"
@@ -140,7 +141,7 @@ rules:
   - id: source-change-requires-test
     type: verification
     trigger:
-      tools: [WriteFile, edit]
+      tools: [write, edit, apply_patch, WriteFile]
       path: "src/"
       pattern: "src/"
     satisfy:
@@ -160,7 +161,8 @@ rules:
     type: command
     match: "(default|choose).*(format|config|rule)"
     action: warn
-    unless_reasoning: "user.*(said|asked|want|use|prefer)|verify|check|ask"
+    unless:
+      - regex: "git config|npm config|pnpm config|yarn config|bun config|npx( |$)|npm exec|pipx|dlx( |$)|init( |$)|-y( |$)|--yes"
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
@@ -176,9 +178,6 @@ rules:
       - pattern: "git commit"
         replace: "git commit --signoff"
     message: "Auto-adding --signoff to commits."
-  - id: re-inject-at-thresholds
-    type: context
-    message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
   - id: git-history-rewrite
     type: command
     match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
@@ -281,11 +280,25 @@ export default {
   server: async (pluginInput: any) => {
     ensureRules()
     const directory = pluginInput?.directory || process.cwd()
-    const hierarchy = loadRuleHierarchy(directory)
-    const ruleErrors = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+    const client = pluginInput?.client
+    // Last known good: an invalid rules file must not disable the guardrails.
+    // Any source with errors is replaced by the built-in default rules (so
+    // enforcement continues), the error is logged loudly, and strict mode
+    // (KEEL_STRICT=1) restores the old throw-on-invalid behavior.
+    let hierarchy = loadRuleHierarchy(directory)
+    let ruleErrors = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
       .flatMap(source => source ? [...(source.errors || []), ...validateRules(source.rules)] : [])
+    const logError = (event: string, errors: string[]) => {
+      try { record({ event, errors, directory }) } catch {}
+      try { client?.app?.log?.({ body: { service: 'keel', level: 'error', message: `[Keel] ${event}: ${errors.join('; ')}` } }) } catch {}
+    }
     if (ruleErrors.length) {
-      throw new Error(`[Keel] Invalid Keel rules: ${ruleErrors.join('; ')}`)
+      if (process.env.KEEL_STRICT === '1') {
+        throw new Error(`[Keel] Invalid Keel rules (KEEL_STRICT=1): ${ruleErrors.join('; ')}`)
+      }
+      logError('invalid-rules-fallback-to-defaults', ruleErrors)
+      hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, 'keel:defaults'), user: null, project: null, local: null }
+      ruleErrors = []
     }
     let level = hierarchy.project?.config.level || hierarchy.global?.config.level || 'balanced'
     let activeHierarchy = hierarchy
@@ -317,8 +330,32 @@ export default {
         RULES_PATH, path.join(os.homedir(), '.config', 'keel', 'rules.yaml'),
       ].map(source => hashRulesFile(source)).join(':'),
       onRulesReload: refreshVerificationMetadata,
+      onRulesError: (errors) => {
+        // Mid-session typo: keep enforcing with the last known good rules,
+        // but surface the error so the user knows the new rules did not take.
+        logError('invalid-rules-reload-kept-last-known-good', errors)
+      },
     })
     const verificationWarnings = new Set<string>()
+    const surfacedWarnings = new Set<string>()
+    const surfaceWarn = (ruleId: string, message: string, sessionID: string | undefined) => {
+      // Warn-level results are audit-only by default; surface each rule once
+      // per session so "warnings vs blocks" is a visible dial, not a silent
+      // trace entry.
+      const key = `${ruleId}:${sessionID || 'unknown'}`
+      if (surfacedWarnings.has(key)) return
+      surfacedWarnings.add(key)
+      try {
+        client?.app?.log?.({
+          body: {
+            service: 'keel',
+            level: 'warn',
+            message: `[Keel] ${ruleId}: ${message}`,
+            extra: { rule_id: ruleId, session_id: sessionID },
+          },
+        })
+      } catch {}
+    }
     const refreshExternalChanges = async () => {
       for (const rule of [...(activeHierarchy.global?.rules || []), ...(activeHierarchy.project?.rules || []), ...(activeHierarchy.local?.rules || [])]) {
         if (rule.type !== 'verification' || !rule.trigger?.path) continue
@@ -341,6 +378,7 @@ export default {
       const args = output?.args || {}
       const result = await pipeline.evaluate(toEnforceInput(input?.tool || 'unknown', args, input, level, directory))
       record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: 'tool.execute.before' })
+      if (result.action === 'warn' && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID)
       if (result.action === 'fix') applyFix(args, result)
       if (result.action === 'warn' && result.rule_id && verificationIds.has(result.rule_id)) {
         const key = `${result.rule_id}:${directory}`

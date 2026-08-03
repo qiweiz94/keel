@@ -43,7 +43,7 @@ rules:
   - id: test-seq
     type: sequence
     steps:
-      - tool: WriteFile
+      - tool: write
         pattern: "src/"
       - tool: edit
         pattern: "src/"
@@ -53,7 +53,7 @@ rules:
   - id: source-change-requires-test
     type: verification
     trigger:
-      tools: [WriteFile, edit]
+      tools: [write, edit]
       path: "src/"
       pattern: "src/"
     satisfy:
@@ -102,8 +102,8 @@ rules:
     message: "Outside schedule"
   - id: flow-protection
     type: flow
-    sources: [ReadFile]
-    sinks: [Bash]
+    sources: [read]
+    sinks: [bash]
     action: deny
     message: "Sensitive flow"
   - id: protected-level
@@ -143,6 +143,14 @@ rules:
     unless_reasoning: "approved"
     action: deny
     message: "Reasoning exemption"
+  - id: must-sign-commits
+    type: command
+    match: "git commit(?!.*--signoff)"
+    action: fix
+    fix:
+      - pattern: "git commit"
+        replace: "git commit --signoff"
+    message: "Commits must be signed off."
 `)
 const hooks = await plugin.server({ directory: join(tmpHome, 'proj') })
 
@@ -152,36 +160,50 @@ check('all plugin hooks', expected.every(h => typeof hooks?.[h] === 'function'))
 // Self-bootstrap writes default rules.
 check('self-bootstrap rules.yaml', fs.existsSync(join(tmpHome, '.keel', 'rules.yaml')))
 
-// Invalid project rules must prevent startup rather than silently disabling enforcement.
+// Invalid project rules: KEEL_STRICT=1 rejects startup; otherwise the plugin
+// falls back to the built-in defaults so enforcement never silently stops.
 const malformedProject = join(tmpHome, 'malformed-project')
 fs.mkdirSync(join(malformedProject, '.keel'), { recursive: true })
 fs.writeFileSync(join(malformedProject, '.keel', 'rules.yaml'), 'version: 1\nrules: [broken\n')
-let malformedRejected = false
-try { await plugin.server({ directory: malformedProject }) } catch (error) { malformedRejected = error.message.startsWith('[Keel]') }
-check('malformed rules fail closed', malformedRejected)
+process.env.KEEL_STRICT = '1'
+let strictRejected = false
+try { await plugin.server({ directory: malformedProject }) } catch (error) { strictRejected = error.message.startsWith('[Keel]') }
+check('KEEL_STRICT rejects malformed rules', strictRejected)
+delete process.env.KEEL_STRICT
+let fallbackHooks = null
+try { fallbackHooks = await plugin.server({ directory: malformedProject }) } catch {}
+let fallbackEnforces = !!fallbackHooks
+if (fallbackHooks) {
+  try {
+    await fallbackHooks['tool.execute.before']({ tool: 'bash', sessionID: 'malformed-1' }, { args: { command: 'git push --force origin main' } })
+    await fallbackHooks['tool.execute.before']({ tool: 'bash', sessionID: 'malformed-1' }, { args: { command: 'git push --force origin main' } })
+    fallbackEnforces = false
+  } catch (e) { fallbackEnforces = e.message.startsWith('[Keel]') }
+}
+check('fallback defaults keep enforcing after malformed rules', fallbackEnforces)
 
 // A hook-boundary failure must also fail closed instead of allowing the tool call.
 let runtimeFailureClosed = false
 try {
   const throwingOutput = {}
   Object.defineProperty(throwingOutput, 'args', { get() { throw new Error('synthetic hook failure') } })
-  await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'runtime-failure' }, throwingOutput)
+  await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'runtime-failure' }, throwingOutput)
 } catch (error) {
   runtimeFailureClosed = error.message.includes('Enforcement failed closed')
 }
 check('runtime hook failures fail closed', runtimeFailureClosed)
 
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'privacy' }, { args: { token: 'plugin-secret-value' } })
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'privacy' }, { args: { token: 'plugin-secret-value' } })
 const traceText = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
   .map(file => fs.readFileSync(join(tmpHome, '.keel', 'traces', file), 'utf8')).join('\n')
 check('plugin audit redacts sensitive arguments', !traceText.includes('plugin-secret-value') && traceText.includes('[redacted]'))
 
 // Warn-then-deny escalation within one process.
 const out1 = { args: { command: 'git push --force origin main' } }
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 't1' }, out1)
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 't1' }, out1)
 let denied = false
 try {
-  await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 't1' }, { args: { command: 'git push --force origin main' } })
+  await hooks['tool.execute.before']({ tool: 'bash', sessionID: 't1' }, { args: { command: 'git push --force origin main' } })
 } catch (e) {
   denied = e.message.startsWith('[Keel]')
 }
@@ -189,7 +211,7 @@ check('warn then deny', denied)
 
 // Sequence rule (WriteFile src/ → edit src/ within 300s).
 // First violation warns; repeat within the window denies.
-await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 't2' }, { args: { filePath: 'src/foo.ts', content: 'x' } })
+await hooks['tool.execute.before']({ tool: 'write', sessionID: 't2' }, { args: { filePath: 'src/foo.ts', content: 'x' } })
 let seqWarned = true
 let seqDenied = false
 try {
@@ -207,7 +229,7 @@ check('sequence repeat denies', seqDenied)
 
 // Sequence rule does NOT fire for unrelated tool calls.
 let seqFalse = false
-await hooks['tool.execute.before']({ tool: 'Read', sessionID: 't2' }, { args: { filePath: 'src/other.ts' } })
+await hooks['tool.execute.before']({ tool: 'read', sessionID: 't2' }, { args: { filePath: 'src/other.ts' } })
 try {
   await hooks['tool.execute.before']({ tool: 'edit', sessionID: 't2' }, { args: { filePath: 'README.md', oldString: 'a', newString: 'b' } })
 } catch (e) {
@@ -217,11 +239,11 @@ check('sequence ignores unrelated calls', !seqFalse)
 
 // Verification obligation: source change is allowed, failed tests do not clear,
 // successful tests clear, and commit boundaries warn before blocking.
-await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 't3' }, { args: { filePath: 'src/obligation.ts', content: 'x' } })
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 't3' }, { args: { command: 'git commit -m "unverified"' } })
+await hooks['tool.execute.before']({ tool: 'write', sessionID: 't3' }, { args: { filePath: 'src/obligation.ts', content: 'x' } })
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 't3' }, { args: { command: 'git commit -m "unverified"' } })
 let boundaryDenied = false
 try {
-  await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 't3' }, { args: { command: 'git commit -m "unverified again"' } })
+  await hooks['tool.execute.before']({ tool: 'bash', sessionID: 't3' }, { args: { command: 'git commit -m "unverified again"' } })
 } catch (e) {
   boundaryDenied = e.message.startsWith('[Keel]')
 }
@@ -236,59 +258,67 @@ const checkRule = async (tool, args, id) => {
 }
 checkRule('WriteFile', { filePath: 'secrets/key', operation: 'write' }, 'types-1')
 let filesystemDenied = false
-try { await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 'types-1' }, { args: { filePath: 'secrets/key', operation: 'write' } }) } catch (e) { filesystemDenied = e.message.startsWith('[Keel]') }
+try { await hooks['tool.execute.before']({ tool: 'write', sessionID: 'types-1' }, { args: { filePath: 'secrets/key', operation: 'write' } }) } catch (e) { filesystemDenied = e.message.startsWith('[Keel]') }
 check('filesystem first warns then denies', filesystemDenied)
 let contentDenied = false
-await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 'types-2' }, { args: { content: 'PRIVATE_KEY' } })
-try { await hooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 'types-2' }, { args: { content: 'PRIVATE_KEY' } }) } catch (e) { contentDenied = e.message.startsWith('[Keel]') }
+await hooks['tool.execute.before']({ tool: 'write', sessionID: 'types-2' }, { args: { content: 'PRIVATE_KEY' } })
+try { await hooks['tool.execute.before']({ tool: 'write', sessionID: 'types-2' }, { args: { content: 'PRIVATE_KEY' } }) } catch (e) { contentDenied = e.message.startsWith('[Keel]') }
 check('content first warns then denies', contentDenied)
 let networkDenied = false
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-3' }, { args: { url: 'https://evil.example' } })
-try { await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-3' }, { args: { url: 'https://evil.example' } }) } catch (e) { networkDenied = e.message.startsWith('[Keel]') }
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-3' }, { args: { url: 'https://evil.example' } })
+try { await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-3' }, { args: { url: 'https://evil.example' } }) } catch (e) { networkDenied = e.message.startsWith('[Keel]') }
 check('network first warns then denies', networkDenied)
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } })
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } })
 let rateDenied = false
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } })
-try { await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } }) } catch (e) { rateDenied = e.message.startsWith('[Keel]') }
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } })
+try { await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-4' }, { args: { command: 'rate-token' } }) } catch (e) { rateDenied = e.message.startsWith('[Keel]') }
 check('rate first violation warns then denies', rateDenied)
 fs.writeFileSync(join(tmpHome, '.env'), 'PRIVATE_KEY=redacted\n')
-await hooks['tool.execute.before']({ tool: 'ReadFile', sessionID: 'types-5' }, { args: { filePath: join(tmpHome, '.env') } })
+await hooks['tool.execute.before']({ tool: 'read', sessionID: 'types-5' }, { args: { filePath: join(tmpHome, '.env') } })
 let flowDenied = false
-await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-5' }, { args: { command: 'send' } })
-try { await hooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-5' }, { args: { command: 'send' } }) } catch (e) { flowDenied = e.message.startsWith('[Keel]') }
+await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-5' }, { args: { command: 'send' } })
+try { await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-5' }, { args: { command: 'send' } }) } catch (e) { flowDenied = e.message.startsWith('[Keel]') }
 check('flow first violation warns then denies', flowDenied)
 const cleanHooks = await plugin.server({ directory: join(tmpHome, 'clean') })
 let priorityAllowed = true
-try { await cleanHooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-6' }, { args: { command: 'priority-check' } }) } catch { priorityAllowed = false }
+try { await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-6' }, { args: { command: 'priority-check' } }) } catch { priorityAllowed = false }
 check('priority metadata selects higher priority rule', priorityAllowed)
 let metadataAllowed = true
 for (const command of ['level-protected', 'ci-only', 'dangerous-action safe', 'reasoned-action']) {
-  try { await cleanHooks['tool.execute.before']({ tool: 'Bash', sessionID: 'types-7', reasoning: command === 'reasoned-action' ? 'approved' : '' }, { args: { command } }) } catch { metadataAllowed = false }
+  try { await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-7', reasoning: command === 'reasoned-action' ? 'approved' : '' }, { args: { command } }) } catch { metadataAllowed = false }
 }
 check('level context and unless metadata allow exemptions', metadataAllowed)
 
+// Fix rules mutate the command args in place instead of throwing.
+// Runs on a fresh server instance: the main fixture's verification obligation
+// is cwd-scoped, so a commit-shaped command there would hit the boundary.
+const fixHooks = await plugin.server({ directory: join(tmpHome, 'fix-dir') })
+const fixArgs = { command: 'git commit -m "sign me"' }
+await fixHooks['tool.execute.before']({ tool: 'bash', sessionID: 'fix-1' }, { args: fixArgs })
+check('fix rule mutates command args in place', fixArgs.command.includes('--signoff'))
+
 const verificationHooks = await plugin.server({ directory: join(tmpHome, 'verification') })
-await verificationHooks['tool.execute.before']({ tool: 'WriteFile', sessionID: 't4' }, { args: { filePath: 'src/verified.ts', content: 'x' } })
+await verificationHooks['tool.execute.before']({ tool: 'write', sessionID: 't4' }, { args: { filePath: 'src/verified.ts', content: 'x' } })
 await verificationHooks['tool.execute.after'](
-  { tool: 'Bash', sessionID: 't4', callID: 'test-fail', args: { command: 'npm test' } },
+  { tool: 'bash', sessionID: 't4', callID: 'test-fail', args: { command: 'npm test' } },
   { title: 'npm test', output: 'failed', metadata: { exit: 1 } },
 )
 let failedTestStillPending = false
 try {
-  await verificationHooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
-  await verificationHooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
+  await verificationHooks['tool.execute.before']({ tool: 'bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
+  await verificationHooks['tool.execute.before']({ tool: 'bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
 } catch (e) {
   failedTestStillPending = e.message.startsWith('[Keel]')
 }
 check('failed test does not satisfy obligation', failedTestStillPending)
 
 await verificationHooks['tool.execute.after'](
-  { tool: 'Bash', sessionID: 't4', callID: 'test-pass', args: { command: 'npm test' } },
+  { tool: 'bash', sessionID: 't4', callID: 'test-pass', args: { command: 'npm test' } },
   { title: 'npm test', output: 'passed', metadata: { exit: 0 } },
 )
 let passedTestStillBlocked = false
 try {
-  await verificationHooks['tool.execute.before']({ tool: 'Bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
+  await verificationHooks['tool.execute.before']({ tool: 'bash', sessionID: 't4' }, { args: { command: 'git push origin main' } })
 } catch {
   passedTestStillBlocked = true
 }
@@ -306,13 +336,13 @@ spawnSync('git', ['-C', repoDir, 'commit', '-q', '-m', 'initial'])
 const repoHooks = await plugin.server({ directory: repoDir })
 fs.writeFileSync(join(repoDir, 'src', 'external.ts'), 'changed outside tool args\n')
 await repoHooks['tool.execute.after'](
-  { tool: 'Bash', sessionID: 'repo', callID: 'external-edit', args: { command: 'true' } },
+  { tool: 'bash', sessionID: 'repo', callID: 'external-edit', args: { command: 'true' } },
   { title: 'true', output: '', metadata: { exit: 0 } },
 )
-await repoHooks['tool.execute.before']({ tool: 'Bash', sessionID: 'repo' }, { args: { command: 'git commit -m "external"' } })
+await repoHooks['tool.execute.before']({ tool: 'bash', sessionID: 'repo' }, { args: { command: 'git commit -m "external"' } })
 let externalBoundaryDenied = false
 try {
-  await repoHooks['tool.execute.before']({ tool: 'Bash', sessionID: 'repo' }, { args: { command: 'git commit -m "external again"' } })
+  await repoHooks['tool.execute.before']({ tool: 'bash', sessionID: 'repo' }, { args: { command: 'git commit -m "external again"' } })
 } catch (e) {
   externalBoundaryDenied = e.message.startsWith('[Keel]')
 }
@@ -360,7 +390,7 @@ rules:
 `
 const dialCall = async (sessionId, command) => {
   try {
-    await dialHooks['tool.execute.before']({ tool: 'Bash', sessionID: sessionId }, { args: { command } })
+    await dialHooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
     return 'allowed'
   } catch (e) {
     return e.message.startsWith('[Keel]') ? 'denied' : 'allowed'

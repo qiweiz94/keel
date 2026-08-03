@@ -1,22 +1,33 @@
 import type { EnforceInput, KeelRule, VerificationMatcher } from '../types.js'
 import type { StateManager } from './state-manager.js'
-import { stripContentArgs, mcpToolString } from './arg-utils.js'
+import { stripContentArgs, mcpToolString, argPath } from './arg-utils.js'
 
-interface PendingVerification {
-  ruleId: string
-  cwd: string
-  sessionId: string
-  generation: number
-  createdAt: number
+// File-modification tools under their real names. opencode calls them
+// write/edit/apply_patch; Claude Code calls them WriteFile/Write/Edit; MCP
+// servers expose file writes under arbitrary tool names. Rules whose trigger
+// names a write tool must fire on all of them, which is why `matches` falls
+// back to arg-shape matching (below) instead of comparing tool names only.
+const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'apply_patch', 'patch', 'writefile', 'write_file'])
+
+function matchesToolList(tools: string[], input: EnforceInput): boolean {
+  if (tools.some(tool => tool.toLowerCase() === input.tool.toLowerCase())) return true
+  if (!tools.some(tool => WRITE_TOOL_NAMES.has(tool.toLowerCase()))) return false
+  // Write-shape fallback: an obligation whose trigger names a write tool is
+  // also created by any tool that is about to write file content, regardless
+  // of what the tool is called (e.g. an MCP server named `mcp__fs__put`).
+  const args = input.args || {}
+  return typeof args.patchText === 'string'
+    || ((typeof args.filePath === 'string' || typeof args.file === 'string')
+      && (args.content !== undefined || args.text !== undefined || args.newString !== undefined))
 }
 
 function matches(matcher: VerificationMatcher | undefined, input: EnforceInput): boolean {
   if (!matcher) return false
   const tools = matcher.tools || (matcher.tool ? [matcher.tool] : [])
-  if (tools.length && !tools.some(tool => tool.toLowerCase() === input.tool.toLowerCase())) return false
+  if (tools.length && !matchesToolList(tools, input)) return false
   const args = input.args || {}
   if (matcher.path) {
-    const value = String(args.path || args.filePath || args.file || args.dest || '')
+    const value = argPath(args)
     if (!value.includes(matcher.path)) return false
   }
   if (matcher.pattern) {
@@ -27,6 +38,14 @@ function matches(matcher: VerificationMatcher | undefined, input: EnforceInput):
     }
   }
   return true
+}
+
+interface PendingVerification {
+  ruleId: string
+  cwd: string
+  sessionId: string
+  generation: number
+  createdAt: number
 }
 
 export class VerificationTracker {

@@ -314,6 +314,18 @@ hot-reloads changed rules on the next tool call.
 | Cursor | `.cursor/rules` declarative | Advisory | ✅ Installed |
 | Codex CLI | AGENTS.md instructions | Advisory | ✅ Installed |
 
+### Integration notes
+
+- **Reasoning-based rules need reasoning text.** `unless_reasoning` and
+  reasoning-anomaly checks run on the model's visible reasoning. Claude Code
+  exposes extended thinking, so `keel enforce` can honor them; the OpenCode
+  plugin has no access to private chain-of-thought and cannot apply
+  reasoning-gated rules there. Do not rely on them as a hard control.
+- **Pattern rules can be obfuscated.** Command/content patterns are regex
+  gates, not an anti-virus engine. For irreversible operations use
+  `action: prompt` (human approval) instead of pattern-matching alone. See
+  `SECURITY.md → Enforcement limits`.
+
 ## The Self-Improvement Loop
 
 ```

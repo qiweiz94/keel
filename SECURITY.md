@@ -24,6 +24,33 @@ Security vulnerabilities include:
   committed key lets attackers forge verified receipts. Rotate by deleting
   the file.
 
+## Enforcement limits
+
+Pattern rules are regex matching over command strings, file contents, and
+reasoning text. They are a gate, not an anti-virus engine:
+
+- **Obfuscation can defeat regex matching.** A determined agent can evade
+  command patterns through alias definitions, `env`-prefixed invocations,
+  shell glob expansion, hex/escape encodings, or indirect exec through other
+  tools — same as any regex-based gate. Mitigations: rules should also match
+  the common encodings they care about, and sensitive operations should be
+  gated by rule `action: prompt` (human approval) rather than pattern-matching
+  alone.
+- **`unless_reasoning` / reasoning checks require reasoning text.** The
+  OpenCode plugin has no access to the model's private chain-of-thought, so
+  reasoning-based `unless` and anomaly rules run only when the integration
+  provides reasoning text (`keel enforce` with Claude Code's extended thinking,
+  or the `input.reasoning` field). They cannot be relied on as a hard control
+  in agents that hide reasoning.
+- **Malformed rules fail closed.** A rule that fails to parse or validate is
+  rejected at load time; the last-known-good rule set stays in force (never a
+  silent fail-open). `keel validate` reports invalid rules before they reach
+  the enforcement path.
+- **The agent's own process is the boundary.** In-process enforcement can be
+  bypassed if the agent process itself is compromised. Git hook bypass
+  (`--no-verify`, `core.hooksPath`) is blocked at the command level; see
+  `docs/comparison.md` for what keel does and does not cover.
+
 ## Supported Versions
 
 | Version | Supported |

@@ -12,10 +12,33 @@ import type { EnforceInput } from '../types.js'
  * MCP-shaped calls (`mcp__<server>__<tool>` + nested `args.args`).
  */
 
-const CONTENT_KEYS = new Set(['content', 'text', 'fileContent', 'code'])
+const CONTENT_KEYS = new Set([
+  'content', 'text', 'fileContent', 'code',
+  // Edit and apply_patch carry file content under non-"content" names; an
+  // edit whose new text merely mentions a command must not trip command
+  // rules, and patch bodies are content, not commands.
+  'newString', 'oldString', 'patchText', 'patch',
+])
 
 function isContentKey(key: string): boolean {
   return CONTENT_KEYS.has(key) || key.toLowerCase().includes('content') || key.toLowerCase().includes('filecontent')
+}
+
+/** Target path encoded in apply_patch text (`*** Add File: src/x.ts`). */
+const PATCH_PATH_RE = /^\*\*\* (?:Add|Update|Move|Delete|Rename) File: (.+)$/m
+
+export function pathFromPatch(patchText: unknown): string {
+  if (typeof patchText !== 'string' || !patchText) return ''
+  const m = PATCH_PATH_RE.exec(patchText)
+  return m ? m[1].trim() : ''
+}
+
+/**
+ * The file path an action targets: explicit path args first, then apply_patch
+ * markers (apply_patch carries no filePath argument — paths live in the body).
+ */
+export function argPath(args: Record<string, unknown>): string {
+  return String(args.path || args.filePath || args.file || args.dest || pathFromPatch(args.patchText) || '')
 }
 
 export function stripContentArgs(args: Record<string, unknown>): Record<string, unknown> {

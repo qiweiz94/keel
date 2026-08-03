@@ -6348,7 +6348,7 @@ function validateRules(rules) {
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
-  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session"]);
+  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       errors.push("Rule entries must be objects");
@@ -6362,6 +6362,9 @@ function validateRules(rules) {
       continue;
     }
     if (typeof rule.type !== "string" || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`);
+    if (rule.action === "mask") {
+      errors.push(`Rule "${label}" uses action "mask", which is not implemented by the enforcement engine \u2014 use "warn" or "deny"`);
+    }
     const actionOptional = rule.type === "context" || rule.type === "meta";
     if (!actionOptional && typeof rule.action !== "string" || typeof rule.action === "string" && !validActions.has(rule.action)) {
       errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`);
@@ -6457,9 +6460,30 @@ function hashRulesFile(filePath) {
 }
 
 // ../core/src/enforce/arg-utils.ts
-var CONTENT_KEYS = /* @__PURE__ */ new Set(["content", "text", "fileContent", "code"]);
+var CONTENT_KEYS = /* @__PURE__ */ new Set([
+  "content",
+  "text",
+  "fileContent",
+  "code",
+  // Edit and apply_patch carry file content under non-"content" names; an
+  // edit whose new text merely mentions a command must not trip command
+  // rules, and patch bodies are content, not commands.
+  "newString",
+  "oldString",
+  "patchText",
+  "patch"
+]);
 function isContentKey(key) {
   return CONTENT_KEYS.has(key) || key.toLowerCase().includes("content") || key.toLowerCase().includes("filecontent");
+}
+var PATCH_PATH_RE = /^\*\*\* (?:Add|Update|Move|Delete|Rename) File: (.+)$/m;
+function pathFromPatch(patchText) {
+  if (typeof patchText !== "string" || !patchText) return "";
+  const m = PATCH_PATH_RE.exec(patchText);
+  return m ? m[1].trim() : "";
+}
+function argPath(args) {
+  return String(args.path || args.filePath || args.file || args.dest || pathFromPatch(args.patchText) || "");
 }
 function stripContentArgs(args) {
   if (typeof args !== "object" || args === null) return args;
@@ -6508,13 +6532,20 @@ function commandString(input) {
 }
 
 // ../core/src/enforce/verification.ts
+var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set(["write", "edit", "apply_patch", "patch", "writefile", "write_file"]);
+function matchesToolList(tools, input) {
+  if (tools.some((tool) => tool.toLowerCase() === input.tool.toLowerCase())) return true;
+  if (!tools.some((tool) => WRITE_TOOL_NAMES.has(tool.toLowerCase()))) return false;
+  const args = input.args || {};
+  return typeof args.patchText === "string" || (typeof args.filePath === "string" || typeof args.file === "string") && (args.content !== void 0 || args.text !== void 0 || args.newString !== void 0);
+}
 function matches(matcher, input) {
   if (!matcher) return false;
   const tools = matcher.tools || (matcher.tool ? [matcher.tool] : []);
-  if (tools.length && !tools.some((tool) => tool.toLowerCase() === input.tool.toLowerCase())) return false;
+  if (tools.length && !matchesToolList(tools, input)) return false;
   const args = input.args || {};
   if (matcher.path) {
-    const value = String(args.path || args.filePath || args.file || args.dest || "");
+    const value = argPath(args);
     if (!value.includes(matcher.path)) return false;
   }
   if (matcher.pattern) {
@@ -6727,7 +6758,10 @@ var EnforcementPipeline = class {
       const reloaded = this.config.reloadRules?.();
       if (reloaded) {
         const errors = [reloaded.global, reloaded.user, reloaded.project, reloaded.local].flatMap((source) => source ? [...source.errors || [], ...validateRules(source.rules)] : []);
-        if (errors.length) throw new Error(`Invalid Keel rules after reload: ${errors.join("; ")}`);
+        if (errors.length) {
+          this.config.onRulesError?.(errors);
+          return false;
+        }
         this.config.ruleHierarchy = reloaded;
         this.config.onRulesReload?.(reloaded);
       }
@@ -6881,10 +6915,10 @@ var EnforcementPipeline = class {
         }
       }
       if (rule.type === "filesystem" && rule.paths && !/^read/i.test(input.tool)) {
-        const path2 = typeof input.args === "object" && input.args !== null ? input.args.path || input.args.file || input.args.filePath || "" : "";
-        const pathStr = String(path2);
+        const args = input.args;
+        const pathStr = argPath(args);
         const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
-        const operation = String(input.args.operation || "");
+        const operation = String(args.operation || "");
         const excluded = (rule.exclude || []).some((p) => this.pathMatches(resolvedPath, p));
         const pathMatched = rule.paths.some((p) => p.startsWith("!") ? !this.pathMatches(resolvedPath, p.slice(1)) : this.pathMatches(resolvedPath, p));
         const operationMatched = !rule.operations?.length || rule.operations.includes(operation);
@@ -6911,12 +6945,14 @@ var EnforcementPipeline = class {
         if (varHit) return this.violation(input, rule, rule.message, start, 3);
       }
       if (deepChecks && rule.type === "content" && rule.patterns && !/^read/i.test(input.tool)) {
-        const path2 = typeof input.args === "object" && input.args !== null ? input.args.path || input.args.filePath || input.args.file || "" : "";
-        const pathStr = String(path2);
+        const args = input.args;
+        const pathStr = argPath(args);
         const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
-        const inlineContent = String(input.args.content || input.args.text || "");
+        const patchText = String(args.patchText || "");
+        const inlineContent = String(args.content || args.text || patchText || "");
         const isFile = resolvedPath && existsSync3(resolvedPath) && statSync2(resolvedPath).isFile();
-        if ((inlineContent || isFile) && (!resolvedPath || !isFile || this.config.contentTracker.hasChanged(resolvedPath))) {
+        const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
+        if (inlineContent || diskChanged) {
           for (const pattern of rule.patterns) {
             const content = inlineContent || (isFile ? readFileSync3(resolvedPath, "utf-8") : "");
             if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
@@ -7348,8 +7384,8 @@ var SequenceDetector = class {
   matchesTool(step, tool, args) {
     if (step.tool.toLowerCase() !== tool.toLowerCase()) return false;
     if (step.path) {
-      const argPath = String(args.path || args.filePath || args.file || args.dest || "");
-      if (!argPath.includes(step.path)) return false;
+      const argPath2 = String(args.path || args.filePath || args.file || args.dest || "");
+      if (!argPath2.includes(step.path)) return false;
     }
     if (step.pattern) {
       const argStr = JSON.stringify(args);
@@ -7777,17 +7813,17 @@ rules:
     message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
   - id: no-force-push
     type: command
-    match: "git push.*--force(?!-with-lease)( |$)|git push.*(^| )-f( |$)"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)"
     action: deny
     level: sprint
     message: "Use --force-with-lease instead of --force."
   - id: no-verify-bypass
     type: command
-    match: "git (commit|push|merge) --no-verify( |$)|git -c ['"]?core[.]hooksPath"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*(commit|push|merge)(( [^ ]+))*? --no-verify( |$)|git ((--no-pager )|(-C [^ ]+ ))*(commit|push|merge)(( [^ ]+))*? -c[ =][^ ]*?core[.]hooksPath(?![/0-9A-Za-z_])|git ((--no-pager )|(-C [^ ]+ ))*-c[ =][^ ]*?core[.]hooksPath(?![/0-9A-Za-z_])|git commit( [^ ]+)* -n( |$)"
     action: deny
     level: sprint
     priority: 90
-    message: "Never bypass git hooks with --no-verify or core.hooksPath."
+    message: "Never bypass git hooks with --no-verify, -n, or core.hooksPath."
   - id: no-curl-pipe-shell
     type: command
     match: "(curl|wget)[^|;&]*[|] *(sudo )*(ba)?sh( |$)|bash <[(]curl"
@@ -7883,7 +7919,7 @@ rules:
   - id: source-change-requires-test
     type: verification
     trigger:
-      tools: [WriteFile, edit]
+      tools: [write, edit, apply_patch, WriteFile]
       path: "src/"
       pattern: "src/"
     satisfy:
@@ -7903,7 +7939,8 @@ rules:
     type: command
     match: "(default|choose).*(format|config|rule)"
     action: warn
-    unless_reasoning: "user.*(said|asked|want|use|prefer)|verify|check|ask"
+    unless:
+      - regex: "git config|npm config|pnpm config|yarn config|bun config|npx( |$)|npm exec|pipx|dlx( |$)|init( |$)|-y( |$)|--yes"
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
   - id: no-destructive-commands
     type: command
@@ -7919,9 +7956,6 @@ rules:
       - pattern: "git commit"
         replace: "git commit --signoff"
     message: "Auto-adding --signoff to commits."
-  - id: re-inject-at-thresholds
-    type: context
-    message: "Re-inject standing requirements at 8K/16K/32K token thresholds to combat context drift."
   - id: git-history-rewrite
     type: command
     match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
@@ -8040,10 +8074,26 @@ var plugin_default = {
   server: async (pluginInput) => {
     ensureRules();
     const directory = pluginInput?.directory || process.cwd();
-    const hierarchy = loadRuleHierarchy(directory);
-    const ruleErrors = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local].flatMap((source) => source ? [...source.errors || [], ...validateRules(source.rules)] : []);
+    const client = pluginInput?.client;
+    let hierarchy = loadRuleHierarchy(directory);
+    let ruleErrors = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local].flatMap((source) => source ? [...source.errors || [], ...validateRules(source.rules)] : []);
+    const logError = (event, errors) => {
+      try {
+        record({ event, errors, directory });
+      } catch {
+      }
+      try {
+        client?.app?.log?.({ body: { service: "keel", level: "error", message: `[Keel] ${event}: ${errors.join("; ")}` } });
+      } catch {
+      }
+    };
     if (ruleErrors.length) {
-      throw new Error(`[Keel] Invalid Keel rules: ${ruleErrors.join("; ")}`);
+      if (process.env.KEEL_STRICT === "1") {
+        throw new Error(`[Keel] Invalid Keel rules (KEEL_STRICT=1): ${ruleErrors.join("; ")}`);
+      }
+      logError("invalid-rules-fallback-to-defaults", ruleErrors);
+      hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, "keel:defaults"), user: null, project: null, local: null };
+      ruleErrors = [];
     }
     let level = hierarchy.project?.config.level || hierarchy.global?.config.level || "balanced";
     let activeHierarchy = hierarchy;
@@ -8086,9 +8136,29 @@ var plugin_default = {
         RULES_PATH,
         path.join(os.homedir(), ".config", "keel", "rules.yaml")
       ].map((source) => hashRulesFile(source)).join(":"),
-      onRulesReload: refreshVerificationMetadata
+      onRulesReload: refreshVerificationMetadata,
+      onRulesError: (errors) => {
+        logError("invalid-rules-reload-kept-last-known-good", errors);
+      }
     });
     const verificationWarnings = /* @__PURE__ */ new Set();
+    const surfacedWarnings = /* @__PURE__ */ new Set();
+    const surfaceWarn = (ruleId, message, sessionID) => {
+      const key = `${ruleId}:${sessionID || "unknown"}`;
+      if (surfacedWarnings.has(key)) return;
+      surfacedWarnings.add(key);
+      try {
+        client?.app?.log?.({
+          body: {
+            service: "keel",
+            level: "warn",
+            message: `[Keel] ${ruleId}: ${message}`,
+            extra: { rule_id: ruleId, session_id: sessionID }
+          }
+        });
+      } catch {
+      }
+    };
     const refreshExternalChanges = async () => {
       for (const rule of [...activeHierarchy.global?.rules || [], ...activeHierarchy.project?.rules || [], ...activeHierarchy.local?.rules || []]) {
         if (rule.type !== "verification" || !rule.trigger?.path) continue;
@@ -8109,6 +8179,7 @@ var plugin_default = {
       const args = output?.args || {};
       const result = await pipeline.evaluate(toEnforceInput(input?.tool || "unknown", args, input, level, directory));
       record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: "tool.execute.before" });
+      if (result.action === "warn" && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID);
       if (result.action === "fix") applyFix(args, result);
       if (result.action === "warn" && result.rule_id && verificationIds.has(result.rule_id)) {
         const key = `${result.rule_id}:${directory}`;

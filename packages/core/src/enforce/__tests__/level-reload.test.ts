@@ -22,6 +22,11 @@ describe('dial level changes apply on the next call (no one-call lag)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'level-reload-'))
   const rulesPath = join(dir, '.keel', 'rules.yaml')
   const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // Isolate ~/.keel (state, overrides, sentinel) so the test never touches
+  // the host's real enforcement state.
+  const previousHome = process.env.HOME
+  process.env.HOME = home
+  const results: Array<{ label: string; action: string }> = []
   beforeAll(async () => {
     mkdirSync(join(dir, '.keel'), { recursive: true })
     const mkRules = (level: string, id: string) => `version: 1
@@ -75,7 +80,22 @@ rules:
     expect(s2.action).toBe('warn')
     expect(p1.action).toBe('warn')
     expect(p2.action).toBe('deny')
+    results.push({ label: 'balanced-second', action: b2.action }, { label: 'sprint-second', action: s2.action }, { label: 'protect-second', action: p2.action })
   })
-  afterAll(() => { rmSync(home, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }) })
-  it('balanced → sprint → protect transitions evaluate at the new level immediately', () => { expect(true).toBe(true) })
+  afterAll(() => {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    rmSync(home, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('balanced → sprint → protect transitions evaluate at the new level immediately', () => {
+    // The real assertions live in beforeAll (they need the live file
+    // rewrites); this test re-checks the recorded outcomes so the suite
+    // fails if the setup is ever removed.
+    expect(results).toEqual([
+      { label: 'balanced-second', action: 'deny' },
+      { label: 'sprint-second', action: 'warn' },
+      { label: 'protect-second', action: 'deny' },
+    ])
+  })
 })

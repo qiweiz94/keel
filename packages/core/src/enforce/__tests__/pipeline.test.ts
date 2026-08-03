@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -414,7 +414,7 @@ rules:
       expect(source.action).toBe('allow')
     })
 
-    it('reloads changed rules and fails closed for invalid replacements', async () => {
+    it('reloads changed rules and keeps the last known good for invalid replacements', async () => {
       const sourcePath = tmpFile('live-reload.yaml')
       writeFileSync(sourcePath, `version: 1
 rules:
@@ -424,12 +424,14 @@ rules:
     action: deny
     message: "Before reload"
 `)
+      const reportedErrors: string[][] = []
       const pipeline = new EnforcementPipeline({
         level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
         contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
         flowTracker: new FlowTracker(), ruleHierarchy: { global: null, user: null, project: parseRulesFile(sourcePath), local: null },
         ruleVersion: 1,
         reloadRules: () => ({ global: null, user: null, project: parseRulesFile(sourcePath), local: null }),
+        onRulesError: (errors) => { reportedErrors.push(errors) },
       })
       expect((await pipeline.evaluate(input('Bash', { command: 'before-reload' }, 'reload'))).action).toBe('warn')
       writeFileSync(sourcePath, `version: 1
@@ -443,7 +445,14 @@ rules:
       expect((await pipeline.evaluate(input('Bash', { command: 'before-reload' }, 'reload'))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'after-reload' }, 'reload'))).action).toBe('warn')
       writeFileSync(sourcePath, 'version: 1\nrules: [broken\n')
-      await expect(pipeline.evaluate(input('Bash', { command: 'after-reload' }, 'reload'))).rejects.toThrow('Invalid Keel rules after reload')
+      // Last known good: an invalid reload keeps the previous rules enforced
+      // instead of throwing on every call, and surfaces the error. The retry
+      // is attempted on each call (the hash never advances past the bad file).
+      // Escalation state also persists: a typo must never soften enforcement,
+      // so the second hit of a deny rule after the failed reload still denies.
+      expect((await pipeline.evaluate(input('Bash', { command: 'after-reload' }, 'reload'))).action).toBe('deny')
+      expect((await pipeline.evaluate(input('Bash', { command: 'before-reload' }, 'reload'))).action).toBe('allow')
+      expect(reportedErrors.length).toBeGreaterThan(0)
       rmSync(sourcePath, { force: true })
     })
   })
@@ -645,6 +654,34 @@ rules:
 `)
       expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time'))).action).toBe('warn')
       expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time'))).action).toBe('deny')
+    })
+
+    it('fires the before-start and after-end schedule branches', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: time-window
+    type: time
+    schedule:
+      start: "10:00"
+      end: "14:00"
+    action: deny
+    message: "Window"
+`)
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026-01-05T08:00:00'))
+        // First violation of the deny rule warns (generic message); the
+        // schedule-specific text is surfaced on the blocking call.
+        expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time-window'))).action).toBe('warn')
+        vi.setSystemTime(new Date('2026-01-05T16:00:00'))
+        const after = await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time-window'))
+        expect(after.action).toBe('deny')
+        expect(after.message).toContain('After schedule end')
+        vi.setSystemTime(new Date('2026-01-05T11:00:00'))
+        expect((await pipeline.evaluate(input('Bash', { command: 'echo hi' }, 'time-window'))).action).toBe('allow')
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('tracks a sensitive read before blocking a network sink', async () => {

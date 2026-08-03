@@ -86,7 +86,7 @@ export function validateRules(rules: unknown): string[] {
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
-  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session'])
+  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session', 'context'])
 
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
@@ -101,6 +101,9 @@ export function validateRules(rules: unknown): string[] {
       continue
     }
     if (typeof rule.type !== 'string' || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`)
+    if (rule.action === 'mask') {
+      errors.push(`Rule "${label}" uses action "mask", which is not implemented by the enforcement engine — use "warn" or "deny"`)
+    }
     const actionOptional = rule.type === 'context' || rule.type === 'meta'
     if ((!actionOptional && typeof rule.action !== 'string') || (typeof rule.action === 'string' && !validActions.has(rule.action))) {
       errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`)

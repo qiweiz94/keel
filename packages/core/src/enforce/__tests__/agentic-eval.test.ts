@@ -310,7 +310,7 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'echo $PROD_API_KEY' }))).action).toBe('warn')
       expect((await p.evaluate(input('Bash', { command: 'printenv PROD_API_KEY' }))).action).toBe('deny')
     })
-    it('mcp/inheritance/meta rule types are rejected at validation, not silent no-ops', () => {
+    it('mcp/inheritance/meta/session/context rule types are rejected at validation, not silent no-ops', () => {
       const yaml = `version: 1
 rules:
   - id: legacy-mcp
@@ -318,10 +318,34 @@ rules:
     match: "x"
     action: deny
     message: "m"
+  - id: legacy-inheritance
+    type: inheritance
+    action: deny
+    message: "i"
+  - id: legacy-meta
+    type: meta
+    action: deny
+    message: "m2"
+  - id: legacy-session
+    type: session
+    action: deny
+    message: "s"
+  - id: legacy-context
+    type: context
+    action: deny
+    message: "c"
+  - id: masked
+    type: command
+    match: "x"
+    action: mask
+    message: "mk"
 `
       const parsed = parseRulesContent(yaml, '/tmp/x.yaml')
       const errors = validateRules(parsed.rules)
-      expect(errors.some(e => e.includes('not implemented') || e.includes('unsupported type'))).toBe(true)
+      for (const id of ['legacy-mcp', 'legacy-inheritance', 'legacy-meta', 'legacy-session', 'legacy-context']) {
+        expect(errors.some(e => e.includes(`"${id}"`) && e.includes('not implemented'))).toBe(true)
+      }
+      expect(errors.some(e => e.includes('"masked"') && e.includes('mask'))).toBe(true)
     })
     it('sequence rule fires on read-then-delete at balanced and protect, skipped at sprint', async () => {
       const ruleYaml = `version: 1
