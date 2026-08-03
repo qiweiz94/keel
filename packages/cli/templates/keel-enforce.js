@@ -7593,7 +7593,7 @@ var FlowTracker = class {
     if (url && (url.toLowerCase().includes(normalized) || normalized === "network")) return true;
     if (normalized !== "network") return false;
     const command = String(args.command || args.cmd || "").toLowerCase();
-    return /(?:curl|wget|fetch|http|https|nc|netcat|socat)\b/.test(`${toolName} ${command}`);
+    return /\b(?:curl|wget|fetch|http|https|nc|netcat|socat)\b/.test(`${toolName} ${command}`);
   }
   clear() {
     this.taggedValues.clear();

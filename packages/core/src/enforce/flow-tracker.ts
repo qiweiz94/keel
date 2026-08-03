@@ -182,7 +182,10 @@ export class FlowTracker {
 
     if (normalized !== 'network') return false
     const command = String(args.command || args.cmd || '').toLowerCase()
-    return /(?:curl|wget|fetch|http|https|nc|netcat|socat)\b/.test(`${toolName} ${command}`)
+    // Both-side word boundaries: a trailing `\b` alone lets `nc` match the
+    // tail of unrelated words like "sync" or "finch". Sink verbs must be
+    // real tokens (nc -l, curl url), not substrings of legitimate commands.
+    return /\b(?:curl|wget|fetch|http|https|nc|netcat|socat)\b/.test(`${toolName} ${command}`)
   }
 
   clear(): void {

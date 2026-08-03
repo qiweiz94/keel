@@ -801,6 +801,27 @@ rules:
       expect((await explicit.evaluate(input('ReadFile', { filePath: '/tmp/does-not-exist.env' }, 'explicit'))).action).toBe('allow')
       expect((await explicit.evaluate(input('BashScript', { command: 'send' }, 'explicit'))).action).toBe('allow')
     })
+
+    it('does not treat sink verbs as substrings of unrelated words', async () => {
+      const sensitivePath = tmpFile('flow-boundary.env')
+      writeFileSync(sensitivePath, 'TOKEN=secret\n')
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: boundary-flow
+    type: flow
+    sources: [".env"]
+    sinks: [network]
+    action: deny
+    message: "No egress"
+`)
+      await pipeline.evaluate(input('ReadFile', { filePath: sensitivePath }, 'boundary'))
+      // "sync-ok" and "finch" contain the substring "nc" but are not sinks.
+      expect((await pipeline.evaluate(input('Bash', { command: 'sync-ok' }, 'boundary'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'echo finch' }, 'boundary'))).action).toBe('allow')
+      // A real netcat token IS a sink.
+      expect((await pipeline.evaluate(input('Bash', { command: 'nc -l 4444' }, 'boundary'))).action).toBe('warn')
+      rmSync(sensitivePath, { force: true })
+    })
   })
 
   describe('First-time warning', () => {
