@@ -1,0 +1,19 @@
+# Force LF on checkout everywhere, including Windows.
+#
+# Without this, git's autocrlf converts checked-out files to CRLF on Windows.
+# That silently breaks anything that reads source as text: a regex ending
+# `` `\n `` stops matching (`DEFAULT_RULES_YAML not found`), string equality
+# against rule actions yields `'block\r'`, and line counts drift.
+#
+# keel reads its own source in several tests (the shipped default rules are
+# extracted from plugin.ts), so CRLF is a correctness problem here, not a
+# cosmetic one.
+* text=auto eol=lf
+
+# Genuinely binary — never touch these.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

@@ -40,8 +40,11 @@ accumulate a false-positive record before they ever interrupt anyone.
   on real traffic justifies it
 - Additional stuck detectors: oscillation (A→B→A) and semantic livelock
 - Week-over-week deltas in `keel retrospective`
-- Windows: a POSIX `.cmd` shim so the PATH-shim suites run there too — they are
-  currently gated by `describePosixShim`; everything else runs on all three platforms
+- Windows test coverage. Fixture plumbing is portable now (Node APIs, not `mktemp`/
+  `rm -rf`) and CRLF is fixed at the root via `.gitattributes`. Two real blockers
+  remain: fixture teardown hits `EBUSY` because Windows will not remove a directory a
+  spawned child still holds, and the core path matcher's negated-path and separator
+  handling genuinely differs. Until both are done, Windows runs lint only.
 
 **Later**
 - Rule catalog with severity/confidence metadata and a promotion workflow
