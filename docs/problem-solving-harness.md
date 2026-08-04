@@ -813,7 +813,8 @@ change needs a CHANGELOG migration note.
 | 7 | Phase 1 — research capability: `/v1/research` + `/v1/research/cache`, `keel_research` / page-retrieval / `keel_search_cache` MCP tools, SSRF-hardened fetcher, `research` rule type + action + `topics`/`max_age_hours`, session cache | ✅ shipped (commit `59f398a`, 2026-08-04) |
 | 8 | Phase 2 — workflow enforcement | 🔨 in progress |
 | 8a | Phase 2a — `stuck` rule type, `redirect` action + directive, command fingerprinting, exit-code telemetry | ✅ shipped (commit `6ae6c07`, 2026-08-04) |
-| 8b | Phase 2b — research-before-solve obligation, ProblemLedger + `keel_hypothesis`, `diagnosis` type, `/v1/outcome` | 🔨 next |
+| 8b | Phase 2b — ProblemLedger + `keel_hypothesis`, `diagnosis` type, `/v1/outcome` | ✅ shipped (commit `d3aa821`, 2026-08-04) |
+| 8c | Phase 2c — research-before-solve obligation (research type trigger/satisfy/boundaries with exit) | 🔨 next |
 
 ---
 
