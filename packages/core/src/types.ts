@@ -8,13 +8,13 @@ export type RuleContext = 'local' | 'ci' | 'both'
 
 export type EnforcementDepth = 'fast' | 'full' | 'deep'
 
-export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'mask' | 'fix' | 'report' | 'research'
+export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'mask' | 'fix' | 'report' | 'research' | 'redirect'
 
 export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
-  | 'research'
+  | 'research' | 'stuck'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -55,6 +55,13 @@ export interface KeelRule {
   // ── Research/freshness rules ──
   topics?: string[]                 // regex list matched against command + reasoning
   max_age_hours?: number            // freshness horizon for the session research cache
+
+  // ── Stuck-loop rules ──
+  max_attempts?: number             // identical failing fingerprint count that redirects (default 3)
+  block_attempts?: number           // count that denies (default 5)
+  fingerprint?: 'auto' | 'exact'    // auto = normalized identity (default), exact = raw string
+  require_failure?: boolean         // only count attempts with a nonzero exit (default true)
+  escalation?: Array<{ at: number; action: EnforcementAction; message: string }>  // custom ladder
 
   // ── Environment rules ──
   vars?: string[]
@@ -172,6 +179,17 @@ export interface EnforceResult {
   tier?: number
   fix_result?: Record<string, unknown>
   directive?: ResearchDirective
+  redirect?: RedirectDirective
+}
+
+export interface RedirectDirective {
+  kind: 'stuck' | 'research' | 'diagnosis' | 'plan'
+  required_tools: string[]
+  target: string
+  rationale: string
+  rule_id: string
+  attempts?: number
+  suggested_call?: string
 }
 
 export interface ResearchDirective {

@@ -9,6 +9,7 @@ import {
   FlowTracker,
   SequenceDetector,
   StateManager,
+  StuckTracker,
   loadRuleHierarchy,
   parseRulesContent,
   hashRulesFile,
@@ -377,6 +378,7 @@ export default {
       flowTracker: new FlowTracker(), ruleHierarchy: hierarchy, ruleVersion: 1,
       allowedFixTransforms: true,
       stateManager: new StateManager(),
+      stuckTracker: new StuckTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [
         path.join(directory, '.keel', 'rules.yaml'), path.join(directory, 'AGENTS.md'), path.join(directory, 'CLAUDE.md'),
@@ -457,6 +459,15 @@ export default {
         } catch {}
         throw new Error(`[Keel] ${result.rule_id}: ${result.message}`)
       }
+      if (result.action === 'redirect') {
+        // Course correction: interrupts this call with the directive so the
+        // model sees it (the hook cannot inject tool results), but is NOT a
+        // deny — complying with the directive clears it and the same action
+        // passes next time. No receipt (nothing was blocked).
+        const directive = result.redirect
+        const hint = directive?.suggested_call ? ` Try: ${directive.suggested_call}` : ''
+        throw new Error(`[Keel] REDIRECT ${result.rule_id}: ${result.message}${hint}`)
+      }
     }
 
     return {
@@ -470,8 +481,13 @@ export default {
         try {
           const args = input?.args || {}
           const action = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)
-          if (Number(output?.metadata?.exit) === 0) pipeline.markVerificationSatisfied(action)
-          record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), action: 'allow', message: 'Tool completed', hook: 'tool.execute.after' })
+          const exit = output?.metadata?.exit === undefined ? null : Number(output?.metadata?.exit)
+          if (exit === 0) pipeline.markVerificationSatisfied(action)
+          // Outcome telemetry: exit codes feed the stuck-loop detector and
+          // make every trace analysis (attempts-until-success, churn)
+          // exact. Also record the working directory for per-project work.
+          pipeline.recordAttemptOutcome(action, exit)
+          record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), action: 'allow', message: 'Tool completed', hook: 'tool.execute.after', exit, cwd: directory })
         } catch {}
       },
       'experimental.chat.system.transform': async (_input: any, output: any) => {

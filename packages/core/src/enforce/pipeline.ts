@@ -3,13 +3,14 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type {
   KeelRule, EnforceInput, EnforceResult, EnforcementAction,
-  ProtectionLevel, RuleContext, CacheEntry, AuditEntry, ResearchDirective,
+  ProtectionLevel, RuleContext, CacheEntry, AuditEntry, ResearchDirective, RedirectDirective,
 } from '../types.js'
 import { ActionCache, ContentTracker, type CacheContext } from './cache.js'
 import type { RuleHierarchy } from './rule-parser.js'
 import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules } from './rule-parser.js'
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
+import { StuckTracker } from './stuck-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
@@ -32,6 +33,7 @@ export interface PipelineConfig {
   stateManager?: StateManager
   overrideStore?: import('./overrides.js').RuleOverrideStore
   researchCache?: ResearchCache
+  stuckTracker?: StuckTracker
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
   onRulesReload?: (hierarchy: RuleHierarchy) => void
@@ -181,7 +183,7 @@ export class EnforcementPipeline {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
-      ['verification', 'research', 'rate', 'time'].includes(rule.type)
+      ['verification', 'research', 'stuck', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow'].includes(rule.type))
     )
     // Approval-gated rules are re-evaluated on every call: the user may grant
@@ -371,6 +373,28 @@ export class EnforcementPipeline {
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3)
       }
 
+      // Match against stuck-loop rules: the same failing command fingerprint
+      // repeated within a window escalates (3 → redirect, 5 → deny). Counts
+      // are recorded by the after-hook via recordAttemptOutcome.
+      if (rule.type === 'stuck' && rule.match && this.config.stuckTracker) {
+        const cmdStr = commandString(input)
+        if (!this.matchesRulePattern(rule.match, cmdStr)) continue
+        const escalation = this.config.stuckTracker.check(rule, input)
+        if (escalation) {
+          const directive: RedirectDirective = {
+            kind: 'stuck',
+            required_tools: ['keel_research', 'keel_hypothesis'],
+            target: `identical failing command (${escalation.attempts} attempts)`,
+            rationale: rule.message,
+            rule_id: rule.id,
+            attempts: escalation.attempts,
+            suggested_call: 'keel_research({ query: "<the exact error text>" })',
+          }
+          return this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, directive, true)
+        }
+        continue
+      }
+
       // Match against knowledge-freshness rules: the agent is about to act
       // on a topic whose session research is missing or stale. Excluded
       // from the Tier-1 allow-cache (stateful per session) so a cached
@@ -505,6 +529,21 @@ export class EnforcementPipeline {
   }
 
   /**
+   * Record an attempt outcome (exit code) from the after-hook. Feeds the
+   * stuck-loop detector: only FAILING fingerprints accumulate, an exit-0
+   * run resets the loop, and matching rules update their counters.
+   */
+  recordAttemptOutcome(input: EnforceInput, exitCode: number | null): void {
+    if (!this.config.stuckTracker) return
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+    for (const rule of rules) {
+      if (rule.type !== 'stuck' || !rule.match) continue
+      if (!this.matchesRulePattern(rule.match, commandString(input))) continue
+      this.config.stuckTracker.recordOutcome(rule, input, exitCode)
+    }
+  }
+
+  /**
    * Evaluate a proposed fix/mutation instead of blocking.
    */
   private fixAction(input: EnforceInput, rule: KeelRule, cmdStr: string, start: number): EnforceResult {
@@ -592,7 +631,7 @@ export class EnforcementPipeline {
     }
   }
 
-  private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id): EnforceResult {
+  private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id, directive?: RedirectDirective, skipFirstWarning = false): EnforceResult {
     const action = this.effectiveAction(rule, input)
     if (action === 'fix') {
       if (rule.fix && rule.type === 'command') {
@@ -604,6 +643,12 @@ export class EnforcementPipeline {
         if (raw) return this.fixAction(input, rule, raw, start)
       }
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier)
+    }
+    if (action === 'redirect') {
+      // Course correction, not a block: never escalates warn-once, never
+      // consumes overrides, self-clears on compliance. Carries the
+      // machine-readable directive to the model.
+      return this.result('redirect', rule.id, message, start, false, tier, undefined, undefined, directive)
     }
     if (action === 'warn' || action === 'allow' || action === 'report') {
       return action === 'warn' ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier)
@@ -622,7 +667,7 @@ export class EnforcementPipeline {
       // At protect the dial's promise is block-first: a deny violation is
       // blocked immediately, with no warning pass. balanced/sprint keep the
       // warn-once-then-block escalation.
-      const blockFirst = this.effectiveLevel(input) === 'protect'
+      const blockFirst = this.effectiveLevel(input) === 'protect' || skipFirstWarning
       if (first && !blockFirst && input.action_override !== 'deny' && input.action_override !== 'block') {
         // The first violation only warns — never consume an armed override
         // for it, or the approval is wasted on a call that would not have
@@ -710,6 +755,7 @@ export class EnforcementPipeline {
     tier: number,
     fixResult?: Record<string, unknown>,
     directive?: ResearchDirective,
+    redirect?: RedirectDirective,
   ): EnforceResult {
     return {
       action,
@@ -722,6 +768,7 @@ export class EnforcementPipeline {
       tier: tier as PipelineTier,
       fix_result: fixResult,
       directive,
+      redirect,
     }
   }
 

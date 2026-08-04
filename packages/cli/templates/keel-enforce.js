@@ -6345,9 +6345,10 @@ function validateRules(rules) {
     "context",
     "verification",
     "meta",
-    "research"
+    "research",
+    "stuck"
   ]);
-  const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research"]);
+  const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -6848,7 +6849,7 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
-      (rule) => ["verification", "research", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
+      (rule) => ["verification", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
     );
     const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
@@ -6989,6 +6990,24 @@ var EnforcementPipeline = class {
         }
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3);
       }
+      if (rule.type === "stuck" && rule.match && this.config.stuckTracker) {
+        const cmdStr = commandString(input);
+        if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
+        const escalation = this.config.stuckTracker.check(rule, input);
+        if (escalation) {
+          const directive = {
+            kind: "stuck",
+            required_tools: ["keel_research", "keel_hypothesis"],
+            target: `identical failing command (${escalation.attempts} attempts)`,
+            rationale: rule.message,
+            rule_id: rule.id,
+            attempts: escalation.attempts,
+            suggested_call: 'keel_research({ query: "<the exact error text>" })'
+          };
+          return this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, directive, true);
+        }
+        continue;
+      }
       if (rule.type === "research" && rule.topics?.length) {
         const haystack = `${commandString(input)} ${input.reasoning || ""}`;
         if (!rule.topics.some((t) => this.matchesRulePattern(t, haystack))) continue;
@@ -7083,6 +7102,20 @@ var EnforcementPipeline = class {
     }
   }
   /**
+   * Record an attempt outcome (exit code) from the after-hook. Feeds the
+   * stuck-loop detector: only FAILING fingerprints accumulate, an exit-0
+   * run resets the loop, and matching rules update their counters.
+   */
+  recordAttemptOutcome(input, exitCode) {
+    if (!this.config.stuckTracker) return;
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+    for (const rule of rules) {
+      if (rule.type !== "stuck" || !rule.match) continue;
+      if (!this.matchesRulePattern(rule.match, commandString(input))) continue;
+      this.config.stuckTracker.recordOutcome(rule, input, exitCode);
+    }
+  }
+  /**
    * Evaluate a proposed fix/mutation instead of blocking.
    */
   fixAction(input, rule, cmdStr, start) {
@@ -7156,7 +7189,7 @@ var EnforcementPipeline = class {
    \u2192 Approval required: run \`keel allow ${rule.id} --once\` to approve this action.`
     };
   }
-  violation(input, rule, message, start, tier, warningKey = rule.id) {
+  violation(input, rule, message, start, tier, warningKey = rule.id, directive, skipFirstWarning = false) {
     const action = this.effectiveAction(rule, input);
     if (action === "fix") {
       if (rule.fix && rule.type === "command") {
@@ -7165,6 +7198,9 @@ var EnforcementPipeline = class {
         if (raw) return this.fixAction(input, rule, raw, start);
       }
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier);
+    }
+    if (action === "redirect") {
+      return this.result("redirect", rule.id, message, start, false, tier, void 0, void 0, directive);
     }
     if (action === "warn" || action === "allow" || action === "report") {
       return action === "warn" ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier);
@@ -7177,7 +7213,7 @@ var EnforcementPipeline = class {
     }
     if (action === "deny" || action === "block") {
       const first = this.isFirstWarning(warningKey);
-      const blockFirst = this.effectiveLevel(input) === "protect";
+      const blockFirst = this.effectiveLevel(input) === "protect" || skipFirstWarning;
       if (first && !blockFirst && input.action_override !== "deny" && input.action_override !== "block") {
         this.denyFirstTime.set(warningKey, true);
         this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash);
@@ -7242,7 +7278,7 @@ var EnforcementPipeline = class {
     this.config.flowTracker.record(input, rule.id);
     return this.result("warn", rule.id, message, start, false, tier);
   }
-  result(action, ruleId, message, start, cacheHit, tier, fixResult, directive) {
+  result(action, ruleId, message, start, cacheHit, tier, fixResult, directive, redirect) {
     return {
       action,
       rule_id: ruleId || null,
@@ -7253,7 +7289,8 @@ var EnforcementPipeline = class {
       cache_hit: cacheHit,
       tier,
       fix_result: fixResult,
-      directive
+      directive,
+      redirect
     };
   }
   getCircuitBreakerState() {
@@ -7621,6 +7658,112 @@ var FlowTracker = class {
     this.tagOrigins.clear();
   }
 };
+
+// ../core/src/enforce/command-fingerprint.ts
+function commandFingerprint(command) {
+  let s = command.replace(/\s+/g, " ").trim().replace(/(\/var\/folders\/)[^\s]+/g, "$1<TMP>").replace(/(^|\s)(\/tmp\/|\$TMPDIR\/)[^\s]*/g, "$1<TMP>").replace(/(-m\s+["'])[^"']*(["'])/g, "$1<msg>$2").replace(/"[^"]{12,}"/g, '"<s>"').replace(/'[^']{12,}'/g, "'<s>'").replace(/\b[0-9a-f]{8,}\b/gi, "<H>").replace(/\b\d+\b/g, "<N>").replace(/(--[\w-]+)=[^\s]+/g, "$1").trim();
+  if (s.length > 160) s = s.slice(0, 160);
+  return s;
+}
+function nearIdentical(a, b) {
+  const fa = commandFingerprint(a);
+  const fb = commandFingerprint(b);
+  if (fa === fb) return true;
+  if (fa.length < 40 || fb.length < 40) return false;
+  const stopwords = /* @__PURE__ */ new Set(["the", "and", "for", "with", "from", "into", "then", "this", "that", "&&", "|", "||", ";", "2>&1"]);
+  const tokens = (s) => new Set(s.split(/\s+/).filter((t) => t.length >= 3 && !stopwords.has(t)));
+  const ta = tokens(fa);
+  const tb = tokens(fb);
+  if (ta.size === 0 || tb.size === 0) return false;
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  const union = ta.size + tb.size - inter;
+  return union > 0 && inter / union >= 0.8;
+}
+
+// ../core/src/enforce/stuck-tracker.ts
+var DEFAULT_WINDOW_MS = 15 * 60 * 1e3;
+var StuckTracker = class {
+  counts = /* @__PURE__ */ new Map();
+  key(ruleId, cwd, fingerprint) {
+    return `stuck:${ruleId}:${cwd}:${fingerprint}`;
+  }
+  fingerprintOf(rule, input) {
+    const cmd = commandString(input);
+    return rule.fingerprint === "exact" ? cmd : commandFingerprint(cmd);
+  }
+  recordOutcome(rule, input, exitCode) {
+    const cmd = commandString(input);
+    if (!cmd) return;
+    const fp = this.fingerprintOf(rule, input);
+    const key = this.key(rule.id, input.cwd, fp);
+    const windowMs = (rule.window_seconds || 60) * 1e3;
+    const now = Date.now();
+    if (exitCode === 0) {
+      this.counts.delete(key);
+      return;
+    }
+    if (rule.require_failure === true && exitCode === null) return;
+    const existing = this.counts.get(key);
+    if (!existing || now - existing.windowStart > windowMs) {
+      this.counts.set(key, { count: 1, windowStart: now, lastAttemptAt: now, lastExit: exitCode });
+      return;
+    }
+    existing.count += 1;
+    existing.lastAttemptAt = now;
+    existing.lastExit = exitCode;
+  }
+  /** Near-identical matches share the same counter bucket (loops mutate args). */
+  bucketOf(rule, input, cmd) {
+    const fp = this.fingerprintOf(rule, input);
+    const exact = this.counts.get(this.key(rule.id, input.cwd, fp));
+    if (exact) return { key: this.key(rule.id, input.cwd, fp), fp };
+    for (const [key, state] of this.counts) {
+      if (!key.startsWith(`stuck:${rule.id}:${input.cwd}:`)) continue;
+      const existing = this.counts.get(key);
+      if (existing && nearIdentical(cmd, fp)) return { key, fp };
+    }
+    return { key: this.key(rule.id, input.cwd, fp), fp };
+  }
+  check(rule, input) {
+    const cmd = commandString(input);
+    if (!cmd) return null;
+    const { key, fp } = this.bucketOf(rule, input, cmd);
+    const state = this.counts.get(key);
+    if (!state) return null;
+    const windowMs = (rule.window_seconds || 60) * 1e3;
+    if (Date.now() - state.windowStart > windowMs) {
+      this.counts.delete(key);
+      return null;
+    }
+    const ladder = rule.escalation?.length ? [...rule.escalation].sort((a, b) => b.at - a.at) : [
+      { at: rule.block_attempts ?? 5, action: "deny", message: "" },
+      { at: rule.max_attempts ?? 3, action: "redirect", message: "" }
+    ];
+    for (const step of ladder) {
+      if (state.count >= step.at) {
+        const message = step.message || defaultMessage(rule.id, fp, state.count, step.action);
+        return { action: step.action, message, attempts: state.count };
+      }
+    }
+    return null;
+  }
+  clear(sessionCwd) {
+    if (sessionCwd) {
+      for (const [key] of this.counts) {
+        if (key.includes(`:${sessionCwd}:`)) this.counts.delete(key);
+      }
+    } else {
+      this.counts.clear();
+    }
+  }
+};
+function defaultMessage(ruleId, fingerprint, attempts, action) {
+  if (action === "redirect") {
+    return `"${fingerprint}" has failed ${attempts} times \u2014 this is a stuck loop. Stop retrying. Run keel_research on the exact error text, record a root-cause hypothesis, then attempt once with a new approach.`;
+  }
+  return `${attempts} identical failures of "${fingerprint}" \u2014 retrying without research is blocked. Record a hypothesis (keel_hypothesis) or ask the user.`;
+}
 
 // ../core/src/enforce/audit.ts
 import { appendFileSync, existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync } from "node:fs";
@@ -8261,6 +8404,7 @@ var plugin_default = {
       ruleVersion: 1,
       allowedFixTransforms: true,
       stateManager: new StateManager(),
+      stuckTracker: new StuckTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [
         path.join(directory, ".keel", "rules.yaml"),
@@ -8336,6 +8480,11 @@ var plugin_default = {
         }
         throw new Error(`[Keel] ${result.rule_id}: ${result.message}`);
       }
+      if (result.action === "redirect") {
+        const directive = result.redirect;
+        const hint = directive?.suggested_call ? ` Try: ${directive.suggested_call}` : "";
+        throw new Error(`[Keel] REDIRECT ${result.rule_id}: ${result.message}${hint}`);
+      }
     };
     return {
       "tool.execute.before": async (input, output) => {
@@ -8350,8 +8499,10 @@ var plugin_default = {
         try {
           const args = input?.args || {};
           const action = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
-          if (Number(output?.metadata?.exit) === 0) pipeline.markVerificationSatisfied(action);
-          record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after" });
+          const exit = output?.metadata?.exit === void 0 ? null : Number(output?.metadata?.exit);
+          if (exit === 0) pipeline.markVerificationSatisfied(action);
+          pipeline.recordAttemptOutcome(action, exit);
+          record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
         } catch {
         }
       },
