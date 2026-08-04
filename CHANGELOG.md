@@ -33,6 +33,14 @@
   `http://` transports to non-local hosts. Findings are ranked critical → low and cite
   the exact command or path that triggered them. Adds `--ci` (exit 1 on any finding);
   `--json` now emits only JSON so it can be piped.
+- **`keel rules harness --append`** — adds the problem-solving rules to
+  `~/.keel/rules.yaml` directly. Printing them to copy by hand meant they routinely
+  never got installed, so the `stuck` / `research` / `diagnosis` machinery stayed inert
+  while traces kept recording repeat loops. The append is idempotent (adds only missing
+  rule ids), writes a `.bak` first, refuses a rules file that does not already parse,
+  and restores the original if the result would be invalid — an invalid rules.yaml fails
+  closed and would block every subsequent tool call. Like `keel dashboard --web`, it
+  requires a TTY, so an agent cannot add or alter its own rules.
 - `CODE_OF_CONDUCT.md` and `.github/ISSUE_TEMPLATE/config.yml`, which routes security
   reports to a private advisory instead of a public issue.
 

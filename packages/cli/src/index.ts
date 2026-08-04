@@ -92,6 +92,7 @@ program
   .argument('[source]', 'Rule source (atr)')
   .option('--output <path>', 'Output directory')
   .option('--lane <mode>', 'Detection lane: enforce, alert, or hunt (default: hunt)')
+  .option('--append', 'harness only: add the rules to ~/.keel/rules.yaml (human-run; requires a TTY)')
   .action(rulesCommand)
 
 program

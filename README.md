@@ -153,9 +153,16 @@ broken command forever:
 - **`diagnosis`** — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
 
 They aren't in the default install because they're behavioural and need burn-in.
-`keel rules harness` prints them ready to paste, in `mode: observe` (records what it
-*would* have done, interrupts nothing). Promote to `warn`/`block` once
-`keel retrospective` shows the hit rate on your own traffic.
+
+```bash
+keel rules harness            # print them, with what they'd have caught in your history
+keel rules harness --append   # add them to ~/.keel/rules.yaml (run in your own terminal)
+```
+
+They arrive as `mode: observe` — recording what they *would* have done, interrupting
+nothing. Check the hit rate on your own traffic with `keel retrospective`, then raise
+`mode` to `warn` or `block`. `--append` edits your rules file, so like every keel
+control surface it requires a TTY and an agent cannot run it.
 
 ## The speed dial
 

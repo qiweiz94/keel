@@ -2,7 +2,8 @@ import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import chalk from 'chalk'
 import { homedir } from 'node:os'
-import { HARNESS_RULES_YAML } from './harness-rules.js'
+import { HARNESS_RULES_YAML, HARNESS_RULE_IDS } from './harness-rules.js'
+import { parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
 
 type DetectionLane = 'enforce' | 'alert' | 'hunt'
 
@@ -88,9 +89,65 @@ async function printHarnessRules() {
   console.log(chalk.dim('  mode to warn or block once you trust the hit rate.\n'))
 }
 
+export interface AppendResult {
+  status: 'appended' | 'already-present' | 'invalid-source' | 'no-rules-file'
+  added: string[]
+  message?: string
+}
+
+/**
+ * Append the problem-solving rules to a rules.yaml.
+ *
+ * `keel rules harness` printed YAML to copy by hand, and that copy did not
+ * happen across a whole working session — so the rules stayed inert while
+ * the traces kept recording repeat loops. Transcribing 80 lines of YAML is
+ * the friction, so remove it.
+ *
+ * This MUTATES the user's rules file, which puts it in the same class as
+ * `keel level`: a human-run control. Two safeties matter. It refuses a
+ * rules file that does not already parse (appending would bury the real
+ * error under a second one), and it restores from backup if the result
+ * fails to parse — an invalid rules.yaml fails closed and blocks every
+ * subsequent tool call.
+ */
+export function appendHarnessRules(rulesPath: string): AppendResult {
+  if (!existsSync(rulesPath)) {
+    return { status: 'no-rules-file', added: [], message: `${rulesPath} does not exist — run \`keel install\` first.` }
+  }
+
+  const original = readFileSync(rulesPath, 'utf-8')
+  const before = parseRulesContent(original, rulesPath)
+  if ((before.errors ?? []).length > 0) {
+    return { status: 'invalid-source', added: [], message: (before.errors ?? []).join('; ') }
+  }
+
+  const existing = new Set(before.rules.map(r => r.id))
+  const missing = HARNESS_RULE_IDS.filter(id => !existing.has(id))
+  if (missing.length === 0) return { status: 'already-present', added: [] }
+
+  // Emit only the blocks whose ids are absent, so a user who pasted one by
+  // hand does not end up with a duplicate id.
+  const blocks = HARNESS_RULES_YAML.split(/\n(?=  - id: )/)
+  const selected = blocks.filter(b => missing.some(id => b.includes(`- id: ${id}`)))
+
+  writeFileSync(rulesPath + '.bak', original, 'utf-8')
+  const joined = original.replace(/\s*$/, '') + '\n\n' + selected.join('\n').replace(/\s*$/, '') + '\n'
+  writeFileSync(rulesPath, joined, 'utf-8')
+
+  const after = parseRulesContent(joined, rulesPath)
+  const issues = [...(after.errors ?? []), ...validateRules(after.rules)]
+  if (issues.length > 0) {
+    // Never leave the user with a rules file that fails closed.
+    writeFileSync(rulesPath, original, 'utf-8')
+    return { status: 'invalid-source', added: [], message: `append produced invalid rules, restored original: ${issues.join('; ')}` }
+  }
+
+  return { status: 'appended', added: missing }
+}
+
 export async function rulesCommand(
   source: string | undefined,
-  options: { output?: string; lane?: string }
+  options: { output?: string; lane?: string; append?: boolean }
 ) {
   if (!source) {
     console.log(chalk.cyan('\nkeel rules:\n'))
@@ -99,13 +156,50 @@ export async function rulesCommand(
     console.log('  Options:')
     console.log('    --output <dir>    Output directory')
     console.log('    --lane <mode>     Detection lane: enforce, alert, or hunt (default: hunt)')
-    console.log('  Usage: keel rules harness')
+    console.log('    --append          harness only: add the rules to ~/.keel/rules.yaml')
+    console.log('  Usage: keel rules harness            # print them')
+    console.log('         keel rules harness --append   # add them (run in your own terminal)')
     console.log('         keel rules atr --lane enforce\n')
     return
   }
 
   if (source === 'harness') {
-    await printHarnessRules()
+    if (!options.append) {
+      await printHarnessRules()
+      return
+    }
+
+    // Human-only by construction, the same way `keel dashboard --web` is:
+    // this writes the user's rules file, and an agent that could add its
+    // own rules could equally remove them. An agent's shell has no TTY.
+    if (!process.stdin.isTTY && process.env.KEEL_ALLOW_NON_TTY !== '1') {
+      console.error(chalk.red('\n  `--append` edits ~/.keel/rules.yaml, so it must be run from your own terminal.'))
+      console.error(chalk.dim('  Run `keel rules harness` (no flag) to print the rules instead.\n'))
+      process.exitCode = 1
+      return
+    }
+
+    const rulesPath = join(homedir(), '.keel', 'rules.yaml')
+    const result = appendHarnessRules(rulesPath)
+    console.log()
+    switch (result.status) {
+      case 'appended':
+        console.log(chalk.green(`  ✓ Added ${result.added.length} rule(s) to ${rulesPath}`))
+        for (const id of result.added) console.log(chalk.dim(`      ${id}`))
+        console.log(chalk.dim(`  Backup: ${rulesPath}.bak`))
+        console.log(chalk.yellow('\n  All are mode: observe — they record, they do not interrupt.'))
+        console.log(chalk.dim('  See what they catch with `keel retrospective`, then raise'))
+        console.log(chalk.dim('  mode to warn or block once you trust the hit rate.\n'))
+        break
+      case 'already-present':
+        console.log(chalk.dim(`  All problem-solving rules are already in ${rulesPath}.\n`))
+        break
+      case 'no-rules-file':
+      case 'invalid-source':
+        console.error(chalk.red(`  ✗ ${result.message}\n`))
+        process.exitCode = 1
+        break
+    }
     return
   }
 
