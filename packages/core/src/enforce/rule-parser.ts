@@ -84,6 +84,19 @@ export function validateRules(rules: unknown): string[] {
   ])
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
+  // Catalog metadata. These MUST be validated rather than passed through:
+  // a typo'd `mode: observ` that silently fell back to enforcing is the
+  // worst failure shape a guardrail can have — the user believes a rule is
+  // burning in while it is actually blocking, or believes it is blocking
+  // while it is silently observing.
+  const validModes = new Set(['observe', 'warn', 'block'])
+  const validSeverities = new Set(['critical', 'high', 'medium', 'low'])
+  const validConfidence = new Set(['high', 'medium', 'low'])
+  const validMaturity = new Set(['stable', 'incubating', 'sandbox', 'deprecated'])
+  const validCategories = new Set([
+    'destructive', 'exfil', 'escalation', 'injection',
+    'resource', 'bypass', 'discipline', 'workflow',
+  ])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
   const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session', 'context'])
@@ -106,6 +119,21 @@ export function validateRules(rules: unknown): string[] {
     if (typeof rule.type !== 'string' || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`)
     if (rule.action === 'mask') {
       errors.push(`Rule "${label}" uses action "mask", which is not implemented by the enforcement engine — use "warn" or "deny"`)
+    }
+    if (rule.mode !== undefined && !validModes.has(String(rule.mode))) {
+      errors.push(`Rule "${label}" has an unsupported mode: ${String(rule.mode)} (expected observe, warn, or block)`)
+    }
+    if (rule.severity !== undefined && !validSeverities.has(String(rule.severity))) {
+      errors.push(`Rule "${label}" has an unsupported severity: ${String(rule.severity)}`)
+    }
+    if (rule.confidence !== undefined && !validConfidence.has(String(rule.confidence))) {
+      errors.push(`Rule "${label}" has an unsupported confidence: ${String(rule.confidence)}`)
+    }
+    if (rule.maturity !== undefined && !validMaturity.has(String(rule.maturity))) {
+      errors.push(`Rule "${label}" has an unsupported maturity: ${String(rule.maturity)}`)
+    }
+    if (rule.category !== undefined && !validCategories.has(String(rule.category))) {
+      errors.push(`Rule "${label}" has an unsupported category: ${String(rule.category)}`)
     }
     const actionOptional = rule.type === 'context' || rule.type === 'meta'
     if ((!actionOptional && typeof rule.action !== 'string') || (typeof rule.action === 'string' && !validActions.has(rule.action))) {

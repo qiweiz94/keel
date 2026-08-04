@@ -8,7 +8,7 @@ import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
-import { loadRuleHierarchy, parseRulesContent, parseRulesFile } from '../rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, parseRulesFile, validateRules } from '../rule-parser.js'
 import type { StateManager } from '../state-manager.js'
 
 function sharedStateManager(): StateManager {
@@ -954,6 +954,122 @@ rules:
       expect(fourth.cache_hit).toBe(false)
       // Circuit breaker appends warning on 3rd+ deny
       expect(fourth.message).toContain('times')
+    })
+  })
+
+  // ── Observe mode ───────────────────────────────────────────────────
+  // Enforcement (`mode`) is a separate axis from the declared `action`, so
+  // a new rule can burn in against real traffic before it ever interrupts.
+  describe('observe mode', () => {
+    const observeRules = (mode: string) => `version: 1
+rules:
+  - id: obs-danger
+    type: command
+    match: "rm -rf /"
+    action: deny
+    mode: ${mode}
+    message: "Destructive delete."
+`
+
+    it('does not block, but records what it would have done', async () => {
+      const pipeline = makePipelineFromYaml(observeRules('observe'))
+      const result = await pipeline.evaluate(input('bash', { command: 'rm -rf /' }, 'obs-1'))
+
+      expect(result.action).toBe('allow')          // nothing is interrupted
+      expect(result.observed_action).toBe('deny')  // but the verdict is recorded
+      expect(result.rule_id).toBe('obs-danger')    // and attributed to the rule
+      expect(result.message).toContain('[observe]')
+    })
+
+    it('still blocks when the same rule is in block mode', async () => {
+      const pipeline = makePipelineFromYaml(observeRules('block'))
+      const first = await pipeline.evaluate(input('bash', { command: 'rm -rf /' }, 'obs-2'))
+      // balanced dial warns once, then blocks — either way it is NOT a
+      // silent allow, which is what distinguishes it from observe.
+      expect(first.action).not.toBe('allow')
+      expect(first.observed_action).toBeUndefined()
+    })
+
+    it('leaves non-matching calls alone in observe mode', async () => {
+      // The must-NOT-fire case: observe must not turn every call into a
+      // rule hit. An allow with no rule_id is a genuine no-match.
+      const pipeline = makePipelineFromYaml(observeRules('observe'))
+      const result = await pipeline.evaluate(input('bash', { command: 'ls -la' }, 'obs-3'))
+
+      expect(result.action).toBe('allow')
+      expect(result.observed_action).toBeUndefined()
+      expect(result.rule_id).toBeFalsy()
+    })
+
+    it('never mutates arguments in observe mode', async () => {
+      // A fix rule rewrites args. Observe must not, or "observation" would
+      // silently change behavior — the thing it exists to avoid.
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: obs-fix
+    type: command
+    match: "grep"
+    action: fix
+    mode: observe
+    fix: { replace: "grep", with: "rg" }
+    message: "Prefer rg."
+`)
+      const args = { command: 'grep foo' }
+      const result = await pipeline.evaluate(input('bash', args, 'obs-4'))
+
+      expect(result.action).toBe('allow')
+      expect(args.command).toBe('grep foo')   // unchanged
+    })
+
+    it('rejects a typo in mode rather than silently enforcing', () => {
+      // A guardrail that silently does the opposite of what the config says
+      // is the single most trust-destroying failure shape. Catch it at parse.
+      const parsed = parseRulesContent(observeRules('observ'), '/tmp/test-rules.md')
+      const errors = validateRules(parsed.rules)
+      expect(errors.some(e => e.includes('unsupported mode'))).toBe(true)
+    })
+
+    it('rejects typos in the catalog metadata fields', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: meta-typo
+    type: command
+    match: "x"
+    action: warn
+    severity: sever
+    confidence: mostly
+    maturity: baked
+    category: nonsense
+    message: "m"
+`, '/tmp/test-rules.md')
+      const errors = validateRules(parsed.rules)
+      for (const field of ['severity', 'confidence', 'maturity', 'category']) {
+        expect(errors.some(e => e.includes(`unsupported ${field}`))).toBe(true)
+      }
+    })
+
+    it('accepts a fully annotated rule', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: fully-annotated
+    type: command
+    match: "rm -rf /"
+    action: deny
+    mode: observe
+    category: destructive
+    severity: critical
+    confidence: high
+    maturity: incubating
+    rationale: "Recursive delete of a root-adjacent path is unrecoverable."
+    remediation: "Scope the delete to the workspace."
+    false_positives: ["rm -rf node_modules"]
+    review_by: "2026-11-01"
+    message: "Destructive delete."
+`, '/tmp/test-rules.md')
+      expect(validateRules(parsed.rules)).toEqual([])
+      expect(parsed.rules[0].mode).toBe('observe')
+      expect(parsed.rules[0].severity).toBe('critical')
+      expect(parsed.rules[0].false_positives).toEqual(['rm -rf node_modules'])
     })
   })
 })

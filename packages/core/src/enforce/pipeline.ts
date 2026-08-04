@@ -706,6 +706,15 @@ export class EnforcementPipeline {
   }
 
   private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id, directive?: RedirectDirective, skipFirstWarning = false): EnforceResult {
+    // Observe mode: record what would have happened, interrupt nothing.
+    // The rule id and message are kept so the trace and the dashboard can
+    // measure this rule's hit rate before anyone promotes it to blocking.
+    if (rule.mode === 'observe') {
+      const would = this.enforcedAction(rule, input)
+      const observed = this.result('allow', rule.id, `[observe] would ${would}: ${message}`, start, false, tier)
+      observed.observed_action = would
+      return observed
+    }
     const action = this.effectiveAction(rule, input)
     if (action === 'fix') {
       if (rule.fix && rule.type === 'command') {
@@ -764,7 +773,22 @@ export class EnforcementPipeline {
     return (h.project?.config?.level || h.global?.config?.level || input.level) as ProtectionLevel
   }
 
+  /**
+   * What this rule actually does right now.
+   *
+   * `mode: observe` short-circuits to allow: the rule still evaluates and
+   * is still recorded, but never interrupts. Breadth (which rules run) and
+   * enforcement (what happens on a match) are separate axes — a new rule
+   * burns in under observe and is promoted once its false-positive rate is
+   * known, rather than interrupting on its very first hit.
+   */
   private effectiveAction(rule: KeelRule, input: EnforceInput): EnforcementAction {
+    if (rule.mode === 'observe') return 'allow'
+    return this.enforcedAction(rule, input)
+  }
+
+  /** The action a rule would take if it were enforcing (ignores observe). */
+  private enforcedAction(rule: KeelRule, input: EnforceInput): EnforcementAction {
     if (input.action_override) return input.action_override
     // `level: protect` rules are floors: always enforced at their declared
     // action, never softened by the sprint dial's deny→warn downgrade.

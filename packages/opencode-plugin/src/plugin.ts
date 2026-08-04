@@ -303,9 +303,40 @@ function requirementLines(filePath: string): string[] {
   } catch { return [] }
 }
 
+/**
+ * Per-session turn counter.
+ *
+ * OpenCode hands us no turn index, and `turn_number` was hardcoded to 0 —
+ * which silently broke everything keyed on it. The FlowTracker buckets on
+ * `flow:<session>:<turn>` (flow-tracker.ts:52,74), so with a constant 0
+ * every turn collapsed into one bucket: a rule meant to catch "read a
+ * secret and reached a network sink IN THE SAME TURN" instead matched any
+ * read and any later sink anywhere in the session — a false-positive
+ * generator. `keel lessons` has the mirror problem (lessons.ts:116 pairs a
+ * claim with a tool call by turn).
+ *
+ * The turn boundary is `experimental.chat.system.transform`, which fires
+ * once per model call. Degradation is graceful: if that hook arrives
+ * without a sessionID we advance the most recently active session, and if
+ * we can attribute nothing the counter simply stays put — i.e. today's
+ * behavior, never worse.
+ */
+const turnCounters = new Map<string, number>()
+let lastActiveSession = 'unknown'
+
+function currentTurn(sessionId: string): number {
+  return turnCounters.get(sessionId) ?? 0
+}
+
+function advanceTurn(sessionId: string): void {
+  turnCounters.set(sessionId, (turnCounters.get(sessionId) ?? 0) + 1)
+}
+
 function toEnforceInput(tool: string, args: Record<string, unknown>, hookInput: any, level: any, cwd: string) {
+  const sessionId = hookInput?.sessionID || 'unknown'
+  lastActiveSession = sessionId
   return {
-    tool, args, cwd, session_id: hookInput?.sessionID || 'unknown', turn_number: 0,
+    tool, args, cwd, session_id: sessionId, turn_number: currentTurn(sessionId),
     context_tokens: 0, level, depth: level === 'protect' ? 'deep' : level === 'sprint' ? 'fast' : 'full',
     context: 'local' as const, agent: 'opencode', subagent_of: null,
     ...(hookInput?.reasoning ? { reasoning: String(hookInput.reasoning) } : {}),
@@ -442,8 +473,9 @@ export default {
       if (level === 'sprint') surfaceWarn('dial-sprint', 'Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.', input?.sessionID)
       await refreshExternalChanges()
       const args = output?.args || {}
-      const result = await pipeline.evaluate(toEnforceInput(input?.tool || 'unknown', args, input, level, directory))
-      record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: 'tool.execute.before' })
+      const enforceInput = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)
+      const result = await pipeline.evaluate(enforceInput)
+      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: 'tool.execute.before' })
       if (result.action === 'warn' && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID)
       if (result.action === 'fix') applyFix(args, result)
       if (result.action === 'warn' && result.rule_id && verificationIds.has(result.rule_id)) {
@@ -489,11 +521,15 @@ export default {
           // make every trace analysis (attempts-until-success, churn)
           // exact. Also record the working directory for per-project work.
           pipeline.recordAttemptOutcome(action, exit)
-          record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), action: 'allow', message: 'Tool completed', hook: 'tool.execute.after', exit, cwd: directory })
+          record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: 'allow', message: 'Tool completed', hook: 'tool.execute.after', exit, cwd: directory })
         } catch {}
       },
-      'experimental.chat.system.transform': async (_input: any, output: any) => {
+      'experimental.chat.system.transform': async (input: any, output: any) => {
         try {
+          // One model call = one turn. This is the only turn boundary the
+          // plugin can observe, and everything keyed on turn_number
+          // (flow correlation, claim-to-tool-call pairing) depends on it.
+          advanceTurn(input?.sessionID || lastActiveSession)
           const blocks = requirementSources.map(requirementLines).filter(lines => lines.length)
           if (blocks.length) {
             output.system ||= []

@@ -26,6 +26,18 @@ export interface KeelConfig {
   re_injection?: ReInjectionConfig
 }
 
+/**
+ * Enforcement state, orthogonal to the rule's declared `action`.
+ * observe → evaluated and recorded, never interrupts (the burn-in state)
+ * warn    → surfaced, transient; escalates on repeat
+ * block   → enforced at the declared action
+ */
+export type RuleMode = 'observe' | 'warn' | 'block'
+
+export type RuleCategory =
+  | 'destructive' | 'exfil' | 'escalation' | 'injection'
+  | 'resource' | 'bypass' | 'discipline' | 'workflow'
+
 export interface KeelRule {
   id: string
   type: RuleType
@@ -35,6 +47,29 @@ export interface KeelRule {
   action: EnforcementAction
   message: string
   priority?: number                 // higher = evaluated first
+
+  // ── Catalog metadata (all optional; existing rules keep working) ──
+  //
+  // `severity` and `confidence` are deliberately SEPARATE axes, following
+  // Semgrep and Falco. Severity is "how bad if the rule is right";
+  // confidence is "how sure the check is correct". One field cannot
+  // express both, and conflating them is why catalogs end up either noisy
+  // or toothless: a low-confidence critical rule belongs in observe, while
+  // a high-confidence low-severity rule can safely block.
+  //
+  // `mode` is the enforcement axis, independent of `action`. A rule can
+  // declare `action: deny` while sitting in `mode: observe` — it evaluates
+  // and is recorded, but never interrupts. That is how a new rule earns
+  // its way to blocking (Cloudflare WAF log mode, OPA Gatekeeper dryrun).
+  category?: RuleCategory
+  severity?: 'critical' | 'high' | 'medium' | 'low'
+  confidence?: 'high' | 'medium' | 'low'
+  maturity?: 'stable' | 'incubating' | 'sandbox' | 'deprecated'
+  mode?: RuleMode
+  rationale?: string                // why this matters, in plain language
+  remediation?: string              // what to do instead
+  false_positives?: string[]        // known benign patterns, shipped with the rule
+  review_by?: string                // YYYY-MM-DD — forces periodic re-justification
 
   // ── Command rules ──
   match?: string                    // regex or literal
@@ -191,6 +226,13 @@ export interface EnforceResult {
   fix_result?: Record<string, unknown>
   directive?: ResearchDirective
   redirect?: RedirectDirective
+  /**
+   * Set only for rules in `mode: observe`: the action that WOULD have been
+   * enforced. The verdict itself is `allow`, so nothing is interrupted —
+   * this is what lets the dashboard report "would have blocked N times"
+   * and measure a rule's false-positive rate before promoting it.
+   */
+  observed_action?: EnforcementAction
 }
 
 export interface RedirectDirective {

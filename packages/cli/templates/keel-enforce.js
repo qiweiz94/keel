@@ -6351,6 +6351,20 @@ function validateRules(rules) {
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
+  const validModes = /* @__PURE__ */ new Set(["observe", "warn", "block"]);
+  const validSeverities = /* @__PURE__ */ new Set(["critical", "high", "medium", "low"]);
+  const validConfidence = /* @__PURE__ */ new Set(["high", "medium", "low"]);
+  const validMaturity = /* @__PURE__ */ new Set(["stable", "incubating", "sandbox", "deprecated"]);
+  const validCategories = /* @__PURE__ */ new Set([
+    "destructive",
+    "exfil",
+    "escalation",
+    "injection",
+    "resource",
+    "bypass",
+    "discipline",
+    "workflow"
+  ]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
@@ -6370,6 +6384,21 @@ function validateRules(rules) {
     if (typeof rule.type !== "string" || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`);
     if (rule.action === "mask") {
       errors.push(`Rule "${label}" uses action "mask", which is not implemented by the enforcement engine \u2014 use "warn" or "deny"`);
+    }
+    if (rule.mode !== void 0 && !validModes.has(String(rule.mode))) {
+      errors.push(`Rule "${label}" has an unsupported mode: ${String(rule.mode)} (expected observe, warn, or block)`);
+    }
+    if (rule.severity !== void 0 && !validSeverities.has(String(rule.severity))) {
+      errors.push(`Rule "${label}" has an unsupported severity: ${String(rule.severity)}`);
+    }
+    if (rule.confidence !== void 0 && !validConfidence.has(String(rule.confidence))) {
+      errors.push(`Rule "${label}" has an unsupported confidence: ${String(rule.confidence)}`);
+    }
+    if (rule.maturity !== void 0 && !validMaturity.has(String(rule.maturity))) {
+      errors.push(`Rule "${label}" has an unsupported maturity: ${String(rule.maturity)}`);
+    }
+    if (rule.category !== void 0 && !validCategories.has(String(rule.category))) {
+      errors.push(`Rule "${label}" has an unsupported category: ${String(rule.category)}`);
     }
     const actionOptional = rule.type === "context" || rule.type === "meta";
     if (!actionOptional && typeof rule.action !== "string" || typeof rule.action === "string" && !validActions.has(rule.action)) {
@@ -7247,6 +7276,12 @@ var EnforcementPipeline = class {
     };
   }
   violation(input, rule, message, start, tier, warningKey = rule.id, directive, skipFirstWarning = false) {
+    if (rule.mode === "observe") {
+      const would = this.enforcedAction(rule, input);
+      const observed = this.result("allow", rule.id, `[observe] would ${would}: ${message}`, start, false, tier);
+      observed.observed_action = would;
+      return observed;
+    }
     const action = this.effectiveAction(rule, input);
     if (action === "fix") {
       if (rule.fix && rule.type === "command") {
@@ -7288,7 +7323,21 @@ var EnforcementPipeline = class {
     const h = this.config.ruleHierarchy;
     return h.project?.config?.level || h.global?.config?.level || input.level;
   }
+  /**
+   * What this rule actually does right now.
+   *
+   * `mode: observe` short-circuits to allow: the rule still evaluates and
+   * is still recorded, but never interrupts. Breadth (which rules run) and
+   * enforcement (what happens on a match) are separate axes — a new rule
+   * burns in under observe and is promoted once its false-positive rate is
+   * known, rather than interrupting on its very first hit.
+   */
   effectiveAction(rule, input) {
+    if (rule.mode === "observe") return "allow";
+    return this.enforcedAction(rule, input);
+  }
+  /** The action a rule would take if it were enforcing (ignores observe). */
+  enforcedAction(rule, input) {
     if (input.action_override) return input.action_override;
     if (rule.level === "protect") return rule.action;
     if (this.effectiveLevel(input) === "sprint" && (rule.action === "deny" || rule.action === "block")) return "warn";
@@ -8450,13 +8499,23 @@ function requirementLines(filePath) {
     return [];
   }
 }
+var turnCounters = /* @__PURE__ */ new Map();
+var lastActiveSession = "unknown";
+function currentTurn(sessionId) {
+  return turnCounters.get(sessionId) ?? 0;
+}
+function advanceTurn(sessionId) {
+  turnCounters.set(sessionId, (turnCounters.get(sessionId) ?? 0) + 1);
+}
 function toEnforceInput(tool, args, hookInput, level, cwd) {
+  const sessionId = hookInput?.sessionID || "unknown";
+  lastActiveSession = sessionId;
   return {
     tool,
     args,
     cwd,
-    session_id: hookInput?.sessionID || "unknown",
-    turn_number: 0,
+    session_id: sessionId,
+    turn_number: currentTurn(sessionId),
     context_tokens: 0,
     level,
     depth: level === "protect" ? "deep" : level === "sprint" ? "fast" : "full",
@@ -8606,8 +8665,9 @@ var plugin_default = {
       if (level === "sprint") surfaceWarn("dial-sprint", "Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.", input?.sessionID);
       await refreshExternalChanges();
       const args = output?.args || {};
-      const result = await pipeline.evaluate(toEnforceInput(input?.tool || "unknown", args, input, level, directory));
-      record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: "tool.execute.before" });
+      const enforceInput = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
+      const result = await pipeline.evaluate(enforceInput);
+      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: "tool.execute.before" });
       if (result.action === "warn" && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID);
       if (result.action === "fix") applyFix(args, result);
       if (result.action === "warn" && result.rule_id && verificationIds.has(result.rule_id)) {
@@ -8646,12 +8706,13 @@ var plugin_default = {
           const exit = output?.metadata?.exit === void 0 ? null : Number(output?.metadata?.exit);
           if (exit === 0) pipeline.markVerificationSatisfied(action);
           pipeline.recordAttemptOutcome(action, exit);
-          record({ session_id: input?.sessionID, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
+          record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
         } catch {
         }
       },
-      "experimental.chat.system.transform": async (_input, output) => {
+      "experimental.chat.system.transform": async (input, output) => {
         try {
+          advanceTurn(input?.sessionID || lastActiveSession);
           const blocks = requirementSources.map(requirementLines).filter((lines) => lines.length);
           if (blocks.length) {
             output.system ||= [];

@@ -477,6 +477,34 @@ check('protect: protect-level rule blocks FIRST', (await dialCall('dial-p3', 'di
 check('protect: protect-level rule blocks on repeat', (await dialCall('dial-p4', 'dial-protect-token')) === 'denied')
 check('protect: balanced-level rule fires (blocks FIRST)', (await dialCall('dial-p5', 'dial-filtered-token')) === 'denied')
 
+// ── turn_number telemetry ────────────────────────────────────────────
+// It was hardcoded to 0, which collapsed the FlowTracker's
+// flow:<session>:<turn> buckets into one and made same-turn correlation
+// impossible. One model call (system.transform) = one turn.
+const turnOf = (session, tool) => {
+  const lines = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+    .flatMap(file => fs.readFileSync(join(tmpHome, '.keel', 'traces', file), 'utf8').split('\n'))
+    .filter(Boolean).map(line => { try { return JSON.parse(line) } catch { return null } })
+    .filter(e => e && e.session_id === session && e.tool === tool)
+  return lines.length ? lines[lines.length - 1].turn_number : undefined
+}
+
+await hooks['experimental.chat.system.transform']({ sessionID: 'turn-a' }, { system: [] })
+await hooks['tool.execute.before']({ tool: 'read', sessionID: 'turn-a' }, { args: { filePath: 'src/t1.ts' } })
+check('turn_number is 1 after the first model call', turnOf('turn-a', 'read') === 1)
+
+await hooks['experimental.chat.system.transform']({ sessionID: 'turn-a' }, { system: [] })
+await hooks['tool.execute.before']({ tool: 'glob', sessionID: 'turn-a' }, { args: { pattern: '*.ts' } })
+check('turn_number advances on the next model call', turnOf('turn-a', 'glob') === 2)
+
+// Sessions must not share a counter — that is the bug being fixed.
+await hooks['tool.execute.before']({ tool: 'read', sessionID: 'turn-b' }, { args: { filePath: 'src/t2.ts' } })
+check('a session with no model call yet stays at turn 0', turnOf('turn-b', 'read') === 0)
+
+await hooks['experimental.chat.system.transform']({ sessionID: 'turn-b' }, { system: [] })
+await hooks['tool.execute.before']({ tool: 'glob', sessionID: 'turn-b' }, { args: { pattern: '*.md' } })
+check('per-session counters are independent', turnOf('turn-b', 'glob') === 1 && turnOf('turn-a', 'glob') === 2)
+
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))
 
