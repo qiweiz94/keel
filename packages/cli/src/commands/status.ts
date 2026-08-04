@@ -4,10 +4,29 @@ import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
+import { loadTraceEntries, TRACKED_AGENTS } from './retrospective.js'
+import { telemetryHealth, type HealthState } from './health.js'
+import { findTemplateSource } from './install.js'
+
+const STATE_MARK: Record<HealthState, string> = {
+  green: '✓', amber: '!', red: '✗', unknown: '?',
+}
+
+function paintState(state: HealthState, text: string): string {
+  if (state === 'green') return chalk.green(text)
+  if (state === 'amber') return chalk.yellow(text)
+  if (state === 'red') return chalk.red(text)
+  return chalk.dim(text)
+}
 
 /**
  * `keel status` — one screen showing the enforcement state the user owns:
- * the dial, the kill switch, armed overrides, rule counts, and recent blocks.
+ * the dial, the kill switch, armed overrides, rule counts, recent blocks,
+ * and — most importantly — whether keel is actually receiving data.
+ *
+ * The telemetry section exists because configuration was always visible
+ * while *flow* never was: `keel retrospective` reported zeros for days
+ * because the loaded plugin wrote no exit codes, and nothing said so.
  */
 export async function statusCommand() {
   const home = homedir()
@@ -89,6 +108,13 @@ export async function statusCommand() {
       for (let i = lines.length - 1; i >= 0 && blocks.length < 5; i--) {
         try {
           const entry = JSON.parse(lines[i])
+          // Only real agent traffic. The `keel evaluate` harness writes
+          // fixture rules (strict-action, protect-only-level-inheritance-*)
+          // with no timestamp, and they used to fill this panel with
+          // "[deny] Bash (strict-action)" at time "?" — the one screen a
+          // user checks to see whether keel is working, showing entries
+          // from a test.
+          if (!TRACKED_AGENTS.has(String(entry.agent))) continue
           if (['deny', 'block', 'prompt'].includes(entry.action)) blocks.push(entry)
         } catch {}
       }
@@ -108,9 +134,36 @@ export async function statusCommand() {
   // ── Plugin ──
   const plugin = join(home, '.opencode', 'plugins', 'keel-enforce.js')
   if (existsSync(plugin)) {
-    console.log(`  OpenCode plugin: ${chalk.green('installed')} (${(readFileSync(plugin).length / 1024).toFixed(0)}kb)`)
+    const installed = readFileSync(plugin)
+    // Compare against the template `keel install --opencode` copies from,
+    // resolved the same way install.ts resolves it — so a stale plugin is
+    // visible rather than being reported as simply "installed".
+    const source = await findTemplateSource('keel-enforce.js')
+    let freshness = ''
+    if (source) {
+      const current = readFileSync(source)
+      freshness = installed.equals(current)
+        ? chalk.green(' · current')
+        : chalk.yellow(' · STALE — run `keel install --opencode`, then restart OpenCode')
+    }
+    console.log(`  OpenCode plugin: ${chalk.green('installed')} (${(installed.length / 1024).toFixed(0)}kb)${freshness}`)
   } else {
     console.log(`  OpenCode plugin: ${chalk.yellow('not installed — run `keel install --opencode`')}`)
+  }
+
+  // ── Telemetry: is keel actually receiving data? ──
+  console.log()
+  console.log(chalk.dim('  Telemetry:'))
+  const entries = loadTraceEntries(join(home, '.keel', 'traces'))
+  const health = telemetryHealth(entries, Date.now())
+  for (const check of health) {
+    const mark = paintState(check.state, STATE_MARK[check.state])
+    console.log(`    ${mark} ${chalk.dim(check.label.padEnd(18))}${check.detail}`)
+    if (check.fix) console.log(`      ${chalk.yellow('→')} ${chalk.dim(check.fix)}`)
+  }
+  if (health.some(c => c.state === 'red' || c.state === 'unknown')) {
+    console.log()
+    console.log(chalk.dim('    Metrics (`keel retrospective`) stay uninformative until these are green.'))
   }
 
   console.log()

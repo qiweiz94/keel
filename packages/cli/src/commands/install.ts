@@ -18,7 +18,7 @@ import chalk from 'chalk'
  * the canonical source shared with the @get-keel/opencode-plugin npm package.
  */
 
-async function findTemplateSource(name: string): Promise<string | null> {
+export async function findTemplateSource(name: string): Promise<string | null> {
   const candidates = [
     join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates', name),
     join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'templates', name),

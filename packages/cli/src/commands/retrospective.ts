@@ -67,6 +67,9 @@ export interface TraceEntry {
   hook?: string
   exit?: number
   cwd?: string
+  /** Real per-session turn index. Was hardcoded 0 before the plugin fix,
+   *  so absent-or-zero means the trace predates working turn telemetry. */
+  turn_number?: number
 }
 
 const TEST_RE = /(npm|pnpm|yarn|bun)( run)? (run )?(test|vitest|jest|pytest)|npx vitest|go test/i
@@ -114,7 +117,7 @@ export function loadTraceEntries(auditDir: string, since?: string): TraceEntry[]
  * platforms; each new client's agent id must land here or its whole trace
  * stream becomes invisible to the retrospective and to `keel gather`.
  */
-const TRACKED_AGENTS = new Set(['opencode-plugin', 'openclaw-plugin', 'hermes-plugin', 'claude-code-hook'])
+export const TRACKED_AGENTS = new Set(['opencode-plugin', 'openclaw-plugin', 'hermes-plugin', 'claude-code-hook'])
 
 function isBefore(e: TraceEntry): boolean {
   return e.hook === 'tool.execute.before' && TRACKED_AGENTS.has(String(e.agent))
