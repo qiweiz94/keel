@@ -490,6 +490,28 @@ async function installOpenClaw() {
   console.log(chalk.dim('    plugins.allow       += "keel"      (pins trust; clears the provenance warning)'))
 }
 
+/**
+ * Install a host's pre-tool hook.
+ *
+ * The prose files these installers used to write on their own are the
+ * prompt layer; this is the enforcement layer. Without it,
+ * `keel install --cursor|--codex|--cline` printed a green check while
+ * enforcing nothing — a guardrail that is believed but absent is worse
+ * than none.
+ */
+async function installHostHook(spec: { label: string; template: string; target: string; note?: string }) {
+  const source = await findTemplateSource(spec.template)
+  if (!source) {
+    console.log(chalk.red(`  ✗ ${spec.label} hook source not found. Run from the keel repo or reinstall the CLI.`))
+    return
+  }
+  mkdirSync(dirname(spec.target), { recursive: true })
+  copyFileSync(source, spec.target)
+  chmodSync(spec.target, 0o755)
+  console.log(chalk.green(`  ✓ Installed ${spec.label} pre-tool hook → ${spec.target}`))
+  if (spec.note) console.log(chalk.yellow(`    ${spec.note}`))
+}
+
 async function installProjectPlugin() {
   const cwd = process.cwd()
 
@@ -719,6 +741,12 @@ Project requirements: .keel/requirements.md (if present)
     console.log(chalk.dim(`  ${clineRulesPath} already has Keel requirements (skipping)`))
   }
 
+  await installHostHook({
+    label: 'Cline',
+    template: 'cline-pretooluse.sh',
+    target: join(homedir(), '.cline', 'hooks', 'PreToolUse'),
+  })
+
   // MCP server — gives Cline an enforcement check tool.
   const clineDir = join(cwd, '.cline')
   const settingsPath = join(clineDir, 'cline_mcp_settings.json')
@@ -778,12 +806,40 @@ Full requirements: ~/.keel/requirements.md
 
   mkdirSync(rulesDir, { recursive: true })
   writeFileSync(rulePath, mdc, 'utf-8')
+
+  await installHostHook({
+    label: 'Cursor',
+    template: 'cursor-beforeshellexecution.sh',
+    target: join(cwd, '.cursor', 'hooks', 'keel-enforce.sh'),
+    note: 'UNVERIFIED against a live Cursor — contract taken from docs, not installed types.',
+  })
+  // failClosed: a crash in the hook must deny, not silently allow.
+  const cursorHooks = join(cwd, '.cursor', 'hooks.json')
+  if (!existsSync(cursorHooks)) {
+    writeFileSync(cursorHooks, JSON.stringify({
+      version: 1,
+      hooks: {
+        beforeShellExecution: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
+        beforeMCPExecution: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
+      },
+    }, null, 2) + '\n', 'utf-8')
+    console.log(chalk.green(`  ✓ Wired ${cursorHooks} (failClosed: true)`))
+  } else {
+    console.log(chalk.yellow(`  ! ${cursorHooks} exists — add the keel hook to beforeShellExecution yourself`))
+  }
   console.log(chalk.green(`  ✓ Created ${rulePath}`))
   console.log(chalk.dim('  Note: Cursor has no blocking hooks — these are advisory rules.'))
 }
 
 // ── Codex CLI (advisory: AGENTS.md section) ──
 async function installCodex() {
+  await installHostHook({
+    label: 'Codex CLI',
+    template: 'codex-pretooluse.sh',
+    target: join(homedir(), '.codex', 'hooks', 'keel-enforce.sh'),
+    note: 'UNVERIFIED against a live Codex CLI — register it in ~/.codex/hooks.json as a PreToolUse hook. Codex requires the hook file hash to be trusted before it runs.',
+  })
+
   const cwd = process.cwd()
   const agentsPath = join(cwd, 'AGENTS.md')
 

@@ -1,5 +1,14 @@
 import { initEnforce, evaluateToolCall } from './enforce.js'
-import type { ProtectionLevel } from '../core/types.js'
+import type { EnforcementAction, ProtectionLevel } from '../core/types.js'
+
+/**
+ * Verdicts that stop the tool call. Exported so a hook, a test, or another
+ * client cannot drift from the definition — the reason `prompt` was
+ * missing here for so long is that the list was inline and invisible.
+ */
+export const BLOCKING_ACTIONS: ReadonlySet<EnforcementAction> = new Set<EnforcementAction>([
+  'deny', 'block', 'prompt', 'redirect', 'research',
+])
 
 export interface EvaluateOptions {
   tool: string
@@ -76,7 +85,23 @@ export async function evaluateCommand(options: EvaluateOptions) {
 
   process.stdout.write(JSON.stringify(result) + '\n')
 
-  if (result.action === 'deny' || result.action === 'block') {
+  // Every verdict that BLOCKS must exit non-zero, not just deny/block.
+  //
+  // `prompt` means "blocked, needs `keel allow <id> --once`", and
+  // `redirect`/`research` interrupt the call to demand an action first.
+  // Exiting 0 for those made every approval gate a silent no-op in every
+  // shell-hook integration — Claude Code included. Five shipped rules are
+  // `prompt` (no-db-destructive, no-push-to-main, no-remote-exec,
+  // git-history-rewrite, publish-gate), so destructive SQL, protected-
+  // branch pushes, remote code execution, history rewrites and publishing
+  // all passed straight through.
+  //
+  // These share exit 1 with deny rather than getting a new code on
+  // purpose: any existing consumer that tests `exit !== 0` becomes correct
+  // immediately, and the change can only add blocking, never remove it.
+  // The verdict's own message carries the `keel allow` path, so a hook
+  // only has to surface it.
+  if (BLOCKING_ACTIONS.has(result.action)) {
     process.exit(1)
   }
 }

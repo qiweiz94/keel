@@ -15,9 +15,20 @@ RESULT=$(keel evaluate --tool "$TOOL_NAME" --args "$TOOL_INPUT" --agent claude-c
 EXIT=$?
 
 if [ "$EXIT" -eq 1 ]; then
-  # deny/block — extract the message and surface it to the model
+  # A blocking verdict: deny, block, prompt, redirect or research.
+  # `prompt` used to exit 0 here and sail through — approval gates on
+  # destructive SQL, protected-branch pushes and publishing were no-ops.
   MESSAGE=$(printf '%s' "$RESULT" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p' | sed 's/\\n/ /g')
-  echo "Keel blocked this action: ${MESSAGE:-rule violation}" >&2
+  ACTION=$(printf '%s' "$RESULT" | sed -n 's/.*"action":"\([a-z]*\)".*/\1/p')
+  case "$ACTION" in
+    prompt)
+      # The message already carries the `keel allow <id> --once` path.
+      echo "Keel requires approval: ${MESSAGE:-approval required}" >&2 ;;
+    redirect|research)
+      echo "Keel redirected this action: ${MESSAGE:-do the required step first}" >&2 ;;
+    *)
+      echo "Keel blocked this action: ${MESSAGE:-rule violation}" >&2 ;;
+  esac
   exit 2
 fi
 
