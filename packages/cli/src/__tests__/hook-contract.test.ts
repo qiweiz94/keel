@@ -97,93 +97,120 @@ describe('keel evaluate exit-code contract', () => {
 })
 
 /**
- * Each host hook, driven with a fake `keel` on PATH that returns a chosen
- * verdict. This is the only way to assert the host-specific output shape
- * without installing four agents: what matters is that a blocking verdict
- * produces that host's block, and an advisory one does not.
+ * Each host hook script, driven end-to-end through the REAL built CLI.
+ *
+ * The scripts are now one-liners that `exec keel hook <host>`, so a fake
+ * keel would only prove the fake works. A shim puts the built dist on
+ * PATH as `keel` and a private rules file supplies the verdicts, which
+ * makes this an integration test of the whole chain: script -> keel hook
+ * -> pipeline -> host-specific output.
  */
-describe('host hook scripts', () => {
+describe('host hook scripts (end-to-end)', () => {
   const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates')
-  let bin = ''
+  let shim = ''
+  let hookHome = ''
+
+  // A message with a quote in it: the sed-based scripts truncated this to
+  // "Use \\" while still emitting valid JSON, so nothing ever failed.
+  const QUOTED = 'Use "--force-with-lease" instead of --force.'
 
   beforeAll(() => {
-    bin = mkdtempSync(join(tmpdir(), 'keel-fakebin-'))
-    writeFileSync(join(bin, 'keel'), `#!/bin/sh
-A="\${KEEL_FAKE_ACTION:-allow}"
-printf '{"action":"%s","rule_id":"r1","message":"test message"}\\n' "$A"
-case "$A" in deny|block|prompt|redirect|research) exit 1 ;; error) exit 2 ;; *) exit 0 ;; esac
-`, { mode: 0o755 })
-  })
-  afterAll(() => rmSync(bin, { recursive: true, force: true }))
+    shim = mkdtempSync(join(tmpdir(), 'keel-shim-'))
+    writeFileSync(join(shim, 'keel'), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 })
 
-  const run = (script: string, action: string, payload: string) =>
+    hookHome = mkdtempSync(join(tmpdir(), 'keel-hookhome-'))
+    mkdirSync(join(hookHome, '.keel'), { recursive: true })
+    writeFileSync(join(hookHome, '.keel', 'rules.yaml'), `version: 1
+level: protect
+rules:
+  - id: h-deny
+    type: command
+    match: "git push .*--force"
+    action: deny
+    level: sprint
+    message: '${QUOTED}'
+  - id: h-prompt
+    type: command
+    match: "git push .*(main|master)"
+    action: prompt
+    level: sprint
+    message: "Approval required."
+`)
+  })
+  afterAll(() => {
+    rmSync(shim, { recursive: true, force: true })
+    rmSync(hookHome, { recursive: true, force: true })
+  })
+
+  const run = (script: string, payload: string, env: Record<string, string> = {}) =>
     spawnSync('sh', [join(TEMPLATES, script)], {
       input: payload,
       encoding: 'utf-8',
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KEEL_FAKE_ACTION: action },
+      env: { ...process.env, PATH: `${shim}:${process.env.PATH}`, HOME: hookHome, ...env },
       timeout: 30000,
     })
 
-  const CLINE_PAYLOAD = JSON.stringify({ preToolUse: { toolName: 'bash', parameters: { command: 'rm -rf /' } } })
-  const CURSOR_PAYLOAD = JSON.stringify({ command: 'rm -rf /', cwd: '/tmp' })
-  const CODEX_PAYLOAD = JSON.stringify({ tool_name: 'bash', tool_input: { command: 'rm -rf /' } })
+  const DENY = 'git push --force origin release'   // matches h-deny only
+  const OK = 'ls -la'
 
-  it('cline: cancels on every blocking verdict, stays silent otherwise', () => {
-    // Contract from the installed @cline/core: a "HOOK_CONTROL<TAB>{json}"
-    // line on stdout, where cancel:true stops the call.
-    for (const action of ['deny', 'block', 'prompt', 'redirect', 'research']) {
-      const out = run('cline-pretooluse.sh', action, CLINE_PAYLOAD).stdout
-      expect(out).toContain('HOOK_CONTROL')
-      expect(out).toContain('"cancel":true')
-    }
-    // Advisory verdicts must emit no control output at all.
-    for (const action of ['allow', 'warn']) {
-      expect(run('cline-pretooluse.sh', action, CLINE_PAYLOAD).stdout.trim()).toBe('')
-    }
-    // A keel that cannot start must fail CLOSED, not wave the call through.
-    expect(run('cline-pretooluse.sh', 'error', CLINE_PAYLOAD).stdout).toContain('"cancel":true')
+  it('cline: cancels on a blocking verdict and keeps the message intact', () => {
+    const out = run('cline-pretooluse.sh',
+      JSON.stringify({ preToolUse: { toolName: 'bash', parameters: { command: DENY } } })).stdout
+    expect(out).toContain('HOOK_CONTROL')
+    const control = JSON.parse(out.replace(/^HOOK_CONTROL\t/, '').trim())
+    expect(control.cancel).toBe(true)
+    // The regression: this used to arrive truncated at the first quote.
+    expect(control.errorMessage).toContain(QUOTED)
   })
 
-  it('cursor: denies on block, asks on prompt, allows otherwise', () => {
-    const permission = (action: string) =>
-      JSON.parse(run('cursor-beforeshellexecution.sh', action, CURSOR_PAYLOAD).stdout).permission
-
-    expect(permission('deny')).toBe('deny')
-    expect(permission('redirect')).toBe('deny')
-    // `ask` routes to Cursor's own approval UI — the closest match to
-    // keel's `prompt`, and it still stops an unattended run.
-    expect(permission('prompt')).toBe('ask')
-    expect(permission('allow')).toBe('allow')
-    expect(permission('warn')).toBe('allow')
-    expect(permission('error')).toBe('deny')
+  it('cline: stays silent on an allowed call', () => {
+    const out = run('cline-pretooluse.sh',
+      JSON.stringify({ preToolUse: { toolName: 'bash', parameters: { command: OK } } })).stdout
+    expect(out.trim()).toBe('')
   })
 
-  it('codex: exits 2 on every blocking verdict, 0 otherwise', () => {
-    // Codex blocks on exit 2 specifically; any other non-zero is treated
-    // as "the hook failed" and execution continues.
-    for (const action of ['deny', 'block', 'prompt', 'redirect', 'research', 'error']) {
-      expect(run('codex-pretooluse.sh', action, CODEX_PAYLOAD).status).toBe(2)
-    }
-    for (const action of ['allow', 'warn']) {
-      expect(run('codex-pretooluse.sh', action, CODEX_PAYLOAD).status).toBe(0)
-    }
+  it('cursor: denies with the full message, asks on prompt, allows otherwise', () => {
+    const denied = JSON.parse(run('cursor-beforeshellexecution.sh', JSON.stringify({ command: DENY })).stdout)
+    expect(denied.permission).toBe('deny')
+    expect(denied.userMessage).toContain(QUOTED)
+
+    const gated = JSON.parse(run('cursor-beforeshellexecution.sh', JSON.stringify({ command: 'git push origin main' })).stdout)
+    expect(gated.permission).toBe('ask')
+
+    const allowed = JSON.parse(run('cursor-beforeshellexecution.sh', JSON.stringify({ command: OK })).stdout)
+    expect(allowed.permission).toBe('allow')
   })
 
-  it('claude code: exits 2 on every blocking verdict, 0 otherwise', () => {
-    const claude = (action: string) =>
-      spawnSync('sh', [join(TEMPLATES, 'claude-pretooluse.sh')], {
-        encoding: 'utf-8',
-        env: {
-          ...process.env, PATH: `${bin}:${process.env.PATH}`, KEEL_FAKE_ACTION: action,
-          TOOL_NAME: 'bash', TOOL_INPUT: '{"command":"rm -rf /"}',
-        },
-        timeout: 30000,
-      })
-    // `prompt` is the regression: it used to exit 0 here and sail through.
-    for (const action of ['deny', 'prompt', 'redirect', 'research', 'error']) {
-      expect(claude(action).status).toBe(2)
-    }
-    expect(claude('allow').status).toBe(0)
-    expect(claude('warn').status).toBe(0)
+  it('codex: exits 2 on a blocking verdict, 0 otherwise', () => {
+    const blocked = run('codex-pretooluse.sh', JSON.stringify({ tool_name: 'bash', tool_input: { command: DENY } }))
+    expect(blocked.status).toBe(2)
+    expect(blocked.stderr).toContain(QUOTED)
+
+    expect(run('codex-pretooluse.sh',
+      JSON.stringify({ tool_name: 'bash', tool_input: { command: OK } })).status).toBe(0)
+  })
+
+  it('claude code: reads the call from the environment and exits 2 when blocked', () => {
+    const blocked = run('claude-pretooluse.sh', '', {
+      TOOL_NAME: 'bash', TOOL_INPUT: JSON.stringify({ command: DENY }),
+    })
+    expect(blocked.status).toBe(2)
+    expect(blocked.stderr).toContain(QUOTED)
+
+    const allowed = run('claude-pretooluse.sh', '', {
+      TOOL_NAME: 'bash', TOOL_INPUT: JSON.stringify({ command: OK }),
+    })
+    expect(allowed.status).toBe(0)
+  })
+
+  it('every host blocks an approval gate — the fail-open regression', () => {
+    // `prompt` exited 0 before, so approval gates on destructive SQL,
+    // protected-branch pushes and publishing were all no-ops.
+    const gate = 'git push origin main'
+    expect(run('codex-pretooluse.sh',
+      JSON.stringify({ tool_name: 'bash', tool_input: { command: gate } })).status).toBe(2)
+    const cline = run('cline-pretooluse.sh',
+      JSON.stringify({ preToolUse: { toolName: 'bash', parameters: { command: gate } } })).stdout
+    expect(cline).toContain('"cancel":true')
   })
 })

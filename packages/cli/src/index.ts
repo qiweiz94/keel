@@ -29,6 +29,7 @@ import { retrospectiveCommand } from './commands/retrospective.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
+import { hookCommand } from './commands/hook.js'
 import { gatherCommand } from './commands/gather.js'
 import { scheduleCommand } from './commands/schedule.js'
 import { watchCommand } from './commands/watch.js'
@@ -269,6 +270,14 @@ program
   .argument('<rule-id>', 'Rule ID to override')
   .option('--once', 'Allow the NEXT violation only (5 minutes if unused)')
   .action(allowCommand)
+
+program
+  .command('hook')
+  .description('Enforcement entry point for agent hosts (reads the tool call on stdin)')
+  .argument('<host>', 'claude-code | cline | cursor | codex | generic')
+  .option('--cwd <path>', 'Working directory to evaluate against')
+  .option('--level <level>', 'Protection level override: sprint, balanced, or protect')
+  .action((host: string, options: { cwd?: string; level?: string }) => hookCommand(host, options))
 
 program
   .command('status')
