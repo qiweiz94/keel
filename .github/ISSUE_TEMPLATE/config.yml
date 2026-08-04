@@ -6,6 +6,8 @@ contact_links:
       Do NOT open a public issue for an enforcement bypass or any other
       vulnerability. Use a private security advisory so it can be fixed before
       it is public. See SECURITY.md.
+  # Requires Discussions to be enabled (Settings → Features → Discussions).
+  # If it is ever turned off, this link 404s — point it at /issues/new instead.
   - name: 💬 Question or setup help
     url: https://github.com/qiweiz94/keel/discussions
     about: Ask how to configure a rule, wire up a host, or interpret a scan result.

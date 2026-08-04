@@ -29,6 +29,17 @@ function installFlags(): string[] {
     .filter(f => !['project', 'mcp', 'all', 'force', 'global'].includes(f))
 }
 
+/** Host keys `keel scan` can detect, read from its AGENT_PATHS table. */
+function scanHosts(): string[] {
+  const src = read(join(CLI, 'src', 'commands', 'scan.ts'))
+  const start = src.indexOf('const AGENT_PATHS')
+  const end = src.indexOf('function parseMCPConfig')
+  return [...src.slice(start, end).matchAll(/^ {2}'([a-z0-9-]+)':/gm)].map(m => m[1])
+}
+
+/** `--gemini` installs to the host `keel scan` calls `gemini-cli`. */
+const SCAN_KEY: Record<string, string> = { gemini: 'gemini-cli' }
+
 describe('user-facing docs match the shipped install flags', () => {
   const flags = installFlags()
 
@@ -56,6 +67,50 @@ describe('user-facing docs match the shipped install flags', () => {
       expect(argLine).toContain(host)
     }
   })
+
+  // `keel scan` reports "N agent hosts can run tools with no enforcement".
+  // A host missing from its detection table is silently excluded from that
+  // count — the tool under-reports on the one claim it exists to make, and
+  // says nothing to indicate it did. cline, openclaw and hermes shipped
+  // working installers while being invisible to scan for exactly this reason.
+  it.each(installFlags())('keel scan can detect the --%s host', (flag) => {
+    expect(scanHosts()).toContain(SCAN_KEY[flag] ?? flag)
+  })
+
+  it('finds scan’s host table at all (guards the parser itself)', () => {
+    const hosts = scanHosts()
+    expect(hosts.length).toBeGreaterThanOrEqual(8)
+    expect(hosts).toContain('opencode')
+  })
+
+  // `keel install --cline` creates ~/.cline/hooks/ and `--openclaw` creates
+  // ~/.openclaw/plugins/keel/. If scan's installCheck were the bare parent
+  // directory, installing keel would make scan report the host as present —
+  // a false positive on the very claim scan exists to make. installCheck
+  // must name something only the HOST writes.
+  it.each(['cline', 'openclaw', 'hermes'])(
+    'scan detects %s by a host-owned file, not the directory keel installs into',
+    (host) => {
+      const src = read(join(CLI, 'src', 'commands', 'scan.ts'))
+      const start = src.indexOf(`  '${host}': {`)
+      expect(start).toBeGreaterThan(-1)
+      const open = src.indexOf('installCheck', start)
+      const checks = src.slice(src.indexOf('[', open) + 1, src.indexOf(']', open))
+
+      // Every entry must reach BELOW ~/.<host>, i.e. carry a path segment
+      // after the host directory. `join(HOME, '.cline')` alone is the bug:
+      // keel's own installer creates that directory.
+      const entries = [...checks.matchAll(/join\(([^)]*)\)/g)].map(m => m[1].trim())
+      expect(entries.length).toBeGreaterThan(0)
+      for (const entry of entries) {
+        const segments = entry.split(',').map(s => s.trim()).filter(Boolean)
+        expect(segments[0]).toBe('HOME')
+        expect(segments[1]).toBe(`'.${host}'`)
+        // HOME + '.host' + at least one more segment.
+        expect(segments.length).toBeGreaterThanOrEqual(3)
+      }
+    },
+  )
 
   it('README does not promise commands the CLI does not register', () => {
     const index = read(join(CLI, 'src', 'index.ts'))

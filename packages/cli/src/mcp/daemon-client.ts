@@ -19,6 +19,24 @@ function cliEntry(): string {
   return 'keel'
 }
 
+/** True if the pid is a live process we own. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort reap of a daemon we spawned but no longer need. */
+function reap(pid: number | undefined) {
+  if (pid === undefined) return
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch { /* already gone */ }
+}
+
 export async function daemonHealth(port: number, token: string): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/v1/health`, {
@@ -62,8 +80,13 @@ async function doEnsureDaemon(): Promise<{ port: number; token: string }> {
   }
   const token = readFileSync(tokenPath, 'utf-8').trim()
 
+  // A daemon.json whose pid is dead is stale: without this check every
+  // caller re-spawns on the strength of a record that can never be healthy,
+  // and the abandoned children pile up until their idle timeout.
   const state = loadDaemonState()
-  if (state && (await daemonHealth(state.port, token))) return { port: state.port, token }
+  if (state && pidAlive(state.pid) && (await daemonHealth(state.port, token))) {
+    return { port: state.port, token }
+  }
 
   // Auto-spawn detached on a dynamic port (avoids collisions with a stale
   // daemon); the daemon writes ~/.keel/daemon.json with its real port and
@@ -84,11 +107,19 @@ async function doEnsureDaemon(): Promise<{ port: number; token: string }> {
   const deadline = Date.now() + 5000
   while (Date.now() < deadline) {
     const current = loadDaemonState()
-    if (current && (childPid === undefined || current.pid === childPid) && (await daemonHealth(current.port, token))) {
+    if (current && (await daemonHealth(current.port, token))) {
+      // A DIFFERENT process may have won the race — `ensureDaemon` dedupes
+      // within one process, but nothing coordinates across the several
+      // `keel hook` invocations a single agent turn produces. Adopt the
+      // winner and reap the daemon we spawned; previously this loop could
+      // only return on `current.pid === childPid`, so a lost race ran to
+      // timeout and left our child orphaned until its idle shutdown.
+      if (childPid !== undefined && current.pid !== childPid) reap(childPid)
       return { port: current.port, token }
     }
     await new Promise((r) => setTimeout(r, 200))
   }
+  reap(childPid)
   throw new Error('keel daemon did not start (run `keel daemon` in a terminal and check ~/.keel/daemon.json)')
 }
 

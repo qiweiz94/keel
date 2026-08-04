@@ -123,6 +123,35 @@ const AGENT_PATHS: Record<string, {
     configs: [],
     skills: [join(HOME, '.codex', 'skills')],
   },
+  // The three below need HOST-OWNED marker files rather than the bare
+  // directory: `keel install --cline` creates ~/.cline/hooks/ and
+  // `--openclaw` creates ~/.openclaw/plugins/keel/, so detecting on the
+  // parent directory would make installing keel "prove" the host exists.
+  // That false positive would land on the exact claim scan is built to
+  // make ("this host is unprotected"), so it must key on files only the
+  // host writes.
+  'cline': {
+    installCheck: [
+      join(HOME, '.cline', 'data', 'settings', 'providers.json'),
+      join(HOME, '.cline', 'data'),
+    ],
+    configs: [join(HOME, '.cline', 'data', 'settings', 'mcp_settings.json')],
+    workspace: ['.cline/mcp.json'],
+  },
+  'openclaw': {
+    installCheck: [join(HOME, '.openclaw', 'openclaw.json')],
+    configs: [join(HOME, '.openclaw', 'openclaw.json')],
+  },
+  'hermes': {
+    // Not installed on any machine this was built against — best effort,
+    // matching the `docs`-level verification hermes carries in
+    // docs/integrations.md.
+    installCheck: [
+      join(HOME, '.hermes', 'config.yaml'),
+      join(HOME, '.hermes', 'hermes.json'),
+    ],
+    configs: [join(HOME, '.hermes', 'mcp.json')],
+  },
 }
 
 function parseMCPConfig(filePath: string): Array<{ name: string; command?: string; args?: string[]; url?: string; type: 'stdio' | 'http' | 'sse' }> {

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
+
+`@get-keel/cli` 0.2.1 · `@get-keel/core` 0.1.9 · `@get-keel/opencode-plugin` 0.1.9
 
 ### Breaking
 
@@ -59,6 +61,20 @@
 - `npm audit` cleared: `fast-uri` (high, host confusion) and `hono` (moderate, CORS
   ReDoS), both transitive via the deprecated private `@get-keel/mcp-server`. CI was
   failing on `npm audit --audit-level=moderate` for all three platforms.
+- **`keel scan` could not detect `cline`, `openclaw` or `hermes`** — 3 of the 8 hosts
+  keel installs into. Its "N agent hosts can run tools with no enforcement" finding
+  silently excluded them, under-reporting with no indication it had done so. Detection
+  keys on host-owned files (`~/.cline/data/settings/providers.json`,
+  `~/.openclaw/openclaw.json`) rather than the bare `~/.<host>` directory, because
+  `keel install` creates those directories itself — detecting on them would make
+  installing keel "prove" the host was present.
+- **Daemon spawn storm.** `ensureDaemon()` deduplicates within one process, but nothing
+  coordinated across the several CLI invocations an agent turn produces. Each lost race
+  ran to a 5s timeout and abandoned its spawned daemon until a 10-minute idle shutdown.
+  A lost race now adopts the winner and reaps its own child, a timeout reaps before
+  throwing, and a `daemon.json` whose pid is no longer alive is treated as stale instead
+  of triggering a fresh spawn on every call. Six concurrent processes now converge on
+  one daemon with zero orphans.
 - `@get-keel/mcp-server`'s `bin` pointed at `keel-mcp.js` while the file on disk was
   still named `ai-enforce-mcp.js` — the last artifact carrying the former product name.
 - `@get-keel/opencode-plugin` did not ship its README, so its npm page rendered blank.
