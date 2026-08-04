@@ -58,12 +58,17 @@ requirements.md markers. Verified end-to-end on 9,694 real trace entries.
 **Phase 3 deferred (declared in §5/§6/§11, NOT built):** week-over-week deltas,
 `keel postmortem`, lesson decay, lessons.json v2 reads. See decisions-log row 9c.
 
-**⚠ The metrics are blind on real traces until you act.** 2,753 after-hook records
-across 2026-08-01..04 carry **zero** `exit` fields: the live
-`~/.opencode/plugins/keel-enforce.js` (Aug 3, 18:15 build) predates Phase 2a's outcome
-telemetry (`recordAttemptOutcome` absent). Attempts-to-success and
-verification-completion will read 0 regardless of correctness until **you** run
-`keel install --opencode` — the agent's control gate blocks it. Row 9d.
+**Plugin refreshed 2026-08-04 22:57** (row 9d resolved). The user ran
+`keel install --opencode`; `~/.opencode/plugins/keel-enforce.js` is now byte-identical
+to `packages/cli/templates/keel-enforce.js` and carries `recordAttemptOutcome` (Phase 2a
+exit-code telemetry, absent from the previous build), `turnCounters` (real
+`turn_number`), and `enforcedAction`/`observed_action` (observe mode).
+
+**Still true until OpenCode is restarted:** traces written before the restart carry no
+`exit` and no `turn_number`, so `keel retrospective` reports 0 for
+attempts-to-success and verification-completion on historical data. Those metrics only
+become meaningful for sessions run against the new build. Do not read a 0 there as a
+code defect — check `MAX(t)` on traces carrying an `exit` field first.
 
 **Open gaps found by external research (row 12):** no shadow/observe rule state; the
 stuck detector misses oscillation and semantic livelock; no reproduction-test-before-fix
