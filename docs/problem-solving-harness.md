@@ -814,7 +814,8 @@ change needs a CHANGELOG migration note.
 | 8 | Phase 2 — workflow enforcement | 🔨 in progress |
 | 8a | Phase 2a — `stuck` rule type, `redirect` action + directive, command fingerprinting, exit-code telemetry | ✅ shipped (commit `6ae6c07`, 2026-08-04) |
 | 8b | Phase 2b — ProblemLedger + `keel_hypothesis`, `diagnosis` type, `/v1/outcome` | ✅ shipped (commit `d3aa821`, 2026-08-04) |
-| 8c | Phase 2c — research-before-solve obligation (research type trigger/satisfy/boundaries with exit) | 🔨 next |
+| 8c | Phase 2c — research-before-solve obligation (trigger/satisfy/boundaries with exit matcher) | ✅ shipped (commit `bcbeb86`, 2026-08-04) |
+| 9 | Phase 3 — the learning loop (retrospective, metrics, lessons) | 🔨 next |
 
 ---
 
