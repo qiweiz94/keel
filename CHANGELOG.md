@@ -33,6 +33,13 @@
   `http://` transports to non-local hosts. Findings are ranked critical → low and cite
   the exact command or path that triggered them. Adds `--ci` (exit 1 on any finding);
   `--json` now emits only JSON so it can be piped.
+- **`keel-control-gate` now covers `keel rules --append`.** The gate listed six
+  subcommands by name, so it did not fail safe: every new mutating subcommand was
+  un-gated by default, and `--append` shipped able to edit `~/.keel/rules.yaml` with
+  only a TTY check in the way — and that check has an environment-variable escape used
+  by the test suite. Defence in depth: the TTY check is the mechanism, the rule is the
+  policy, and neither should be the only thing between an agent and the rules file.
+  Read-only `keel rules harness` stays allowed, so an agent can still show them to you.
 - **`keel rules harness --append`** — adds the problem-solving rules to
   `~/.keel/rules.yaml` directly. Printing them to copy by hand meant they routinely
   never got installed, so the `stuck` / `research` / `diagnosis` machinery stayed inert

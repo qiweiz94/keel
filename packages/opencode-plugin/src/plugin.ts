@@ -35,11 +35,11 @@ level: balanced
 rules:
   - id: keel-control-gate
     type: command
-    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
+    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)|keel rules [^|;&]*--append"
     action: deny
     level: protect
     priority: 100
-    message: "keel controls are user-owned — run keel disable|allow|level|install in your own terminal, not through the agent."
+    message: "keel controls are user-owned — run keel disable|allow|level|install|rules --append in your own terminal, not through the agent."
   - id: no-rules-tampering
     type: filesystem
     paths:
