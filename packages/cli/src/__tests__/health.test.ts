@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { telemetryHealth } from '../commands/health.js'
+import { countDistinctRules } from '../commands/status.js'
 import type { TraceEntry } from '../commands/retrospective.js'
 
 /**
@@ -97,5 +98,38 @@ describe('telemetry health', () => {
   it('flags a stale agent as amber rather than green', () => {
     const old = [after(60 * 24 * 3, 0)]   // three days ago
     expect(line(telemetryHealth(old, NOW), 'agent-activity').state).toBe('amber')
+  })
+})
+
+describe('rule counting on the status screen', () => {
+  const rules = (n: number, prefix = 'r') =>
+    Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}` }))
+
+  it('counts a file once when two scopes resolve to the same path', () => {
+    // Every user whose shell sits in their home directory hits this: the
+    // project lookup is <cwd>/.keel/rules.yaml, which IS the global path.
+    // Summing scopes reported "23 of 46" and implied half the rules were
+    // switched off.
+    const same = { rules: rules(23), sourcePath: '/home/u/.keel/rules.yaml' }
+    const { distinct, duplicatePaths } = countDistinctRules([
+      ['global', same],
+      ['project', same],
+    ])
+    expect(distinct).toBe(23)
+    expect(duplicatePaths.has('/home/u/.keel/rules.yaml')).toBe(true)
+  })
+
+  it('still counts genuinely distinct scopes, minus shared ids', () => {
+    const { distinct, duplicatePaths } = countDistinctRules([
+      ['global', { rules: rules(23), sourcePath: '/home/u/.keel/rules.yaml' }],
+      // one id overlaps the global set, so it is the same rule overridden
+      ['project', { rules: [{ id: 'r0' }, { id: 'proj-only' }], sourcePath: '/repo/.keel/rules.yaml' }],
+    ])
+    expect(distinct).toBe(24)
+    expect(duplicatePaths.size).toBe(0)
+  })
+
+  it('tolerates absent scopes', () => {
+    expect(countDistinctRules([['global', null], ['project', null]]).distinct).toBe(0)
   })
 })

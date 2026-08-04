@@ -12,6 +12,36 @@ const STATE_MARK: Record<HealthState, string> = {
   green: '✓', amber: '!', red: '✗', unknown: '?',
 }
 
+/**
+ * Distinct rules across scopes, and which scopes are re-reads of a file
+ * already counted.
+ *
+ * Summing `scope.rules.length` is wrong whenever two scopes resolve to the
+ * same file — which happens for every user whose working directory is
+ * their home directory, because the project lookup
+ * (`<cwd>/.keel/rules.yaml`) is then literally the global path. That
+ * reported "23 of 46" and implied half the rules were switched off.
+ * `mergeRules` dedupes by id, so enforcement was never affected; the
+ * status screen was.
+ */
+export function countDistinctRules(
+  scopes: ReadonlyArray<readonly [string, { rules: Array<{ id: string }>; sourcePath: string } | null]>,
+): { distinct: number; duplicatePaths: Set<string> } {
+  const seenPaths = new Set<string>()
+  const duplicatePaths = new Set<string>()
+  const ids = new Set<string>()
+  for (const [, scope] of scopes) {
+    if (!scope) continue
+    if (seenPaths.has(scope.sourcePath)) {
+      duplicatePaths.add(scope.sourcePath)
+      continue
+    }
+    seenPaths.add(scope.sourcePath)
+    for (const rule of scope.rules) ids.add(rule.id)
+  }
+  return { distinct: ids.size, duplicatePaths }
+}
+
 function paintState(state: HealthState, text: string): string {
   if (state === 'green') return chalk.green(text)
   if (state === 'amber') return chalk.yellow(text)
@@ -85,18 +115,29 @@ export async function statusCommand() {
     ['project', hierarchy.project],
     ['local', hierarchy.local],
   ] as const
-  let total = 0
+  // Count DISTINCT rules, not the sum of scope sizes. When the working
+  // directory is the home directory, the project lookup
+  // (`<cwd>/.keel/rules.yaml`) resolves to the very same file as the
+  // global one, so summing scopes double-counted every rule and reported
+  // "23 of 46" — telling the user half their rules were inactive when in
+  // fact all 23 were live. mergeRules dedupes by rule id, so enforcement
+  // was always correct; only this screen lied, and this is the screen
+  // people read to decide whether keel is working.
+  const { distinct, duplicatePaths } = countDistinctRules(scopes)
+  const counted = new Set<string>()
   let invalid = 0
   for (const [name, scope] of scopes) {
     if (!scope) continue
-    const issues = [...(scope.errors || []), ...validateRules(scope.rules)]
-    total += scope.rules.length
+    const isRepeat = counted.has(scope.sourcePath)
+    counted.add(scope.sourcePath)
+    const issues = isRepeat ? [] : [...(scope.errors || []), ...validateRules(scope.rules)]
     invalid += issues.length
     const badge = issues.length ? chalk.red(`⚠ ${issues.length} issue(s)`) : chalk.green(`${scope.rules.length} rules`)
-    console.log(chalk.dim(`  Rules (${name}):`) + ` ${badge}${chalk.dim(` — ${scope.sourcePath}`)}`)
+    const note = isRepeat && duplicatePaths.has(scope.sourcePath) ? chalk.dim(' (same file as above)') : ''
+    console.log(chalk.dim(`  Rules (${name}):`) + ` ${badge}${chalk.dim(` — ${scope.sourcePath}`)}${note}`)
   }
   const active = mergeRules(hierarchy, dial, 'local').length
-  console.log(chalk.dim(`  Active at current dial:`) + ` ${chalk.white(active.toString())} of ${total}${invalid ? chalk.red(` (${invalid} rule issue(s) — run keel validate)`) : ''}`)
+  console.log(chalk.dim(`  Active at current dial:`) + ` ${chalk.white(active.toString())} of ${distinct}${invalid ? chalk.red(` (${invalid} rule issue(s) — run keel validate)`) : ''}`)
 
   // ── Recent blocks ──
   const traceFile = join(home, '.keel', 'traces', `${today}.jsonl`)
