@@ -1,6 +1,6 @@
 {
   "name": "@get-keel/cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Enforce rules on AI coding agents — guardrails that run outside the context window, so they survive context rot, compaction, and agent amnesia.",
   "keywords": [
     "ai-agents",

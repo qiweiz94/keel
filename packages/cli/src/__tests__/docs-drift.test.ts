@@ -83,34 +83,11 @@ describe('user-facing docs match the shipped install flags', () => {
     expect(hosts).toContain('opencode')
   })
 
-  // `keel install --cline` creates ~/.cline/hooks/ and `--openclaw` creates
-  // ~/.openclaw/plugins/keel/. If scan's installCheck were the bare parent
-  // directory, installing keel would make scan report the host as present —
-  // a false positive on the very claim scan exists to make. installCheck
-  // must name something only the HOST writes.
-  it.each(['cline', 'openclaw', 'hermes'])(
-    'scan detects %s by a host-owned file, not the directory keel installs into',
-    (host) => {
-      const src = read(join(CLI, 'src', 'commands', 'scan.ts'))
-      const start = src.indexOf(`  '${host}': {`)
-      expect(start).toBeGreaterThan(-1)
-      const open = src.indexOf('installCheck', start)
-      const checks = src.slice(src.indexOf('[', open) + 1, src.indexOf(']', open))
-
-      // Every entry must reach BELOW ~/.<host>, i.e. carry a path segment
-      // after the host directory. `join(HOME, '.cline')` alone is the bug:
-      // keel's own installer creates that directory.
-      const entries = [...checks.matchAll(/join\(([^)]*)\)/g)].map(m => m[1].trim())
-      expect(entries.length).toBeGreaterThan(0)
-      for (const entry of entries) {
-        const segments = entry.split(',').map(s => s.trim()).filter(Boolean)
-        expect(segments[0]).toBe('HOME')
-        expect(segments[1]).toBe(`'.${host}'`)
-        // HOME + '.host' + at least one more segment.
-        expect(segments.length).toBeGreaterThanOrEqual(3)
-      }
-    },
-  )
+  // The self-detection property is tested behaviourally in
+  // scan-self-detection.test.ts: install each host into an empty HOME and
+  // assert scan still reports it absent. A source-level version of this was
+  // tried first and could not tell a path keel READS (`~/.config/opencode`)
+  // from one it WRITES (`~/.gemini/hooks/`), so it failed on correct code.
 
   it('README does not promise commands the CLI does not register', () => {
     const index = read(join(CLI, 'src', 'index.ts'))

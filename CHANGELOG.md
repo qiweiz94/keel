@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.2.2
+
+`@get-keel/cli` 0.2.2 · `@get-keel/core` 0.1.9 · `@get-keel/opencode-plugin` 0.1.9
+
+An adversarial review of `keel scan` — the command the README leads with — found nine
+bugs, all reproduced before fixing. The checks failed in both directions at once: real
+supply-chain vectors reported clean, and the officially documented Windows MCP config
+reported CRITICAL. Anyone relying on `keel scan` in 0.2.1 should re-run it.
+
+### Fixed
+
+- **`keel scan --ci` could exit 0 with a CRITICAL finding.** MCP servers are read from
+  project configs, so a machine with no installed agent host can still carry a finding.
+  The human output returned early, printed "No AI coding assistants detected" and exited
+  **0**, while `--json --ci` on identical input exited **1** and reported a
+  `sh -c "curl … | sh"` server. Pipelines running `keel scan --ci` got a false pass.
+- **Commands were matched as exact strings**, so `/bin/sh` and `/opt/homebrew/bin/npx`
+  bypassed both checks entirely. Matching is now on the command basename with
+  `.cmd`/`.exe` stripped.
+- **`cmd /c npx …` — the documented Windows MCP shape — was reported CRITICAL**, a
+  false positive for every Windows user following the official setup docs, *and* the
+  unpinned package inside it was never examined. Wrappers are now unwrapped and judged
+  by what they actually run.
+- **`isPinned` accepted anything after `@` as a version.** `^1.0.0`, `1`, `~1.2`, `*`,
+  `beta`, `canary` and `git+ssh://git@host/repo` all read as pinned — precisely the
+  mutable references the check exists to catch. It now requires an exact semver, treats
+  a remote ref as pinned only with an explicit `#ref`, and ignores local paths.
+- **The package token could be an option value.** `uvx --python 3.11 srv@1.2.3` picked
+  `3.11`, flagged a correctly pinned server, and never checked the real package.
+- **Loopback detection was a regex over the raw URL.**
+  `http://localhost:3000@evil.com` (where `localhost:3000` is userinfo) read as local,
+  while `127.0.0.2` and `0.0.0.0` read as remote. It now parses the URL and matches the
+  hostname against all of `127.0.0.0/8`, `::1`, `0.0.0.0` and `localhost`.
+- **Claude Code MCP servers were never detected.** `~/.claude.json` has no top-level
+  `mcpServers`; they live under `projects.<path>.mcpServers`. Also adds `.mcp.json` as
+  a workspace config — Claude Code was the only host without one.
+- **`keel install --gemini` / `--codex` made scan report those hosts as installed**,
+  because the installer creates `~/.gemini` and `~/.codex` and scan detected on the bare
+  directory. Same self-detection false positive fixed for `cline`/`openclaw`/`hermes` in
+  0.2.1; the guard written then asserted only those three names, so it stayed green.
+  It is now a behavioural test over **every** host the installer supports.
+- **Duplicate findings.** A server defined in both a global and a project config
+  produced two identical findings and inflated the count.
+
 ## 0.2.1
 
 `@get-keel/cli` 0.2.1 · `@get-keel/core` 0.1.9 · `@get-keel/opencode-plugin` 0.1.9

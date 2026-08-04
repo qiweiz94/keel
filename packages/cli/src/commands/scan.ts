@@ -45,6 +45,9 @@ const AGENT_PATHS: Record<string, {
       join(HOME, '.claude.json'),
     ],
     skills: [join(HOME, '.claude', 'skills')],
+    // Claude Code's documented project-scope MCP file. It was the only host
+    // with no workspace entry, so project-scoped servers were never read.
+    workspace: ['.mcp.json'],
     managed: IS_MAC
       ? { darwin: '/Library/Application Support/ClaudeCode/managed-mcp.json' }
       : IS_LINUX
@@ -93,7 +96,13 @@ const AGENT_PATHS: Record<string, {
       : [],
   },
   'gemini-cli': {
-    installCheck: [join(HOME, '.gemini')],
+    // Host-owned markers: `keel install --gemini` writes
+    // ~/.gemini/hooks/PreToolUse, which creates ~/.gemini.
+    installCheck: [
+      join(HOME, '.gemini', 'settings.json'),
+      join(HOME, '.gemini', 'installation_id'),
+      join(HOME, '.gemini', 'oauth_creds.json'),
+    ],
     configs: [join(HOME, '.gemini', 'settings.json')],
     skills: [join(HOME, '.gemini', 'skills')],
   },
@@ -119,7 +128,13 @@ const AGENT_PATHS: Record<string, {
     configs: [],
   },
   'codex': {
-    installCheck: [join(HOME, '.codex')],
+    // Host-owned markers: `keel install --codex` writes ~/.codex/hooks/,
+    // which creates ~/.codex — so the bare directory would make keel's own
+    // installer "prove" Codex is present.
+    installCheck: [
+      join(HOME, '.codex', 'config.toml'),
+      join(HOME, '.codex', 'auth.json'),
+    ],
     configs: [],
     skills: [join(HOME, '.codex', 'skills')],
   },
@@ -180,8 +195,24 @@ function parseMCPConfig(filePath: string): Array<{ name: string; command?: strin
     if (config.servers && typeof config.servers === 'object')
       return Object.entries(config.servers).map(toEntry)
 
+    // Format 5: Claude Code — {"projects": {"<abs path>": {"mcpServers": {...}}}}
+    // There is NO top-level mcpServers key in ~/.claude.json, so every check
+    // above misses it and MCP findings on the flagship host were all false
+    // negatives. Servers are merged across projects and de-duplicated by name.
+    if (config.projects && typeof config.projects === 'object') {
+      const byName = new Map<string, ReturnType<typeof toEntry>>()
+      for (const project of Object.values(config.projects) as any[]) {
+        if (!project?.mcpServers || typeof project.mcpServers !== 'object') continue
+        for (const entry of Object.entries(project.mcpServers)) {
+          const parsed = toEntry(entry as [string, any])
+          if (!byName.has(parsed.name)) byName.set(parsed.name, parsed)
+        }
+      }
+      if (byName.size > 0) return [...byName.values()]
+    }
+
     // Format 4: {"name": {"command": "...", ...}}
-    const entries = Object.entries(config).filter(([_, c]: [string, any]) => c.command || c.url)
+    const entries = Object.entries(config).filter(([_, c]: [string, any]) => c && (c.command || c.url))
     if (entries.length > 0) return entries.map(toEntry)
 
     return []
@@ -286,12 +317,16 @@ export async function scanCommand(options: { json?: boolean; dir?: string; ci?: 
     return
   }
 
+  // NOT an early return. MCP servers are read from project configs too, so a
+  // machine with no installed host can still carry a critical finding — and
+  // returning here printed "nothing detected" and exited 0 while
+  // `--json --ci` on the same input exited 1 with a CRITICAL `curl | sh`
+  // server. Anyone running `keel scan --ci` in a pipeline got a false pass.
   if (installed.length === 0) {
     console.log(chalk.yellow('  No AI coding assistants detected on this machine.\n'))
-    return
+  } else {
+    console.log(chalk.green(`  Found ${installed.length} AI coding assistant(s):\n`))
   }
-
-  console.log(chalk.green(`  Found ${installed.length} AI coding assistant(s):\n`))
 
   for (const tool of installed) {
     const mcpCount = tool.mcpServers.length

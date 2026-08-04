@@ -109,19 +109,95 @@ export function assessProtection(tools: DetectedTool[], home: string, cwd: strin
 }
 
 /** `npx pkg` runs whatever is newest; `npx pkg@1.2.3` runs what you audited. */
-const RUNNER_COMMANDS = new Set(['npx', 'bunx', 'pnpx', 'uvx', 'pipx'])
-const SHELL_COMMANDS = new Set(['sh', 'bash', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh'])
+const RUNNER_COMMANDS = new Set(['npx', 'bunx', 'pnpx', 'uvx', 'pipx', 'dlx'])
+const SHELL_COMMANDS = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'powershell', 'pwsh'])
+/** Windows wrappers. `cmd /c npx …` is the DOCUMENTED MCP config shape. */
+const WRAPPER_COMMANDS = new Set(['cmd', 'cmd.exe'])
 
-function isPinned(spec: string): boolean {
-  // `@scope/name@1.2.3` → pinned. `@scope/name` and `name@latest` → not.
-  const at = spec.lastIndexOf('@')
-  if (at <= 0) return false
-  const version = spec.slice(at + 1)
-  return version.length > 0 && version !== 'latest' && version !== 'next'
+/**
+ * Commands arrive as `sh`, `/bin/sh`, or `npx.cmd` depending on platform and
+ * how the config was written. Matching the raw string missed every absolute
+ * path — `/opt/homebrew/bin/npx` sailed through unchecked.
+ */
+function commandName(command: string): string {
+  const base = command.split(/[\\/]/).pop() ?? command
+  return base.replace(/\.(cmd|exe|bat|ps1)$/i, '').toLowerCase()
 }
 
+/**
+ * Pinned means an EXACT version. Ranges (`^1.0.0`, `1`, `~1.2`, `*`) and
+ * mutable dist-tags (`beta`, `canary`) all resolve to whatever is newest at
+ * launch, which is the entire supply-chain risk this check exists to catch —
+ * yet the old test only blacklisted `latest` and `next` and passed the rest.
+ */
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
+
+/** A local path has no version to pin — flagging it would be noise. */
+function isLocalPath(spec: string): boolean {
+  return /^[./~]/.test(spec)
+}
+
+/** git+ssh://…, https://… — a remote ref, pinned only by an explicit #ref. */
+function isRemoteRef(spec: string): boolean {
+  return /^[a-z+]+:\/\//i.test(spec) || spec.startsWith('git+')
+}
+
+/** Whether this spec is something we can meaningfully judge as pinned. */
+function isVersionedSpec(spec: string): boolean {
+  return !isLocalPath(spec)
+}
+
+function isPinned(spec: string): boolean {
+  // A remote ref resolves to the default branch unless a ref is given, so
+  // `git+ssh://git@host/repo` is unpinned — and its userinfo `@` must never
+  // be mistaken for a version.
+  if (isRemoteRef(spec)) return /#.+$/.test(spec)
+  const at = spec.lastIndexOf('@')
+  if (at <= 0) return false
+  return EXACT_VERSION.test(spec.slice(at + 1))
+}
+
+/** Runner flags that consume the next argument, so it is not the package. */
+const VALUE_FLAGS = new Set(['--python', '--registry', '--from', '--with', '--index-url', '--index', '-p', '--package'])
+
+/**
+ * Pick the package spec from a runner's arguments. `args.find(a => !a.startsWith('-'))`
+ * returned option VALUES: `uvx --python 3.11 srv@1.2.3` yielded `3.11`, so a
+ * correctly pinned server was reported unpinned and the real package never checked.
+ */
+function packageSpec(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (VALUE_FLAGS.has(arg)) {
+      // `--from pkg` names the package itself; other value flags do not.
+      if (arg === '--from' || arg === '--package' || arg === '-p') return args[i + 1]
+      i++
+      continue
+    }
+    if (arg.startsWith('-')) continue
+    return arg
+  }
+  return undefined
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '::1', '0.0.0.0', '::'])
+
+/**
+ * Parse rather than regex. The old pattern matched on the raw URL prefix, so
+ * `http://localhost:3000@evil.com` — where `localhost:3000` is userinfo and
+ * the real host is evil.com — was reported as local, and every loopback
+ * address outside 127.0.0.1 (all of 127.0.0.0/8) was reported as remote.
+ */
 function isLocalUrl(url: string): boolean {
-  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(url)
+  try {
+    const hostname = new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    if (LOOPBACK_HOSTS.has(hostname)) return true
+    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true
+    if (/^::ffff:127\./i.test(hostname)) return true
+    return false
+  } catch {
+    return false
+  }
 }
 
 export function assessMcpRisk(tools: DetectedTool[]): Finding[] {
@@ -130,44 +206,67 @@ export function assessMcpRisk(tools: DetectedTool[]): Finding[] {
   for (const tool of tools) {
     for (const server of tool.mcpServers) {
       const where = `${tool.name} → MCP server "${server.name}"`
-      const args = server.args ?? []
+      const rawArgs = server.args ?? []
+      const shown = `${server.command ?? server.url ?? ''} ${rawArgs.join(' ')}`.trim()
 
-      if (server.command && SHELL_COMMANDS.has(server.command)) {
+      // `cmd /c npx -y pkg` is the documented Windows MCP shape, not an
+      // exploit. Unwrap it and judge what it actually runs; flagging the
+      // wrapper put a CRITICAL false positive in front of every Windows user
+      // following the official setup docs, AND skipped the real package.
+      let command = server.command ? commandName(server.command) : ''
+      let args = rawArgs
+      if (WRAPPER_COMMANDS.has(command)) {
+        const rest = rawArgs.slice(rawArgs[0] === '/c' || rawArgs[0] === '/k' ? 1 : 0)
+        if (rest.length > 0) {
+          command = commandName(rest[0])
+          args = rest.slice(1)
+        }
+      }
+
+      if (command && SHELL_COMMANDS.has(command)) {
         findings.push({
           id: 'mcp-shell-exec',
           severity: 'critical',
           title: 'MCP server runs through a shell',
-          evidence: `${where}: ${server.command} ${args.join(' ')}`.trim(),
+          evidence: `${where}: ${shown}`,
           remediation: 'Invoke the server binary directly instead of via a shell, so its command line cannot be rewritten by whatever it interpolates.',
         })
       }
 
-      if (server.command && RUNNER_COMMANDS.has(server.command)) {
-        const pkg = args.find(a => !a.startsWith('-'))
-        if (pkg && !isPinned(pkg)) {
+      if (command && RUNNER_COMMANDS.has(command)) {
+        const pkg = packageSpec(args)
+        if (pkg && isVersionedSpec(pkg) && !isPinned(pkg)) {
           findings.push({
             id: 'mcp-unpinned-package',
             severity: 'high',
             title: 'MCP server installs an unpinned package at launch',
-            evidence: `${where}: ${server.command} ${args.join(' ')}`.trim(),
-            remediation: `Pin the version (e.g. ${pkg}@1.2.3). Unpinned runners fetch whatever is newest, which is the slopsquatting and dependency-confusion vector.`,
+            evidence: `${where}: ${shown}`,
+            remediation: `Pin the version (e.g. ${pkg.split('@')[0] || pkg}@1.2.3). Unpinned runners resolve to whatever is newest at launch, which is the slopsquatting and dependency-confusion vector.`,
           })
         }
       }
 
-      if (server.url && /^http:\/\//i.test(server.url) && !isLocalUrl(server.url)) {
+      if (server.url && /^(http|ws):\/\//i.test(server.url) && !isLocalUrl(server.url)) {
         findings.push({
           id: 'mcp-plaintext-transport',
           severity: 'high',
           title: 'MCP server uses an unencrypted transport',
           evidence: `${where}: ${server.url}`,
-          remediation: 'Use https://. Tool arguments and results — which routinely include file contents and credentials — travel over this connection in cleartext.',
+          remediation: 'Use https:// (or wss://). Tool arguments and results — which routinely include file contents and credentials — travel over this connection in cleartext.',
         })
       }
     }
   }
 
-  return findings
+  // The same server can appear in both a global and a project config, which
+  // produced byte-identical duplicate findings and inflated the count.
+  const seen = new Set<string>()
+  return findings.filter(f => {
+    const key = `${f.id} ${f.evidence}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export function assessRisk(tools: DetectedTool[], home: string, cwd: string): Finding[] {
