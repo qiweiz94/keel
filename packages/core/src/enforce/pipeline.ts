@@ -12,6 +12,7 @@ import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
 import { ProblemLedger } from './problem-ledger.js'
+import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
@@ -34,6 +35,7 @@ export interface PipelineConfig {
   stateManager?: StateManager
   overrideStore?: import('./overrides.js').RuleOverrideStore
   researchCache?: ResearchCache
+  researchTracker?: ResearchTracker
   stuckTracker?: StuckTracker
   ledger?: ProblemLedger
   reloadRules?: () => RuleHierarchy
@@ -209,6 +211,28 @@ export class EnforcementPipeline {
               : rule
             return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey)
           }
+      }
+      // Research-before-solve obligations: a pending obligation (a failing
+      // command was seen, no fresh research since) gates the next fix via
+      // its boundaries. Discharge happens below and on recordAttemptOutcome.
+      if (rule.type === 'research' && rule.trigger && this.config.researchTracker) {
+        const researchTracker = this.config.researchTracker
+        if (researchTracker.discharge(rule, input)) continue
+        const boundaryMessage = researchTracker.boundary(rule, input)
+        if (boundaryMessage) {
+          const boundaryRule: KeelRule = boundaryMessage.action
+            ? { ...rule, action: boundaryMessage.action as KeelRule['action'] }
+            : { ...rule, action: 'redirect' as const }
+          const directive: RedirectDirective = {
+            kind: 'research',
+            required_tools: rule.satisfy?.tools?.length ? rule.satisfy.tools : ['keel_research'],
+            target: `fix action while a failing command still lacks fresh research`,
+            rationale: rule.message,
+            rule_id: rule.id,
+            suggested_call: `keel_research({ query: "<the failing module or error>" })`,
+          }
+          return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, rule.id, directive, true)
+        }
       }
     }
 
@@ -577,6 +601,12 @@ export class EnforcementPipeline {
     const cmd = commandString(input)
     if (this.config.ledger && cmd) {
       this.config.ledger.recordOutcome(input.cwd, cmd, exitCode, input.session_id)
+    }
+    if (this.config.researchTracker) {
+      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      for (const rule of rules) {
+        if (rule.type === 'research' && rule.trigger) this.config.researchTracker.observeTrigger(rule, input, exitCode)
+      }
     }
     if (!this.config.stuckTracker) return
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)

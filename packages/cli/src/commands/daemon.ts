@@ -12,6 +12,7 @@ import { StateManager } from '../core/enforce/state-manager.js'
 import { loadRuleHierarchy, parseRulesContent } from '../core/enforce/rule-parser.js'
 import { ProblemLedger } from '../core/enforce/problem-ledger.js'
 import { StuckTracker } from '../core/enforce/stuck-tracker.js'
+import { ResearchTracker } from '../core/enforce/research-tracker.js'
 import { commandString } from '../core/enforce/arg-utils.js'
 import { ResearchCache } from '../core/enforce/research/research-cache.js'
 import { fetchPage, ResearchError } from '../core/enforce/research/fetcher.js'
@@ -129,6 +130,7 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     flowTracker: new FlowTracker(),
     researchCache: sharedResearchCache,
     stuckTracker: new StuckTracker(),
+    researchTracker: new ResearchTracker(sharedResearchCache),
     ledger: sharedLedger,
     ruleHierarchy: hierarchy,
     ruleVersion: 1,

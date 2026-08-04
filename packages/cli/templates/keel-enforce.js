@@ -6360,6 +6360,9 @@ function validateRules(rules) {
     const rule = candidate;
     const label = typeof rule.id === "string" && rule.id ? rule.id : "<unnamed>";
     if (typeof rule.id !== "string" || !rule.id.trim()) errors.push("Rule is missing a non-empty id");
+    if (rule.type === "research" && !rule.topics?.length && !rule.trigger) {
+      errors.push(`Research rule "${label}" needs topics (freshness form) or a trigger (research-before-solve form)`);
+    }
     if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine \u2014 remove it or use a supported type`);
       continue;
@@ -6867,6 +6870,23 @@ var EnforcementPipeline = class {
           return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey);
         }
       }
+      if (rule.type === "research" && rule.trigger && this.config.researchTracker) {
+        const researchTracker = this.config.researchTracker;
+        if (researchTracker.discharge(rule, input)) continue;
+        const boundaryMessage = researchTracker.boundary(rule, input);
+        if (boundaryMessage) {
+          const boundaryRule = boundaryMessage.action ? { ...rule, action: boundaryMessage.action } : { ...rule, action: "redirect" };
+          const directive = {
+            kind: "research",
+            required_tools: rule.satisfy?.tools?.length ? rule.satisfy.tools : ["keel_research"],
+            target: `fix action while a failing command still lacks fresh research`,
+            rationale: rule.message,
+            rule_id: rule.id,
+            suggested_call: `keel_research({ query: "<the failing module or error>" })`
+          };
+          return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, rule.id, directive, true);
+        }
+      }
     }
     const cached = statefulRules.length || gatedRules.length || input.action_override ? null : this.config.cache.get(
       input.tool,
@@ -7137,6 +7157,12 @@ var EnforcementPipeline = class {
     const cmd = commandString(input);
     if (this.config.ledger && cmd) {
       this.config.ledger.recordOutcome(input.cwd, cmd, exitCode, input.session_id);
+    }
+    if (this.config.researchTracker) {
+      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      for (const rule of rules2) {
+        if (rule.type === "research" && rule.trigger) this.config.researchTracker.observeTrigger(rule, input, exitCode);
+      }
     }
     if (!this.config.stuckTracker) return;
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
@@ -7796,6 +7822,86 @@ function defaultMessage(ruleId, fingerprint, attempts, action) {
   return `${attempts} identical failures of "${fingerprint}" \u2014 retrying without research is blocked. Record a hypothesis (keel_hypothesis) or ask the user.`;
 }
 
+// ../core/src/enforce/research-tracker.ts
+var ResearchTracker = class {
+  constructor(researchCache) {
+    this.researchCache = researchCache;
+  }
+  researchCache;
+  pending = /* @__PURE__ */ new Map();
+  key(rule, input) {
+    return `${rule.id}:${input.cwd}:${input.session_id}`;
+  }
+  /** Arm the obligation: a FAILING command matched the trigger. */
+  observeTrigger(rule, input, exitCode) {
+    if (rule.type !== "research" || !rule.trigger) return;
+    if (!matches(rule.trigger, input)) return;
+    if (rule.trigger.exit !== void 0) {
+      const want = rule.trigger.exit;
+      if (want === "nonzero" && exitCode === 0) return;
+      if (typeof want === "number" && exitCode !== want) return;
+    }
+    this.pending.set(this.key(rule, input), { createdAt: Date.now() });
+  }
+  isPending(rule, input) {
+    if (rule.type !== "research" || !rule.trigger) return false;
+    const pending = this.pending.get(this.key(rule, input));
+    if (!pending) return false;
+    const window = (rule.research_window_seconds || 600) * 1e3;
+    if (Date.now() - pending.createdAt > window) {
+      this.pending.delete(this.key(rule, input));
+      return false;
+    }
+    return true;
+  }
+  /**
+   * Fresh research evidence discharges the obligation: either the current
+   * action is a satisfying research call, or the session cache holds fresh
+   * entries matching the rule's topics.
+   */
+  discharge(rule, input) {
+    if (!this.isPending(rule, input)) return true;
+    if (rule.satisfy && matches(rule.satisfy, input)) {
+      this.pending.delete(this.key(rule, input));
+      return true;
+    }
+    const freshnessSec = rule.freshness_seconds ?? 1800;
+    if (this.researchCache && rule.topics?.length) {
+      const probe = this.researchCache.probe(input.session_id, rule.topics, freshnessSec / 3600);
+      if (probe.hit) {
+        this.pending.delete(this.key(rule, input));
+        return true;
+      }
+    }
+    return false;
+  }
+  /** Boundary check: a fix/commit action while the obligation is pending. */
+  boundary(rule, input) {
+    if (!this.isPending(rule, input) || !rule.boundaries) return null;
+    const args = `${input.tool} ${JSON.stringify(stripContentArgs(input.args || {}))}`;
+    const mcp = mcpToolString(input);
+    for (const boundary of Object.values(rule.boundaries)) {
+      try {
+        if (boundary.pattern && new RegExp(boundary.pattern, "i").test(args)) {
+          return { message: rule.message, action: boundary.action };
+        }
+      } catch {
+      }
+      if (mcp && boundary.pattern) {
+        const words = boundary.pattern.replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+        const verbs = words.slice(1);
+        if (verbs.length && verbs.every((word) => new RegExp(`\\b${word}\\b`, "i").test(mcp))) {
+          return { message: rule.message, action: boundary.action };
+        }
+      }
+    }
+    return null;
+  }
+  clear() {
+    this.pending.clear();
+  }
+};
+
 // ../core/src/enforce/problem-ledger.ts
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync3, renameSync as renameSync2 } from "node:fs";
 import { join as join3 } from "node:path";
@@ -8442,6 +8548,7 @@ var plugin_default = {
       allowedFixTransforms: true,
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
+      researchTracker: new ResearchTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [
         path.join(directory, ".keel", "rules.yaml"),

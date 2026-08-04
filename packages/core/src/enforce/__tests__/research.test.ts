@@ -8,6 +8,7 @@ import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import { parseRulesContent } from '../rule-parser.js'
 import { ResearchCache, researchKey } from '../research/research-cache.js'
+import { ResearchTracker } from '../research-tracker.js'
 import { fetchPage, ResearchError } from '../research/fetcher.js'
 import { parseDuckDuckGo } from '../research/search.js'
 import type { EnforceInput } from '../../types.js'
@@ -31,6 +32,7 @@ function makePipeline(yaml: string, cache: ResearchCache): EnforcementPipeline {
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
     researchCache: cache,
+    researchTracker: new ResearchTracker(cache),
     ruleHierarchy: { global: rules, user: null, project: null, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
@@ -240,5 +242,95 @@ rules:
     expect((await pipeline.evaluate(input('Bash', { command: 'npm install openai' }, 'stateful-1'))).action).toBe('research')
     // Same call again: still gated (no stale allow-cache entry).
     expect((await pipeline.evaluate(input('Bash', { command: 'npm install openai' }, 'stateful-1'))).action).toBe('research')
+  })
+})
+
+const OBLIGATION_RULE = `version: 1
+rules:
+  - id: research-before-fix
+    type: research
+    trigger:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+      exit: nonzero
+    satisfy:
+      tools: [Bash]
+      pattern: "keel_research"
+    topics: ["failing"]
+    boundaries:
+      edit:
+        pattern: "apply_patch|write|edit"
+        action: redirect
+      commit:
+        pattern: "git commit"
+        action: warn
+    research_window_seconds: 600
+    freshness_seconds: 1800
+    action: redirect
+    message: "The failing command needs fresh research before you fix it."
+`
+
+describe('research-before-solve obligation (trigger/satisfy/boundaries)', () => {
+  let home: string
+  let previousHome: string | undefined
+  let cache: ResearchCache
+
+  beforeEach(() => {
+    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    previousHome = process.env.HOME
+    process.env.HOME = home
+    cache = new ResearchCache()
+  })
+
+  afterEach(() => {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    execSync(`rm -rf "${home}"`)
+  })
+
+  it('arms on a failing test run and redirects the next fix', async () => {
+    const pipeline = makePipeline(OBLIGATION_RULE, cache)
+    pipeline.recordAttemptOutcome(input('Bash', { command: 'npm test' }, 'obl-1'), 1)
+    const fix = await pipeline.evaluate(input('write', { filePath: '/tmp/src/x.ts', content: 'x' }, 'obl-1'))
+    expect(fix.action).toBe('redirect')
+    expect(fix.redirect?.kind).toBe('research')
+    expect(fix.redirect?.suggested_call).toContain('keel_research')
+  })
+
+  it('does not arm on a passing test run', async () => {
+    const pipeline = makePipeline(OBLIGATION_RULE, cache)
+    pipeline.recordAttemptOutcome(input('Bash', { command: 'npm test' }, 'obl-2'), 0)
+    const fix = await pipeline.evaluate(input('write', { filePath: '/tmp/src/x.ts', content: 'x' }, 'obl-2'))
+    expect(fix.action).toBe('allow')
+  })
+
+  it('discharges after a satisfying research action', async () => {
+    const pipeline = makePipeline(OBLIGATION_RULE, cache)
+    pipeline.recordAttemptOutcome(input('Bash', { command: 'npm test' }, 'obl-3'), 1)
+    // The research call itself hits the freshness gate ('research' — text
+    // alone is not evidence); the daemon populates the cache afterwards.
+    const research = await pipeline.evaluate(input('Bash', { command: 'keel_research {"query": "failing module"}' }, 'obl-3'))
+    expect(research.action).toBe('research')
+    cache.put({ topic: 'failing module docs 2026', kind: 'search', session_id: 'obl-3', fetched_at: Date.now(), maxAgeHours: 24, results: [], source: 'duckduckgo', truncated: false })
+    const fix = await pipeline.evaluate(input('write', { filePath: '/tmp/src/x.ts', content: 'x' }, 'obl-3'))
+    expect(fix.action).toBe('allow')
+  })
+
+  it('discharges when fresh research evidence exists in the session cache', async () => {
+    const pipeline = makePipeline(OBLIGATION_RULE, cache)
+    pipeline.recordAttemptOutcome(input('Bash', { command: 'npm test' }, 'obl-4'), 1)
+    cache.put({ topic: 'failing module docs 2026', kind: 'search', session_id: 'obl-4', fetched_at: Date.now(), maxAgeHours: 24, results: [], source: 'duckduckgo', truncated: false })
+    const fix = await pipeline.evaluate(input('write', { filePath: '/tmp/src/x.ts', content: 'x' }, 'obl-4'))
+    expect(fix.action).toBe('allow')
+  })
+
+  it('expires the obligation after the window', async () => {
+    const tracker = new ResearchTracker(cache)
+    const pipeline = makePipeline(OBLIGATION_RULE, cache)
+    pipeline.recordAttemptOutcome(input('Bash', { command: 'npm test' }, 'obl-5'), 1)
+    // Simulate an aged pending entry via a tiny window rule.
+    const rules = parseRulesContent(OBLIGATION_RULE, '/tmp/obl.yaml')
+    const agedRule = { ...rules.rules[0], research_window_seconds: -1 }
+    expect(tracker.isPending(agedRule, input('Bash', { command: 'npm test' }, 'obl-5'))).toBe(false)
   })
 })

@@ -10,6 +10,7 @@ import {
   SequenceDetector,
   StateManager,
   StuckTracker,
+  ResearchTracker,
   loadRuleHierarchy,
   parseRulesContent,
   hashRulesFile,
@@ -379,6 +380,7 @@ export default {
       allowedFixTransforms: true,
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
+      researchTracker: new ResearchTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [
         path.join(directory, '.keel', 'rules.yaml'), path.join(directory, 'AGENTS.md'), path.join(directory, 'CLAUDE.md'),

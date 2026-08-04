@@ -21,7 +21,7 @@ function matchesToolList(tools: string[], input: EnforceInput): boolean {
       && (args.content !== undefined || args.text !== undefined || args.newString !== undefined))
 }
 
-function matches(matcher: VerificationMatcher | undefined, input: EnforceInput): boolean {
+export function matches(matcher: VerificationMatcher | undefined, input: EnforceInput): boolean {
   if (!matcher) return false
   const tools = matcher.tools || (matcher.tool ? [matcher.tool] : [])
   if (tools.length && !matchesToolList(tools, input)) return false

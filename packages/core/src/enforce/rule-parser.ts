@@ -96,6 +96,9 @@ export function validateRules(rules: unknown): string[] {
     const rule = candidate as Partial<KeelRule>
     const label = typeof rule.id === 'string' && rule.id ? rule.id : '<unnamed>'
     if (typeof rule.id !== 'string' || !rule.id.trim()) errors.push('Rule is missing a non-empty id')
+    if (rule.type === 'research' && !rule.topics?.length && !rule.trigger) {
+      errors.push(`Research rule "${label}" needs topics (freshness form) or a trigger (research-before-solve form)`)
+    }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine — remove it or use a supported type`)
       continue

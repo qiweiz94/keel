@@ -55,6 +55,8 @@ export interface KeelRule {
   // ── Research/freshness rules ──
   topics?: string[]                 // regex list matched against command + reasoning
   max_age_hours?: number            // freshness horizon for the session research cache
+  research_window_seconds?: number  // research-before-solve obligation TTL (default 600)
+  freshness_seconds?: number        // evidence older than this does NOT discharge (default 1800)
 
   // ── Stuck-loop rules ──
   max_attempts?: number             // identical failing fingerprint count that redirects (default 3)
@@ -132,6 +134,8 @@ export interface VerificationMatcher {
   /** Any-of additional path targets (e.g. package.json re-arms the obligation). */
   paths?: string[]
   pattern?: string
+  /** Only match when the command exited with this code ('nonzero' for any failure). */
+  exit?: number | 'nonzero'
 }
 
 export interface VerificationBoundary {
