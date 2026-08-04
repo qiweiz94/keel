@@ -105,6 +105,24 @@ describe('verdict rendering per host', () => {
     expect(renderVerdict('cursor', verdict()).exitCode).toBe(0)
   })
 
+  it('supports gemini, which uses the Claude Code hook shape', () => {
+    // `gemini hooks migrate --from-claude` exists and advertises that
+    // equivalence, so the adapter is Claude-Code-shaped by construction.
+    expect(HOSTS).toContain('gemini')
+
+    expect(parsePayload('gemini', JSON.stringify({
+      tool_name: 'bash', tool_input: { command: 'rm -rf /' },
+    }))).toEqual({ tool: 'bash', args: { command: 'rm -rf /' } })
+
+    const blocked = renderVerdict('gemini', verdict())
+    expect(blocked.blocked).toBe(true)
+    expect(blocked.exitCode).toBe(2)
+    // The quote-truncation regression, checked for the new host too.
+    expect(blocked.stderr).toContain('Use "--force-with-lease" instead of --force.')
+
+    expect(renderVerdict('gemini', verdict({ action: 'warn' })).exitCode).toBe(0)
+  })
+
   it('fails CLOSED when keel itself could not evaluate', () => {
     for (const host of HOSTS) {
       const failure = renderVerdict(host, null)

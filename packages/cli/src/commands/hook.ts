@@ -25,7 +25,7 @@ import type { EnforceResult, ProtectionLevel } from '../core/types.js'
  * Adding a host is a row in HOST_ADAPTERS, not a new script.
  */
 
-export const HOSTS = ['claude-code', 'cline', 'cursor', 'codex', 'generic'] as const
+export const HOSTS = ['claude-code', 'cline', 'cursor', 'codex', 'gemini', 'generic'] as const
 export type Host = (typeof HOSTS)[number]
 
 export interface ParsedCall {
@@ -80,7 +80,11 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       }
     }
     case 'codex':
-    case 'claude-code': {
+    case 'claude-code':
+    case 'gemini': {
+      // Gemini CLI ships `gemini hooks migrate --from-claude`, which
+      // advertises equivalence with the Claude Code hook format, so it
+      // reads the same payload rather than a guessed one of its own.
       return {
         tool: typeof body.tool_name === 'string' ? body.tool_name : 'unknown',
         args: asRecord(body.tool_input),
@@ -162,8 +166,9 @@ export function renderVerdict(host: Host, result: EnforceResult | null): HostVer
     }
     case 'codex':
     case 'claude-code':
+    case 'gemini':
     default: {
-      // Both block on exit 2 specifically. For Codex any OTHER non-zero
+      // All three block on exit 2 specifically. For Codex any OTHER non-zero
       // means "the hook failed" and execution continues, so the code
       // matters as much as being non-zero.
       return { blocked: true, exitCode: 2, stdout: '', stderr: text }
@@ -182,7 +187,7 @@ export async function hookCommand(hostArg: string, options: { cwd?: string; leve
   const host = (HOSTS as readonly string[]).includes(hostArg) ? hostArg as Host : 'generic'
 
   // Claude Code passes the call in the environment, not on stdin.
-  const raw = host === 'claude-code' && process.env.TOOL_NAME
+  const raw = (host === 'claude-code' || host === 'gemini') && process.env.TOOL_NAME
     ? JSON.stringify({ tool_name: process.env.TOOL_NAME, tool_input: safeJson(process.env.TOOL_INPUT) })
     : await readStdin()
 

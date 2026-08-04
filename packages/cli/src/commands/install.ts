@@ -327,6 +327,7 @@ export async function installCommand(options: {
   codex?: boolean
   hermes?: boolean
   openclaw?: boolean
+  gemini?: boolean
   mcp?: boolean
   all?: boolean
 }) {
@@ -384,6 +385,10 @@ export async function installCommand(options: {
 
   if (options.openclaw || options.all) {
     await installOpenClaw()
+  }
+
+  if (options.gemini || options.all) {
+    await installGemini()
   }
 
   console.log(chalk.dim('\n  Next steps:'))
@@ -510,6 +515,25 @@ async function installHostHook(spec: { label: string; template: string; target: 
   chmodSync(spec.target, 0o755)
   console.log(chalk.green(`  ✓ Installed ${spec.label} pre-tool hook → ${spec.target}`))
   if (spec.note) console.log(chalk.yellow(`    ${spec.note}`))
+}
+
+/**
+ * Gemini CLI hook.
+ *
+ * Gemini ships `gemini hooks migrate --from-claude`, which exists to
+ * convert Claude Code hooks into its own format — so the two are
+ * equivalent by the vendor's own account, and keel reuses the Claude Code
+ * contract rather than guessing a separate one.
+ */
+async function installGemini() {
+  await installHostHook({
+    label: 'Gemini CLI',
+    template: 'gemini-pretooluse.sh',
+    target: join(homedir(), '.gemini', 'hooks', 'PreToolUse'),
+    note: 'Claude-Code-compatible by construction. If Gemini\'s format has drifted, run `gemini hooks migrate --from-claude`.',
+  })
+  console.log(chalk.dim('    Gemini also has its own Policy Engine (--policy/--admin-policy);'))
+  console.log(chalk.dim('    this hook is independent of it and enforces your keel rules.'))
 }
 
 async function installProjectPlugin() {
