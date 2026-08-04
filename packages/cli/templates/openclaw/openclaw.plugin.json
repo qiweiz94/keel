@@ -1,0 +1,13 @@
+{
+  "id": "keel",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" }
+    }
+  }
+}

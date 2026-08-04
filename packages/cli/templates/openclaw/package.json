@@ -1,0 +1,11 @@
+{
+  "name": "@get-keel/openclaw-plugin",
+  "version": "1.0.0",
+  "description": "keel guardrail and workflow governor for OpenClaw — enforces via the local keel daemon",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  }
+}

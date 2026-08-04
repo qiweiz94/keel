@@ -326,6 +326,7 @@ export async function installCommand(options: {
   cursor?: boolean
   codex?: boolean
   hermes?: boolean
+  openclaw?: boolean
   mcp?: boolean
   all?: boolean
 }) {
@@ -379,6 +380,10 @@ export async function installCommand(options: {
 
   if (options.hermes || options.all) {
     await installHermes()
+  }
+
+  if (options.openclaw || options.all) {
+    await installOpenClaw()
   }
 
   console.log(chalk.dim('\n  Next steps:'))
@@ -446,6 +451,43 @@ async function installHermes() {
   // Say what is NOT enforced, rather than letting it look covered.
   console.log(chalk.yellow('    • Hermes cannot rewrite tool arguments, so keel `fix` rules are'))
   console.log(chalk.yellow('      advisory there — they are reported, not applied'))
+}
+
+/**
+ * OpenClaw plugin — a thin client over the keel daemon.
+ *
+ * Three files into ~/.openclaw/plugins/keel/. Nothing is bundled: the
+ * plugin imports only node builtins, and `definePluginEntry` is
+ * effectively identity, so the entry object is built as a literal.
+ */
+async function installOpenClaw() {
+  const dir = join(homedir(), '.openclaw', 'plugins', 'keel')
+  mkdirSync(dir, { recursive: true })
+
+  const files = ['index.mjs', 'openclaw.plugin.json', 'package.json']
+  for (const name of files) {
+    const source = await findTemplateSource(join('openclaw', name))
+    if (!source) {
+      console.log(chalk.red(`  ✗ OpenClaw plugin source (${name}) not found. Run from the keel repo or reinstall the CLI.`))
+      return
+    }
+    copyFileSync(source, join(dir, name))
+  }
+  console.log(chalk.green(`  ✓ Installed OpenClaw plugin to ${dir}`))
+
+  createRequirementsFile()
+  console.log()
+  console.log(chalk.dim('  The OpenClaw plugin enforces through the keel daemon:'))
+  console.log(chalk.dim('    • start it with `keel daemon` (it idles out after 10 min)'))
+  console.log(chalk.dim('    • if the daemon is unreachable, only catastrophic commands are blocked'))
+  console.log(chalk.dim('      and the plugin says so loudly — it never silently stops enforcing'))
+  console.log(chalk.dim('    • approval gates fail CLOSED: an unanswered prompt denies, never allows'))
+  console.log()
+  console.log(chalk.yellow('  Enable it in your OpenClaw config, then restart:'))
+  console.log(chalk.dim('    plugins.load.paths  += "~/.openclaw/plugins/keel"'))
+  // OpenClaw's own doctor flags a plugin loaded without provenance as
+  // untracked local code. Pinning it in plugins.allow is what clears that.
+  console.log(chalk.dim('    plugins.allow       += "keel"      (pins trust; clears the provenance warning)'))
 }
 
 async function installProjectPlugin() {
