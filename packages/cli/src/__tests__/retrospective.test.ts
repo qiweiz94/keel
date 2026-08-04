@@ -210,6 +210,29 @@ describe('retrospective metrics', () => {
     expect(m!.pivoted_after_stuck).toBe(false)
   })
 
+  it('pairs results positionally when timestamps tie in the same millisecond', () => {
+    // Real plugin traces stamp with Date.now(), and a session lands
+    // several calls inside one millisecond — so every fixture in this file
+    // that spaces entries a second apart was hiding a bug. Matching on
+    // time alone returned the FIRST result for every call, and a genuine
+    // fail → fail → pass recovery scored as never passing.
+    const s = 'tied'
+    const at = (t: number, extra: Partial<FixtureEntry>): FixtureEntry => ({
+      t, agent: 'opencode-plugin', session_id: s, tool: 'Bash',
+      args: { command: 'npm test' }, rule_id: null, action: 'allow',
+      hook: 'tool.execute.before', ...extra,
+    })
+    const entries = [
+      { ...at(1000, { tool: 'write', args: { filePath: '/p/src/a.ts' } }) },
+      at(1001, {}), at(1001, { hook: 'tool.execute.after', exit: 1 }),
+      at(1001, {}), at(1001, { hook: 'tool.execute.after', exit: 1 }),
+      at(1001, {}), at(1001, { hook: 'tool.execute.after', exit: 0 }),
+    ]
+    const m = analyzeSession(entries)
+    expect(m!.verification_completed).toBe(true)
+    expect(m!.attempts_to_success).toBe(3)
+  })
+
   // ── F2: --project must re-aggregate over the filtered sessions ──
   it('re-aggregates when sessions are filtered to one project', () => {
     const a = [

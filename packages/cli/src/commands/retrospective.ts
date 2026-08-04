@@ -234,14 +234,21 @@ export function analyzeSession(entries: TraceEntry[]): SessionMetrics | null {
   // pass evidence"; we require that evidence to post-date the first edit.
   let attemptsToSuccess: number | null = null
   let verificationCompleted = false
-  const afterEvents = after.map((a) => ({ cmd: normalize(commandOf(a)), exit: a.exit, t: a.t || 0 }))
+  const afterEvents = after.map((a) => ({ cmd: normalize(commandOf(a)), exit: a.exit, t: a.t || 0, used: false }))
   const firstSourceEdit = before.findIndex(isSourceEdit)
   if (firstSourceEdit >= 0) {
     for (let i = firstSourceEdit + 1; i < before.length; i++) {
       const e = before[i]
       if (!isTestCommand(commandOf(e))) continue
       const fp = normalize(commandOf(e))
-      const paired = afterEvents.find((a) => a.cmd === fp && a.t >= (e.t || 0))
+      // Each result pairs with exactly one call, and is then consumed.
+      // Timestamps alone are not enough: the plugin stamps with
+      // Date.now(), and a real session lands several calls inside the same
+      // millisecond, so a time-ordered `find` kept returning the FIRST
+      // matching result and a fail→fail→pass run read as never passing.
+      // Consumption makes the pairing genuinely positional.
+      const paired = afterEvents.find((a) => !a.used && a.cmd === fp && a.t >= (e.t || 0))
+      if (paired) paired.used = true
       if (paired && paired.exit === 0) {
         verificationCompleted = true
         attemptsToSuccess = i - firstSourceEdit
