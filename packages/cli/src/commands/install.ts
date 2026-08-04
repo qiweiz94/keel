@@ -274,6 +274,50 @@ rules:
     message: "Publishing or deleting registry artifacts — approval required."
 `
 
+/**
+ * `keel install --mcp` — print ready-to-paste MCP config snippets. keel
+ * speaks MCP (stdio or streamable-http) so ANY MCP-native agent platform
+ * gets the keel_check / keel_audit / keel_requirements tools.
+ */
+function printMcpConfigs(): void {
+  console.log(chalk.bold.cyan('\n  ⚓ keel as an MCP server'))
+  console.log()
+  console.log(chalk.dim('  keel serves keel_check (policy verdict), keel_audit (trace), and'))
+  console.log(chalk.dim('  keel_requirements (standing requirements). Pick one transport:'))
+  console.log()
+  console.log(chalk.white('  STDIO (any platform that launches an MCP server):'))
+  console.log(`    ${chalk.dim('command:')} keel`)
+  console.log(`    ${chalk.dim('args:')} ["serve"]`)
+  console.log()
+  console.log(chalk.white('  STREAMABLE-HTTP (platforms with url-based MCP config):'))
+  console.log(`    ${chalk.dim('url:')} http://127.0.0.1:3100`)
+  console.log(`    ${chalk.dim('transport:')} streamable-http`)
+  console.log(`    ${chalk.dim('headers:')} { "Authorization": "Bearer $KEEL_DAEMON_TOKEN" }`)
+  console.log()
+  console.log(chalk.white('  OpenClaw:'))
+  console.log('    openclaw mcp set keel --command keel --args "[\'serve\']"')
+  console.log()
+  console.log(chalk.white('  Hermes (~/.hermes/config.yaml):'))
+  console.log('    mcp_servers:')
+  console.log('      keel:')
+  console.log("        command: keel")
+  console.log("        args: ['serve']")
+  console.log()
+  console.log(chalk.white('  Cline (.cline/cline_mcp_settings.json):'))
+  console.log('    { "mcpServers": { "keel": { "command": "keel", "args": ["serve"] } } }')
+  console.log()
+  console.log(chalk.white('  OpenCode (opencode.json):'))
+  console.log('    { "mcp": { "keel": { "type": "local", "command": ["keel", "serve"] } } }')
+  console.log()
+  console.log(chalk.white('  Claude Code (.mcp.json):'))
+  console.log('    { "mcpServers": { "keel": { "command": "keel", "args": ["serve"] } } }')
+  console.log()
+  console.log(chalk.dim('  The tools are advisory for the agent (self-checks + audit); for hard'))
+  console.log(chalk.dim('  enforcement use the pre-tool hook integration (keel install --opencode,'))
+  console.log(chalk.dim('  --claude-code) or the gateway (keel gateway --command "<tool server>").'))
+  console.log()
+}
+
 export async function installCommand(options: {
   opencode?: boolean
   project?: boolean
@@ -281,6 +325,7 @@ export async function installCommand(options: {
   cline?: boolean
   cursor?: boolean
   codex?: boolean
+  mcp?: boolean
   all?: boolean
 }) {
   const keelDir = join(homedir(), '.keel')
@@ -301,6 +346,11 @@ export async function installCommand(options: {
   const tracesDir = join(keelDir, 'traces')
   mkdirSync(tracesDir, { recursive: true })
   console.log(chalk.dim('  ✓ Ensured ~/.keel/traces/ exists'))
+
+  if (options.mcp) {
+    printMcpConfigs()
+    return
+  }
 
   if (options.opencode || options.all) {
     await installOpenCodePlugin()

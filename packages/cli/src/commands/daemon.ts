@@ -9,7 +9,8 @@ import { ActionCache, ContentTracker } from '../core/enforce/cache.js'
 import { SequenceDetector } from '../core/enforce/sequencer.js'
 import { FlowTracker } from '../core/enforce/flow-tracker.js'
 import { StateManager } from '../core/enforce/state-manager.js'
-import { loadRuleHierarchy } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent } from '../core/enforce/rule-parser.js'
+import { DEFAULT_RULES_YAML } from './install.js'
 import type { EnforceInput, ProtectionLevel } from '../core/types.js'
 
 /**
@@ -47,10 +48,15 @@ export function loadOrCreateDaemonToken(): string {
     const existing = readFileSync(path, 'utf-8').trim()
     if (existing) return existing
   }
+  // Atomic exclusive create: concurrent starters must never mint two
+  // tokens for one file (the loser reads the winner's).
   const token = randomBytes(24).toString('hex')
   mkdirSync(join(homedir(), '.keel'), { recursive: true })
-  writeFileSync(path, token + '\n', { mode: 0o600 })
-  return token
+  try {
+    writeFileSync(path, token + '\n', { flag: 'wx', mode: 0o600 })
+  } catch { /* a concurrent starter won — use its token */ }
+  const onDisk = existsSync(path) ? readFileSync(path, 'utf-8').trim() : token
+  return onDisk || token
 }
 
 export function loadDaemonState(): { port: number; pid: number } | null {
@@ -98,7 +104,13 @@ function ruleFingerprint(cwd: string): string {
 function pipelineFor(cwd: string): EnforcementPipeline {
   const existing = pipelineCache.get(cwd)
   if (existing) return existing
-  const hierarchy = loadRuleHierarchy(cwd)
+  let hierarchy = loadRuleHierarchy(cwd)
+  // Same fallback as the plugin: when no rules exist anywhere, enforce the
+  // built-in defaults so a bare project is still protected.
+  const scopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+  if (!scopes.some((s) => s && s.rules.length > 0)) {
+    hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, 'keel:defaults'), user: null, project: null, local: null }
+  }
   const level = (hierarchy.project?.config?.level || hierarchy.global?.config?.level || 'balanced') as ProtectionLevel
   const pipeline = new EnforcementPipeline({
     level,
@@ -134,9 +146,12 @@ export interface DaemonHandle {
   close: () => Promise<void>
 }
 
-export function startDaemon(options: { port?: number; token?: string } = {}): Promise<DaemonHandle> {
+export function startDaemon(options: { port?: number; token?: string; idleTimeoutMs?: number } = {}): Promise<DaemonHandle> {
   const token = options.token || loadOrCreateDaemonToken()
+  const idleTimeoutMs = options.idleTimeoutMs ?? 10 * 60 * 1000
+  let lastActivity = Date.now()
   const server = createServer((req, res) => {
+    lastActivity = Date.now()
     const url = new URL(req.url || '/', 'http://127.0.0.1')
     const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '') || ''
     const authed = secureEqual(bearer, token) || secureEqual(String(req.headers['x-keel-token'] || ''), token)
@@ -194,10 +209,22 @@ export function startDaemon(options: { port?: number; token?: string } = {}): Pr
   return new Promise((resolve) => {
     server.listen(options.port || 0, '127.0.0.1', () => {
       const port = (server.address() as { port: number }).port
+      // Idle exit: a daemon with no requests for the idle window shuts
+      // itself down (clients auto-spawn it again on demand), so abandoned
+      // daemons cannot pile up.
+      const idleTimer = setInterval(() => {
+        if (Date.now() - lastActivity > idleTimeoutMs) {
+          clearInterval(idleTimer)
+          server.close()
+        }
+      }, 30000)
       resolve({
         port,
         token,
-        close: () => new Promise((done) => server.close(() => done())),
+        close: () => {
+          clearInterval(idleTimer)
+          return new Promise((done) => server.close(() => done()))
+        },
       })
     })
   })
@@ -205,7 +232,7 @@ export function startDaemon(options: { port?: number; token?: string } = {}): Pr
 
 export async function daemonCommand(options: { port?: number } = {}): Promise<DaemonHandle> {
   const token = loadOrCreateDaemonToken()
-  const port = options.port || Number(process.env.KEEL_DAEMON_PORT) || DAEMON_PORT
+  const port = options.port ?? (Number(process.env.KEEL_DAEMON_PORT) || DAEMON_PORT)
   const handle = await startDaemon({ port, token })
 
   mkdirSync(join(homedir(), '.keel'), { recursive: true })

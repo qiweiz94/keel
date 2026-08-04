@@ -25,10 +25,9 @@
 import { spawn, ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PolicyEngine } from '../policy-engine.js'
+import { daemonCheck } from './daemon-client.js'
 
 // Suspicious patterns in tool descriptions (tool poisoning indicators)
 const TOOL_POISONING_PATTERNS = [
@@ -72,7 +71,6 @@ interface ToolSignature {
 export class MCPGateway {
   private upstream: ChildProcess | null = null
   private rl: ReturnType<typeof createInterface> | null = null
-  private engine: PolicyEngine
   private upstreamConfig: UpstreamConfig
   private toolCache: Map<string, ToolSignature> = new Map()
   private toolHistory: Map<string, ToolSignature[]> = new Map()
@@ -81,18 +79,9 @@ export class MCPGateway {
 
   constructor(config: UpstreamConfig) {
     this.upstreamConfig = config
-    const policyPath = process.env.KEEL_POLICY || join(process.cwd(), '.keel.yaml')
-    this.engine = new PolicyEngine(policyPath)
-    // Load unconditionally, matching `keel check`.
-    //
-    // Guarding this on existsSync left `policy` null when no file was present,
-    // which routed evaluate() into its fail-closed branch — so the gateway
-    // denied EVERY tool call while the CLI applied defaults for the same
-    // project. One engine, two opposite postures, depending on entry point.
-    //
-    // loadPolicy() itself now draws the distinction that actually matters:
-    // absent file => defaults; present but unparseable => fail closed.
-    this.engine.loadPolicy()
+    // Enforcement happens through the keel daemon (one engine, thin
+    // clients): every tool call is checked against the modern pipeline
+    // before it is forwarded upstream.
   }
 
   /** Start the upstream MCP server and begin listening */
@@ -286,16 +275,17 @@ export class MCPGateway {
       }
     }
 
-    // 2. Policy check (git hook bypass, destructive commands, etc.)
-    const polResults = this.engine.evaluate({
-      tool_name: `mcp__${toolName}`,
+    // 2. Policy check through the keel daemon (git hook bypass, destructive
+    //    commands, etc.) — the same verdicts every integration gets.
+    const verdict = await daemonCheck({
+      tool: `mcp__${toolName}`,
       args,
       cwd: process.cwd(),
-      timestamp: new Date().toISOString(),
-    })
-    if (polResults.some(r => r.action === 'block')) {
+      session_id: 'gateway',
+    }).catch(() => null)
+    if (verdict && (verdict.action === 'deny' || verdict.action === 'block' || verdict.action === 'prompt')) {
       return {
-        content: [{ type: 'text', text: `POLICY BLOCKED: ${polResults.map(r => r.message).join('; ')}` }],
+        content: [{ type: 'text', text: `POLICY BLOCKED: ${verdict.message}` }],
         isError: true,
       }
     }
@@ -396,18 +386,17 @@ export class MCPGateway {
           }
         }
         if (filePath) {
-          const verdicts = this.engine.evaluate({
-            tool_name: 'read_file',
+          const verdict = await daemonCheck({
+            tool: 'read_file',
             args: { filePath },
             cwd: process.cwd(),
-            timestamp: new Date().toISOString(),
-          })
-          const blocked = verdicts.find((v) => v.action === 'block')
-          if (blocked) {
+            session_id: 'gateway',
+          }).catch(() => null)
+          if (verdict && (verdict.action === 'deny' || verdict.action === 'block' || verdict.action === 'prompt')) {
             return {
               jsonrpc: '2.0',
               id: msg.id,
-              error: { code: -32000, message: `keel: ${blocked.message}` },
+              error: { code: -32000, message: `keel: ${verdict.message}` },
             }
           }
         }

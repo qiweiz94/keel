@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,22 +58,32 @@ describe('one engine, not two', () => {
 })
 
 describe('policy-absence semantics are the same at every entry point', () => {
-  it('the gateway applies defaults when no policy file exists, like the CLI', () => {
-    // Previously the gateway skipped loadPolicy() when the file was missing,
-    // leaving policy null so evaluate() fail-closed and denied EVERY tool call
-    // — while `keel check` applied defaults for the same project.
-    const gateway = new MCPGateway({ command: 'true', args: [] })
-    const engine = (gateway as any).engine as InstanceType<typeof CorePolicyEngine>
-
-    const results = engine.evaluate({
-      tool_name: 'bash', args: { command: 'ls -la' }, cwd: '.', timestamp: '',
-    })
-    expect(results.some((r) => r.rule_name === 'fail-closed')).toBe(false)
-
-    // ...and a genuinely dangerous command is still blocked by the defaults.
-    const bad = engine.evaluate({
-      tool_name: 'bash', args: { command: 'rm -rf /' }, cwd: '.', timestamp: '',
-    })
-    expect(bad.some((r) => r.action === 'block')).toBe(true)
+  it('the gateway applies defaults when no policy file exists, like the CLI', async () => {
+    // The gateway (and every integration) enforces through the keel daemon,
+    // which applies the DEFAULT rules when no rules.yaml exists — benign
+    // actions pass, dangerous ones are caught by the defaults.
+    const home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    const project = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    const previousHome = process.env.HOME
+    process.env.HOME = home
+    process.env.KEEL_CLI_ENTRY = join(HERE, '..', '..', 'dist', 'index.js')
+    try {
+      const { daemonCheck } = await import('../mcp/daemon-client.js')
+      const benign = await daemonCheck({ tool: 'Bash', args: { command: 'ls -la' }, cwd: project, session_id: 'conv-1' })
+      expect(benign.action).toBe('allow')
+      const dangerous = await daemonCheck({ tool: 'Bash', args: { command: 'rm -rf /' }, cwd: project, session_id: 'conv-1' })
+      expect(dangerous.action).not.toBe('allow')
+      expect(dangerous.rule_id).toBe('no-destructive-commands')
+    } finally {
+      delete process.env.KEEL_CLI_ENTRY
+      if (previousHome === undefined) delete process.env.HOME
+      else process.env.HOME = previousHome
+      execSync(`rm -rf "${home}" "${project}"`)
+      try {
+        const { loadDaemonState } = await import('../commands/daemon.js')
+        const state = loadDaemonState()
+        if (state) process.kill(state.pid, 'SIGTERM')
+      } catch {}
+    }
   })
 })

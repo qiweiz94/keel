@@ -247,6 +247,7 @@ program
   .option('--cline', 'Wire Cline (.clinerules + MCP check server)')
   .option('--cursor', 'Wire Cursor (.cursor/rules declarative rules)')
   .option('--codex', 'Wire Codex CLI (AGENTS.md instructions)')
+  .option('--mcp', 'Print MCP server config snippets for any MCP-native platform')
   .option('--all', 'Install everything (default)')
   .action(installCommand)
 
