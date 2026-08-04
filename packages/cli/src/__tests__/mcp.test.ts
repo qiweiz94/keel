@@ -106,6 +106,7 @@ describe('keel serve (MCP stdio, thin client of the daemon)', () => {
     expect(tools).toContain('keel_research')
     expect(tools).toContain('keel_fetch')
     expect(tools).toContain('keel_search_cache')
+    expect(tools).toContain('keel_hypothesis')
 
     const first = (responses[2].result as { content: Array<{ text: string }> }).content[0].text
     expect(first).toMatch(/VERDICT: warn/)

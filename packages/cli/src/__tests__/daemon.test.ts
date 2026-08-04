@@ -168,4 +168,34 @@ describe('keel daemon', () => {
       await handle.close()
     }
   })
+
+  it('records outcomes and hypotheses through the ledger endpoints', async () => {
+    const handle = await startDaemon({})
+    try {
+      const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${handle.token}` }
+      const outcome = await (await fetch(`http://127.0.0.1:${handle.port}/v1/outcome`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ session_id: 'ledger-1', cwd: project, tool: 'Bash', args: { command: 'demo-token' }, exit_code: 1 }),
+      })).json()
+      expect(outcome.recorded).toBe(true)
+
+      const hyp = await (await fetch(`http://127.0.0.1:${handle.port}/v1/hypothesis`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ session_id: 'ledger-1', statement: 'Because X, Y fails.' }),
+      })).json()
+      expect(hyp.hypothesis.statement).toContain('Because')
+      expect(hyp.problem_key).toBeTruthy()
+
+      const noStatement = await fetch(`http://127.0.0.1:${handle.port}/v1/hypothesis`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ session_id: 'ledger-2' }),
+      })
+      expect(noStatement.status).toBe(400)
+    } finally {
+      await handle.close()
+    }
+  })
 })

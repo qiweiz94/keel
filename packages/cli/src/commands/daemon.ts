@@ -10,6 +10,9 @@ import { SequenceDetector } from '../core/enforce/sequencer.js'
 import { FlowTracker } from '../core/enforce/flow-tracker.js'
 import { StateManager } from '../core/enforce/state-manager.js'
 import { loadRuleHierarchy, parseRulesContent } from '../core/enforce/rule-parser.js'
+import { ProblemLedger } from '../core/enforce/problem-ledger.js'
+import { StuckTracker } from '../core/enforce/stuck-tracker.js'
+import { commandString } from '../core/enforce/arg-utils.js'
 import { ResearchCache } from '../core/enforce/research/research-cache.js'
 import { fetchPage, ResearchError } from '../core/enforce/research/fetcher.js'
 import { webSearch, type SearchConfig } from '../core/enforce/research/search.js'
@@ -85,6 +88,7 @@ function secureEqual(a: string, b: string): boolean {
 const pipelineCache = new Map<string, EnforcementPipeline>()
 const sharedState = new StateManager()
 const sharedResearchCache = new ResearchCache()
+const sharedLedger = new ProblemLedger()
 
 function ruleFingerprint(cwd: string): string {
   const sources = [
@@ -124,6 +128,8 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
     researchCache: sharedResearchCache,
+    stuckTracker: new StuckTracker(),
+    ledger: sharedLedger,
     ruleHierarchy: hierarchy,
     ruleVersion: 1,
     allowedFixTransforms: true,
@@ -301,6 +307,47 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
       const sessionId = url.searchParams.get('session_id') || 'daemon'
       const topic = url.searchParams.get('topic') || undefined
       return send(200, { entries: sharedResearchCache.list(sessionId, topic) })
+    }
+
+    if (url.pathname === '/v1/hypothesis' && req.method === 'POST') {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { problem_key?: string; statement?: string; evidence?: string[]; session_id?: string }
+          if (!parsed.statement || typeof parsed.statement !== 'string') {
+            return send(400, { error: 'statement is required' })
+          }
+          let problemKey = parsed.problem_key
+          if (!problemKey) problemKey = sharedLedger.activeProblemKey(parsed.session_id || 'daemon') || ''
+          if (!problemKey) return send(400, { error: 'no active problem — provide problem_key' })
+          const hypothesis = sharedLedger.addHypothesis(problemKey, parsed.statement, parsed.evidence || [])
+          return send(200, { hypothesis, problem_key: problemKey })
+        } catch (err) {
+          return send(400, { error: String(err) })
+        }
+      })
+      return
+    }
+
+    if (url.pathname === '/v1/outcome' && req.method === 'POST') {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { session_id?: string; cwd?: string; tool?: string; args?: Record<string, unknown>; exit_code?: number | null }
+          const cwd = parsed.cwd || process.cwd()
+          const command = commandString({ tool: parsed.tool || 'unknown', args: parsed.args || {}, cwd, session_id: parsed.session_id || 'daemon', turn_number: 1, context_tokens: 0, level: 'balanced', context: 'local', agent: 'unknown', subagent_of: null } as EnforceInput)
+          const exit = parsed.exit_code === undefined ? null : Number(parsed.exit_code)
+          sharedLedger.recordOutcome(cwd, command, exit, parsed.session_id || 'daemon')
+          const pipeline = pipelineFor(cwd)
+          pipeline.recordAttemptOutcome({ tool: parsed.tool || 'unknown', args: parsed.args || {}, cwd, session_id: parsed.session_id || 'daemon', turn_number: 1, context_tokens: 0, level: 'balanced', context: 'local', agent: 'unknown', subagent_of: null } as EnforceInput, exit)
+          return send(200, { recorded: true })
+        } catch (err) {
+          return send(400, { error: String(err) })
+        }
+      })
+      return
     }
 
     return send(404, { error: 'not found' })

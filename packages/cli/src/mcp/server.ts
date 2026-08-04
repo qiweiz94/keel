@@ -21,7 +21,7 @@ import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { ensureDaemon, daemonCheck, daemonRequirements, daemonResearch, daemonResearchCache } from './daemon-client.js'
+import { ensureDaemon, daemonCheck, daemonRequirements, daemonResearch, daemonResearchCache, daemonHypothesis } from './daemon-client.js'
 import type { EnforceResult } from '../core/types.js'
 import type { ResearchEntry } from '../core/enforce/research/research-cache.js'
 
@@ -110,6 +110,20 @@ function toolDefinitions() {
         required: ['session_id'],
       },
     },
+    {
+      name: 'keel_hypothesis',
+      description: 'Record a root-cause hypothesis for the current problem BEFORE a complex or destructive fix. Discharges diagnosis obligations; falsified by a later failing verification.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          statement: { type: 'string', description: 'One sentence: "Because X, Y fails. Fix: Z."' },
+          evidence: { type: 'array', items: { type: 'string' }, description: 'Evidence ids from keel_research or git log/blame/bisect' },
+          problem_key: { type: 'string', description: 'Optional — derived from the session\'s recent failing commands' },
+          session_id: { type: 'string' },
+        },
+        required: ['statement'],
+      },
+    },
   ]
 }
 
@@ -141,6 +155,22 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     try {
       const content = await daemonRequirements(cwd)
       return { content: [{ type: 'text', text: content || 'No standing requirements configured.' }] }
+    } catch (err) {
+      return { content: [{ type: 'text', text: `KEEL ERROR: ${err}` }], isError: true }
+    }
+  }
+
+  if (name === 'keel_hypothesis') {
+    try {
+      const statement = String(args.statement || '')
+      if (!statement) return { content: [{ type: 'text', text: 'KEEL ERROR: statement is required' }], isError: true }
+      const result = await daemonHypothesis({
+        statement,
+        evidence: Array.isArray(args.evidence) ? args.evidence.map(String) : [],
+        problem_key: args.problem_key ? String(args.problem_key) : undefined,
+        session_id: String(args.session_id || 'mcp'),
+      })
+      return { content: [{ type: 'text', text: `HYPOTHESIS RECORDED: ${result.hypothesis.id}\nPROBLEM: ${result.problem_key}\nSTATEMENT: ${statement}` }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `KEEL ERROR: ${err}` }], isError: true }
     }

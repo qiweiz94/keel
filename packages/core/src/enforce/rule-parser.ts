@@ -80,7 +80,7 @@ export function validateRules(rules: unknown): string[] {
   const validTypes = new Set([
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
-    'verification', 'meta', 'research', 'stuck',
+    'verification', 'meta', 'research', 'stuck', 'diagnosis',
   ])
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])

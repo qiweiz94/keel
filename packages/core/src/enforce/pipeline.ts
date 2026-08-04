@@ -11,6 +11,7 @@ import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validate
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
+import { ProblemLedger } from './problem-ledger.js'
 import type { ResearchCache } from './research/research-cache.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
@@ -34,6 +35,7 @@ export interface PipelineConfig {
   overrideStore?: import('./overrides.js').RuleOverrideStore
   researchCache?: ResearchCache
   stuckTracker?: StuckTracker
+  ledger?: ProblemLedger
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
   onRulesReload?: (hierarchy: RuleHierarchy) => void
@@ -395,6 +397,44 @@ export class EnforcementPipeline {
         continue
       }
 
+      // Match against diagnosis rules (root-cause marker): complex or
+      // destructive fixes are gated on a fresh hypothesis (or diagnosis
+      // evidence) for the session's active problem in the ledger.
+      if (rule.type === 'diagnosis' && this.config.ledger) {
+        const cmdStr = commandString(input)
+
+        // Diagnosis evidence actions (git log/blame/bisect) are recognized
+        // regardless of the trigger — they record evidence on the active
+        // problem and pass.
+        if (rule.fallback_tools?.includes(input.tool) && rule.fallback_pattern && this.matchesRulePattern(rule.fallback_pattern, cmdStr)) {
+          const activeKey = this.config.ledger.activeProblemKey(input.session_id)
+          if (activeKey) this.config.ledger.recordDiagnosis(activeKey, cmdStr)
+          continue
+        }
+
+        if (!rule.match) continue
+        const haystack = `${input.tool} ${JSON.stringify(input.args)}`
+        if (!this.matchesRulePattern(rule.match, haystack)) continue
+        const windowSec = rule.hypothesis_window_seconds ?? 900
+        const problemKey = this.config.ledger.activeProblemKey(input.session_id)
+        // Nothing is failing — nothing to diagnose; never stall green work.
+        if (!problemKey) continue
+
+        const hasHypothesis = this.config.ledger.hasFreshHypothesis(problemKey, windowSec)
+        const hasDiagnosis = this.config.ledger.hasFreshDiagnosis(problemKey, windowSec)
+        if (hasHypothesis || hasDiagnosis) continue
+
+        const directive: RedirectDirective = {
+          kind: 'diagnosis',
+          required_tools: rule.hypothesis_tools ?? ['keel_hypothesis'],
+          target: 'complex fix without a stated root cause',
+          rationale: rule.message,
+          rule_id: rule.id,
+          suggested_call: 'keel_hypothesis({ statement: "Because X, Y fails. Fix: Z." })',
+        }
+        return this.violation(input, { ...rule, action: rule.action || 'redirect' }, rule.message, start, 2, rule.id, directive, true)
+      }
+
       // Match against knowledge-freshness rules: the agent is about to act
       // on a topic whose session research is missing or stale. Excluded
       // from the Tier-1 allow-cache (stateful per session) so a cached
@@ -534,11 +574,15 @@ export class EnforcementPipeline {
    * run resets the loop, and matching rules update their counters.
    */
   recordAttemptOutcome(input: EnforceInput, exitCode: number | null): void {
+    const cmd = commandString(input)
+    if (this.config.ledger && cmd) {
+      this.config.ledger.recordOutcome(input.cwd, cmd, exitCode, input.session_id)
+    }
     if (!this.config.stuckTracker) return
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
     for (const rule of rules) {
       if (rule.type !== 'stuck' || !rule.match) continue
-      if (!this.matchesRulePattern(rule.match, commandString(input))) continue
+      if (!this.matchesRulePattern(rule.match, cmd)) continue
       this.config.stuckTracker.recordOutcome(rule, input, exitCode)
     }
   }

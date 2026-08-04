@@ -14,7 +14,7 @@ export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
-  | 'research' | 'stuck'
+  | 'research' | 'stuck' | 'diagnosis'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -62,6 +62,13 @@ export interface KeelRule {
   fingerprint?: 'auto' | 'exact'    // auto = normalized identity (default), exact = raw string
   require_failure?: boolean         // only count attempts with a nonzero exit (default true)
   escalation?: Array<{ at: number; action: EnforcementAction; message: string }>  // custom ladder
+
+  // ── Diagnosis rules (root-cause marker) ──
+  require_hypothesis?: boolean      // gate the action on a fresh ledger hypothesis (default true)
+  hypothesis_window_seconds?: number  // hypothesis freshness window (default 900)
+  hypothesis_tools?: string[]       // tools that record hypotheses (default ['keel_hypothesis'])
+  fallback_tools?: string[]         // diagnosis EVIDENCE tools that also discharge (e.g. Bash)
+  fallback_pattern?: string         // regex for fallback evidence commands (git log|blame|bisect)
 
   // ── Environment rules ──
   vars?: string[]

@@ -6346,7 +6346,8 @@ function validateRules(rules) {
     "verification",
     "meta",
     "research",
-    "stuck"
+    "stuck",
+    "diagnosis"
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -7008,6 +7009,32 @@ var EnforcementPipeline = class {
         }
         continue;
       }
+      if (rule.type === "diagnosis" && this.config.ledger) {
+        const cmdStr = commandString(input);
+        if (rule.fallback_tools?.includes(input.tool) && rule.fallback_pattern && this.matchesRulePattern(rule.fallback_pattern, cmdStr)) {
+          const activeKey = this.config.ledger.activeProblemKey(input.session_id);
+          if (activeKey) this.config.ledger.recordDiagnosis(activeKey, cmdStr);
+          continue;
+        }
+        if (!rule.match) continue;
+        const haystack = `${input.tool} ${JSON.stringify(input.args)}`;
+        if (!this.matchesRulePattern(rule.match, haystack)) continue;
+        const windowSec = rule.hypothesis_window_seconds ?? 900;
+        const problemKey2 = this.config.ledger.activeProblemKey(input.session_id);
+        if (!problemKey2) continue;
+        const hasHypothesis = this.config.ledger.hasFreshHypothesis(problemKey2, windowSec);
+        const hasDiagnosis = this.config.ledger.hasFreshDiagnosis(problemKey2, windowSec);
+        if (hasHypothesis || hasDiagnosis) continue;
+        const directive = {
+          kind: "diagnosis",
+          required_tools: rule.hypothesis_tools ?? ["keel_hypothesis"],
+          target: "complex fix without a stated root cause",
+          rationale: rule.message,
+          rule_id: rule.id,
+          suggested_call: 'keel_hypothesis({ statement: "Because X, Y fails. Fix: Z." })'
+        };
+        return this.violation(input, { ...rule, action: rule.action || "redirect" }, rule.message, start, 2, rule.id, directive, true);
+      }
       if (rule.type === "research" && rule.topics?.length) {
         const haystack = `${commandString(input)} ${input.reasoning || ""}`;
         if (!rule.topics.some((t) => this.matchesRulePattern(t, haystack))) continue;
@@ -7107,11 +7134,15 @@ var EnforcementPipeline = class {
    * run resets the loop, and matching rules update their counters.
    */
   recordAttemptOutcome(input, exitCode) {
+    const cmd = commandString(input);
+    if (this.config.ledger && cmd) {
+      this.config.ledger.recordOutcome(input.cwd, cmd, exitCode, input.session_id);
+    }
     if (!this.config.stuckTracker) return;
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
     for (const rule of rules) {
       if (rule.type !== "stuck" || !rule.match) continue;
-      if (!this.matchesRulePattern(rule.match, commandString(input))) continue;
+      if (!this.matchesRulePattern(rule.match, cmd)) continue;
       this.config.stuckTracker.recordOutcome(rule, input, exitCode);
     }
   }
@@ -7765,10 +7796,16 @@ function defaultMessage(ruleId, fingerprint, attempts, action) {
   return `${attempts} identical failures of "${fingerprint}" \u2014 retrying without research is blocked. Record a hypothesis (keel_hypothesis) or ask the user.`;
 }
 
-// ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync } from "node:fs";
+// ../core/src/enforce/problem-ledger.ts
+import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync3, renameSync as renameSync2 } from "node:fs";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
+import { createHash as createHash2 } from "node:crypto";
+
+// ../core/src/enforce/audit.ts
+import { appendFileSync, existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, readdirSync } from "node:fs";
+import { join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -7805,22 +7842,22 @@ import {
   generateKeyPairSync,
   createPrivateKey,
   createPublicKey,
-  createHash as createHash2,
+  createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync7, readFileSync as readFileSync7, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync2 } from "node:fs";
-import { join as join4 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { existsSync as existsSync8, readFileSync as readFileSync8, writeFileSync as writeFileSync5, mkdirSync as mkdirSync5, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync3 } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 var signingKey = null;
 function keyPath() {
-  return join4(homedir4(), ".keel", "receipt-key.json");
+  return join5(homedir5(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join4(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join5(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync7(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync8(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -7850,24 +7887,24 @@ function initReceiptKey() {
   });
   const privJwk = createPrivateKey({ key: kp.privateKey, format: "der", type: "pkcs8" }).export({ format: "jwk" });
   const pubJwk = createPublicKey({ key: kp.publicKey, format: "der", type: "spki" }).export({ format: "jwk" });
-  const kid = createHash2("sha256").update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: pubJwk.x })).digest("base64url");
+  const kid = createHash3("sha256").update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: pubJwk.x })).digest("base64url");
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join4(homedir4(), ".keel");
-    if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
-    writeFileSync4(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join5(homedir5(), ".keel");
+    if (!existsSync8(dir)) mkdirSync5(dir, { recursive: true });
+    writeFileSync5(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join4(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join5(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines = readFileSync7(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines = readFileSync8(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -7881,7 +7918,7 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   initReceiptKey();
   const session = sessionName || process.env.KEEL_SESSION_ID || "default";
   if (!receiptChain.has(session)) receiptChain.set(session, loadReceiptChainHead(session));
-  const argsHash = createHash2("sha256").update(JSON.stringify(args)).digest("hex");
+  const argsHash = createHash3("sha256").update(JSON.stringify(args)).digest("hex");
   const receipt = {
     version: "action-receipt/v1",
     id: randomUUID(),
@@ -7894,25 +7931,25 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
     receipt_hash: ""
   };
   const { receipt_hash: _, signature: _s, ...toHash } = receipt;
-  receipt.receipt_hash = createHash2("sha256").update(JSON.stringify(toHash)).digest("hex");
+  receipt.receipt_hash = createHash3("sha256").update(JSON.stringify(toHash)).digest("hex");
   const key = signingKey;
   const privateKey = createPrivateKey({ key: key.privateJwk, format: "jwk" });
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join4(process.cwd(), ".keel", "receipts");
-    if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
-    appendFileSync2(join4(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join5(process.cwd(), ".keel", "receipts");
+    if (!existsSync8(dir)) mkdirSync5(dir, { recursive: true });
+    appendFileSync2(join5(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync3 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
-var STATE_DIR = join5(homedir5(), ".keel", "state");
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+var STATE_DIR = join6(homedir6(), ".keel", "state");
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -7923,13 +7960,13 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join5(STATE_DIR, `${name}.json`);
+    return join6(STATE_DIR, `${name}.json`);
   }
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
-      if (existsSync8(p)) {
-        return JSON.parse(readFileSync8(p, "utf-8"));
+      if (existsSync9(p)) {
+        return JSON.parse(readFileSync9(p, "utf-8"));
       }
     } catch {
     }
@@ -7937,11 +7974,11 @@ var StateManager = class {
   }
   saveFile(name, data) {
     try {
-      mkdirSync5(STATE_DIR, { recursive: true });
+      mkdirSync6(STATE_DIR, { recursive: true });
       const p = this.statePath(name);
       const tmp = p + ".tmp";
-      writeFileSync5(tmp, JSON.stringify(data));
-      renameSync3(tmp, p);
+      writeFileSync6(tmp, JSON.stringify(data));
+      renameSync4(tmp, p);
     } catch {
     }
   }

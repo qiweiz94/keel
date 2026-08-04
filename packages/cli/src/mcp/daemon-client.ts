@@ -142,3 +142,38 @@ export async function daemonResearchCache(sessionId: string, topic?: string): Pr
   if (!res.ok) throw new Error(`keel daemon research cache failed (${res.status})`)
   return (await res.json()) as { entries: Array<import('../core/enforce/research/research-cache.js').ResearchEntry> }
 }
+
+export async function daemonHypothesis(input: {
+  statement: string
+  evidence?: string[]
+  problem_key?: string
+  session_id: string
+}): Promise<{ hypothesis: import('../core/enforce/problem-ledger.js').Hypothesis; problem_key: string }> {
+  const { port, token } = await ensureDaemon()
+  const res = await fetch(`http://127.0.0.1:${port}/v1/hypothesis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) throw new Error(`keel daemon hypothesis failed (${res.status})`)
+  return (await res.json()) as { hypothesis: import('../core/enforce/problem-ledger.js').Hypothesis; problem_key: string }
+}
+
+export async function daemonOutcome(input: {
+  session_id: string
+  cwd?: string
+  tool?: string
+  args?: Record<string, unknown>
+  exit_code?: number | null
+}): Promise<{ recorded: boolean }> {
+  const { port, token } = await ensureDaemon()
+  const res = await fetch(`http://127.0.0.1:${port}/v1/outcome`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) throw new Error(`keel daemon outcome failed (${res.status})`)
+  return (await res.json()) as { recorded: boolean }
+}
