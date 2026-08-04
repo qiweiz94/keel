@@ -24,14 +24,14 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=moderate
       - run: npm run build
-      # Test suites assume POSIX path semantics in rule patterns (negated
-      # paths, /tmp-style fixtures). Windows: install/build/lint/audit are
-      # verified; vitest suites run on posix until the core matcher
-      # normalizes path separators (see ROADMAP "Windows path semantics").
+      # Runs on all three platforms. The suites previously used POSIX shell
+      # calls (`mktemp -d`, `rm -rf`, `chmod`) for fixtures, so Windows ran
+      # lint only — a three-OS matrix reporting a type-check as coverage.
+      # Those are Node APIs now; the handful of suites that put a
+      # `#!/bin/bash` shim on PATH are gated by `describePosixShim`
+      # (see src/__tests__/helpers/platform.ts) rather than skipped wholesale.
       - run: npm test
-        if: matrix.os != 'windows-latest'
       - run: npx vitest run packages/cli/src/__tests__
-        if: matrix.os != 'windows-latest'
         env:
           CI: true
       - run: npm run lint

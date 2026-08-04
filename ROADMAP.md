@@ -40,7 +40,8 @@ accumulate a false-positive record before they ever interrupt anyone.
   on real traffic justifies it
 - Additional stuck detectors: oscillation (A→B→A) and semantic livelock
 - Week-over-week deltas in `keel retrospective`
-- Windows: vitest is currently skipped in CI (path semantics)
+- Windows: a POSIX `.cmd` shim so the PATH-shim suites run there too — they are
+  currently gated by `describePosixShim`; everything else runs on all three platforms
 
 **Later**
 - Rule catalog with severity/confidence metadata and a promotion workflow

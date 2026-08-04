@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execSync, spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,8 +27,8 @@ let dir: string
 let home: string
 
 beforeEach(() => {
-  dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
-  home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+  dir = mkdtempSync(join(tmpdir(), 'keel-test-'))
+  home = mkdtempSync(join(tmpdir(), 'keel-test-'))
   mkdirSync(join(home, '.keel'), { recursive: true })
   writeFileSync(join(home, '.keel', 'rules.yaml'), `version: 1
 level: balanced
@@ -41,7 +42,7 @@ rules:
 })
 
 afterEach(() => {
-  execSync(`rm -rf "${dir}" "${home}"`)
+  rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true })
 })
 
 function startServer(): Promise<{ port: number; token: string; kill: () => void }> {

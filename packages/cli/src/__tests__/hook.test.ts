@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
 import { writeFileSync, mkdirSync, chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -74,7 +75,7 @@ function runHook(toolName: string, toolInput: object): { stdout: string; stderr:
   }
 }
 
-describe('Claude Code PreToolUse hook', () => {
+describePosixShim('Claude Code PreToolUse hook', () => {
   beforeAll(() => {
     testDir = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'keel-hook-'))
     tempHome = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'keel-home-'))

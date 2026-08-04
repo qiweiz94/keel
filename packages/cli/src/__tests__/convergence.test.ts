@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { execSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -69,8 +70,8 @@ describe('policy-absence semantics are the same at every entry point', () => {
     // The gateway (and every integration) enforces through the keel daemon,
     // which applies the DEFAULT rules when no rules.yaml exists — benign
     // actions pass, dangerous ones are caught by the defaults.
-    const home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
-    const project = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    const home = mkdtempSync(join(tmpdir(), 'keel-test-'))
+    const project = mkdtempSync(join(tmpdir(), 'keel-test-'))
     const previousHome = process.env.HOME
     process.env.HOME = home
     process.env.KEEL_CLI_ENTRY = join(HERE, '..', '..', 'dist', 'index.js')
@@ -85,7 +86,7 @@ describe('policy-absence semantics are the same at every entry point', () => {
       delete process.env.KEEL_CLI_ENTRY
       if (previousHome === undefined) delete process.env.HOME
       else process.env.HOME = previousHome
-      execSync(`rm -rf "${home}" "${project}"`)
+      rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true })
       try {
         const { loadDaemonState } = await import('../commands/daemon.js')
         const state = loadDaemonState()

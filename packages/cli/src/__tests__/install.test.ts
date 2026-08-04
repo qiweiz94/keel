@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, chmodSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -33,21 +35,21 @@ function run(args: string, opts: { cwd?: string; path?: string; home?: string } 
 }
 
 beforeEach(() => {
-  dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+  dir = mkdtempSync(join(tmpdir(), 'keel-test-'))
   execSync('git init', { cwd: dir })
   execSync('git config user.email t@t.com', { cwd: dir })
   execSync('git config user.name t', { cwd: dir })
   shim = join(dir, 'shim')
-  execSync(`mkdir -p "${shim}"`)
+  mkdirSync(shim, { recursive: true })
   writeFileSync(join(shim, 'keel'), `#!/bin/bash\nexec node "${CLI}" "$@"\n`, 'utf-8')
   chmodSync(join(shim, 'keel'), 0o755)
 })
 
 afterEach(() => {
-  execSync(`rm -rf "${dir}"`)
+  rmSync(dir, { recursive: true, force: true })
 })
 
-describe('init --hooks', () => {
+describePosixShim('init --hooks', () => {
   it('preserves an existing hook instead of overwriting it', () => {
     const hook = join(dir, '.git', 'hooks', 'pre-commit')
     writeFileSync(hook, '#!/bin/bash\necho PROJECT-LINT-RAN\n', 'utf-8')
@@ -108,7 +110,7 @@ describe('init --hooks', () => {
   })
 })
 
-describe('policy loading fails closed', () => {
+describePosixShim('policy loading fails closed', () => {
   it('denies when the policy file is empty', () => {
     // parseYaml("") returns null without throwing, so this must be checked
     // explicitly — it used to throw a TypeError and crash the CLI.
@@ -132,7 +134,7 @@ describe('policy loading fails closed', () => {
   })
 })
 
-describe('the policy protects its own configuration', () => {
+describePosixShim('the policy protects its own configuration', () => {
   const protectedPaths = [
     '.keel.yaml',
     '.keel/audit/audit.log',
@@ -160,11 +162,11 @@ describe('install --opencode creates the global rules', () => {
   let home: string
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-test-'))
   })
 
   afterEach(() => {
-    execSync(`rm -rf "${home}"`)
+    rmSync(home, { recursive: true, force: true })
   })
 
   it('creates ~/.keel/rules.yaml with the current defaults', () => {

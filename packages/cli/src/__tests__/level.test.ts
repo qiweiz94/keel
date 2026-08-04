@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync, chmodSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,20 +40,20 @@ rules:
 `
 
 beforeEach(() => {
-  dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
-  home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+  dir = mkdtempSync(join(tmpdir(), 'keel-test-'))
+  home = mkdtempSync(join(tmpdir(), 'keel-test-'))
   mkdirSync(join(dir, '.keel'), { recursive: true })
   shim = join(dir, 'shim')
-  execSync(`mkdir -p "${shim}"`)
+  mkdirSync(shim, { recursive: true })
   writeFileSync(join(shim, 'keel'), `#!/bin/bash\nexec node "${CLI}" "$@"\n`, 'utf-8')
-  execSync(`chmod +x "${shim}"`)
+  chmodSync(shim, 0o755)
 })
 
 afterEach(() => {
-  execSync(`rm -rf "${dir}" "${home}"`)
+  rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true })
 })
 
-describe('keel level (the speed dial)', () => {
+describePosixShim('keel level (the speed dial)', () => {
   it('rejects an invalid level', () => {
     const out = run('level turbo')
     expect(out.stdout).toContain('Invalid level')
@@ -105,7 +107,7 @@ describe('keel level (the speed dial)', () => {
   })
 })
 
-describe('keel dashboard', () => {
+describePosixShim('keel dashboard', () => {
   it('--once prints the dial panel', () => {
     mkdirSync(join(home, '.keel'), { recursive: true })
     writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES)
@@ -126,7 +128,7 @@ describe('keel dashboard', () => {
   })
 })
 
-describe('keel status (enforcement health)', () => {
+describePosixShim('keel status (enforcement health)', () => {
   it('reports the dial, kill switch, and rule counts', () => {
     mkdirSync(join(home, '.keel'), { recursive: true })
     writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES)

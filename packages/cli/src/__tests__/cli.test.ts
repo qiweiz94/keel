@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -34,14 +35,14 @@ function run(args: string): RunResult {
 describe('CLI Integration', () => {
   beforeAll(() => {
     // Create temp git repo
-    testDir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    testDir = mkdtempSync(join(tmpdir(), 'keel-test-'))
     execSync('git init', { cwd: testDir })
     execSync('git config user.email test@test.com', { cwd: testDir })
     execSync('git config user.name test', { cwd: testDir })
   })
 
   afterAll(() => {
-    execSync(`rm -rf "${testDir}"`)
+    rmSync(testDir, { recursive: true, force: true })
   })
 
   it('shows version', () => {

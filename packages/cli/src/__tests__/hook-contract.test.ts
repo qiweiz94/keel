@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describePosixShim } from './helpers/platform.js'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -105,7 +106,7 @@ describe('keel evaluate exit-code contract', () => {
  * makes this an integration test of the whole chain: script -> keel hook
  * -> pipeline -> host-specific output.
  */
-describe('host hook scripts (end-to-end)', () => {
+describePosixShim('host hook scripts (end-to-end)', () => {
   const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates')
   let shim = ''
   let hookHome = ''

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execSync } from 'node:child_process'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,7 +33,7 @@ const receiptLines = () =>
   readFileSync(join(dir, '.keel', 'receipts', 'receipts.log'), 'utf-8').split('\n').filter(Boolean)
 
 beforeEach(() => {
-  dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+  dir = mkdtempSync(join(tmpdir(), 'keel-test-'))
   execSync('git init', { cwd: dir })
   cli('init')
   // Three SEPARATE processes — the case an in-memory chain cannot span, and
@@ -41,7 +42,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  execSync(`rm -rf "${dir}"`)
+  rmSync(dir, { recursive: true, force: true })
 })
 
 describe('audit log', () => {
@@ -140,7 +141,7 @@ describe('action receipts', () => {
   })
 
   it('rotation keeps old receipts verifiable (archived keys still verify)', () => {
-    const home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    const home = mkdtempSync(join(tmpdir(), 'keel-test-'))
     try {
       const core = JSON.stringify(join(HERE, '..', '..', '..', 'core', 'dist', 'index.js'))
       const scriptFile = join(home, 'rotate-test.cjs')
@@ -168,7 +169,7 @@ describe('action receipts', () => {
       const out = execSync(`node "${scriptFile}"`, { encoding: 'utf-8', timeout: 10000 })
       expect(out).toContain('OK rotated-kids')
     } finally {
-      execSync(`rm -rf "${home}"`)
+      rmSync(home, { recursive: true, force: true })
     }
   })
 })

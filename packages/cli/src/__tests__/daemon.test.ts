@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startDaemon, daemonTokenPath, daemonStatePath, daemonCommand } from '../commands/daemon.js'
@@ -31,8 +32,8 @@ rules:
 `
 
 beforeEach(() => {
-  home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
-  project = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+  home = mkdtempSync(join(tmpdir(), 'keel-test-'))
+  project = mkdtempSync(join(tmpdir(), 'keel-test-'))
   mkdirSync(join(project, '.keel'), { recursive: true })
   writeFileSync(join(project, '.keel', 'rules.yaml'), RULES, 'utf-8')
   previousHome = process.env.HOME
@@ -42,7 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
-  execSync(`rm -rf "${home}" "${project}"`)
+  rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true })
 })
 
 describe('keel daemon', () => {
