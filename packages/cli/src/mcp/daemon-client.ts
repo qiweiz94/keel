@@ -114,3 +114,31 @@ export async function daemonRequirements(cwd: string): Promise<string> {
   const body = (await res.json()) as { content: string }
   return body.content
 }
+
+export async function daemonResearch(input: {
+  query?: string
+  url?: string
+  session_id: string
+  max_results?: number
+}): Promise<{ kind: 'search' | 'fetch'; cached: boolean; entry: import('../core/enforce/research/research-cache.js').ResearchEntry }> {
+  const { port, token } = await ensureDaemon()
+  const res = await fetch(`http://127.0.0.1:${port}/v1/research`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(20000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`keel daemon research failed (${res.status})${detail ? `: ${detail}` : ''}`)
+  }
+  return (await res.json()) as { kind: 'search' | 'fetch'; cached: boolean; entry: import('../core/enforce/research/research-cache.js').ResearchEntry }
+}
+
+export async function daemonResearchCache(sessionId: string, topic?: string): Promise<{ entries: Array<import('../core/enforce/research/research-cache.js').ResearchEntry> }> {
+  const { port, token } = await ensureDaemon()
+  const url = `http://127.0.0.1:${port}/v1/research/cache?session_id=${encodeURIComponent(sessionId)}${topic ? `&topic=${encodeURIComponent(topic)}` : ''}`
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
+  if (!res.ok) throw new Error(`keel daemon research cache failed (${res.status})`)
+  return (await res.json()) as { entries: Array<import('../core/enforce/research/research-cache.js').ResearchEntry> }
+}

@@ -133,4 +133,39 @@ describe('keel daemon', () => {
       await handle.close()
     }
   })
+
+  it('blocks SSRF targets on /v1/research (422)', async () => {
+    const handle = await startDaemon({})
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/research`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${handle.token}` },
+        body: JSON.stringify({ url: 'http://127.0.0.1:1/x', session_id: 'ssrf-test' }),
+      })
+      expect(res.status).toBe(422)
+      const body = await res.json()
+      expect(body.error).toContain('ssrf_blocked')
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('lists an empty research cache and rejects a bad body', async () => {
+    const handle = await startDaemon({})
+    try {
+      const cache = await (await fetch(`http://127.0.0.1:${handle.port}/v1/research/cache?session_id=nobody`, {
+        headers: { Authorization: `Bearer ${handle.token}` },
+      })).json()
+      expect(cache.entries).toEqual([])
+
+      const bad = await fetch(`http://127.0.0.1:${handle.port}/v1/research`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${handle.token}` },
+        body: JSON.stringify({ session_id: 'x' }),
+      })
+      expect(bad.status).toBe(400)
+    } finally {
+      await handle.close()
+    }
+  })
 })

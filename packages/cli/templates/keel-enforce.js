@@ -6344,9 +6344,10 @@ function validateRules(rules) {
     "inheritance",
     "context",
     "verification",
-    "meta"
+    "meta",
+    "research"
   ]);
-  const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report"]);
+  const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -6847,7 +6848,7 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
-      (rule) => ["verification", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
+      (rule) => ["verification", "research", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
     );
     const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
@@ -6987,6 +6988,25 @@ var EnforcementPipeline = class {
           if (isExcepted) continue;
         }
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3);
+      }
+      if (rule.type === "research" && rule.topics?.length) {
+        const haystack = `${commandString(input)} ${input.reasoning || ""}`;
+        if (!rule.topics.some((t) => this.matchesRulePattern(t, haystack))) continue;
+        if (rule.except?.some((d) => haystack.includes(d))) continue;
+        if (!this.config.researchCache) continue;
+        const maxAgeHours = rule.max_age_hours ?? (Number(process.env.KEEL_RESEARCH_MAX_AGE_HOURS) || 24);
+        const probe = this.config.researchCache.probe(input.session_id, rule.topics, maxAgeHours);
+        if (probe.hit) continue;
+        const topic = rule.topics[0];
+        const missing = probe.entries.length === 0;
+        const directive = {
+          topic,
+          missing,
+          stalenessHours: probe.stalenessHours,
+          maxAgeHours,
+          suggestion: `Run keel_research { query: "${topic}" } (or your platform web_search), then re-run this action.`
+        };
+        return this.result("research", rule.id, `Knowledge freshness gate: ${missing ? "no research" : `research ${probe.stalenessHours?.toFixed(1)}h old (max ${maxAgeHours}h)`} for "${topic}". ${directive.suggestion}`, start, false, 3, void 0, directive);
       }
       if (rule.type === "env" && rule.vars?.length) {
         const cmdStr = commandString(input);
@@ -7222,7 +7242,7 @@ var EnforcementPipeline = class {
     this.config.flowTracker.record(input, rule.id);
     return this.result("warn", rule.id, message, start, false, tier);
   }
-  result(action, ruleId, message, start, cacheHit, tier, fixResult) {
+  result(action, ruleId, message, start, cacheHit, tier, fixResult, directive) {
     return {
       action,
       rule_id: ruleId || null,
@@ -7232,7 +7252,8 @@ var EnforcementPipeline = class {
       duration_ms: Date.now() - start,
       cache_hit: cacheHit,
       tier,
-      fix_result: fixResult
+      fix_result: fixResult,
+      directive
     };
   }
   getCircuitBreakerState() {

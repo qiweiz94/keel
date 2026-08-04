@@ -3,13 +3,14 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type {
   KeelRule, EnforceInput, EnforceResult, EnforcementAction,
-  ProtectionLevel, RuleContext, CacheEntry, AuditEntry,
+  ProtectionLevel, RuleContext, CacheEntry, AuditEntry, ResearchDirective,
 } from '../types.js'
 import { ActionCache, ContentTracker, type CacheContext } from './cache.js'
 import type { RuleHierarchy } from './rule-parser.js'
 import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules } from './rule-parser.js'
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
+import type { ResearchCache } from './research/research-cache.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
 import { FileRuleOverrideStore } from './overrides.js'
@@ -30,6 +31,7 @@ export interface PipelineConfig {
   allowedFixTransforms?: boolean
   stateManager?: StateManager
   overrideStore?: import('./overrides.js').RuleOverrideStore
+  researchCache?: ResearchCache
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
   onRulesReload?: (hierarchy: RuleHierarchy) => void
@@ -179,7 +181,7 @@ export class EnforcementPipeline {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
-      ['verification', 'rate', 'time'].includes(rule.type)
+      ['verification', 'research', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow'].includes(rule.type))
     )
     // Approval-gated rules are re-evaluated on every call: the user may grant
@@ -367,6 +369,32 @@ export class EnforcementPipeline {
         }
 
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3)
+      }
+
+      // Match against knowledge-freshness rules: the agent is about to act
+      // on a topic whose session research is missing or stale. Excluded
+      // from the Tier-1 allow-cache (stateful per session) so a cached
+      // `allow` can never let stale knowledge through.
+      if (rule.type === 'research' && rule.topics?.length) {
+        const haystack = `${commandString(input)} ${input.reasoning || ''}`
+        if (!rule.topics.some((t) => this.matchesRulePattern(t, haystack))) continue
+        if (rule.except?.some((d) => haystack.includes(d))) continue
+        if (!this.config.researchCache) continue
+
+        const maxAgeHours = rule.max_age_hours ?? (Number(process.env.KEEL_RESEARCH_MAX_AGE_HOURS) || 24)
+        const probe = this.config.researchCache.probe(input.session_id, rule.topics, maxAgeHours)
+        if (probe.hit) continue
+
+        const topic = rule.topics[0]
+        const missing = probe.entries.length === 0
+        const directive = {
+          topic,
+          missing,
+          stalenessHours: probe.stalenessHours,
+          maxAgeHours,
+          suggestion: `Run keel_research { query: "${topic}" } (or your platform web_search), then re-run this action.`,
+        }
+        return this.result('research', rule.id, `Knowledge freshness gate: ${missing ? 'no research' : `research ${probe.stalenessHours?.toFixed(1)}h old (max ${maxAgeHours}h)`} for "${topic}". ${directive.suggestion}`, start, false, 3, undefined, directive)
       }
 
       // Match against environment variable names appearing in the command
@@ -681,6 +709,7 @@ export class EnforcementPipeline {
     cacheHit: boolean,
     tier: number,
     fixResult?: Record<string, unknown>,
+    directive?: ResearchDirective,
   ): EnforceResult {
     return {
       action,
@@ -692,6 +721,7 @@ export class EnforcementPipeline {
       cache_hit: cacheHit,
       tier: tier as PipelineTier,
       fix_result: fixResult,
+      directive,
     }
   }
 

@@ -10,6 +10,9 @@ import { SequenceDetector } from '../core/enforce/sequencer.js'
 import { FlowTracker } from '../core/enforce/flow-tracker.js'
 import { StateManager } from '../core/enforce/state-manager.js'
 import { loadRuleHierarchy, parseRulesContent } from '../core/enforce/rule-parser.js'
+import { ResearchCache } from '../core/enforce/research/research-cache.js'
+import { fetchPage, ResearchError } from '../core/enforce/research/fetcher.js'
+import { webSearch, type SearchConfig } from '../core/enforce/research/search.js'
 import { DEFAULT_RULES_YAML } from './install.js'
 import type { EnforceInput, ProtectionLevel } from '../core/types.js'
 
@@ -81,6 +84,7 @@ function secureEqual(a: string, b: string): boolean {
 // every platform client.
 const pipelineCache = new Map<string, EnforcementPipeline>()
 const sharedState = new StateManager()
+const sharedResearchCache = new ResearchCache()
 
 function ruleFingerprint(cwd: string): string {
   const sources = [
@@ -119,6 +123,7 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    researchCache: sharedResearchCache,
     ruleHierarchy: hierarchy,
     ruleVersion: 1,
     allowedFixTransforms: true,
@@ -138,6 +143,30 @@ function requirementsContent(cwd: string): string {
     if (existsSync(file)) return readFileSync(file, 'utf-8')
   }
   return ''
+}
+
+function searchConfig(): SearchConfig {
+  const backend = (process.env.KEEL_SEARCH_BACKEND || 'duckduckgo') as SearchConfig['backend']
+  return {
+    backend: backend === 'api' || backend === 'none' ? backend : 'duckduckgo',
+    apiUrl: process.env.KEEL_SEARCH_API_URL,
+    apiKey: process.env.KEEL_SEARCH_API_KEY,
+  }
+}
+
+function researchErrorStatus(err: unknown): number {
+  if (err instanceof ResearchError) {
+    if (err.code === 'ssrf_blocked') return 422
+    if (err.code === 'timeout') return 504
+    if (err.code === 'too_large') return 413
+    return 502
+  }
+  return 500
+}
+
+function researchErrorMessage(err: unknown): string {
+  if (err instanceof ResearchError) return `${err.code}: ${err.message}`
+  return String(err)
 }
 
 export interface DaemonHandle {
@@ -201,6 +230,77 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
     if (url.pathname === '/v1/requirements') {
       const cwd = url.searchParams.get('cwd') || process.cwd()
       return send(200, { content: requirementsContent(cwd) })
+    }
+
+    if (url.pathname === '/v1/research' && req.method === 'POST') {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as {
+            query?: string
+            url?: string
+            session_id?: string
+            cwd?: string
+            max_results?: number
+            max_age_hours?: number
+          }
+          const sessionId = parsed.session_id || 'daemon'
+          const maxResults = Math.min(Math.max(Number(parsed.max_results) || 5, 1), 10)
+          const maxAgeHours = parsed.max_age_hours ?? (Number(process.env.KEEL_RESEARCH_MAX_AGE_HOURS) || 24)
+
+          if (parsed.url) {
+            fetchPage(parsed.url)
+              .then((page) => {
+                const entry = sharedResearchCache.put({
+                  topic: parsed.url as string,
+                  kind: 'fetch',
+                  session_id: sessionId,
+                  fetched_at: page.fetched_at,
+                  maxAgeHours,
+                  text: page.text,
+                  title: page.title,
+                  url: page.finalUrl,
+                  source: 'platform',
+                  truncated: page.truncated,
+                })
+                return send(200, { kind: 'fetch', entry, cached: false })
+              })
+              .catch((err: unknown) => send(researchErrorStatus(err), { error: researchErrorMessage(err) }))
+            return
+          }
+
+          if (parsed.query) {
+            webSearch(parsed.query, searchConfig(), maxResults)
+              .then(async (results) => {
+                const entry = sharedResearchCache.put({
+                  topic: parsed.query as string,
+                  kind: 'search',
+                  session_id: sessionId,
+                  fetched_at: Date.now(),
+                  maxAgeHours,
+                  results,
+                  source: searchConfig().backend === 'api' ? 'api' : 'duckduckgo',
+                  truncated: false,
+                })
+                return send(200, { kind: 'search', entry, cached: false })
+              })
+              .catch((err: unknown) => send(researchErrorStatus(err), { error: researchErrorMessage(err) }))
+            return
+          }
+
+          return send(400, { error: 'provide a query or a url' })
+        } catch (err) {
+          return send(400, { error: String(err) })
+        }
+      })
+      return
+    }
+
+    if (url.pathname === '/v1/research/cache') {
+      const sessionId = url.searchParams.get('session_id') || 'daemon'
+      const topic = url.searchParams.get('topic') || undefined
+      return send(200, { entries: sharedResearchCache.list(sessionId, topic) })
     }
 
     return send(404, { error: 'not found' })

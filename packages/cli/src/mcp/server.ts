@@ -21,8 +21,9 @@ import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { ensureDaemon, daemonCheck, daemonRequirements } from './daemon-client.js'
+import { ensureDaemon, daemonCheck, daemonRequirements, daemonResearch, daemonResearchCache } from './daemon-client.js'
 import type { EnforceResult } from '../core/types.js'
+import type { ResearchEntry } from '../core/enforce/research/research-cache.js'
 
 const VERSION = '0.1.0'
 
@@ -72,6 +73,43 @@ function toolDefinitions() {
         properties: { cwd: { type: 'string', description: 'Working directory (defaults to the server cwd)' } },
       },
     },
+    {
+      name: 'keel_research',
+      description: 'Search the web for current information on a topic (latest API versions, breaking changes, exact error text) and cache the result for this session. Use BEFORE attempting fixes — satisfies knowledge-freshness gates. Backend: DuckDuckGo by default; configure KEEL_SEARCH_BACKEND / KEEL_SEARCH_API_URL / KEEL_SEARCH_API_KEY.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query naming the exact module/API/error' },
+          session_id: { type: 'string', description: 'Session identifier (must match keel_check)' },
+          max_results: { type: 'number', description: 'Max results (default 5, max 10)' },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'keel_fetch',
+      description: 'Fetch a URL, strip scripts/styles, and return readable text (capped at 1 MB). SSRF-guarded: private IPs, localhost, and metadata endpoints are blocked.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'http(s) URL to fetch' },
+          session_id: { type: 'string' },
+        },
+        required: ['url'],
+      },
+    },
+    {
+      name: 'keel_search_cache',
+      description: 'List research cached for this session with fetched_at timestamps (freshness evidence).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string' },
+          topic: { type: 'string', description: 'Optional topic filter (substring)' },
+        },
+        required: ['session_id'],
+      },
+    },
   ]
 }
 
@@ -103,6 +141,40 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     try {
       const content = await daemonRequirements(cwd)
       return { content: [{ type: 'text', text: content || 'No standing requirements configured.' }] }
+    } catch (err) {
+      return { content: [{ type: 'text', text: `KEEL ERROR: ${err}` }], isError: true }
+    }
+  }
+
+  if (name === 'keel_research' || name === 'keel_fetch' || name === 'keel_search_cache') {
+    const sessionId = String(args.session_id || 'mcp')
+    try {
+      if (name === 'keel_research') {
+        const query = String(args.query || '')
+        if (!query) return { content: [{ type: 'text', text: 'KEEL ERROR: query is required' }], isError: true }
+        const result = await daemonResearch({
+          query,
+          session_id: sessionId,
+          max_results: Number(args.max_results) || 5,
+        })
+        const lines = [
+          `RESEARCH: ${result.entry.topic} (cached: ${result.cached})`,
+          ...(result.entry.results || []).map((r) => `${r.rank}. ${r.title}\n   ${r.url}\n   ${r.snippet}`),
+        ]
+        return { content: [{ type: 'text', text: lines.join('\n') }] }
+      }
+      if (name === 'keel_fetch') {
+        const url = String(args.url || '')
+        if (!url) return { content: [{ type: 'text', text: 'KEEL ERROR: url is required' }], isError: true }
+        const result = await daemonResearch({ url, session_id: sessionId })
+        const page = result.entry
+        return { content: [{ type: 'text', text: `TITLE: ${page.title || ''}\nURL: ${page.url || ''}\n\n${(page.text || '').slice(0, 20000)}${page.truncated ? '\n[truncated]' : ''}` }] }
+      }
+      const result = await daemonResearchCache(sessionId, String(args.topic || ''))
+      const lines = result.entries.length
+        ? result.entries.map((e) => `${new Date(e.fetched_at).toISOString()} [${e.kind}] ${e.topic} (${e.results?.length ?? 0} results)`).join('\n')
+        : 'No research cached for this session.'
+      return { content: [{ type: 'text', text: lines }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `KEEL ERROR: ${err}` }], isError: true }
     }

@@ -8,12 +8,13 @@ export type RuleContext = 'local' | 'ci' | 'both'
 
 export type EnforcementDepth = 'fast' | 'full' | 'deep'
 
-export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'mask' | 'fix' | 'report'
+export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'mask' | 'fix' | 'report' | 'research'
 
 export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
+  | 'research'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -50,6 +51,10 @@ export interface KeelRule {
 
   // ── Network rules ──
   except?: string[]                 // domains to allow
+
+  // ── Research/freshness rules ──
+  topics?: string[]                 // regex list matched against command + reasoning
+  max_age_hours?: number            // freshness horizon for the session research cache
 
   // ── Environment rules ──
   vars?: string[]
@@ -166,6 +171,15 @@ export interface EnforceResult {
   cache_hit?: boolean
   tier?: number
   fix_result?: Record<string, unknown>
+  directive?: ResearchDirective
+}
+
+export interface ResearchDirective {
+  topic: string
+  missing: boolean
+  stalenessHours?: number
+  maxAgeHours: number
+  suggestion: string
 }
 
 // ── Audit log ───────────────────────────────────────────────────────
