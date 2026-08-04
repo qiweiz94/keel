@@ -104,8 +104,20 @@ export function loadTraceEntries(auditDir: string, since?: string): TraceEntry[]
   return out.sort((a, b) => (a.t || 0) - (b.t || 0))
 }
 
+/**
+ * Agents whose traces are real enforcement events. The `keel evaluate` test
+ * harness writes entries with `agent: "unknown"` and no `hook` — §2.1 of the
+ * design doc measured 224 of 3,201 entries on one day, which produced
+ * hundreds of false repeat hits. Filtering is mandatory for every detector.
+ *
+ * This is a list, not a single id, because Phase 4 adds thin clients on other
+ * platforms; each new client's agent id must land here or its whole trace
+ * stream becomes invisible to the retrospective and to `keel gather`.
+ */
+const TRACKED_AGENTS = new Set(['opencode-plugin', 'openclaw-plugin', 'hermes-plugin', 'claude-code-hook'])
+
 function isBefore(e: TraceEntry): boolean {
-  return e.hook === 'tool.execute.before' && e.agent === 'opencode-plugin'
+  return e.hook === 'tool.execute.before' && TRACKED_AGENTS.has(String(e.agent))
 }
 
 function commandOf(e: TraceEntry): string {
@@ -200,24 +212,38 @@ export function analyzeSession(entries: TraceEntry[]): SessionMetrics | null {
   // Attempts-until-success: index of the first passing test minus the index
   // of the first source edit (§6 metric 1).
   //
-  // The after-entry must be paired POSITIONALLY: matching by fingerprint
-  // alone always returns the session's first run of that command, so a
-  // fail → fail → pass sequence (exits 1,1,0) reads exit 1 forever and the
-  // session is scored as never verified — exactly the recoveries this
-  // metric exists to count. Entries are time-sorted by loadTraceEntries.
+  // Two things this must get right, both learned the hard way:
+  //
+  // 1. The after-entry is paired POSITIONALLY. Matching by fingerprint alone
+  //    always returns the session's first run of that command, so a
+  //    fail → fail → pass sequence (exits 1,1,0) reads exit 1 forever and the
+  //    session is scored as never verified — exactly the recoveries this
+  //    metric exists to count. Entries are time-sorted by loadTraceEntries.
+  //
+  // 2. Only a pass AFTER the first source edit counts. A green run that
+  //    precedes every edit is a baseline, not a verification of the work —
+  //    scanning from index 0 produced negative attempt counts for the
+  //    (perfectly normal) baseline-first workflow, and those negatives then
+  //    dragged the median. A session with no source edit attempted nothing,
+  //    so its attempts-to-success is null rather than an index.
+  //
+  // Deviation recorded in the decisions log: §6 metric 6 says "sessions with
+  // pass evidence"; we require that evidence to post-date the first edit.
   let attemptsToSuccess: number | null = null
   let verificationCompleted = false
   const afterEvents = after.map((a) => ({ cmd: normalize(commandOf(a)), exit: a.exit, t: a.t || 0 }))
   const firstSourceEdit = before.findIndex(isSourceEdit)
-  for (let i = 0; i < before.length; i++) {
-    const e = before[i]
-    if (!isTestCommand(commandOf(e))) continue
-    const fp = normalize(commandOf(e))
-    const paired = afterEvents.find((a) => a.cmd === fp && a.t >= (e.t || 0))
-    if (paired && paired.exit === 0) {
-      verificationCompleted = true
-      attemptsToSuccess = i - (firstSourceEdit < 0 ? 0 : firstSourceEdit)
-      break
+  if (firstSourceEdit >= 0) {
+    for (let i = firstSourceEdit + 1; i < before.length; i++) {
+      const e = before[i]
+      if (!isTestCommand(commandOf(e))) continue
+      const fp = normalize(commandOf(e))
+      const paired = afterEvents.find((a) => a.cmd === fp && a.t >= (e.t || 0))
+      if (paired && paired.exit === 0) {
+        verificationCompleted = true
+        attemptsToSuccess = i - firstSourceEdit
+        break
+      }
     }
   }
 
@@ -258,33 +284,39 @@ export function analyzeSession(entries: TraceEntry[]): SessionMetrics | null {
   // Pivot recovery: among sessions with a stuck loop, did a research call
   // or a command-family change follow within 5 calls of the 2nd repeat?
   //
-  // The scan must be restricted to keys that actually formed a stuck
-  // cluster. Scanning every entry collides all the rule-less, command-less
-  // calls (writes, reads) on the key "null:", which puts the anchor at the
-  // start of the session and measures the wrong five calls — and this is
-  // §6 metric 8, the headline number.
+  // Two constraints, both found by testing rather than by reading:
+  //
+  // 1. Only keys that actually formed a stuck cluster may anchor the window.
+  //    Scanning every entry collides all the rule-less, command-less calls
+  //    (writes, reads) on the key "null:", which puts the anchor at the start
+  //    of the session and measures the wrong five calls.
+  //
+  // 2. EVERY stuck cluster is evaluated, not just the first to repeat. A
+  //    session that pivots away from one loop while still circling on another
+  //    has not recovered; anchoring on whichever cluster fired first credited
+  //    it with a pivot it never made. This is §6 metric 8, the headline
+  //    number, so it reports true only when every loop was broken.
+  const famOf = (c: string) => c.trim().split(/\s+/)[0] || ''
   let pivotedAfterStuck: boolean | null = null
-  if (stuckLoops > 0) {
-    let secondRepeatAt = -1
-    const seen = new Map<string, number>()
-    for (let i = 0; i < before.length; i++) {
-      const e = before[i]
-      if (!e.rule_id || !VERDICTS.includes(String(e.action))) continue
-      const key = clusterKey(e)
-      if (!stuckKeys.has(key)) continue
-      const n = (seen.get(key) || 0) + 1
-      seen.set(key, n)
-      if (n === 2) { secondRepeatAt = i; break }
-    }
-    if (secondRepeatAt >= 0) {
+  if (stuckKeys.size > 0) {
+    const perCluster: boolean[] = []
+    for (const key of stuckKeys) {
+      let seen = 0
+      let secondRepeatAt = -1
+      for (let i = 0; i < before.length; i++) {
+        const e = before[i]
+        if (!e.rule_id || !VERDICTS.includes(String(e.action))) continue
+        if (clusterKey(e) !== key) continue
+        if (++seen === 2) { secondRepeatAt = i; break }
+      }
+      if (secondRepeatAt < 0) continue
       const window = before.slice(secondRepeatAt + 1, secondRepeatAt + 6)
-      pivotedAfterStuck = window.some(isResearch)
-        || (() => {
-          const fam = (c: string) => c.trim().split(/\s+/)[0] || ''
-          const beforeFam = fam(commandOf(before[secondRepeatAt]))
-          return window.some((w) => fam(commandOf(w)) !== beforeFam)
-        })()
+      const anchorFam = famOf(commandOf(before[secondRepeatAt]))
+      perCluster.push(
+        window.some(isResearch) || window.some((w) => famOf(commandOf(w)) !== anchorFam),
+      )
     }
+    if (perCluster.length > 0) pivotedAfterStuck = perCluster.every(Boolean)
   }
 
   return {
@@ -453,9 +485,4 @@ export async function retrospectiveCommand(options: { since?: string; project?: 
     appendFileSync(path, lines.join('\n'))
     console.log(chalk.dim(`  Wrote ${path}`))
   }
-}
-
-// Re-export for the lessons flow (used by gather).
-export function extractWorkflowLessons(report: RetrospectiveReport): Array<{ key: string; text: string; count: number }> {
-  return report.lessons
 }

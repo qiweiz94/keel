@@ -148,6 +148,68 @@ describe('retrospective metrics', () => {
     expect(m!.attempts_to_success).toBe(3)
   })
 
+  // ── A2: a green baseline run before any edit is not a verification ──
+  it('ignores a passing run that precedes the first source edit', () => {
+    const s = 'baseline-1'
+    const entries = [
+      before(s, 'Bash', 'npm test'),              // 0 — baseline, before any edit
+      after(s, 'Bash', 'npm test', 0),
+      write(s, '/tmp/proj-a/src/a.ts'),           // 1 — first source edit
+      before(s, 'Bash', 'npm test'),              // 2 — the real verification
+      after(s, 'Bash', 'npm test', 0),
+    ]
+    const m = analyzeSession(entries)
+    expect(m!.attempts_to_success).toBe(1)   // 2 - 1, never negative
+    expect(m!.verification_completed).toBe(true)
+  })
+
+  it('reports no attempts-to-success for a session that never edits source', () => {
+    const s = 'readonly-1'
+    const entries = [
+      before(s, 'Bash', 'ls'),
+      before(s, 'Bash', 'cat x'),
+      before(s, 'Bash', 'npm test'),
+      after(s, 'Bash', 'npm test', 0),
+    ]
+    const m = analyzeSession(entries)
+    expect(m!.source_edits).toBe(0)
+    expect(m!.attempts_to_success).toBeNull()
+    expect(m!.verification_completed).toBe(false)
+  })
+
+  it('stops at the first post-edit pass even if later work fails', () => {
+    // Chosen behavior, not accidental: §6 metric 1 is "min i such that…".
+    const s = 'later-fail-1'
+    const entries = [
+      write(s, '/tmp/proj-a/src/a.ts'),           // 0
+      before(s, 'Bash', 'npm test'),              // 1 — passes
+      after(s, 'Bash', 'npm test', 0),
+      write(s, '/tmp/proj-a/src/b.ts'),           // 2
+      before(s, 'Bash', 'npm test'),              // 3 — later failure
+      after(s, 'Bash', 'npm test', 1),
+    ]
+    expect(analyzeSession(entries)!.attempts_to_success).toBe(1)
+  })
+
+  // ── A3: the pivot window must account for EVERY stuck cluster ──
+  it('does not credit a pivot when a second stuck cluster never pivoted', () => {
+    const s = 'two-clusters'
+    const entries = [
+      before(s, 'Bash', 'npm test', { rule_id: 'rA', action: 'warn' }),
+      before(s, 'Bash', 'npm test', { rule_id: 'rA', action: 'warn' }),
+      before(s, 'websearch', 'docs for the failing module'),   // cluster A pivots
+      before(s, 'Bash', 'npm test', { rule_id: 'rA', action: 'deny' }),
+      before(s, 'Bash', 'git commit -m x', { rule_id: 'rB', action: 'warn' }),
+      before(s, 'Bash', 'git commit -m x', { rule_id: 'rB', action: 'warn' }),
+      before(s, 'Bash', 'git commit -m x', { rule_id: 'rB', action: 'deny' }),
+      before(s, 'Bash', 'git commit -m x', { rule_id: 'rB', action: 'deny' }),
+    ]
+    const m = analyzeSession(entries)
+    expect(m!.stuck_loops).toBe(2)
+    // Cluster B never pivoted, so the session did not recover from every loop.
+    expect(m!.pivoted_after_stuck).toBe(false)
+  })
+
   // ── F2: --project must re-aggregate over the filtered sessions ──
   it('re-aggregates when sessions are filtered to one project', () => {
     const a = [
