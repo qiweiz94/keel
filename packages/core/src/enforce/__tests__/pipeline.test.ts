@@ -1021,6 +1021,27 @@ rules:
       expect(args.command).toBe('grep foo')   // unchanged
     })
 
+    it('does not raise an approval gate for an observed prompt rule', () => {
+      // effectiveAction() feeds three call sites; violation() and the fix
+      // path are covered above, this is the third (the `prompt` filter).
+      // An observe rule must never demand `keel allow` — that would be an
+      // interruption, which is exactly what observe promises not to do.
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: obs-gate
+    type: command
+    match: "terraform destroy"
+    action: prompt
+    mode: observe
+    message: "Teardown needs approval."
+`)
+      return pipeline.evaluate(input('bash', { command: 'terraform destroy' }, 'obs-5')).then(result => {
+        expect(result.action).toBe('allow')
+        expect(result.observed_action).toBe('prompt')
+        expect(result.message).not.toContain('keel allow')
+      })
+    })
+
     it('rejects a typo in mode rather than silently enforcing', () => {
       // A guardrail that silently does the opposite of what the config says
       // is the single most trust-destroying failure shape. Catch it at parse.
