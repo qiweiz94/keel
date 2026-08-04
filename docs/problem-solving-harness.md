@@ -73,10 +73,72 @@ Real trace data (`~/.keel/traces/*.jsonl`, 8,700+ entries analyzed):
 4. **No stuck-loop detector on identical failing commands.** Rate rules
    count all calls of a tool; the circuit breaker keys on `rule:tool`, not
    on "same command, no progress".
-5. **No research-before-solve obligation** — no rule type for it.
-6. **Reasoning is redacted** (`audit-redaction.ts:25-27` redacts it to a
-   constant) — no claim-quality or root-cause-hypothesis check can run in
-   real time.
+ 5. **No research-before-solve obligation** — no rule type for it.
+ 6. **Reasoning is redacted** (`audit-redaction.ts:25-27` redacts it to a
+    constant) — no claim-quality or root-cause-hypothesis check can run in
+    real time.
+ 7. **No per-session task memory.** StateManager persists rule-level
+    counters only; there is no notion of "what the agent is trying to
+    accomplish", so no detector can distinguish productive exploration
+    from circling.
+ 8. **The CLI `audit` command and the plugin disagree.** `audit.ts` reads
+    the legacy `<project>/.keel/audit/audit.log`; the plugin writes
+    `~/.keel/traces/`. Two views of the same events.
+
+### 2.1 Complete audit findings (verified trace schema, bugs, analysis rules)
+
+**Verified live trace schema** (every plugin record, from 8,700+ real
+entries): `t` (epoch ms), `timestamp`, `agent`, `session_id`, `tool`,
+`args` (redacted via `projectAuditArgs` — SAFE_KEYS: command, cmd, path,
+file, filePath, url, uri, host, operation, tool, oldString, newString
+truncated at 2000 chars; write content and reasoning are `[redacted]`),
+`rule_id`, `action`, `message`, `hook`. Search calls are identifiable
+(`websearch.query`, `webfetch.url`, `grep.pattern`); test calls are
+identifiable (bash command matching `/npm|pnpm|yarn|bun|npx vitest|jest|
+pytest|go test/`).
+
+**Analysis noise to filter (mandatory for every detector/lesson):** the
+`keel evaluate` test harness writes entries with `agent: "unknown"`, no
+`hook`, and fixture rules (`protect-only-level-inheritance-*`,
+`dangerous`, `strict-action`). On one sample day they were 224 of 3,201
+entries and created hundreds of false "repeat" hits. **All detection must
+require `hook` present or `agent === 'opencode-plugin'`.**
+
+**Known bugs and stubs found in the existing learning loop:**
+
+| Bug | Location | Impact |
+|---|---|---|
+| `--apply-and-save` advertised but does not exist | `lessons.ts:329` | users think rules were applied |
+| `file.replace('.jsonl',')')` filter typo | `lessons.ts:275` | lesson scan works only by lexicographic luck |
+| Dead gather category mappings (`build-not-test`, `sequence-violation`) | `gather.ts:29,45` | dead code; stale `~/.keel/lessons.json` contains a lesson `extractLessons` cannot produce |
+| `testFromAudit` counts entries instead of re-evaluating | `test.ts:132-137` | "rule replay against old traces" is a stub |
+| `buildClaims` findIndex across all entries, not the same turn | `lessons.ts:114` | claim-without-evidence lesson misattributes |
+| `keel watch --json` accepted but ignored | `watch.ts` | — |
+| Token-hotspot analysis meaningless | `suggester.ts:42-57` | plugin records `context_tokens: 0` |
+| Override detection is a string heuristic | `suggester.ts:33` | `message.includes('--once')` |
+| SPEC §7 lesson approve/reject lifecycle is display-only | `SPEC.md:784-792` | no `[y/N]` gate implemented |
+| FlowTracker tags keyed `flow:<session>:<turn>` with turn always 0 | `flow-tracker.ts:52,74` | multiple reads in one session collide |
+
+**Ranked gaps by leverage (highest first):**
+
+1. Record execution outcomes — `exit_code`, `output_hash`, `duration_ms`
+   in `tool.execute.after`. Zero new infra; everything else depends on it.
+2. Real-time identical-command stuck-loop detector (Pattern A, §6.1).
+3. Research-before-solve obligation + a keel-provided search MCP tool +
+   per-session research store injected like requirements — the single
+   highest-leverage *missing affordance*; turns keel from blocker into
+   enabler.
+4. Fix telemetry plumbing (`turn_number`, `context_tokens`, `cwd`,
+   `level`).
+5. Persist reasoning locally instead of redacting; wire the Tier-7
+   reasoning analyzer (`reasoning.ts:42-91`) into the plugin so
+   reasoning-quality checks run at every call, not just protect.
+6. Real-time "claim without evidence" check (verification obligations
+   prove tests ran; nothing catches the agent *asserting* done/fixed).
+7. Fix and enrich the learning loop (bugs above; data-driven gather
+   bullets with counts + example turns).
+8. Session/task memory (`task_id`/goal field; per-session state that
+   survives restarts).
 
 **Have vs missing (grounded):**
 
@@ -120,6 +182,28 @@ Real trace data (`~/.keel/traces/*.jsonl`, 8,700+ entries analyzed):
    lands a beat before its enforcement.
 6. **Warn on evidence.** New behavior rules are warn-first; deny only at
    escalation thresholds; `keel allow` remains the human override.
+
+### 3.1 Prompt vs enforce — the decision table
+
+Governing principle: **keel enforces observable action loops; prompts shape
+cognition. Everything unobservable from tool calls stays advisory** —
+pretending otherwise teaches agents to route around the rules.
+
+| # | Behavior | PROMPT | ENFORCE | Mechanism |
+|---|---|---|---|---|
+| 1 | Research/search before solving | ✅ Problem-solving protocol | **Partial — sequence rule**: `edit`/`write` into `src/` with no prior research call in the session window → warn (balanced) / prompt (protect) | existing `sequence` type; new rule id `research-before-edit` |
+| 2 | First-principles thinking | ✅ protocol | ❌ unobservable — skip | — |
+| 3 | Root cause before fix | ✅ protocol | ❌ semantic claim. **Enforce the partner**: source changes without a passing test are already gated (`source-change-requires-test`) — the test gate is the root-cause proxy: symptom patches rarely pass | exists |
+| 4 | Cite sources with dates | ✅ protocol | ❌ unobservable | — |
+| 5 | Check newest version when an error mentions one | ✅ Evidence & freshness | **Weak — warn-level command rule**: `npm install <pkg>@<version>` pins → warn "check what's current first" | `type: command, action: warn` |
+| 6 | Don't circle / stuck escalation | ✅ Stuck protocol | **Yes — the strongest enforcement case**: identical-command repeat rule (3rd → warn, 5th → prompt with approval path) | new `stuck` type (§4.1) |
+| 7 | Escalate to the user when stuck | ✅ protocol | **Partial**: `action: prompt` on the 5th repeat; high-stakes actions already surface approval paths | exists |
+| 8 | Verify before claiming done | ✅ existing Verification culture | ✅ exists | `source-change-requires-test` + `no-skip-tests` |
+
+Summary of new rules to add (all warn-first per the balance philosophy):
+`research-before-edit` (sequence, warn), `no-repeat-loops` (stuck, warn →
+prompt), `check-version-before-pin` (command, warn). Everything else stays
+prompt-layer only.
 
 ---
 
@@ -217,6 +301,50 @@ structured record (`statement`, `evidence[]`, `status`) that keel persists,
 verifies against later outcomes, and **falsifies when the next verification
 run still fails** — "I guessed" becomes visible in the post-mortem.
 
+#### `type: research` (freshness form) — "knowledge freshness" gate
+
+Distinct from the research-before-solve obligation: this one fires when the
+agent is about to act on **stale or missing knowledge**, not after a
+failure. First-class `research` verdict (blocks like `prompt`, satisfier is
+*research performed*):
+
+```yaml
+- id: freshness-openai-sdk
+  type: research
+  level: balanced
+  action: research            # first-class verdict — blocks on first hit
+  priority: 60
+  topics:                     # matched against command args + reasoning
+    - "openai[ -]?(sdk|python|node)|responses api"
+  except:                     # same semantics as network rules' `except`
+    - "openai.com/docs"       # already targeting an official doc domain
+  max_age_hours: 24           # staleness horizon for the session cache
+  message: "Research is stale for OpenAI SDK changes (last fetched >24h ago). Run keel_research {query} first."
+```
+
+Semantics:
+
+- Evaluated like the network matcher: on topic match (command + reasoning)
+  and no `except`, probe the session research cache; fresh evidence →
+  allow; missing/stale → `research` directive.
+- **Not subject to warn-once escalation** — like `prompt`, it blocks on
+  the first hit; the satisfier is the research performed, not a second
+  attempt. The directive is self-clearing on compliance.
+- **Excluded from the Tier-1 allow-cache** (stateful per session) — a
+  cached `allow` would let stale knowledge through forever.
+- Integration: OpenCode plugin throws `[Keel] research required:
+  <suggestion>`; MCP `keel_check` returns `isError: true` with the
+  directive; gateway treats it as blocked; trace + signed receipt record
+  `action: 'research'`.
+- **v1/v2 satisfier gap**: the rule reads keel's cache. If the agent
+  researches via Hermes `web_search` instead of `keel_research`, keel
+  cannot see it. v1 = the directive always suggests `keel_research`/`keel_fetch`
+  (strict, zero platform cooperation). v2 = a `research_completed { topic,
+  source, fetched_at }` recording call so platform-native search satisfies
+  the rule instead of bypassing it.
+
+
+
 ### 4.2 The `redirect` action
 
 A new first-class `EnforcementAction`:
@@ -296,6 +424,43 @@ Add to `packages/cli/src/mcp/server.ts` (all thin daemon clients):
   engine itself is delegated (platform-native search in Hermes/OpenClaw can
   satisfy the gate via a `research_completed` recording call in v2).
 
+**Configuration (env only — never hardcoded, never persisted):**
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `KEEL_SEARCH_BACKEND` | `duckduckgo` \| `api` \| `none` | `duckduckgo` (keyless HTML endpoint) |
+| `KEEL_SEARCH_API_URL` | Base URL for a custom search API (SearXNG, Tavily, Brave…) | unset |
+| `KEEL_SEARCH_API_KEY` | Key for the custom backend — env-only, never written to disk or logs; add to the `no-credential-echo` vars | unset |
+| `KEEL_RESEARCH_CACHE_DIR` | Cache override | `~/.keel/cache/` |
+| `KEEL_RESEARCH_MAX_AGE_HOURS` | Default freshness horizon for rules that omit `max_age_hours` | `24` |
+| `KEEL_RESEARCH_TIMEOUT_MS` | Total page/search timeout | `15000` |
+| `KEEL_RESEARCH_MAX_BYTES` | Response cap before sanitization | `1048576` (1 MB) |
+| `KEEL_RESEARCH_MAX_TEXT` | Sanitized text cap (≈ 15k tokens) | `60000` chars |
+
+**Cache entry shape** (`~/.keel/cache/research/<session>/<sha256>.json`,
+0600, atomic tmp+rename writes):
+
+```ts
+interface ResearchEntry {
+  key: string                  // sha256(session_id, topic)
+  topic: string                // normalized query or URL
+  kind: 'search' | 'fetch'
+  session_id: string
+  fetched_at: number           // epoch ms — the freshness timestamp
+  expires_at: number           // fetched_at + max_age (set at insert)
+  results?: SearchResult[]     // search mode: { title, url, snippet, rank }
+  text?: string                // fetch mode (sanitized)
+  title?: string
+  url?: string
+  source: 'duckduckgo' | 'api' | 'platform'
+  truncated: boolean
+}
+```
+
+Per-session rate cap on `/v1/research` (default 20 ops/session, keyed
+`research:<session_id>` via the StateManager rate pattern). Full results
+never enter traces — only counts and topic tags.
+
 ### 4.6 Traces and telemetry
 
 - **One-line fix first**: record `exit` in `tool.execute.after`; real
@@ -335,6 +500,59 @@ project-first single-file inconsistency — merge global then project so every
 client injects identical text); session context card injected as a third
 block (PROBLEM / ATTEMPTED / RULES HIT / RESEARCH / FRESHNESS / STUCK /
 NEXT BEST STEP — machine-derived from traces).
+
+**Global vs project division of labor:**
+
+| Source | Carries | Example |
+|---|---|---|
+| `~/.keel/requirements.md` (global) | Universal protocols — problem-solving, stuck, evidence & freshness, identity, verification, dial | applies to every project |
+| `<project>/.keel/requirements.md` (project) | Project-specific research surface — where the newest truth lives for THIS repo: canonical doc URLs, tracked API/package versions, known-stale files, project anti-circling notes | "This repo's truth: docs/API.md (2026-07); track `@auth/core` ≥ 0.40" |
+
+**Dial-aware injection:** `[sprint]` = included at all levels, `[full]` =
+excluded at sprint (sprint keeps only the first bullet of each protocol
+section — the minimal anti-circling guardrails), untagged = included
+everywhere. Implemented once in a shared `selectRequirements(sources,
+level)` used by both the plugin and the daemon (one engine, thin clients).
+The daemon's `/v1/requirements` also gains `?level=` filtering and
+`?format=json` (`{ sections: [{ name, dial, lines }] }`) so Hermes/OpenClaw
+clients inject byte-identical text with zero keel-specific logic.
+
+**Authoring note (plugin behavior to respect):** `requirementLines()`
+(plugin.ts:295-302) strips `#` headings, drops lines starting with `[` or
+`<!--`, and flattens each file into one bullet list. Drafted text must
+survive that — no content may depend on headings, and the `[` prefix is
+reserved for the dial tags above. Project bullets don't visually override
+global ones; use an explicit `(project)` prefix tag if needed (the `[`-form
+is dropped).
+
+**Session context card** (injected as a third block after requirements,
+~14 lines, machine-derived, clearly labeled auto-generated so agents don't
+mistake machine state for user instructions):
+
+```markdown
+## Session context (keel, auto-generated)
+PROBLEM: <1 line — from `keel note` or first failing action; else "not provided">
+ATTEMPTED: 3 edits to src/auth.ts · 4 test runs (12 pass / 1 fail) · 1 install
+RULES HIT: no-force-push (deny ×1) · no-fix (warn ×2) · bash-rate-limit (warn ×1)
+RESEARCH: 1 webfetch this session (no dated sources ≥ 2026-07)
+FRESHNESS: @auth/core pinned 0.35 (lockfile) — registry shows 0.41 (2026-07-30)
+STUCK: identical `npm test` ×3 — escalate: search → ask user → change approach
+NEXT BEST STEP: webfetch @auth/core@0.41 changelog; re-check refresh handler
+```
+
+- `PROBLEM` — best-effort: `keel note <text>` writes
+  `~/.keel/state/session-notes.json` keyed by session_id; else first
+  denied/failed action; else "not provided".
+- `ATTEMPTED` / `RULES HIT` / `RESEARCH` / `STUCK` — machine-derived from
+  traces (counts per tool, per rule id, research-tool count,
+  identical-command counter).
+- `FRESHNESS` — best-effort from a small pinned-versions registry (`keel
+  note` or project requirements entries); falls back to "no version info".
+- `NEXT BEST STEP` — nudge from the STUCK row (search → ask → change
+  approach); agents may ignore it.
+- The plugin generates it offline from its own JSONL; the daemon is the
+  canonical generator. `experimental.session.compacting` embeds the same
+  selected content — compaction is exactly when the card is most needed.
 
 Verification: injection tests still pass; the new sections appear in
 `keel requirements` and the plugin's transform output. Honest caveat:
@@ -412,6 +630,138 @@ telemetry lands (heuristic fallbacks documented until then):
 [--write]` renders the weekly table with week-over-week deltas, top problem
 signatures, and lessons written.
 
+### 6.1 Stuck detection algorithms (exact)
+
+Input: per-session stream of **before-hook** entries, noise-filtered
+(`hook === 'tool.execute.before'` AND `agent === 'opencode-plugin'`).
+Fields used: `t`, `tool`, `args.command` (bash), `args.filePath`
+(edit/write), `args.pattern` (grep), `args.query` (websearch), `args.url`
+(webfetch), `rule_id`, `action`, `message`.
+
+**Command normalization** ("identical" means *same failing attempt*, not
+the same string — real data shows `git commit -m "fix: ..."` retried with
+different messages):
+
+```
+normalize(cmd):
+  1. collapse whitespace
+  2. replace temp paths ($TMPDIR, /var/folders/.../T/) with <TMP>
+  3. strip git commit -m "…" / -m '…' payloads → -m "<msg>"
+  4. replace quoted strings longer than 12 chars → "<s>"
+  5. replace hex runs ≥ 8 chars → <H>
+  6. truncate to 160 chars
+
+near_identical(a, b):
+  normalize(a) == normalize(b)
+  OR (len ≥ 40 AND Jaccard(token sets) ≥ 0.8)   # tokens: whitespace-split, len ≥ 3, stopwords dropped
+```
+
+**Pattern A — repeated identical/near-identical failing command:**
+ring buffer of the last 20 before-hook calls per session; key
+`(rule_id, normalize(command))` for bash calls with action ∈ {deny, warn,
+prompt}; count within `min(20 calls, 30 min)`; count ≥ 3 → stuck,
+count == 2 → pre-stuck. (Real-data evidence: a `git commit` denied 3× by
+`source-change-requires-test`; a `TMP=$(mktemp -d) && mkdir …` denied 3×
+by `verify-before-irreversible`.)
+
+**Pattern B — churn (edit → test-fail → edit cycles):**
+`churn_cycle(F) = edit(F) … testCmd … edit(F)` with ≤ 8 calls between the
+edits and the same normalized `filePath` F; ≥ 2 cycles for the same F
+(i.e. F edited ≥ 3 times with ≥ 2 interleaved test runs) → churn.
+Test-command regex: `/npm|pnpm|yarn|bun|npx vitest|jest|pytest|go test/i`.
+Fake-swallow regex (reuse `isFakeSatisfy`,
+`verification.ts:101-108`): `--help|--list|--dry-run|--version`,
+`|| true`, `; exit 0`, `| cat|tee|head|tail|grep|true`. (Real-data
+evidence: 25 same-file edit→test→edit triples in one session.)
+
+**Pattern C — no-progress:**
+last 25 before-hook calls (or 10 min); `SOURCE_EDITS ≥ 6` AND no progress
+event → no-progress. Progress = a non-fake test command, a research call
+(websearch | webfetch | grep | glob), a question to the user (`question`
+tool), or a write to a new file.
+
+**Response ladder** (runs inside the plugin after `pipeline.evaluate`,
+catches loops no rule fires on):
+
+```
+RESPOND(session, pattern, count):
+  if count == 2 or 1 churn cycle or no-progress:
+      surfaceWarn('stuck-loop', directive(count), session)   # once per session
+  if count >= 3 or 2 churn cycles:
+      if level == 'sprint': surfaceWarn('stuck-loop', directive(count), session)
+      else:                 throw Error('[Keel] stuck-loop: ' + directive(count))
+
+directive(count) = "You have retried the same command ${count} times against the same rule (${rule_id}). "
+  + "This is a stuck loop. Stop retrying. SEARCH FIRST: use websearch/webfetch, read the project docs "
+  + "and the blocking rule's message ('${rule_message}'), then either satisfy the rule or change approach. "
+  + "Repeating the identical call will keep failing."
+```
+
+Counters reset on any progress event (passing test, research call,
+command-cluster change). State: in-memory ring buffers per session,
+persisted to `~/.keel/state/stuck.json` so loops survive restarts.
+
+### 6.2 Offline post-mortem (per session)
+
+`analyzeSession()` (used by `keel lessons`, `keel gather`,
+`keel retrospective`):
+
+- **Outcome classifier**: `success` (a non-fake test run followed by no
+  same-file edit within the next 8 calls), `stuck` (Pattern A/B/C fired),
+  `blocked` (last action ∈ {deny, block, prompt}), `interrupted`
+  (anything else). The pass-heuristic is the fallback until exit codes
+  land in traces.
+- **Problem signature**: top-5 edited files (by count), top-3 rules among
+  deny/warn/prompt, repeated normalized commands (count ≥ 3), topic =
+  `rule-loop:<top rule>` | `churn:<top file>` | `general`.
+- **Approaches & pivots**: sliding window of 5 calls; feature signature =
+  {tool, file, cmd_family}; a **pivot** is where Jaccard(signature(w_i),
+  signature(w_{i+1})) < 0.4; segments labeled by dominant activity
+  (edit/test/search/read/mixed).
+
+**Lessons v2 schema** (`~/.keel/lessons.json`, backward-compatible
+envelope — existing `ExtractedLesson[]` core preserved; `lessons.ts` reads
+accept `Array.isArray(data) ? data : data.sessions`):
+
+```json
+{
+  "version": 2,
+  "window": { "start": "2026-07-28", "end": "2026-08-03" },
+  "sessions": [{
+    "session_id": "ses_...", "project": "/path", "date": "2026-08-03",
+    "outcome": "success",
+    "problem_signature": { "topic": "rule-loop:source-change-requires-test",
+      "files": [...], "rules": [...], "repeated_commands": ["git add -A && git commit -m <msg>"] },
+    "stats": { "tool_calls": 2471, "attempts_to_success": 132, "stuck_loops": 1,
+      "churn_cycles": 25, "pivots": 4, "time_to_first_search_s": 183,
+      "research_before_edit": false },
+    "approaches": [{ "start_t": ..., "end_t": ..., "label": "read", "calls": 14, "files": [] }],
+    "pivot_points": [{ "t": ..., "from": "edit", "to": "search" }],
+    "lessons": [{ "key": "research-before-edit", "text": "Edited before searching…", "confidence": 0.7 }]
+  }],
+  "aggregate": { "sessions": 41, "success": 22, "stuck": 6, "blocked": 4,
+    "interrupted": 9, "stuck_rate": 0.15, "median_attempts_to_success": 47,
+    "median_time_to_first_search_s": 120 }
+}
+```
+
+**Lesson templates (only with evidence):** `research-before-edit` (first
+edit precedes first research call), `stuck-loop` (Pattern A ≥ 1),
+`no-pivot` (pivots == 0 AND stuck), `late-pivot` (pivots ≥ 2 AND stuck).
+`keel gather` emits a problem-solving block inside the markers only when
+evidence ≥ 2 sessions (or ≥ 1 stuck session), with counts:
+
+```markdown
+### Problem-solving
+- Research before editing: sessions that searched first resolved in fewer attempts (median 6 vs 14 tool calls, 3 of 5 sessions this window).
+- Do not retry an identical blocked command: 6 stuck loops observed; read the rule message and change approach instead.
+- Switch approach after 2 failed attempts: 4 of 6 stuck sessions recovered after pivoting; sessions that never pivoted stayed stuck.
+```
+
+**Metric honesty note:** AUS/compliance can only *prove* improvement once
+the same trace format persists across weeks; the lessons.json v2 envelope
+change needs a CHANGELOG migration note.
+
 ---
 
 ## 7. Security
@@ -488,3 +838,60 @@ between the markers of requirements.md, and tomorrow's session starts with
 the knowledge injected at zero cost.
 
 Guardrail, harness, and memory in one daemon.
+
+## 11. Implementation checklist (files touched)
+
+| File | Change |
+|---|---|
+| `packages/core/src/types.ts` | `RuleType` + `research`/`stuck`/`diagnosis`; `EnforcementAction` + `redirect`/`research`; `RedirectDirective`; `VerificationMatcher.exit`; `EnforceInput.exit_code`/`attempt_id`; `EnforceResult.directive`/`attempt_id`; `AuditEntry` event fields; rule fields (`topics`, `freshness_seconds`, `max_age_hours`, `max_attempts`, `fingerprint`, `escalation`, `require_hypothesis`, `hypothesis_tools`, `fallback_tools`, `redirect_throttle_seconds`, `block_after_redirects`) |
+| `packages/core/src/enforce/verification.ts` | factor `matches()`/`boundary()` into shared `boundary-match.ts`; add `exit` matching |
+| `packages/core/src/enforce/research-tracker.ts` | new — mirrors VerificationTracker (research-before-solve) |
+| `packages/core/src/enforce/stuck-tracker.ts` | new — fingerprint counting, escalation, reset-on-success |
+| `packages/core/src/enforce/command-fingerprint.ts` | new — `commandFingerprint()` |
+| `packages/core/src/enforce/problem-ledger.ts` | new — problems/evidence/hypotheses/plans, StateManager-persisted at `~/.keel/state/ledger.json` |
+| `packages/core/src/enforce/research/{fetcher,search,research-cache,freshness}.ts` | new — SSRF-guarded fetch, backends, session cache, staleness |
+| `packages/core/src/enforce/state-manager.ts` | + `research`, `stuck`, `ledger` stores (same atomic pattern) |
+| `packages/core/src/enforce/pipeline.ts` | config + `researchTracker`/`stuckTracker`/`ledger`; new rule branches; `markResearchSatisfied`; `recordAttemptOutcome`; `researchDirective`; directive in `result()` |
+| `packages/core/src/enforce/rule-parser.ts` | validate new types/actions/fields; `research` must NOT join `notImplemented` |
+| `packages/core/src/enforce/audit.ts` / `audit-redaction.ts` | event fields; research-query scrubbing |
+| `packages/core/src/enforce/index.ts` / `keel-core.ts` | export new trackers |
+| `packages/cli/src/commands/daemon.ts` | `/v1/research`, `/v1/research/cache`, `/v1/context`, `/v1/stuck`, `/v1/outcome`, `/v1/plan`; `/v1/requirements` merge + dial filter + `?format=json` |
+| `packages/cli/src/research/research-service.ts` | new — fetch + disk cache (daemon-side) |
+| `packages/cli/src/mcp/daemon-client.ts` | 5+ new client fns |
+| `packages/cli/src/mcp/server.ts` | 5+ new tool definitions + handlers |
+| `packages/opencode-plugin/src/plugin.ts` | redirect + research surfacing; `/v1/outcome` reporting; exit/turn/cwd in records; dial-aware requirement selection; session context card injection |
+| `packages/cli/src/commands/lessons.ts` | bug fixes (§2.1); `stuck-loop`/`research-before-edit`/pivot lessons; lessons.json v2 reads |
+| `packages/cli/src/commands/gather.ts` | data-driven bullets; `keel:workflow` block; lesson decay |
+| `packages/cli/src/commands/suggest.ts` / `watch.ts` | heuristic fixes (§2.1) |
+| `packages/cli/src/commands/retrospective.ts` | new — weekly report; `keel postmortem` in `postmortem.ts` |
+| `packages/cli/src/index.ts` | register `retrospective`, `postmortem`, `note` |
+| `packages/cli/src/commands/install.ts` | `no-credential-echo` + `KEEL_SEARCH_API_KEY`; `--hermes`/`--openclaw` (Phase 4) |
+| `docs/problem-solving-harness.md` | this document |
+
+## 12. Honest boundaries (what this design does NOT solve)
+
+- **It enforces workflow shape, not cognition.** An agent can record a
+  garbage hypothesis and pass. The falsification loop (hypothesis →
+  verification still fails → `status: falsified`) makes that visible and
+  escalatable, but keel never judges the hypothesis content.
+- **Same root cause, different files/symptoms is not detectable.** Churn
+  is keyed on same-file edits; a root cause that manifests across files
+  will be under-counted (Pattern B limitation).
+- **No LLM synthesis.** Lessons are template-based; there is no
+  natural-language root-cause analysis.
+- **The redirect lever depends on the hook channel.** On platforms where
+  keel runs only via MCP (no before-hook), redirects degrade to verdict
+  text the agent reads after calling `keel_check` — guidance still works,
+  enforcement of *interruption* doesn't.
+- **Stuck detection is exit-code-dependent.** Agents that never run shell
+  commands (pure MCP edits) are tracked via fix-attempt repetition instead
+  — the `stuck` rule's `match` should list edit tools too when that is the
+  target.
+- **The loop detector counts identical fingerprints.** "Same problem,
+  different command each time" is caught by the diagnosis obligation (no
+  hypothesis before repeated destructive edits), not by fingerprint
+  counting.
+- **Trace redaction** (write content `[redacted]`, diffs truncated at
+  2000 chars) limits edit-diff analysis.
+- **Metrics need format stability.** AUS/compliance can only prove
+  improvement once the same trace format persists across weeks.
