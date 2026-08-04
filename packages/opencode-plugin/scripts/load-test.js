@@ -505,6 +505,56 @@ await hooks['experimental.chat.system.transform']({ sessionID: 'turn-b' }, { sys
 await hooks['tool.execute.before']({ tool: 'glob', sessionID: 'turn-b' }, { args: { pattern: '*.md' } })
 check('per-session counters are independent', turnOf('turn-b', 'glob') === 1 && turnOf('turn-a', 'glob') === 2)
 
+// ── post-edit syntax check (tier 1) ──────────────────────────────────
+// A broken edit is caught where it is made. Findings are queued on the
+// after-hook and surfaced on the next tool call, because the after-hook's
+// channel does not reliably reach the model.
+const proj = join(tmpHome, 'proj')
+fs.mkdirSync(proj, { recursive: true })
+const traceHas = (needle) => fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .some(file => fs.readFileSync(join(tmpHome, '.keel', 'traces', file), 'utf8').includes(needle))
+
+fs.writeFileSync(join(proj, 'broken.ts'), 'const x: number = ;')
+await hooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'syn-1', args: { filePath: 'broken.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+check('post-edit check flags a broken TypeScript edit', traceHas('post-edit-syntax'))
+
+// The must-NOT-fire case: a healthy file must stay silent, or the check
+// becomes noise and gets switched off.
+const before = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
+fs.writeFileSync(join(proj, 'clean.ts'), 'export const ok: number = 1\n')
+await hooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'syn-2', args: { filePath: 'clean.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+const after = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
+check('post-edit check stays silent on a clean edit', before === after)
+
+// A non-source file has no verifier — that is "cannot verify", not an error.
+fs.writeFileSync(join(proj, 'notes.txt'), 'anything at all')
+const beforeTxt = after
+await hooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'syn-3', args: { filePath: 'notes.txt' } },
+  { title: '', output: '', metadata: {} },
+)
+const afterTxt = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
+check('post-edit check ignores files it cannot verify', beforeTxt === afterTxt)
+
+// A read is not an edit — the check must not run on every tool call.
+const beforeRead = afterTxt
+await hooks['tool.execute.after'](
+  { tool: 'read', sessionID: 'syn-4', args: { filePath: 'broken.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+const afterRead = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
+check('post-edit check only runs on edits', beforeRead === afterRead)
+
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))
 

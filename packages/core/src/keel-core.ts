@@ -14,6 +14,7 @@ export { commandFingerprint, nearIdentical } from './enforce/command-fingerprint
 export { AuditLog } from './enforce/audit.js'
 export { Suggester } from './enforce/suggester.js'
 export { createReceipt } from './receipts.js'
+export { verifyFileSyntax, isVerifiableFile } from './file-verify.js'
 export {
   parseRulesFile,
   parseRulesContent,

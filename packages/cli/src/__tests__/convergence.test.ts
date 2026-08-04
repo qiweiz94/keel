@@ -53,7 +53,14 @@ describe('one engine, not two', () => {
 
     expect(blocksWrite('.keel.yaml')).toBe(true)            // self-protection
     expect(e.checkNoVerify('git commit -m x -n')).toBe(true) // -n anywhere
-    expect(CorePolicyEngine.prototype.autoVerify.toString()).toContain('execFileSync')
+    // The shell-injection fix. It used to be guarded by string-matching
+    // autoVerify's own body; the checking now lives in file-verify.ts, so
+    // the guard follows it — and asserts the property directly rather
+    // than by proxy: argv arrays in, no interpolated shell string.
+    const verifier = readFileSync(join(CLI_SRC, 'core', 'file-verify.ts'), 'utf-8')
+    expect(verifier).toContain('execFileSync')
+    expect(verifier).not.toMatch(/exec(Sync)?\([`'"][^`'"]*\$\{/)   // no `cmd ${path}` shell strings
+    expect(CorePolicyEngine.prototype.autoVerify.toString()).toContain('verifyFileSyntax')
   })
 })
 

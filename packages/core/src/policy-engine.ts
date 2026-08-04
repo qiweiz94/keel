@@ -14,6 +14,7 @@ import type {
 } from './types.js'
 import { createSignedEntry, initSigning } from './signing.js'
 import { createReceipt } from './receipts.js'
+import { verifyFileSyntax } from './file-verify.js'
 
 export const SECRET_ENV_PATTERNS = [
   /\b(?:OPENAI|ANTHROPIC|DEEPSEEK|AWS|GITLAB|OPENCODE)_(?:API_KEY|SECRET|TOKEN)(?![a-zA-Z0-9])/,
@@ -326,70 +327,23 @@ export class PolicyEngine {
   }
 
   /**
-   * Syntax-check a file, so a broken edit is caught where it is made rather
-   * than at the next run.
+   * Syntax-check a file, so a broken edit is caught where it is made
+   * rather than at the next run.
    *
-   * Two things were wrong before and both mattered:
-   *
-   * 1. The path was interpolated into a shell string
-   *    (`python3 -m py_compile "${filePath}"`), so a filename containing a
-   *    quote, backtick or $(...) executed arbitrary commands — inside the tool
-   *    whose purpose is preventing exactly that. Every checker now uses
-   *    execFileSync with an argv array, and the two that need no subprocess at
-   *    all (JSON, YAML) are parsed in-process.
-   * 2. Nothing called it. A verifier that never runs verifies nothing; it is
-   *    wired into `check --file` and `check --ci` below.
-   *
-   * A missing interpreter is reported as "cannot verify" (null), never as a
-   * syntax error — a machine without python3 must not fail every .py file.
+   * The checking itself lives in `file-verify.ts` because the OpenCode
+   * plugin's after-hook needs the same logic without dragging in this
+   * whole class. See that module for the two load-bearing properties
+   * (no shell interpolation; "cannot verify" is not "broken").
    */
   async autoVerify(filePath: string): Promise<EnforcementResult | null> {
-    const { execFileSync } = await import('node:child_process')
-    const ext = extname(filePath).toLowerCase()
-
-    const spawn = (cmd: string, args: string[]) =>
-      execFileSync(cmd, args, { stdio: 'pipe', timeout: 10000 })
-
-    try {
-      switch (ext) {
-        case '.py':
-          spawn('python3', ['-m', 'py_compile', filePath])
-          break
-        case '.sh':
-        case '.bash':
-          spawn('bash', ['-n', filePath])
-          break
-        case '.js':
-        case '.mjs':
-        case '.cjs':
-          spawn(process.execPath, ['--check', filePath])
-          break
-        case '.json':
-          JSON.parse(readFileSync(filePath, 'utf-8'))
-          break
-        case '.yaml':
-        case '.yml':
-          // Directly relevant to this tool: a malformed .keel.yaml now
-          // fails closed, so catching it at edit time beats discovering it
-          // when every action starts being denied.
-          parseYaml(readFileSync(filePath, 'utf-8'))
-          break
-        default:
-          return null
-      }
-    } catch (err: any) {
-      // ENOENT from the interpreter itself is "no verifier available" —
-      // distinct from "the file is broken", and must not be reported as one.
-      if (err && (err.code === 'ENOENT' || err.code === 'EACCES')) return null
-      const detail = String(err?.message || '').split('\n')[0]
-      return {
-        action: 'warn',
-        rule_name: 'auto-verify',
-        message: `Syntax error in ${basename(filePath)}: ${detail}`,
-        timestamp: new Date().toISOString(),
-      }
+    const detail = await verifyFileSyntax(filePath)
+    if (!detail) return null
+    return {
+      action: 'warn',
+      rule_name: 'auto-verify',
+      message: `Syntax error in ${basename(filePath)}: ${detail}`,
+      timestamp: new Date().toISOString(),
     }
-    return null
   }
 
   private evaluateCommand(cmd: string): EnforcementResult[] {

@@ -17,7 +17,12 @@ import {
   validateRules,
   projectAuditArgs,
   createReceipt,
+  verifyFileSyntax,
+  isVerifiableFile,
 } from '../../core/src/keel-core.js'
+
+/** Tools whose completion means a file on disk just changed. */
+const EDIT_TOOLS = new Set(['write', 'edit', 'apply_patch', 'writefile', 'write_file', 'multiedit'])
 
 const KEEL_DIR = path.join(os.homedir(), '.keel')
 const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
@@ -461,6 +466,37 @@ export default {
       .filter((source, index, all) => all.indexOf(source) === index)
     consumeRestartDisable()
 
+    /**
+     * Post-edit syntax check (tier 1).
+     *
+     * Runs after an edit lands, so a broken file is caught where it was
+     * made rather than at the next test run. Findings are QUEUED, not
+     * thrown: the after-hook's only channel is the client log, which the
+     * user sees but the model may not. The proven model-visible channel is
+     * a throw from the before-hook, so the finding is surfaced on the
+     * agent's next tool call — the same deferred-boundary shape the
+     * verification obligations already use.
+     *
+     * Ships observe-first: it warns, it never blocks. Promotion to a
+     * harder action is earned by a measured false-positive rate, not
+     * assumed.
+     */
+    const pendingSyntaxFindings: string[] = []
+
+    const verifyEdit = async (tool: string | undefined, args: Record<string, unknown>, sessionID: string | undefined, turn: number) => {
+      if (!EDIT_TOOLS.has(String(tool).toLowerCase())) return
+      const raw = String(args.filePath || args.path || args.file || '')
+      if (!raw) return
+      const target = path.isAbsolute(raw) ? raw : path.join(directory, raw)
+      if (!isVerifiableFile(target) || !fs.existsSync(target)) return
+      const detail = await verifyFileSyntax(target)
+      if (!detail) return          // clean, or no verifier available
+      const message = `${path.basename(target)} has a syntax error after your edit: ${detail}`
+      pendingSyntaxFindings.push(message)
+      record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: 'post-edit-syntax', action: 'warn', message, hook: 'tool.execute.after', cwd: directory })
+      surfaceWarn('post-edit-syntax', message, sessionID)
+    }
+
     const before = async (input: any, output: any) => {
       if (isDisabled()) return
       if (sentinelCorrupted) {
@@ -472,6 +508,14 @@ export default {
       // weakening (content/sequence/flow checks are skipped at sprint).
       if (level === 'sprint') surfaceWarn('dial-sprint', 'Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.', input?.sessionID)
       await refreshExternalChanges()
+      // Deliver any post-edit finding here, on the model-visible channel,
+      // before evaluating this call. Non-blocking by design: the agent is
+      // told the file it just wrote is broken and can fix it, which is the
+      // whole point — interrupting the edit itself would be too late.
+      if (pendingSyntaxFindings.length) {
+        const findings = pendingSyntaxFindings.splice(0, pendingSyntaxFindings.length)
+        surfaceWarn(`post-edit-syntax:${findings.length}`, findings.join(' · '), input?.sessionID)
+      }
       const args = output?.args || {}
       const enforceInput = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)
       const result = await pipeline.evaluate(enforceInput)
@@ -522,6 +566,7 @@ export default {
           // exact. Also record the working directory for per-project work.
           pipeline.recordAttemptOutcome(action, exit)
           record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: 'allow', message: 'Tool completed', hook: 'tool.execute.after', exit, cwd: directory })
+          await verifyEdit(input?.tool, args, input?.sessionID, action.turn_number)
         } catch {}
       },
       'experimental.chat.system.transform': async (input: any, output: any) => {

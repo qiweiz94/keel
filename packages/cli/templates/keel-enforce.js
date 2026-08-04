@@ -8100,11 +8100,95 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   return receipt;
 }
 
+// ../core/src/file-verify.ts
+import { readFileSync as readFileSync9 } from "node:fs";
+import { extname, basename, dirname, join as join6 } from "node:path";
+async function loadTypeScriptFor(filePath) {
+  const { createRequire } = await import("node:module");
+  for (const root of [join6(dirname(filePath), "noop.js"), import.meta.url]) {
+    try {
+      const ts = createRequire(root)("typescript");
+      const api = ts?.createSourceFile ? ts : ts?.default;
+      if (api?.createSourceFile) return api;
+    } catch {
+    }
+  }
+  return null;
+}
+async function verifyFileSyntax(filePath) {
+  const { execFileSync } = await import("node:child_process");
+  const ext = extname(filePath).toLowerCase();
+  const spawn = (cmd, args) => execFileSync(cmd, args, { stdio: "pipe", timeout: 1e4 });
+  try {
+    switch (ext) {
+      case ".py":
+        spawn("python3", ["-m", "py_compile", filePath]);
+        break;
+      case ".sh":
+      case ".bash":
+        spawn("bash", ["-n", filePath]);
+        break;
+      case ".js":
+      case ".mjs":
+      case ".cjs":
+        spawn(process.execPath, ["--check", filePath]);
+        break;
+      case ".ts":
+      case ".tsx":
+      case ".mts":
+      case ".cts": {
+        const ts = await loadTypeScriptFor(filePath);
+        if (!ts) return null;
+        const source = readFileSync9(filePath, "utf-8");
+        const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+        const parsed = ts.createSourceFile(basename(filePath), source, ts.ScriptTarget.Latest, false, kind);
+        const diagnostics = parsed.parseDiagnostics;
+        if (diagnostics?.length) {
+          return ts.flattenDiagnosticMessageText(diagnostics[0].messageText, " ");
+        }
+        break;
+      }
+      case ".json":
+        JSON.parse(readFileSync9(filePath, "utf-8"));
+        break;
+      case ".yaml":
+      case ".yml":
+        parse(readFileSync9(filePath, "utf-8"));
+        break;
+      default:
+        return null;
+    }
+  } catch (err) {
+    const code = err?.code;
+    if (code === "ENOENT" || code === "EACCES") return null;
+    return String(err?.message || "").split("\n")[0];
+  }
+  return null;
+}
+var VERIFIABLE = /* @__PURE__ */ new Set([
+  ".py",
+  ".sh",
+  ".bash",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".json",
+  ".yaml",
+  ".yml"
+]);
+function isVerifiableFile(filePath) {
+  return VERIFIABLE.has(extname(filePath).toLowerCase());
+}
+
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
-import { join as join6 } from "node:path";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
+import { join as join7 } from "node:path";
 import { homedir as homedir6 } from "node:os";
-var STATE_DIR = join6(homedir6(), ".keel", "state");
+var STATE_DIR = join7(homedir6(), ".keel", "state");
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -8115,13 +8199,13 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join6(STATE_DIR, `${name}.json`);
+    return join7(STATE_DIR, `${name}.json`);
   }
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
       if (existsSync9(p)) {
-        return JSON.parse(readFileSync9(p, "utf-8"));
+        return JSON.parse(readFileSync10(p, "utf-8"));
       }
     } catch {
     }
@@ -8214,6 +8298,7 @@ var StateManager = class {
 };
 
 // src/plugin.ts
+var EDIT_TOOLS = /* @__PURE__ */ new Set(["write", "edit", "apply_patch", "writefile", "write_file", "multiedit"]);
 var KEEL_DIR = path.join(os.homedir(), ".keel");
 var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
@@ -8656,6 +8741,20 @@ var plugin_default = {
     };
     const requirementSources = [REQUIREMENTS_PATH, path.join(directory, ".keel", "requirements.md")].filter((source, index, all) => all.indexOf(source) === index);
     consumeRestartDisable();
+    const pendingSyntaxFindings = [];
+    const verifyEdit = async (tool, args, sessionID, turn) => {
+      if (!EDIT_TOOLS.has(String(tool).toLowerCase())) return;
+      const raw = String(args.filePath || args.path || args.file || "");
+      if (!raw) return;
+      const target = path.isAbsolute(raw) ? raw : path.join(directory, raw);
+      if (!isVerifiableFile(target) || !fs.existsSync(target)) return;
+      const detail = await verifyFileSyntax(target);
+      if (!detail) return;
+      const message = `${path.basename(target)} has a syntax error after your edit: ${detail}`;
+      pendingSyntaxFindings.push(message);
+      record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: "post-edit-syntax", action: "warn", message, hook: "tool.execute.after", cwd: directory });
+      surfaceWarn("post-edit-syntax", message, sessionID);
+    };
     const before = async (input, output) => {
       if (isDisabled()) return;
       if (sentinelCorrupted) {
@@ -8664,6 +8763,10 @@ var plugin_default = {
       }
       if (level === "sprint") surfaceWarn("dial-sprint", "Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.", input?.sessionID);
       await refreshExternalChanges();
+      if (pendingSyntaxFindings.length) {
+        const findings = pendingSyntaxFindings.splice(0, pendingSyntaxFindings.length);
+        surfaceWarn(`post-edit-syntax:${findings.length}`, findings.join(" \xB7 "), input?.sessionID);
+      }
       const args = output?.args || {};
       const enforceInput = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
       const result = await pipeline.evaluate(enforceInput);
@@ -8707,6 +8810,7 @@ var plugin_default = {
           if (exit === 0) pipeline.markVerificationSatisfied(action);
           pipeline.recordAttemptOutcome(action, exit);
           record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
+          await verifyEdit(input?.tool, args, input?.sessionID, action.turn_number);
         } catch {
         }
       },

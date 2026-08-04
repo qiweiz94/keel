@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { PolicyEngine } from '../policy-engine.js'
 
 function makeEngine(): PolicyEngine {
@@ -325,6 +328,62 @@ describe('PolicyEngine', () => {
         cwd: '/test',
         timestamp: new Date().toISOString(),
       })).not.toThrow()
+    })
+  })
+
+  // ── autoVerify ─────────────────────────────────────────────────────
+  // The check that catches a broken edit where it is made. It had no
+  // tests, and nothing on the agent path called it.
+  describe('autoVerify', () => {
+    const engine = makeEngine()
+    let dir = ''
+
+    beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'keel-autoverify-')) })
+    afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+
+    const write = (name: string, content: string) => {
+      const p = join(dir, name)
+      writeFileSync(p, content)
+      return p
+    }
+
+    it('flags a JavaScript syntax error', async () => {
+      const result = await engine.autoVerify(write('broken.js', 'function ( {'))
+      expect(result?.action).toBe('warn')
+      expect(result?.rule_name).toBe('auto-verify')
+    })
+
+    it('stays silent on valid JavaScript', async () => {
+      // The must-not-fire case. A verifier that flags healthy files is
+      // worse than none — that is the false-positive path to being
+      // switched off.
+      expect(await engine.autoVerify(write('ok.js', 'export const a = 1\n'))).toBeNull()
+    })
+
+    it('flags malformed JSON and accepts valid JSON', async () => {
+      expect((await engine.autoVerify(write('bad.json', '{"a": }')))?.action).toBe('warn')
+      expect(await engine.autoVerify(write('ok.json', '{"a": 1}'))).toBeNull()
+    })
+
+    it('flags malformed YAML and accepts valid YAML', async () => {
+      expect((await engine.autoVerify(write('bad.yaml', 'a: [1, 2\nb: 3')))?.action).toBe('warn')
+      expect(await engine.autoVerify(write('ok.yaml', 'a: 1\n'))).toBeNull()
+    })
+
+    it('reports "cannot verify" for an unknown extension', async () => {
+      // Not an error — no verifier exists for it.
+      expect(await engine.autoVerify(write('notes.txt', 'anything at all'))).toBeNull()
+    })
+
+    it('verifies TypeScript rather than silently skipping it', async () => {
+      // .ts fell through to `default: return null`, so every TypeScript
+      // file was silently unverified — in a TypeScript codebase.
+      const result = await engine.autoVerify(write('broken.ts', 'const x: number = ;'))
+      expect(result?.action).toBe('warn')
+    })
+
+    it('stays silent on valid TypeScript', async () => {
+      expect(await engine.autoVerify(write('ok.ts', 'export const n: number = 1\n'))).toBeNull()
     })
   })
 })
