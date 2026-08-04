@@ -809,7 +809,9 @@ change needs a CHANGELOG migration note.
 | 3 | P0 + P1 + P2 = the actual harness (80/20); P3/P4 compound/broaden | ✅ approved |
 | 4 | Research backend default: keyless DuckDuckGo; `api` and `none` backends supported | ✅ approved (per recommendation) |
 | 5 | Enforcement posture: warn-first; deny only at escalation thresholds | ✅ approved (per recommendation) |
-| 6 | Start with P0 immediately (requirements.md) | 🔨 in progress |
+| 6 | Start with P0 immediately (requirements.md) | ✅ shipped (2026-08-04) |
+| 7 | Phase 1 — research capability: `/v1/research` + `/v1/research/cache`, `keel_research` / page-retrieval / `keel_search_cache` MCP tools, SSRF-hardened fetcher, `research` rule type + action + `topics`/`max_age_hours`, session cache | ✅ shipped (commit `59f398a`, 2026-08-04) |
+| 8 | Phase 2 — workflow enforcement: `stuck` type, research-before-solve obligation, `redirect` action, ProblemLedger, `/v1/outcome` | 🔨 next |
 
 ---
 
