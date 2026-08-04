@@ -1,6 +1,8 @@
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import chalk from 'chalk'
+import { homedir } from 'node:os'
+import { HARNESS_RULES_YAML } from './harness-rules.js'
 
 type DetectionLane = 'enforce' | 'alert' | 'hunt'
 
@@ -50,17 +52,60 @@ const ATR_CATEGORIES: ATRCategory[] = [
   { title: 'Fine-Tuning Manipulation', id: 'ATR-DP-002', description: 'Detects unauthorized fine-tuning pipeline changes', severity: 'high', lane: 'alert', detection: { selection: [{ type: 'regex', field: 'command', pattern: '.*(?:finetune|training).*--(?:override|force|unsafe)' }] } },
 ]
 
+/**
+ * `keel rules harness` — emit the problem-solving rules for pasting.
+ *
+ * A default install writes only destructive-command guards, so the
+ * `stuck` / `research` / `diagnosis` types that exist to stop an agent
+ * circling are never actually enabled. This prints them, and first
+ * reports what they would have caught in the local trace history — the
+ * point being to show evidence rather than ask for trust.
+ */
+async function printHarnessRules() {
+  console.log(chalk.bold.cyan('\n  ⚓ keel problem-solving rules\n'))
+
+  // Evidence first: what does the existing history actually look like?
+  try {
+    const { loadTraceEntries, buildReport } = await import('./retrospective.js')
+    const report = buildReport(loadTraceEntries(join(homedir(), '.keel', 'traces')))
+    const stuck = report.sessions.filter(s => s.stuck_loops > 0)
+    if (report.sessions.length) {
+      console.log(chalk.dim(`  In your last ${report.sessions.length} sessions:`))
+      const loops = report.sessions.reduce((total, s) => total + s.stuck_loops, 0)
+      console.log(`    ${chalk.white(String(loops))} repeat loop(s) across ${chalk.white(String(stuck.length))} session(s)`)
+      const noResearch = report.sessions.filter(s => s.research_before_solve === false).length
+      if (noResearch) console.log(`    ${chalk.white(String(noResearch))} session(s) edited source before any research call`)
+      console.log(chalk.dim('    (these rules would have observed exactly those)'))
+      console.log()
+    }
+  } catch { /* evidence is a bonus; never block the paste on it */ }
+
+  console.log(chalk.dim('  Paste into the rules: list of ~/.keel/rules.yaml — keel cannot'))
+  console.log(chalk.dim('  edit that file for you, by design.\n'))
+  console.log(HARNESS_RULES_YAML)
+  console.log(chalk.yellow('  All three are mode: observe — they record, they do not interrupt.'))
+  console.log(chalk.dim('  Check what they caught with `keel retrospective`, then change'))
+  console.log(chalk.dim('  mode to warn or block once you trust the hit rate.\n'))
+}
+
 export async function rulesCommand(
   source: string | undefined,
   options: { output?: string; lane?: string }
 ) {
   if (!source) {
     console.log(chalk.cyan('\nkeel rules:\n'))
+    console.log('  harness        The problem-solving rules: stop circling, research first, root cause')
     console.log('  atr            Import rules from Agent Threat Rules (ATR) format')
     console.log('  Options:')
     console.log('    --output <dir>    Output directory')
     console.log('    --lane <mode>     Detection lane: enforce, alert, or hunt (default: hunt)')
-    console.log('  Usage: keel rules atr --lane enforce\n')
+    console.log('  Usage: keel rules harness')
+    console.log('         keel rules atr --lane enforce\n')
+    return
+  }
+
+  if (source === 'harness') {
+    await printHarnessRules()
     return
   }
 
