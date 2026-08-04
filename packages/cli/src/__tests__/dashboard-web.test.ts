@@ -14,6 +14,14 @@ import { fileURLToPath } from 'node:url'
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 
+/**
+ * These tests spawn a real node process that loads the entire CLI bundle.
+ * On a cold macOS CI runner that regularly exceeds vitest's 5s default —
+ * and worse, 5s is BELOW startServer()'s own 10s timeout, so vitest killed
+ * the test before the helper could report why the server never came up.
+ */
+const SPAWN_TIMEOUT_MS = 30_000
+
 let dir: string
 let home: string
 
@@ -43,6 +51,9 @@ function startServer(): Promise<{ port: number; token: string; kill: () => void 
       env: { ...process.env, HOME: home, KEEL_DASHBOARD_ALLOW_NON_TTY: '1' },
     })
     let out = ''
+    // Must stay BELOW the per-test timeout below, or vitest kills the test
+    // first and this descriptive message ("server did not start: <stdout>")
+    // is replaced by a bare "Test timed out in 5000ms" that says nothing.
     const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 10000)
     child.stdout.on('data', (chunk: Buffer) => {
       out += chunk.toString()
@@ -85,7 +96,7 @@ describe('keel dashboard --web', () => {
     } finally {
       server.kill()
     }
-  })
+  }, SPAWN_TIMEOUT_MS)
 
   it('switches the dial through the API and persists it to rules.yaml', async () => {
     const server = await startServer()
@@ -102,7 +113,7 @@ describe('keel dashboard --web', () => {
     } finally {
       server.kill()
     }
-  })
+  }, SPAWN_TIMEOUT_MS)
 
   it('rejects dial changes without the token', async () => {
     const server = await startServer()
@@ -116,5 +127,5 @@ describe('keel dashboard --web', () => {
     } finally {
       server.kill()
     }
-  })
+  }, SPAWN_TIMEOUT_MS)
 })
