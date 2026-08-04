@@ -811,7 +811,9 @@ change needs a CHANGELOG migration note.
 | 5 | Enforcement posture: warn-first; deny only at escalation thresholds | ✅ approved (per recommendation) |
 | 6 | Start with P0 immediately (requirements.md) | ✅ shipped (2026-08-04) |
 | 7 | Phase 1 — research capability: `/v1/research` + `/v1/research/cache`, `keel_research` / page-retrieval / `keel_search_cache` MCP tools, SSRF-hardened fetcher, `research` rule type + action + `topics`/`max_age_hours`, session cache | ✅ shipped (commit `59f398a`, 2026-08-04) |
-| 8 | Phase 2 — workflow enforcement: `stuck` type, research-before-solve obligation, `redirect` action, ProblemLedger, `/v1/outcome` | 🔨 next |
+| 8 | Phase 2 — workflow enforcement | 🔨 in progress |
+| 8a | Phase 2a — `stuck` rule type, `redirect` action + directive, command fingerprinting, exit-code telemetry | ✅ shipped (commit `6ae6c07`, 2026-08-04) |
+| 8b | Phase 2b — research-before-solve obligation, ProblemLedger + `keel_hypothesis`, `diagnosis` type, `/v1/outcome` | 🔨 next |
 
 ---
 
