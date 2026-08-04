@@ -140,7 +140,7 @@ export function telemetryHealth(entries: TraceEntry[], now: number): HealthLine[
       id: 'noise',
       label: 'Trace quality',
       state: pct > 50 ? 'amber' : 'green',
-      detail: `${pct}% of ${entries.length} entries are non-agent (test-harness) records, excluded from metrics`,
+      detail: `${pct}% of ${entries.length} recent entries are non-agent (test-harness) records, excluded from metrics`,
     })
   }
 

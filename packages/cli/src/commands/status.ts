@@ -154,7 +154,12 @@ export async function statusCommand() {
   // ── Telemetry: is keel actually receiving data? ──
   console.log()
   console.log(chalk.dim('  Telemetry:'))
-  const entries = loadTraceEntries(join(home, '.keel', 'traces'))
+  // Bounded on purpose: `keel status` runs constantly, and the trace
+  // corpus only grows (6 MB today). Health is a question about the recent
+  // past, so a week of files answers it without re-parsing history on
+  // every invocation.
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+  const entries = loadTraceEntries(join(home, '.keel', 'traces'), weekAgo)
   const health = telemetryHealth(entries, Date.now())
   for (const check of health) {
     const mark = paintState(check.state, STATE_MARK[check.state])

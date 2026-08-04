@@ -8711,10 +8711,12 @@ var plugin_default = {
     });
     const verificationWarnings = /* @__PURE__ */ new Set();
     const surfacedWarnings = /* @__PURE__ */ new Set();
-    const surfaceWarn = (ruleId, message, sessionID) => {
+    const surfaceWarn = (ruleId, message, sessionID, once = true) => {
       const key = `${ruleId}:${sessionID || "unknown"}`;
-      if (surfacedWarnings.has(key)) return;
-      surfacedWarnings.add(key);
+      if (once) {
+        if (surfacedWarnings.has(key)) return;
+        surfacedWarnings.add(key);
+      }
       try {
         client?.app?.log?.({
           body: {
@@ -8753,7 +8755,6 @@ var plugin_default = {
       const message = `${path.basename(target)} has a syntax error after your edit: ${detail}`;
       pendingSyntaxFindings.push(message);
       record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: "post-edit-syntax", action: "warn", message, hook: "tool.execute.after", cwd: directory });
-      surfaceWarn("post-edit-syntax", message, sessionID);
     };
     const before = async (input, output) => {
       if (isDisabled()) return;
@@ -8765,7 +8766,7 @@ var plugin_default = {
       await refreshExternalChanges();
       if (pendingSyntaxFindings.length) {
         const findings = pendingSyntaxFindings.splice(0, pendingSyntaxFindings.length);
-        surfaceWarn(`post-edit-syntax:${findings.length}`, findings.join(" \xB7 "), input?.sessionID);
+        surfaceWarn("post-edit-syntax", findings.join(" \xB7 "), input?.sessionID, false);
       }
       const args = output?.args || {};
       const enforceInput = toEnforceInput(input?.tool || "unknown", args, input, level, directory);

@@ -432,13 +432,20 @@ export default {
     })
     const verificationWarnings = new Set<string>()
     const surfacedWarnings = new Set<string>()
-    const surfaceWarn = (ruleId: string, message: string, sessionID: string | undefined) => {
+    const surfaceWarn = (ruleId: string, message: string, sessionID: string | undefined, once = true) => {
       // Warn-level results are audit-only by default; surface each rule once
       // per session so "warnings vs blocks" is a visible dial, not a silent
       // trace entry.
+      //
+      // `once: false` is for findings that are distinct events rather than
+      // one recurring rule — a syntax error in a second file is new
+      // information, not a repeat. Deduping those by rule id reported the
+      // first broken file and silently swallowed every one after it.
       const key = `${ruleId}:${sessionID || 'unknown'}`
-      if (surfacedWarnings.has(key)) return
-      surfacedWarnings.add(key)
+      if (once) {
+        if (surfacedWarnings.has(key)) return
+        surfacedWarnings.add(key)
+      }
       try {
         client?.app?.log?.({
           body: {
@@ -492,9 +499,12 @@ export default {
       const detail = await verifyFileSyntax(target)
       if (!detail) return          // clean, or no verifier available
       const message = `${path.basename(target)} has a syntax error after your edit: ${detail}`
+      // Queue only. Delivery happens on the agent's next tool call, on the
+      // model-visible channel — surfacing here as well would double-report
+      // and, worse, consume the once-per-session budget so the deferred
+      // copy went missing.
       pendingSyntaxFindings.push(message)
       record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: 'post-edit-syntax', action: 'warn', message, hook: 'tool.execute.after', cwd: directory })
-      surfaceWarn('post-edit-syntax', message, sessionID)
     }
 
     const before = async (input: any, output: any) => {
@@ -514,7 +524,7 @@ export default {
       // whole point — interrupting the edit itself would be too late.
       if (pendingSyntaxFindings.length) {
         const findings = pendingSyntaxFindings.splice(0, pendingSyntaxFindings.length)
-        surfaceWarn(`post-edit-syntax:${findings.length}`, findings.join(' · '), input?.sessionID)
+        surfaceWarn('post-edit-syntax', findings.join(' · '), input?.sessionID, false)
       }
       const args = output?.args || {}
       const enforceInput = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)

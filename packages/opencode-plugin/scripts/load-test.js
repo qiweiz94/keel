@@ -545,8 +545,31 @@ const afterTxt = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
   .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
 check('post-edit check ignores files it cannot verify', beforeTxt === afterTxt)
 
+// EVERY broken file must be reported, not just the first. Warn-surfacing
+// dedupes once per rule per session, which silently swallowed the second
+// and later syntax errors — the exact silent-no-op failure a guardrail
+// must never have. A mock client makes the surfaced warnings observable.
+const surfaced = []
+const mockClient = { app: { log: (entry) => surfaced.push(entry?.body?.message || '') } }
+const hooks2 = await plugin.server({ directory: proj, client: mockClient })
+for (const name of ['b1.ts', 'b2.ts', 'b3.ts']) {
+  fs.writeFileSync(join(proj, name), 'const q: number = ;')
+  await hooks2['tool.execute.after'](
+    { tool: 'write', sessionID: 'multi', args: { filePath: name } },
+    { title: '', output: '', metadata: {} },
+  )
+  // Findings are delivered on the agent's next tool call.
+  await hooks2['tool.execute.before']({ tool: 'read', sessionID: 'multi' }, { args: { filePath: 'b1.ts' } })
+}
+const reported = ['b1.ts', 'b2.ts', 'b3.ts'].filter(n => surfaced.some(m => m.includes(n)))
+check(`every broken file is reported (${reported.length}/3)`, reported.length === 3)
+
 // A read is not an edit — the check must not run on every tool call.
-const beforeRead = afterTxt
+// Baseline is recomputed here rather than reused from above: the
+// multi-file block in between adds findings, so a stale baseline would
+// make this assert on the wrong delta.
+const beforeRead = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
 await hooks['tool.execute.after'](
   { tool: 'read', sessionID: 'syn-4', args: { filePath: 'broken.ts' } },
   { title: '', output: '', metadata: {} },
