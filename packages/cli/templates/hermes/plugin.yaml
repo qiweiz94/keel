@@ -1,0 +1,14 @@
+name: keel
+version: 1.0.0
+description: >
+  Guardrail and workflow governor. Evaluates every tool call against your
+  keel rules via the local keel daemon, records outcomes so the stuck-loop
+  detector works, and injects your standing requirements each turn.
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+requires_env:
+  - name: KEEL_DAEMON_PORT
+    description: "Port of the local keel daemon (default 31990)"
+    secret: false

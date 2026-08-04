@@ -325,6 +325,7 @@ export async function installCommand(options: {
   cline?: boolean
   cursor?: boolean
   codex?: boolean
+  hermes?: boolean
   mcp?: boolean
   all?: boolean
 }) {
@@ -376,6 +377,10 @@ export async function installCommand(options: {
     await installCodex()
   }
 
+  if (options.hermes || options.all) {
+    await installHermes()
+  }
+
   console.log(chalk.dim('\n  Next steps:'))
   console.log(chalk.dim('    1. Review ~/.keel/rules.yaml and customize'))
   if (options.opencode || options.all || options.project) {
@@ -407,6 +412,40 @@ async function installOpenCodePlugin() {
 
   createRequirementsFile()
   upgradePluginConfig()
+}
+
+/**
+ * Hermes Agent plugin — a thin client over the keel daemon.
+ *
+ * Hermes plugins are Python with a YAML manifest, so unlike the OpenCode
+ * plugin there is nothing to bundle: two files into
+ * ~/.hermes/plugins/keel/ and the daemon does the enforcing.
+ */
+async function installHermes() {
+  const dir = join(homedir(), '.hermes', 'plugins', 'keel')
+  mkdirSync(dir, { recursive: true })
+
+  const plugin = await findTemplateSource(join('hermes', 'keel_plugin.py'))
+  const manifest = await findTemplateSource(join('hermes', 'plugin.yaml'))
+  if (!plugin || !manifest) {
+    console.log(chalk.red('  ✗ Hermes plugin source not found. Run from the keel repo or reinstall the CLI.'))
+    return
+  }
+  copyFileSync(plugin, join(dir, 'keel_plugin.py'))
+  copyFileSync(manifest, join(dir, 'plugin.yaml'))
+  // Hermes requires __init__.py exposing register(ctx).
+  writeFileSync(join(dir, '__init__.py'), 'from .keel_plugin import register  # noqa: F401\n')
+  console.log(chalk.green(`  ✓ Installed Hermes plugin to ${dir}`))
+
+  createRequirementsFile()
+  console.log()
+  console.log(chalk.dim('  The Hermes plugin enforces through the keel daemon:'))
+  console.log(chalk.dim('    • start it with `keel daemon` (it idles out after 10 min and respawns)'))
+  console.log(chalk.dim('    • if the daemon is unreachable, only catastrophic commands are blocked'))
+  console.log(chalk.dim('      and the plugin says so loudly — it never silently stops enforcing'))
+  // Say what is NOT enforced, rather than letting it look covered.
+  console.log(chalk.yellow('    • Hermes cannot rewrite tool arguments, so keel `fix` rules are'))
+  console.log(chalk.yellow('      advisory there — they are reported, not applied'))
 }
 
 async function installProjectPlugin() {

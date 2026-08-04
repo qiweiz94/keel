@@ -11,3 +11,7 @@ packages/cli/src/core
 
 # legacy — OpenCode uses AGENTS.md
 CLAUDE.md
+
+# Python bytecode from the Hermes plugin template (py_compile in tests)
+__pycache__/
+*.pyc
