@@ -22,7 +22,7 @@ import type { EnforceResult, ProtectionLevel } from '../core/types.js'
  * Doing it here also removes a process: a hook used to spawn `sh` AND a
  * second `keel`, per tool call. Now the host spawns one.
  *
- * Adding a host is a row in HOST_ADAPTERS, not a new script.
+ * Adding a host is an entry in HOSTS plus a parse/render branch, not a new script.
  */
 
 export const HOSTS = ['claude-code', 'cline', 'cursor', 'codex', 'gemini', 'generic'] as const

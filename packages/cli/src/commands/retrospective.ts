@@ -15,7 +15,7 @@ import type { AuditEntry } from '../core/types.js'
  * time-to-first-search, churn, deny-repeat rate, verification completion,
  * and pivot recovery.
  *
- * Metrics definitions (see docs/problem-solving-harness.md §6).
+ * Metrics definitions.
  *
  * NOT yet implemented (deferred from Phase 3, see the decisions log):
  * week-over-week deltas, `keel postmortem`, lesson decay, lessons.json v2.

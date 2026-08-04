@@ -53,7 +53,7 @@ Capabilities differ, and keel does not pretend otherwise:
 
 ## Universal paths — no adapter needed
 
-**MCP server** (`keel mcp`) exposes 7 tools — `keel_check`, `keel_audit`,
+**MCP server** (`keel serve`) exposes 7 tools — `keel_check`, `keel_audit`,
 `keel_requirements`, `keel_research`, `keel_fetch`, `keel_search_cache`,
 `keel_hypothesis`. Any MCP-capable client can use keel with no keel-specific code:
 Windsurf, Zed, Continue, JetBrains AI, and others. This is advisory rather than
@@ -73,8 +73,8 @@ exit   : 0 = allow, 2 = blocked
 ```
 
 That is how Goose, Roo, Kilo, Amp, n8n or a homegrown wrapper integrate today. Adding a
-*named* host on top of it is a row in `HOST_ADAPTERS` (`packages/cli/src/commands/hook.ts`)
-plus a test — not a new script.
+*named* host on top of it is an entry in `HOSTS` (`packages/cli/src/commands/hook.ts`)
+plus a branch in `parsePayload`/`renderVerdict` and a test — not a new script.
 
 ---
 

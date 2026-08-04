@@ -1,165 +1,106 @@
-# keel vs. Other Projects
+# How keel compares
 
-## How keel Differs from Prompt-Based Approaches
+A map of the space, and where keel sits in it. Every project listed here is solving a
+real problem — mostly a *different* one. This page is meant to help you pick the right
+tool, including when that tool isn't keel.
 
-CLAUDE.md, AGENTS.md, .cursorrules, .clinerules, and AI agent memory/skills are all **prompt-based governance**. They inject instructions into the AI's system prompt and *hope* the AI follows them.
-
-Research proves this is structurally unreliable:
-
-- Anthropic's own docs state: *"Claude reads it and tries to follow it, but there's no guarantee of strict compliance."*
-- Andriushchenko et al. (ICLR 2025) achieved **100% attack success rate** on GPT-4o, Claude 3, and Llama-3
-- As context grows, initial instructions are diluted and forgotten
-- The AI can "self-bypass" using `--no-verify`, `core.hooksPath`, MCP API writes
-- Prompt injection from external files overrides governance instructions
-
-**keel operates at a different layer entirely.** It intercepts tool calls BEFORE execution using:
-1. **PreToolUse hooks** (Claude Code, Cline) — hooks fire before the tool runs; the AI receives a `permissionDecision: "deny"` it cannot override
-2. **Git hooks** (any AI tool) — catches violations at commit time; works with every AI coding assistant
-3. **MCP enforcement server** — real-time policy checking via the Model Context Protocol
-
-| Approach | Mechanism | Can AI Ignore? | Example |
-|----------|-----------|---------------|---------|
-| Prompt-based | Instructions in system prompt | ✅ Yes — trivially | CLAUDE.md, AGENTS.md, .cursorrules |
-| Memory/Skills | Optional context loaded by AI | ✅ Yes — AI chooses to use | Claude memory, skill directories |
-| **Hard enforcement** | OS/hook-level block before execution | ❌ No — cannot override | **keel** |
+> **On numbers:** this page deliberately carries no star counts or benchmark figures.
+> They rot within weeks and can't be verified by a reader months later. Links go to the
+> projects themselves so you can check current state yourself.
 
 ---
 
-## Competitive Landscape
+## The category distinction that matters
 
-### Comparison Matrix
+Most "AI guardrail" tools fall into one of four groups. They are not substitutes.
 
-| Capability | Cupcake | agentsh | Aegis | DashClaw | MS AGT | Guardrails | block-no-verify | Semgrep | Snyk Agent Scan | **keel** |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **Hard enforcement** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ⚠️ (post-hoc) | ❌ | **✅ 3 layers** |
-| **PreToolUse hook** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | **✅** |
-| **Git hook level** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | **✅** |
-| **MCP enforcement** | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ⚠️ (scan only) | ✅ | **✅** |
-| **Git bypass prevention** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | **✅** |
-| **Cross-platform** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | **✅** |
-| **Secret detection** | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ | **✅** |
-| **Audit logging** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | **✅** |
-| **Policy-as-code** | Rego | YAML | JSON | YAML | YAML/OPA | Rail | ❌ | YAML | ❌ | **YAML** |
-| **CI/CD integration** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | **✅ GitHub Action** |
+| Group | Enforces on | Example projects | Can the agent ignore it? |
+|---|---|---|---|
+| **Prompt-based guidance** | the model's attention | `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, agent memory/skills | Yes — it's a request |
+| **Output validation** | LLM text responses | [Guardrails AI](https://github.com/guardrails-ai/guardrails) | N/A — validates text, not tool calls |
+| **Static analysis** | source code, after it's written | [Semgrep](https://github.com/semgrep/semgrep) | Findable after the fact; the write already happened |
+| **Tool-call interception** | the action, before it runs | **keel**, [Cupcake](https://github.com/eqtylab/cupcake), and others below | No — the call is gated |
 
-### Detailed Project Analysis
+keel is in the fourth group. If what you need is "stop bad code from reaching main,"
+Semgrep is a better answer. If you need "stop the agent from running `rm -rf` or
+force-pushing at 2am," that's this group.
 
-#### Cupcake (eqtylab/cupcake)
-- **Stars**: 282 | **Language**: Rust | **License**: Apache 2.0
-- **What it does**: Policy enforcement via OPA/Rego compiled to WASM. Intercepts tool calls through hooks.
-- **Strengths**: Deterministic evaluation via Rego/WASM. Multi-agent support.
-- **Gaps**: No git hook enforcement. No MCP enforcement server. No secret scanning. No bypass prevention. Single enforcement layer.
-- **What we can learn**: Rego-as-WASM for deterministic policy evaluation is powerful — we should add optional Rego engine.
+### Why prompt-based guidance isn't enforcement
 
-#### agentsh (canyonroad/agentsh)
-- **Stars**: 363 | **Language**: Go | **License**: Apache 2.0
-- **What it does**: OS-level execution sandboxing via seccomp, eBPF, FUSE, Landlock, ESF. Intercepts at kernel level.
-- **Strengths**: Hardest enforcement (kernel-level). Cannot be bypassed by any AI process.
-- **Gaps**: No git hook enforcement. Requires kernel dependencies. No CLI/CI mode. Heavy infrastructure.
-- **What we can learn**: Optional OS sandbox mode (`keel sandbox`) for high-security environments.
+This is keel's core premise, so it should be checkable rather than asserted:
 
-#### Aegis (Justin0504/Aegis)
-- **Stars**: 370 | **Languages**: Python, TypeScript, Go | **License**: MIT
-- **What it does**: Pre-execution firewall with 5-stage pipeline (Classify, Anomaly, Evaluate, DSL Match, Decide). HTTP/MCP proxy.
-- **Strengths**: Anomaly detection pipeline. Multi-language SDK support. Fine-grained classification.
-- **Gaps**: No git hook enforcement. Single point of failure (proxy). No bypass prevention.
-- **What we can learn**: Anomaly detection classifier could detect novel attack patterns.
+- Anthropic's own documentation describes `CLAUDE.md` as something Claude "reads and
+  tries to follow," without a guarantee of strict compliance.
+- Instruction-following degrades as context grows — the "Lost in the Middle" effect
+  ([Liu et al., 2023](https://arxiv.org/abs/2307.03172)) shows retrieval accuracy
+  dropping for content in the middle of long contexts.
+- Compaction discards earlier turns by design.
+- An agent that *wants* to proceed can use `--no-verify`, `core.hooksPath`, or direct
+  file writes to route around anything advisory.
 
-#### DashClaw (ucsandman/DashClaw)
-- **Stars**: 287 | **Languages**: TypeScript, Python | **License**: MIT
-- **What it does**: PreToolUse hooks with remote approval, Ed25519-signed audit ledger, calibrated interruption controller.
-- **Strengths**: Tamper-evident audit logs. Remote approval flow. Calibrated interruptions prevent hook timeouts.
-- **Gaps**: Documented **18-day enforcement blackout** due to hook misconfig. No git hooks. Single enforcement layer.
-- **What we can learn**: Ed25519-signed audit log — prevents tampering with enforcement history.
-- **Note**: The 18-day blackout incident is the best argument for multi-layer enforcement.
-
-#### Microsoft Agent Governance Toolkit (microsoft/agent-governance-toolkit)
-- **Stars**: 4,900 | **Languages**: Python, TS, Rust, Go, C# | **License**: MIT
-- **What it does**: Full policy engine with identity, trust scoring, execution sandboxing, audit, SRE. 10 formal specs, 992 conformance tests. OWASP Agentic Top 10 coverage.
-- **Strengths**: Most comprehensive policy engine. Multi-language SDK. Formal specs + extensive tests.
-- **Gaps**: In-process enforcement only (if the agent process is compromised, enforcement is bypassed). No git hooks. No bypass prevention. Microsoft-centric.
-- **What we can learn**: The formal spec + conformance test approach. We should write spec docs and aim for similar test coverage.
-
-#### Guardrails AI (guardrails-ai/guardrails)
-- **Stars**: 7,200 | **Language**: Python | **License**: Apache 2.0
-- **What it does**: LLM input/output guardrails. Validates LLM responses against schemas and risk policies. Client-side validation.
-- **Strengths**: Pre-built "Hub" of validators. Snowglobe simulation testing. Largest community in this space.
-- **Gaps**: Not agent-tool enforcement at all. Text-only validation. Model can ignore guardrails. Not coding-assistant specific.
-- **What we can learn**: The Hub concept — a community library of reusable policy templates.
-
-#### block-no-verify (tupe12334/block-no-verify)
-- **Stars**: 6 | **Language**: TypeScript | **License**: MIT
-- **What it does**: Blocks `--no-verify`, `core.hooksPath` overrides, MCP API direct writes, and hook-manager disable env vars.
-- **Strengths**: Comprehensive git bypass prevention. Uses Polyhook for cross-platform support.
-- **Gaps**: Single-purpose (git bypass only). No file/command/secret protection. No policy engine.
-- **What we can learn**: MCP API write detection — we improved `checkHookBypass` based on this.
-
-#### Semgrep (semgrep/semgrep)
-- **Stars**: 16,000 | **Language**: OCaml/Python | **License**: LGPL 2.1
-- **What it does**: Static analysis (SAST) for code quality and security. Can run as pre-commit hook or via MCP.
-- **Strengths**: Largest community. Thousands of rules. Fast scanning.
-- **Gaps**: Post-hoc only (scans code after it's written). No real-time enforcement. AI can bypass with `--no-verify`.
-- **What we can learn**: Community rule ecosystem. Users share thousands of rules.
-
-#### Snyk Agent Scan (formerly Invariant Labs MCP-Scan)
-- **Stars**: 2,800 | **Language**: Python | **License**: Apache 2.0
-- **What it does**: Scans MCP servers, agent skills, and configurations for vulnerabilities. Auto-discovers MCP configs across all major tools.
-- **Strengths**: Comprehensive MCP vulnerability scanning. Auto-discovers configs from Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, and more.
-- **Gaps**: Scan-only (detective, not preventative). No runtime enforcement. No blocking.
-- **What we can learn**: Auto-discover tool configurations — `keel scan` command that detects which AI tools are configured.
+None of that makes prompts useless — keel ships standing requirements precisely because
+prompts help. It makes them insufficient *on their own*.
 
 ---
 
-## What keel Does Differently
+## Tool-call interception: who does what
 
-### Three Enforcement Layers (No Other Project Has This)
+| Project | Interception point | Policy language | Notable strength |
+|---|---|---|---|
+| **keel** | host hooks/plugins (8 hosts), MCP, generic stdin | YAML + optional Rego/WASM | breadth of hosts; approval gates; signed receipts |
+| [Cupcake](https://github.com/eqtylab/cupcake) | tool-call hooks | Rego compiled to WASM | deterministic policy evaluation |
+| [agentsh](https://github.com/canyonroad/agentsh) | OS kernel (seccomp, eBPF, Landlock) | Go config | strongest enforcement boundary — survives a compromised agent process |
+| [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit) | in-process SDK | YAML / OPA | formal specs, conformance test suite, OWASP Agentic Top 10 mapping |
+| [Snyk Agent Scan](https://github.com/snyk/agent-scan) (formerly Invariant MCP-Scan) | none — scanner | — | MCP config discovery and vulnerability scanning |
+
+**Where keel is genuinely weaker:** `agentsh` enforces at the kernel. keel enforces
+in-process, which means a compromised agent process defeats it — stated plainly in
+[SECURITY.md](../SECURITY.md). If your threat model includes a hostile agent binary
+rather than a careless one, kernel-level sandboxing is the correct choice.
+
+**Where the Microsoft toolkit is ahead:** formal specifications and conformance testing.
+That's a discipline worth copying, not a gap to spin.
+
+---
+
+## What keel actually offers
+
+Three independent enforcement surfaces, so a single misconfiguration doesn't drop
+protection to zero:
 
 ```
-Layer 1: PreToolUse Hook (real-time, BEFORE execution)
-Layer 2: Git Hook (commit-time, ANY tool)
-Layer 3: MCP/CLI/CI (manual, pipeline, audit)
+1. Tool-call interception  — plugin/hook per host, before execution   (primary)
+2. Git hooks               — commit-time, works with ANY agent        (keel init --hooks)
+3. CLI / CI / MCP          — keel evaluate, keel enforce --ci, keel serve
 ```
 
-Every other project has exactly **one** enforcement layer. If that layer fails, protection drops to zero. keel requires **three independent failures** to lose protection.
+The second is the one people underestimate: git hooks are agent-agnostic, so they cover
+tools keel has no adapter for — including ones with no interception point at all.
 
-### Cross-Platform Git Enforcement
-Git hooks work with EVERY AI coding assistant — Cline, Claude Code, Cursor, GitHub Copilot, Aider, Windsurf, Devin. This is the universal enforcement surface.
+Beyond that:
 
-### Git Bypass Prevention
-Only block-no-verify addresses this, and only for git bypass. keel combines git bypass prevention with file/command/secret protection and audit logging.
-
-### Secret Detection in Git Hooks
-Only Semgrep does this (post-hoc), and it can be bypassed with `--no-verify`. keel catches secrets at commit time AND prevents bypass.
-
----
-
-## What We Should Learn From Each Project (Roadmap)
-
-| Priority | Feature | Source | Effort | Status |
-|----------|---------|--------|--------|--------|
-| P0 | Policy template library (`keel template`) | Guardrails AI | 2 days | ✅ Done |
-| P0 | MCP API write detection (improved) | block-no-verify | 1 day | ✅ Done |
-| P1 | Auto-discover tool configs (`keel scan`) | Snyk Agent Scan | 3 days | ✅ Done |
-| P1 | Tamper-evident audit logs (Ed25519 signed) | DashClaw | 2 days | ✅ Done |
-| P1 | ATR rule import (10 categories + lanes) | Agent Threat Rules | 5 days | ✅ Done |
-| P2 | Rego as optional policy engine | Cupcake | 5 days | ✅ Done (partial — requires `@open-policy-agent/opa-wasm`) |
-| P2 | Reasoning trace analysis | Adrian | 5 days | ✅ Done |
-| P2 | Fail-closed guarantee | Doberman | 2 days | ✅ Done |
-| P2 | Anomaly detection classifier | Aegis | 5 days | 📋 Planned |
-| P2 | Signed action receipts (evidence trail) | Pipelock | 3 days | 📋 Planned |
-| P3 | MCP security gateway (bidirectional proxy) | Pipelock, AGT | 5 days | 📋 Planned |
-| P3 | OS-level sandbox (`keel sandbox`) | agentsh | 3 weeks | 🔮 Future |
-| P3 | Formal specs + conformance tests | MS AGT | Ongoing | 🔮 Future |
+- **Approval gates** (`action: prompt`) — irreversible operations block until a human
+  runs `keel allow <id> --once`. Never downgraded by the protection level.
+- **Signed, hash-chained receipts** — tamper-evident enforcement history (`keel verify`).
+- **A speed dial** — `sprint` / `balanced` / `protect`, because a guardrail that can't be
+  loosened gets uninstalled instead.
+- **Honest host verification levels** — [docs/integrations.md](integrations.md) marks each
+  host `live`, `types`, or `docs` rather than implying all are equally proven.
+- **`keel scan`** — audits which agents on a machine have no enforcement at all, and
+  flags MCP servers running unpinned packages or plaintext transports.
 
 ---
 
-## Key Insight: Why Multi-Layer Matters
+## Choosing
 
-DashClaw documented a real incident where a hook configuration error disabled ALL enforcement for **18 days**. The team **didn't notice** because the audit log showed decisions that were never applied.
+| If you need… | Use |
+|---|---|
+| Stop an agent running destructive commands, now | keel |
+| Enforcement that survives a compromised agent process | agentsh, or a container |
+| Vulnerabilities in the code your agent wrote | Semgrep, Snyk |
+| Audit MCP servers for supply-chain risk | `keel scan`, Snyk Agent Scan |
+| Validate LLM text output against a schema | Guardrails AI |
+| Enterprise policy with formal conformance testing | Microsoft AGT |
 
-With keel's three layers:
-- If the PreToolUse hook fails → git hook catches it at commit time
-- If git hooks are bypassed → CI/CD pipeline catches it
-- If all three fail → audit log provides forensic evidence
-
-**Three independent enforcement layers means three independent failures needed for a breach.**
+These compose. Running keel and Semgrep together is a reasonable setup — they gate
+different things at different times.

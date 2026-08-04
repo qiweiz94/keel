@@ -96,9 +96,10 @@ program
 
 program
   .command('scan')
-  .description('Detect AI coding assistant configurations on this machine')
+  .description('Audit this machine\'s AI agent setup — unprotected hosts and risky MCP servers')
   .option('--json', 'Output as JSON')
   .option('--dir <path>', 'Custom project directory to scan')
+  .option('--ci', 'Exit with code 1 if any finding is reported')
   .action(scanCommand)
 
 program
@@ -275,7 +276,7 @@ program
 program
   .command('hook')
   .description('Enforcement entry point for agent hosts (reads the tool call on stdin)')
-  .argument('<host>', 'claude-code | cline | cursor | codex | generic')
+  .argument('<host>', 'claude-code | cline | cursor | codex | gemini | generic')
   .option('--cwd <path>', 'Working directory to evaluate against')
   .option('--level <level>', 'Protection level override: sprint, balanced, or protect')
   .action((host: string, options: { cwd?: string; level?: string }) => hookCommand(host, options))

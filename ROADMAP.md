@@ -1,98 +1,69 @@
-# Keel Roadmap
+# Roadmap
 
-## Current State (v0.1.5)
+Where keel is and where it's going. Anything under **Shipped** is in the current
+release and covered by tests; anything under **Planned** is not built yet.
 
-### Implemented (10 CLI commands)
+## Shipped (v0.2.x)
 
-| Command | Purpose | Status |
-|---------|---------|--------|
-| `init` | Create policy + install git hooks | ✅ |
-| `check` | Check commands/files/policies against rules | ✅ |
-| `audit` | View signed enforcement audit log | ✅ |
-| `serve` | MCP enforcement server (policy checking tools) | ✅ |
-| `template` | 4 pre-built policy templates | ✅ |
-| `rules` | Import ATR detection rules (10 categories, 3 lanes) | ✅ |
-| `scan` | Auto-detect 12+ AI coding assistants + MCP configs | ✅ |
-| `verify` | Verify Ed25519-signed action receipts | ✅ |
-| `gateway` | MCP security gateway (bidirectional proxy + scanning) | ✅ |
-| `policy` | Rego/WASM policy engine | ✅ |
+**Enforcement**
+- Tool-call interception for 8 hosts — see [docs/integrations.md](docs/integrations.md)
+  for the per-host verification level
+- One enforcement entry point (`keel hook <host>`), plus a `generic` stdin/exit-code
+  contract for hosts with no bespoke adapter
+- MCP server (`keel serve`, 7 tools) and a local daemon (`keel daemon`) for thin clients
+- 12 rule types; 7 actions, including `prompt` approval gates and `fix` command rewriting
+- Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
+- Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
+- Self-protection: agents cannot run keel's control commands or edit its rules
+- Rego/WASM policies (`keel policy`) alongside YAML rules
 
-### Enforcement Guards (10)
+**Visibility**
+- `keel scan` — machine audit: unprotected hosts and risky MCP servers, ranked by severity
+- `keel audit`, `keel watch`, `keel status`
+- Signed, hash-chained receipts (`keel verify`, `keel receipts rotate`)
+- `keel dashboard` (terminal and `--web`), human-owned by construction
+- `keel retrospective` — where agents repeated themselves or skipped research
 
-- Destructive commands (rm -rf /, sudo, pkill)
-- Git hook bypass (--no-verify, core.hooksPath, MCP API writes)
-- Force-push (unsafe)
-- Secret file access (.env, credentials, *.pem)
-- Git config access
-- Secret detection (API keys, tokens, private keys)
-- API key exposure via commands (echo, cat, curl Bearer)
-- Edit-before-read warning
-- API key exposure checks
-- Behavioral anomaly detection (4 dimensions)
+**Learning**
+- `keel suggest` / `keel lessons` / `keel gather` — proposes rules from the audit
+  trail, never applies them automatically
+- `keel schedule` — periodic analysis via launchd/cron
 
-### Security Features
+**Problem-solving rules** (`stuck`, `research`, `diagnosis`) ship via
+`keel rules harness` in `mode: observe` rather than in the default install, so they
+accumulate a false-positive record before they ever interrupt anyone.
 
-- Ed25519-signed audit entries (persistent keys, hash-chained)
-- Signed action receipts (offline-verifiable evidence trail)
-- MCP security gateway (input/output scanning, tool poisoning detection, DLP)
-- Reasoning trace analysis (deception/override detection, +35% accuracy)
-- Fail-closed guarantee (no policy = deny everything)
-- Detection lanes (enforce/alert/hunt)
-- File size limits (10MB) + binary file detection
+## Planned
 
-### Code Quality
+**Near term**
+- Promote the problem-solving rules into the default install once observe-mode data
+  on real traffic justifies it
+- Additional stuck detectors: oscillation (A→B→A) and semantic livelock
+- Week-over-week deltas in `keel retrospective`
+- Windows: vitest is currently skipped in CI (path semantics)
 
-- 48 unit tests (all passing)
-- 8 critical + 4 high bugs fixed
-- Monorepo cleanup (package names, duplicated MCP server removed)
-- Comprehensive comparison/documentation
+**Later**
+- Rule catalog with severity/confidence metadata and a promotion workflow
+- Team and organisation rule distribution
+- Compliance mappings for common frameworks
 
----
+## Non-goals
 
-## Next Steps (v0.2.0)
+- **Replacing prompt-based guidance.** Standing requirements complement rules. keel
+  does not claim prompts are useless — only that they are not enforcement.
+- **Sandboxing.** keel gates tool calls; it is not a container or a syscall filter.
+- **Scanning application source for vulnerabilities.** That is Semgrep/Snyk territory.
+  keel governs what the *agent* does, not what your code contains.
 
-### Publish to npm
+## Known limits
 
-- [x] Prepare public v1 package metadata, audits, tarball checks, and release workflow
-- [x] Set up GitHub Actions for automated publishing
-- [ ] Add semantic release workflow
+See [README → Limits](README.md#limits) and [SECURITY.md](SECURITY.md). In short:
+pattern rules are regex gates rather than an anti-virus, reasoning-gated rules need a
+host that exposes reasoning, and in-process enforcement assumes the agent process
+itself is not compromised.
 
-### Community Launch Prep
+## Contributing
 
-- [ ] Add animated demo GIF to README
-- [ ] Write HN launch post outline
-- [ ] Create Reddit r/programming post
-- [ ] Set up Discord server
-- [ ] Add GitHub issue templates
-- [ ] Add GitHub Actions CI badge (currently broken)
-- [ ] Publish `.pre-commit-hooks.yaml` to pre-commit registry
-
-### Feature Gaps
-
-- [ ] PreToolUse hooks for Cursor, Windsurf, GitHub Copilot (only Claude Code + Cline currently)
-- [ ] Docker-based sandbox (`keel sandbox`)
-- [ ] Formally prove security properties (conformance tests)
-- [ ] 2,000+ community rules via Semgrep registry integration
-- [ ] Turn gate (pre-inference prompt screening from Doberman)
-- [ ] Privilege rings + trust scoring (from Microsoft AGT)
-- [ ] OS-level seccomp/eBPF sandbox (from agentsh — lower priority)
-
-### Testing
-
-- [x] Add CLI package tests
-- [ ] Add reasoning trace analysis tests
-- [ ] Add anomaly detection tests
-- [ ] Add MCP gateway tests
-- [ ] Add receipt/signing tests
-- [ ] Add Rego/WASM engine tests
-- [ ] Add integration test for `keel init` + `keel check --ci`
-- [ ] Windows path semantics in core matcher (normalize path separators; negated-path rule tests currently fail on Windows)
-- [ ] Add MCP server integration test
-
-### Known Issues
-
-- `action: prompt` and `action: mask` are not supported in CLI (treated as `warn`)
-- MCP gateway only supports stdio upstream (no HTTP/SSE yet)
-- No CI/CD enforcement via native GitHub App
-- No Homebrew formula for `brew install keel`
-- Package versions are coordinated by `scripts/check-release.mjs`
+Adding a rule type or a host adapter is documented in
+[CONTRIBUTING.md](CONTRIBUTING.md). Issues and discussions are the right place to
+propose roadmap changes.

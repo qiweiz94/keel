@@ -4,6 +4,19 @@
 
 ### Breaking
 
+- **The `product-name-is-keel` default rule is removed.** It denied renaming keel to
+  its former name at priority 100 — enforcing this project's own rename history inside
+  strangers' repositories. Fresh installs now ship 21 default rules instead of 22;
+  existing `~/.keel/rules.yaml` files are untouched. Remove the rule by hand if you
+  want it gone from an existing install.
+- **The shipped standing-requirements template is rewritten.** `keel install` writes
+  `~/.keel/requirements.md`, which the plugin injects into the agent's system prompt
+  every turn. It previously carried keel-project-specific assertions ("the primary agent
+  used in this project is OpenCode", "never write to CLAUDE.md", "product name is
+  'keel'"), so every user's agent was told this repo's conventions as if they were their
+  own. It is now host-agnostic: verification culture, root-cause-before-fix, stuck
+  escalation, and decision hygiene. Existing files are not overwritten — delete
+  `~/.keel/requirements.md` and re-run `keel install` to pick up the new template.
 - Receipt and signing keys moved to machine scope (`~/.keel/receipt-key.json`, `~/.keel/signing-key.json`); legacy project-tree keys are still read so existing receipts keep verifying.
 - `keel allow <id>` now means a 24-hour window (all violations allowed, audited); `--once` is consumed only by a violation that would actually block (first-time warnings do not consume it). Unknown rule ids are refused.
 
@@ -12,15 +25,45 @@
 - `keel dashboard` — interactive TTY dial panel (1/2/3 switch, project target, refresh, quit).
 - `keel dashboard --web` — browser UI with the same controls; 127.0.0.1 only, TTY required to start, one-time token printed on the terminal (never stored; passed as a URL hash fragment).
 - New default rules: `no-after-hours-publish` (time, warn) and `bash-rate-limit` (rate, warn) — both last-resort priority so they never preempt deny/prompt gates.
+- **`keel scan` now assesses risk, not just discovers.** It reports which installed
+  agent hosts have no keel enforcement at all, and flags MCP servers that launch
+  unpinned packages (`npx pkg` without a version), run through a shell, or use plaintext
+  `http://` transports to non-local hosts. Findings are ranked critical → low and cite
+  the exact command or path that triggered them. Adds `--ci` (exit 1 on any finding);
+  `--json` now emits only JSON so it can be piped.
+- `CODE_OF_CONDUCT.md` and `.github/ISSUE_TEMPLATE/config.yml`, which routes security
+  reports to a private advisory instead of a public issue.
 
 ### Changed
 
 - **protect is now block-first**: deny rules block on the FIRST violation (previously warn-then-block at every dial). sprint = warn-only, balanced = warn-then-block, protect = block-first + reasoning checks.
 - Time rules support an optional command `match` (previously they fired on every action) and overnight windows (start > end).
+- `@get-keel/core` bumped to 0.1.9 and the CLI now requires `^0.1.9`. The CLI imports
+  five exports (`loadReceiptPublicKey`, `rotateReceiptKey`, `rotateSigningKey`,
+  `loadPublicKeyJwk`, `receiptPublicKeyCandidates`) that 0.1.8 does not provide;
+  publishing the CLI against the old caret range produced a crash at import time.
+- README, ROADMAP, and `docs/comparison.md` rewritten for external readers. The
+  comparison page no longer carries undated star counts or competitor teardowns.
+- `docs/integrations.md`: `keel mcp` corrected to `keel serve`, and the nonexistent
+  `HOST_ADAPTERS` symbol corrected to `HOSTS`.
 
 ### Fixed
 
 - Flow sink detection matched the substring "nc" inside unrelated words (e.g. "sync"); sink verbs now require full-word boundaries.
+- **`keel dashboard --web` failed silently when unauthenticated.** Opening the page
+  without the `#token=…` fragment, or after the server had exited, rendered a shell full
+  of placeholders whose only error signal was a toast that auto-hid after 2.6 seconds —
+  indistinguishable from a broken page. All three failure modes (missing token, invalid
+  token, server unreachable) now show a persistent banner naming the cause and the exact
+  command to recover.
+- `npm audit` cleared: `fast-uri` (high, host confusion) and `hono` (moderate, CORS
+  ReDoS), both transitive via the deprecated private `@get-keel/mcp-server`. CI was
+  failing on `npm audit --audit-level=moderate` for all three platforms.
+- `@get-keel/mcp-server`'s `bin` pointed at `keel-mcp.js` while the file on disk was
+  still named `ai-enforce-mcp.js` — the last artifact carrying the former product name.
+- `@get-keel/opencode-plugin` did not ship its README, so its npm page rendered blank.
+  All three published packages now carry `keywords`, `homepage`, `bugs`, `author`, and
+  `publishConfig`.
 
 ### Added
 

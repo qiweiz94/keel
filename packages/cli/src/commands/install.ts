@@ -39,20 +39,13 @@ async function findRequirementsSource(): Promise<string | null> {
   return findTemplateSource('requirements.md')
 }
 
-export const DEFAULT_RULES_YAML = `# Keel rules — enforced OUTSIDE agent context (via OpenCode plugin)
-# These rules cannot be forgotten, overridden, or degraded by context rot.
-# Layer 3 enforcement (semantic) — runs before every tool dispatch.
+export const DEFAULT_RULES_YAML = `# Keel rules — enforced OUTSIDE the agent's context window.
+# Evaluated before every tool call, so they cannot be forgotten, overridden,
+# or degraded by context rot. Edit freely: this file is yours.
+# Docs: https://github.com/qiweiz94/keel#rules
 version: 1
 level: balanced
 rules:
-  - id: product-name-is-keel
-    type: command
-    match: "(sed|replaceAll|rename).{0,80}(keel|product).{0,40}(ai-enforce)"
-    action: deny
-    level: sprint
-    priority: 100
-    message: "Product name is 'keel'. Never change it back to ai-enforce."
-
   - id: keel-control-gate
     type: command
     match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
@@ -631,39 +624,39 @@ async function writeDraftRequirements(reqPath: string) {
     ? readFileSync(source, 'utf-8')
     : `# Standing Requirements
 
-## Agent identity
-- The primary agent used in this project is OpenCode.
-- All agent-facing instructions go in AGENTS.md (project root). Never write to CLAUDE.md.
-- OpenCode does not use CLAUDE.md. Only GitHub Copilot and Claude Code use CLAUDE.md.
+Keel injects this file into your agent's system prompt on every turn, so these
+survive long sessions, compaction, and context rot. Edit it freely — it is yours.
 
 ## Verification culture
 - Before ANY claim of completion ("done", "fixed", "ready", "working", "tested", "verified"):
-  1. Run the project's test command (e.g., npm test) — not just npm run build
-  2. Include the test output in the response as evidence
-  3. List what was changed and how each change was verified
-- A compile check is NOT verification. Tests must pass.
+  1. Run the project's real test command — not just a build or a type-check
+  2. Include the output in the response as evidence
+  3. List what changed, and how each change was verified
+- A compile check is NOT verification. A passing build is not a passing test.
+- "I believe it works" is not evidence. Show the output.
+
+## Root cause before fix
+- Diagnose the cause before changing code. A fix aimed at a symptom usually moves the bug.
+- Before proposing a plan, state what it does NOT address.
+- Distinguish a patch (suppresses the symptom) from a fix (removes the cause).
+
+## When stuck
+- After two failed attempts at the same approach, stop. Do not retry a third time.
+- Escalate: search the exact error, re-read the source that failed, or ask.
+- Say plainly when you are stuck. Circling silently is worse than asking.
 
 ## Decision-making
-- When choosing a format, convention, or tool: ASK THE USER what they use. Never default.
-- Before making any decision that affects naming or file structure, verify against the user's stated preferences.
-- "I believe it works" is not evidence. Show proof.
-
-## Product identity
-- Product name is "keel". Never "ai-enforce" or any other name.
-- Before any rename/sed/replaceAll operation: verify the direction. The correct name is "keel."
-
-## Plan quality
-- Before proposing a plan, identify what root causes it does NOT address.
-- Distinguish between bug fixes (patch symptoms) and root-cause fixes.
-- Be honest about what you have verified vs what you haven't tested.
+- When choosing a format, convention, or tool: ask what this project already uses. Never default.
+- Verify a convention is actually enforced before relying on it.
+- Be explicit about what you have tested versus what you are assuming.
 
 ## Context awareness
-- At 16K+ tokens, re-check the user's standing requirements — they were stated early and may have degraded from context.
-- If a requirement conflicts with recently accessed information, the standing requirement wins.
+- In long sessions, re-read these requirements — they were stated early and degrade as context fills.
+- If a requirement conflicts with something read recently, the standing requirement wins.
 
 ## Self-enforcement
-- When you read this file, incorporate these requirements into your behavior immediately.
-- Act as if these requirements were stated by the user at the start of this conversation.
+- Incorporate these requirements into your behaviour as soon as you read them.
+- Treat them as if stated by the user at the start of the conversation.
 `
   writeFileSync(reqPath, draft, 'utf-8')
   console.log(chalk.green(`  ✓ Created ${reqPath}`))

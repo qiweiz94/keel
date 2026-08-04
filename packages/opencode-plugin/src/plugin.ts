@@ -30,17 +30,9 @@ const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
 let sentinelCorrupted = false
 const TRACES_DIR = path.join(KEEL_DIR, 'traces')
-const LEGACY_PRODUCT_NAME = 'ai-' + 'enforce'
 export const DEFAULT_RULES_YAML = `version: 1
 level: balanced
 rules:
-  - id: product-name-is-keel
-    type: command
-    match: "(sed|replaceAll|rename).{0,80}(keel|product).{0,40}(${LEGACY_PRODUCT_NAME})"
-    action: deny
-    level: sprint
-    priority: 100
-    message: "Product name is 'keel'. Never change it back to ${LEGACY_PRODUCT_NAME}."
   - id: keel-control-gate
     type: command
     match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"

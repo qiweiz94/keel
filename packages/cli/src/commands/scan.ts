@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import chalk from 'chalk'
+import { assessRisk, assessProtection, worstSeverity, type Severity } from './scan-risk.js'
 
 /**
  * keel scan command
@@ -215,28 +216,44 @@ function detectTools(detectDir?: string): DetectedTool[] {
   return results
 }
 
-export async function scanCommand(options: { json?: boolean; dir?: string }) {
+export async function scanCommand(options: { json?: boolean; dir?: string; ci?: boolean }) {
   const cwd = options.dir || process.cwd()
 
-  console.log(chalk.cyan(`\nkeel scan — detecting AI coding assistant configurations\n`))
-  console.log(`  Scanning: ${cwd}\n`)
+  // --json must emit ONLY JSON: anything else on stdout makes it unpipeable,
+  // which is the one thing the flag exists for.
+  if (!options.json) {
+    console.log(chalk.cyan(`\nkeel scan — auditing this machine's AI agent setup\n`))
+    console.log(`  Scanning: ${cwd}\n`)
+  }
 
   const tools = detectTools(options.dir)
 
   const installed = tools.filter(t => t.installed)
   const withMCP = tools.filter(t => t.mcpServers.length > 0)
+  const findings = assessRisk(tools, HOME, cwd)
+  const protection = assessProtection(tools, HOME, cwd)
 
   if (options.json) {
-    const output = tools.map(t => ({
-      name: t.name,
-      installed: t.installed,
-      configPaths: t.configPaths.filter(p => existsSync(p)),
-      mcpServers: t.mcpServers,
-      skillsDirs: t.skillsDirs.filter(p => existsSync(p)),
-      configCount: t.configPaths.filter(p => existsSync(p)).length,
-      mcpCount: t.mcpServers.length,
-    }))
+    const output = {
+      tools: tools.map(t => ({
+        name: t.name,
+        installed: t.installed,
+        configPaths: t.configPaths.filter(p => existsSync(p)),
+        mcpServers: t.mcpServers,
+        skillsDirs: t.skillsDirs.filter(p => existsSync(p)),
+        configCount: t.configPaths.filter(p => existsSync(p)).length,
+        mcpCount: t.mcpServers.length,
+      })),
+      protection,
+      findings,
+      summary: {
+        hostsInstalled: installed.length,
+        hostsUnprotected: protection.filter(p => p.supported && !p.enforced).length,
+        worstSeverity: worstSeverity(findings),
+      },
+    }
     console.log(JSON.stringify(output, null, 2))
+    if (options.ci && findings.length > 0) process.exit(1)
     return
   }
 
@@ -273,9 +290,45 @@ export async function scanCommand(options: { json?: boolean; dir?: string }) {
     console.log('')
   }
 
+  // ── Enforcement coverage ────────────────────────────────────────────
+  const actionable = protection.filter(p => p.supported)
+  if (actionable.length > 0) {
+    console.log(chalk.bold('  Enforcement coverage\n'))
+    for (const p of actionable) {
+      const mark = p.enforced
+        ? chalk.green('✓ enforced   ')
+        : chalk.red('✗ unprotected')
+      console.log(`    ${mark}  ${p.host}`)
+      if (p.artifact) console.log(chalk.dim(`                   ${p.artifact}`))
+    }
+    console.log('')
+  }
+
+  // ── Findings ────────────────────────────────────────────────────────
+  if (findings.length === 0) {
+    console.log(chalk.green('  No risks found.\n'))
+  } else {
+    console.log(chalk.bold(`  ${findings.length} finding${findings.length === 1 ? '' : 's'}\n`))
+    for (const f of findings) {
+      console.log(`  ${severityBadge(f.severity)} ${chalk.bold(f.title)}`)
+      console.log(chalk.dim(`     ${f.evidence}`))
+      console.log(chalk.dim(`     → ${f.remediation}`))
+      console.log('')
+    }
+  }
+
   if (withMCP.length > 0) {
-    console.log(chalk.cyan('  Security note:'))
-    console.log(chalk.cyan('    MCP servers execute arbitrary commands on your machine.'))
-    console.log(chalk.cyan('    Run `keel check --ci` to verify your policies cover them.\n'))
+    console.log(chalk.dim('  MCP servers execute commands on your machine with your privileges.\n'))
+  }
+
+  if (options.ci && findings.length > 0) process.exit(1)
+}
+
+function severityBadge(severity: Severity): string {
+  switch (severity) {
+    case 'critical': return chalk.bgRed.white.bold(' CRITICAL ')
+    case 'high': return chalk.red.bold('   HIGH   ')
+    case 'medium': return chalk.yellow.bold('  MEDIUM  ')
+    case 'low': return chalk.dim('   LOW    ')
   }
 }

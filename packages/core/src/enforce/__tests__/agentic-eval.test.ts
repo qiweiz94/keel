@@ -42,9 +42,7 @@ function loadDefaultRules(): ReturnType<typeof parseRulesContent> {
   const src = readFileSync(findPluginSource(HERE), 'utf-8')
   const m = src.match(/DEFAULT_RULES_YAML = `([\s\S]*?)`\n/)
   if (!m) throw new Error('DEFAULT_RULES_YAML not found in plugin source')
-  const legacy = src.match(/const LEGACY_PRODUCT_NAME = '([^']+)' \+ '([^']+)'/)
-  let yaml = m[1]
-  if (legacy) yaml = yaml.replaceAll('${LEGACY_PRODUCT_NAME}', `${legacy[1]}${legacy[2]}`)
+  const yaml = m[1]
   const parsed = parseRulesContent(yaml, 'default-rules')
   // Determinism: `time` and `rate` rules depend on the wall clock and call
   // volume, so they are excluded from these fixtures (they are still tested
@@ -261,7 +259,7 @@ rules:
     operations: [write, delete]
     action: deny
     message: "Secrets are read-only."
-  - id: product-name-is-keel
+  - id: no-destructive-commands
     type: command
     match: "rm -rf /etc"
     action: warn
@@ -270,9 +268,12 @@ rules:
       expect((await p.evaluate(input('WriteFile', { filePath: '/tmp/keel-agentic-eval/.env', operation: 'write', content: 'k=1' }))).action).toBe('warn')
       expect((await p.evaluate(input('WriteFile', { filePath: '/tmp/keel-agentic-eval/.env', operation: 'write', content: 'k=1' }))).action).toBe('deny')
       expect((await p.evaluate(input('WriteFile', { filePath: '/tmp/keel-agentic-eval/.env.example', operation: 'write' }))).action).toBe('allow')
+      // The global default for this id is `deny`. If the project rule merely
+      // stacked alongside it rather than replacing it, the global deny would
+      // win here — so `warn` is what proves the override actually shadowed.
       const override = await p.evaluate(input('Bash', { command: 'rm -rf /etc' }))
       expect(override.action).toBe('warn')
-      expect(override.rule_id).toBe('product-name-is-keel')
+      expect(override.rule_id).toBe('no-destructive-commands')
     })
     it('rate rule throttles repeated calls', async () => {
       const p = makePipeline('balanced', `version: 1

@@ -84,17 +84,6 @@ Auto-load gotchas:
 - `opencode run` (headless) and `opencode serve` load server-kind plugins;
   the TUI loads them too (in its worker process)
 
-## Standing requirements
-
-- OpenCode is the primary agent. Use AGENTS.md for instructions. Never CLAUDE.md.
-- Before claiming "done": run `npm test`, include output as evidence.
-- Build success ≠ tests pass. Run both.
-- When choosing a format/convention: ask the user. Never default.
-- Product name is "keel". Never "ai-enforce".
-- Before proposing a plan: identify root causes it does NOT address.
-- Be honest about what you've verified vs what you haven't tested.
-- At 16K+ tokens, re-check standing requirements — they degrade from context.
-
 ## Publishing
 
 ```bash
@@ -103,27 +92,32 @@ Auto-load gotchas:
 # Never publish MCP; packages/mcp-server is private and deprecated.
 ```
 
-## Standing requirements (for Keel itself)
+## Standing requirements for work in this repo
 
 ### Verification culture
-- Before ANY "done" claim: run `npm run build` AND `npm run test -w @get-keel/core`
-- Include test output as evidence in the response
-- List what was changed and how each change was verified
-- A compile check is NOT verification. Tests must pass.
+- Before ANY "done" claim: run `npm run build` AND the test suites, and include the
+  output as evidence. A compile check is NOT verification.
+- Never pipe a verifying test command through `grep`/`head`/`tail` when reporting it —
+  a filtered pass hides the failures underneath.
+- List what changed and how each change was verified.
 
-### Format decisions
-- OpenCode is the primary agent. Use AGENTS.md for agent instructions.
-- Never write to CLAUDE.md. OpenCode doesn't use it.
-- When choosing a format, ask the user what they use. Never default.
+### Generated artifacts — never edit directly
+- `packages/cli/src/core/` is copied from `packages/core/src` at build time.
+- `packages/cli/templates/keel-enforce.js` is built from
+  `packages/opencode-plugin/src/plugin.ts`.
+- Edits to either are silently wiped by the next build. Change the source.
 
 ### Plan quality
 - Before proposing a plan, identify what root causes it does NOT address.
-- Distinguish between bug fixes (patch symptoms) and root-cause fixes.
-- Be honest about what you have verified vs what you haven't tested.
+- Distinguish bug fixes (patch symptoms) from root-cause fixes.
+- Be honest about what you have verified versus what you have assumed.
 
-### Product identity
-- Product name is "keel". Never "ai-enforce" or any other name.
-- Before any rename/sed/replaceAll operation: verify the direction.
+### What ships to users
+- `packages/cli/templates/requirements.md` is written into every user's
+  `~/.keel/requirements.md` and injected into their system prompt every turn.
+  It must stay host-agnostic — nothing about this repo's own conventions.
+- The same applies to `DEFAULT_RULES_YAML` in `install.ts` and `plugin.ts`, which
+  must stay identical (guarded by `drift.test.ts`).
 
 ### Irreversible operations
 - Before recommending or executing an IRREVERSIBLE action (repo deletion, npm publish/unpublish, force push, data deletion), enumerate inbound references: npm registry metadata, README badges, CI links, forks, issues, other repos.

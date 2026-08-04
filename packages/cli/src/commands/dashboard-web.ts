@@ -80,11 +80,21 @@ function pageHtml(): string {
   #toast.show { display: block; }
   #toast.ok { border-color: #3fb950; }
   #toast.err { border-color: #f85149; }
+  /* A dead session must not fail silently: the toast auto-hides, so an
+     unauthenticated page would otherwise sit there full of placeholders
+     with no explanation. This banner persists until the page is reloaded
+     with a valid token. */
+  #banner { display: none; background: #f8514922; border: 1px solid #f85149; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; font-size: 13px; }
+  #banner.show { display: block; }
+  #banner b { color: #f85149; display: block; margin-bottom: 6px; font-size: 14px; }
+  #banner code { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>
 </head>
 <body>
   <h1><span class="anchor">⚓</span> keel dashboard</h1>
   <div class="sub">Speed dial · approvals · enforcement health <span class="live"><span class="dot"></span>live</span></div>
+
+  <div id="banner"></div>
 
   <div class="card">
     <h2>Speed dial</h2>
@@ -137,12 +147,46 @@ const token = new URLSearchParams(location.hash.slice(1)).get('token') || ''
 let target = 'global'
 let dial = null
 
+function banner(title, html) {
+  const b = document.getElementById('banner')
+  b.innerHTML = '<b>' + title + '</b>' + html
+  b.className = 'show'
+}
+
+// Opening the bare http://127.0.0.1:PORT/ (no #token=...) is the single most
+// common way to land here: the page renders, every API call 401s, and without
+// this the only signal was a toast that vanished after 2.6 seconds.
+if (!token) {
+  banner('Missing access token',
+    'This page needs the full URL printed in your terminal, including the ' +
+    '<code>#token=…</code> fragment — it is what authenticates you, and it is ' +
+    'never written to disk.<br><br>If you no longer have it, restart the server: ' +
+    '<code>keel dashboard --web</code>')
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { ...(opts.headers || {}), Authorization: 'Bearer ' + token },
-  })
-  if (res.status === 401) { toast('Session expired — restart keel dashboard --web', 'err'); return null }
+  let res
+  try {
+    res = await fetch(path, {
+      ...opts,
+      headers: { ...(opts.headers || {}), Authorization: 'Bearer ' + token },
+    })
+  } catch {
+    // The server process exited (Ctrl+C, or the terminal it ran in closed).
+    banner('Cannot reach the keel dashboard server',
+      'The server that served this page is no longer running. It stops when you ' +
+      'press Ctrl+C or close its terminal.<br><br>Restart it with ' +
+      '<code>keel dashboard --web</code> and open the new URL it prints.')
+    return null
+  }
+  if (res.status === 401) {
+    banner('Not authorized',
+      'The token in this URL is not valid for the running server — it changes ' +
+      'every time the server restarts.<br><br>Run <code>keel dashboard --web</code> ' +
+      'again and open the URL it prints.')
+    return null
+  }
+  document.getElementById('banner').className = ''
   return res.json()
 }
 

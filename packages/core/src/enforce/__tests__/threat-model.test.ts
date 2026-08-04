@@ -41,9 +41,7 @@ function loadDefaultRules(): ReturnType<typeof parseRulesContent> {
   const src = readFileSync(findPluginSource(HERE), 'utf-8')
   const m = src.match(/DEFAULT_RULES_YAML = `([\s\S]*?)`\n/)
   if (!m) throw new Error('DEFAULT_RULES_YAML not found in plugin source')
-  const legacy = src.match(/const LEGACY_PRODUCT_NAME = '([^']+)' \+ '([^']+)'/)
-  let yaml = m[1]
-  if (legacy) yaml = yaml.replaceAll('${LEGACY_PRODUCT_NAME}', `${legacy[1]}${legacy[2]}`)
+  const yaml = m[1]
   const parsed = parseRulesContent(yaml, 'default-rules')
   // Determinism: `time` and `rate` rules depend on the wall clock and call
   // volume, so they are excluded from these fixtures (they are still tested
@@ -160,9 +158,12 @@ describe('agentic threat model (shipped defaults)', () => {
 
   describe('product identity', () => {
     const pipeline = makeDefaultsPipeline()
-    it('denies renaming keel back to the legacy name', async () => {
-      expect((await pipeline.evaluate(input('Bash', { command: "sed -i '' 's/keel/ai-enforce/g' docs.md" }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: "sed -i '' 's/keel/ai-enforce/g' docs.md" }))).action).toBe('deny')
+    // The shipped defaults deliberately carry NO rule about keel's own
+    // product name. That rule enforced this project's rename history on
+    // strangers' repos, at priority 100, in a file keel writes to their
+    // home directory. Renaming things is the user's business.
+    it('does not enforce keel’s own naming history on a user’s repo', async () => {
+      expect((await pipeline.evaluate(input('Bash', { command: "sed -i '' 's/keel/something-else/g' docs.md" }))).action).toBe('allow')
     })
   })
 

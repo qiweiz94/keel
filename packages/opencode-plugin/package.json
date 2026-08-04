@@ -1,7 +1,26 @@
 {
   "name": "@get-keel/opencode-plugin",
   "version": "0.1.8",
-  "description": "Keel enforcement plugin for OpenCode — rules that survive context rot",
+  "description": "Keel enforcement plugin for OpenCode — blocks rule violations at tool.execute.before, outside the agent's context window.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "ai-agents",
+    "ai-safety",
+    "agent-security",
+    "guardrails",
+    "policy-engine",
+    "llm",
+    "coding-agent"
+  ],
+  "homepage": "https://github.com/qiweiz94/keel#readme",
+  "bugs": {
+    "url": "https://github.com/qiweiz94/keel/issues"
+  },
+  "author": "Chaoyi Li",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.12.0"
   },
@@ -19,7 +38,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "node -e \"const f=require('node:fs');f.rmSync('dist',{recursive:true,force:true});f.mkdirSync('dist',{recursive:true})\" && npx esbuild src/plugin.ts --bundle --format=esm --platform=node --external:node:* --alias:yaml=../../node_modules/yaml/browser/index.js --outfile=dist/index.js && node -e \"const f=require('node:fs');f.copyFileSync('dist/index.js','../../packages/cli/templates/keel-enforce.js');f.copyFileSync('src/index.d.ts','dist/index.d.ts')\"",
@@ -30,6 +50,6 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/qiweiz94/keel.git"
+    "url": "git+https://github.com/qiweiz94/keel.git"
   }
 }

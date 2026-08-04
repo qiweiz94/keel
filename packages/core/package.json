@@ -1,7 +1,26 @@
 {
   "name": "@get-keel/core",
-  "version": "0.1.8",
-  "description": "Core enforcement engine for Keel — policy engine, signing, receipts, enforce pipeline",
+  "version": "0.1.9",
+  "description": "Core enforcement engine for Keel — policy engine, signed receipts, and the tool-call enforce pipeline for AI coding agents.",
+  "keywords": [
+    "ai-agents",
+    "ai-safety",
+    "agent-security",
+    "guardrails",
+    "policy-engine",
+    "enforcement",
+    "llm",
+    "coding-agent",
+    "governance"
+  ],
+  "homepage": "https://github.com/qiweiz94/keel#readme",
+  "bugs": {
+    "url": "https://github.com/qiweiz94/keel/issues"
+  },
+  "author": "Chaoyi Li",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.12.0"
   },
@@ -28,6 +47,6 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/qiweiz94/keel.git"
+    "url": "git+https://github.com/qiweiz94/keel.git"
   }
 }
