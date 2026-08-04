@@ -25,6 +25,7 @@ import { statusCommand } from './commands/status.js'
 import { dashboardCommand } from './commands/dashboard.js'
 import { dashboardWebCommand } from './commands/dashboard-web.js'
 import { daemonCommand } from './commands/daemon.js'
+import { retrospectiveCommand } from './commands/retrospective.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand } from './commands/install.js'
@@ -229,6 +230,15 @@ program
   .option('--apply-and-save', 'Append proposed rules to ~/.keel/rules.yaml')
   .option('--dry-run', 'Show what would be written without writing')
   .action(gatherCommand)
+
+program
+  .command('retrospective')
+  .description('Weekly report of agent improvement metrics (attempts-until-success, stuck loops, research compliance)')
+  .option('--since <date>', 'Window start (YYYY-MM-DD), default: all traces')
+  .option('--project <path>', 'Filter to a project')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--write', 'Append the report to ~/.keel/retrospectives/')
+  .action((options: { since?: string; project?: string; json?: boolean; write?: boolean }) => retrospectiveCommand(options))
 
 program
   .command('schedule')

@@ -3,10 +3,12 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import chalk from 'chalk'
 import type { AuditEntry, ProjectInsights, Suggestion, KeelRule } from '../core/types.js'
+import { commandFingerprint } from '../core/enforce/command-fingerprint.js'
+import { VERDICTS } from './retrospective.js'
 
 interface ExtractedLesson {
   pattern: string
-  category: 'claim-without-evidence' | 'context-drift' | 'sequence-violation' | 'rate-violation' | 'format-default' | 'build-not-test' | 'irreversible-action'
+  category: 'claim-without-evidence' | 'context-drift' | 'sequence-violation' | 'rate-violation' | 'format-default' | 'build-not-test' | 'irreversible-action' | 'stuck-loop' | 'no-research-before-solve'
   severity: 'high' | 'medium' | 'low'
   description: string
   suggested_rule: Omit<KeelRule, 'id'> & { id?: string }
@@ -262,6 +264,71 @@ export function extractLessons(entries: AuditEntry[]): ExtractedLesson[] {
     })
   }
 
+  // ── Lesson 6: Stuck loop (identical blocked command retried) ──
+  const clusterCounts = new Map<string, number>()
+  for (const e of entries) {
+    // Shared with the retrospective: the ladder is warn → redirect → deny,
+    // so a loop that peaks at redirect must still count.
+    if (!e.rule_id || !VERDICTS.includes(String(e.action))) continue
+    const cmd = e.args?.command ? String(e.args.command) : ''
+    if (!cmd) continue
+    const key = `${e.rule_id}:${commandFingerprint(cmd)}`
+    clusterCounts.set(key, (clusterCounts.get(key) || 0) + 1)
+  }
+  const stuckClusters = [...clusterCounts.entries()].filter(([, c]) => c >= 3)
+  if (stuckClusters.length > 0) {
+    lessons.push({
+      pattern: 'Stuck loop',
+      category: 'stuck-loop',
+      severity: 'medium',
+      description: 'The agent retried the same blocked command repeatedly. Suggest a stuck-loop rule with a redirect at 3 attempts and a research-first directive.',
+      suggested_rule: {
+        id: 'no-repeat-loops',
+        type: 'stuck',
+        match: '(npm test|npm run test|vitest|jest|npm run build|tsc)',
+        window_seconds: 900,
+        action: 'redirect',
+        message: 'Identical failing command repeated — research the exact error and change approach.',
+      },
+      occurrences: stuckClusters.length,
+      example_turns: [],
+    })
+  }
+
+  // ── Lesson 7: No research before solving ──
+  const sessions = new Map<string, AuditEntry[]>()
+  for (const e of entries) {
+    if (!e.session_id) continue
+    if (!sessions.has(e.session_id)) sessions.set(e.session_id, [])
+    sessions.get(e.session_id)!.push(e)
+  }
+  const researchFirstCount = [...sessions.values()].filter((s) => {
+    const edits = s.findIndex((e) => ['write', 'edit', 'apply_patch', 'WriteFile'].includes(String(e.tool)) && String(e.args?.filePath || '').match(/src\//))
+    if (edits < 0) return false
+    const firstResearch = s.findIndex((e) => /keel_research|keel_fetch|websearch|webfetch/i.test(String(e.args?.command || '') + String(e.tool)))
+    return firstResearch < 0 || firstResearch > edits
+  }).length
+  if (researchFirstCount >= 2) {
+    lessons.push({
+      pattern: 'No research before solve',
+      category: 'no-research-before-solve',
+      severity: 'medium',
+      description: 'Sessions edited source before any research call. Suggest a research-before-solve obligation.',
+      suggested_rule: {
+        id: 'research-before-fix',
+        type: 'research',
+        trigger: { tools: ['Bash'], pattern: '(npm test|npm run test|vitest|jest)', exit: 'nonzero' },
+        satisfy: { tools: ['Bash'], pattern: 'keel_research' },
+        boundaries: { edit: { pattern: 'write|edit|apply_patch', action: 'redirect' } },
+        research_window_seconds: 600,
+        action: 'redirect',
+        message: 'The failing command needs fresh research before you fix it.',
+      },
+      occurrences: researchFirstCount,
+      example_turns: [],
+    })
+  }
+
   return lessons
 }
 
@@ -272,7 +339,7 @@ function loadAuditEntries(auditDir: string, since?: string): AuditEntry[] {
 
   for (const file of readdirSync(auditDir)) {
     if (!file.endsWith('.jsonl')) continue
-    if (since && file.replace('.jsonl',')') < since) continue
+    if (since && file.replace('.jsonl', '') < since) continue
 
     try {
       const lines = readFileSync(join(auditDir, file), 'utf-8').trim().split('\n').filter(Boolean)

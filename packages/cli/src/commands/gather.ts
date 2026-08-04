@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { extractLessons } from './lessons.js'
+import { buildReport, type TraceEntry } from './retrospective.js'
 import type { AuditEntry } from '../core/types.js'
 
 /**
@@ -50,6 +51,18 @@ const LESSON_REQUIREMENTS: Record<string, { title: string; bullet: string }> = {
     title: 'Irreversible operations',
     bullet: 'Before destructive or irreversible actions (repo deletion, publish, force push), verify inbound references and state what was checked vs assumed.',
   },
+  'stuck-loop': {
+    title: 'Problem-solving',
+    bullet: 'Do not retry an identical blocked command: read the rule message, research the exact error, and change approach instead.',
+  },
+  'no-research-before-solve': {
+    title: 'Problem-solving',
+    bullet: 'Research before editing: sessions that searched first resolved in fewer attempts. Search for the newest data on the failing API or version first.',
+  },
+  'no-pivot': {
+    title: 'Problem-solving',
+    bullet: 'Switch approach after 2 failed attempts (search, new tool, different file) — sessions that never pivoted stayed stuck.',
+  },
 }
 
 function loadAuditEntries(auditDir: string, sinceDays?: number): AuditEntry[] {
@@ -75,19 +88,42 @@ function loadAuditEntries(auditDir: string, sinceDays?: number): AuditEntry[] {
   return entries
 }
 
-function buildGatherBlock(entries: AuditEntry[]): string {
+/**
+ * Workflow lesson keys derived from the trace stream by the retrospective
+ * (`stuck-loop`, `no-research-before-solve`, `no-pivot`). They come from
+ * `buildReport`, not `extractLessons`, because they need per-session
+ * sequencing — without this wire their LESSON_REQUIREMENTS entries are
+ * unreachable. They carry no `suggested_rule`, so they feed the bullets
+ * only and never reach `renderProposedRules`.
+ *
+ * The cast is deliberate: AuditEntry does not declare the plugin's
+ * `hook`/`exit`/`cwd`/`t` fields even though every trace record carries
+ * them, and widening the core type would pull core into a CLI changeset.
+ */
+function workflowLessonKeys(entries: AuditEntry[]): string[] {
+  try {
+    return buildReport(entries as unknown as TraceEntry[]).lessons.map((l) => l.key)
+  } catch {
+    return []
+  }
+}
+
+export function buildGatherBlock(entries: AuditEntry[]): string {
   const lessons = extractLessons(entries)
-  if (lessons.length === 0) {
+  const workflowKeys = workflowLessonKeys(entries)
+  if (lessons.length === 0 && workflowKeys.length === 0) {
     return `${GATHER_START}\n\n<!-- keel gather: no recurring issues detected yet -->\n\n${GATHER_END}\n`
   }
 
   const sections = new Map<string, string[]>()
-  for (const lesson of lessons) {
-    const spec = LESSON_REQUIREMENTS[lesson.category]
-    if (!spec) continue
+  const addBullet = (category: string) => {
+    const spec = LESSON_REQUIREMENTS[category]
+    if (!spec) return
     if (!sections.has(spec.title)) sections.set(spec.title, [])
     sections.get(spec.title)!.push(spec.bullet)
   }
+  for (const lesson of lessons) addBullet(lesson.category)
+  for (const key of workflowKeys) addBullet(key)
 
   const lines: string[] = [GATHER_START, '', '## Gathered from audit history (auto-generated)', '']
   for (const [title, bullets] of sections) {
