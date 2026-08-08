@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@open-policy-agent/opa-wasm": "^1.10.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.2",
     "typescript": "^5.5.0",
     "vitest": "^4.1.10",
     "esbuild": "^0.28.1",
