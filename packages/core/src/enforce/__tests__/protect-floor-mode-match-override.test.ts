@@ -10,7 +10,8 @@ import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import { parseRulesContent } from '../rule-parser.js'
 import type { PipelineConfig } from '../pipeline.js'
-import type { EnforceInput } from '../../types.js'
+import type { ParsedRules } from '../rule-parser.js'
+import type { EnforceInput, KeelRule } from '../../types.js'
 
 // Red-team residual (SECURITY.md §"Residual on floor overrides"): the
 // mergeRules floor-override guard used to compare the `action` field only.
@@ -41,10 +42,7 @@ const m = installTs.match(/DEFAULT_RULES_YAML = `([\s\S]*?)\n`/)
 if (!m) throw new Error('DEFAULT_RULES_YAML not found in install.ts')
 const defaultsYaml = m[1]
 
-function makePipeline(localYaml: string): EnforcementPipeline {
-  const global = parseRulesContent(defaultsYaml, 'defaults')
-  global.config.level = 'balanced'
-  const local = parseRulesContent(localYaml, '.keel.local.yaml')
+function pipelineFor(global: ParsedRules, local: ParsedRules): EnforcementPipeline {
   const config: PipelineConfig = {
     level: 'balanced',
     context: 'local',
@@ -60,6 +58,36 @@ function makePipeline(localYaml: string): EnforcementPipeline {
   return new EnforcementPipeline(config)
 }
 
+function makePipeline(localYaml: string): EnforcementPipeline {
+  const global = parseRulesContent(defaultsYaml, 'defaults')
+  global.config.level = 'balanced'
+  const local = parseRulesContent(localYaml, '.keel.local.yaml')
+  return pipelineFor(global, local)
+}
+
+/**
+ * A local override built by CLONING the real shipped `no-force-push` floor
+ * (rather than hand-typing its regex into a YAML string, which would be a
+ * transcription hazard) and changing only the given fields. Guarantees the
+ * override is byte-identical to the floor on every field except the ones
+ * under test — otherwise a test claiming to isolate the mode axis could
+ * actually be rejected on an incidental surface mismatch (e.g. a hand-typed
+ * override omitting `match` entirely) and pass for the wrong reason. See
+ * sameEnforcementSurface in rule-parser.ts: ANY field difference outside
+ * action/mode/cosmetic-metadata is already enough to reject an override, so
+ * a test with an incidental mismatch cannot tell that check apart from the
+ * one this file exists to verify.
+ */
+function makePipelineWithClonedFloorOverride(overrides: Partial<KeelRule>): EnforcementPipeline {
+  const global = parseRulesContent(defaultsYaml, 'defaults')
+  global.config.level = 'balanced'
+  const floor = global.rules.find(r => r.id === 'no-force-push')
+  if (!floor) throw new Error('no-force-push not found in DEFAULT_RULES_YAML')
+  const clonedOverride: KeelRule = { ...JSON.parse(JSON.stringify(floor)), ...overrides }
+  const local: ParsedRules = { config: { version: 1 }, rules: [clonedOverride], sourcePath: '.keel.local.yaml', version: 1, markdown: '' }
+  return pipelineFor(global, local)
+}
+
 function input(command: string): EnforceInput {
   return { tool: 'Bash', args: { command } }
 }
@@ -73,16 +101,13 @@ function input(command: string): EnforceInput {
 const FORCE_PUSH_OFF_MAIN = 'git push --force origin some-feature-branch'
 
 describe('a .keel.local.yaml cannot neutralize a level:protect floor via mode or match', () => {
-  it('adding `mode: observe` to no-force-push (keeping deny+protect) does NOT let `git push --force` through', async () => {
-    const p = makePipeline(`version: 1
-rules:
-  - id: no-force-push
-    type: command
-    action: deny
-    level: protect
-    mode: observe
-    message: "local silences the floor via mode"
-`)
+  it('adding `mode: observe` to no-force-push (keeping deny+protect, everything else byte-identical to the floor) does NOT let `git push --force` through', async () => {
+    // The override is a clone of the real floor with ONLY `mode` and
+    // `message` changed — the same `match` regex, same everything else —
+    // so a rejection here can only be attributed to the mode axis, not an
+    // incidental surface mismatch (see makePipelineWithClonedFloorOverride's
+    // doc comment for why that distinction matters).
+    const p = makePipelineWithClonedFloorOverride({ mode: 'observe', message: 'local silences the floor via mode' })
     const r = await p.evaluate(input(FORCE_PUSH_OFF_MAIN))
     expect(['deny', 'block']).toContain(r.action)
   })

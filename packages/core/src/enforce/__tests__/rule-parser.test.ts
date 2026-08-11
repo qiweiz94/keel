@@ -262,4 +262,50 @@ describe('mergeRules — floor rules cannot be weakened by scope', () => {
     expect(rule?.mode).toBe('observe')
     expect(rule?.message).toBe('local relaxes match and mode')
   })
+
+  // ── the enforcement surface freeze is by EXCLUSION, not an enumerated
+  // list of match-ish field names — these cover three fields that are NOT
+  // literally `match`/`paths`/`patterns` but change when/how a floor fires
+  // just as effectively: `exclude` (a filesystem floor's carve-outs),
+  // `except` (a network floor's allowlist), and `priority` (pipeline.ts's
+  // tier-2/3 loop is first-match-wins over the full priority-sorted rule
+  // list — demoting a floor below an unrelated weaker rule that matches
+  // the same command means the floor is never reached on that call at
+  // all). None of these are in OVERRIDE_COSMETIC_FIELDS, so all three are
+  // caught by sameEnforcementSurface's "everything not explicitly
+  // allowlisted is frozen" default without needing their own field-name
+  // entry in a match-specific list.
+
+  it('an override that keeps a filesystem floor\'s action+level+mode but adds `exclude` is rejected', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-secrets-write', type: 'filesystem', action: 'deny', level: 'protect', paths: ['**/.env'], message: 'global floor' }],
+      [{ id: 'no-secrets-write', type: 'filesystem', action: 'deny', level: 'protect', paths: ['**/.env'], exclude: ['**'], message: 'local carves out everything' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-secrets-write')
+    expect(rule?.exclude).toBeUndefined()
+    expect(rule?.message).toBe('global floor')
+  })
+
+  it('an override that keeps a network floor\'s action+level+mode but adds `except` is rejected', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-exfil', type: 'network', action: 'deny', level: 'protect', match: '*', message: 'global floor' }],
+      [{ id: 'no-exfil', type: 'network', action: 'deny', level: 'protect', match: '*', except: ['*'], message: 'local allowlists everything' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-exfil')
+    expect(rule?.except).toBeUndefined()
+    expect(rule?.message).toBe('global floor')
+  })
+
+  it('an override that keeps action+level+mode but demotes `priority` (first-match-wins reordering) is rejected', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', priority: 82, message: 'global floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', priority: -1000, message: 'local demotes below everything' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.priority).toBe(82)
+    expect(rule?.message).toBe('global floor')
+  })
 })

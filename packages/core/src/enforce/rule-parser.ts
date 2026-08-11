@@ -425,31 +425,64 @@ function modeStrength(mode: RuleMode | undefined): number {
 }
 
 /**
- * The fields that make up a command/filesystem/content rule's matching
- * surface — what a rule actually fires on. Used only to decide whether a
- * more-specific-scope override of a `level: protect` floor changes WHAT
- * the floor watches (mergeRules' dedup loop, below) — the third
- * neutralization vector: an override can keep `action: deny` +
- * `level: protect` (and even `mode: block`) and still disable the floor
- * for the dangerous command by replacing `match`/`paths`/`patterns` with
- * a pattern that never fires on it.
- *
- * The safe default, and the one implemented here: a `level: protect`
- * floor's matching surface may not be altered AT ALL by a lower scope —
- * not narrowed, not widened, not rephrased. There is no principled way to
- * tell a legitimate narrowing (a project genuinely needs a tighter regex)
- * from an adversarial no-op (a pattern crafted to never fire) from inside
- * mergeRules — it has no notion of "the same dangerous command" to test
- * candidate patterns against. Any change to these fields is therefore
- * rejected outright, exactly like a weakening action or mode. A project
- * that legitimately needs a different matching surface for a floor should
- * get keel's maintainers to change the shipped floor rule, not shadow its
- * id from a lower scope.
+ * Fields a lower-scope override of a `level: protect` floor may freely
+ * change without being treated as a weakening: pure catalog metadata that
+ * documents the rule but plays no role in whether or how it fires.
+ * `action` and `mode` are handled by their own strength checks above, not
+ * listed here; `level` and `scope` are checked/assigned separately by
+ * mergeRules itself.
  */
-const MATCHING_SURFACE_FIELDS = ['match', 'match_prefix', 'match_regex', 'paths', 'patterns'] as const
+const OVERRIDE_COSMETIC_FIELDS = new Set<keyof KeelRule>([
+  'message', 'rationale', 'remediation', 'false_positives', 'review_by',
+  'category', 'severity', 'confidence', 'maturity',
+])
 
-function sameMatchingSurface(existing: KeelRule, candidate: KeelRule): boolean {
-  return MATCHING_SURFACE_FIELDS.every(field => JSON.stringify(existing[field]) === JSON.stringify(candidate[field]))
+/** Handled by their own dedicated strength checks / dedup logic, not by the identical-surface comparison below. */
+const OVERRIDE_STRENGTH_CHECKED_FIELDS = new Set<keyof KeelRule>(['action', 'mode', 'level', 'scope'])
+
+/**
+ * Whether a candidate override of a `level: protect` floor changes
+ * anything about WHEN or HOW the floor fires, beyond action/mode (each
+ * checked separately by ACTION_STRENGTH / MODE_STRENGTH above) and pure
+ * catalog metadata (OVERRIDE_COSMETIC_FIELDS). This is the third
+ * neutralization vector beyond action and mode: an override can keep
+ * `action: deny` + `level: protect` + `mode: block` and still disable a
+ * floor for the command it exists to catch by changing its matching
+ * surface (`match`/`match_prefix`/`match_regex`/`paths`/`patterns`),
+ * narrowing its scope (`exclude`, `operations`, `except`), retiming it
+ * (`schedule`), swapping its check class (`type`), or reordering it below
+ * a weaker rule that matches the same command and returns first
+ * (`priority` — pipeline.ts's tier-2/3 loop is first-match-wins over the
+ * full priority-sorted rule list, so a floor demoted below an unrelated
+ * `action: warn` rule matching the same command never gets evaluated at
+ * all on that call).
+ *
+ * Rather than enumerate every one of KeelRule's ~40 optional fields by
+ * name (a list that silently rots every time a new rule type adds a
+ * field), this compares by EXCLUSION: strip the cosmetic and
+ * strength-checked fields from both rules and require the remainder to be
+ * byte-identical (JSON.stringify). Anything not explicitly named as safe
+ * to differ is therefore frozen by construction, including fields added
+ * to KeelRule after this guard was written — the allowlist has to be
+ * extended deliberately to loosen the guard; the freeze does not have to
+ * be extended to keep catching a new field.
+ *
+ * There is no principled way to tell a legitimate narrowing (a project
+ * genuinely needs a tighter regex, or a lower priority) from an
+ * adversarial no-op from inside mergeRules alone — it has no notion of
+ * "the same dangerous command" to test a candidate surface against. A
+ * project that legitimately needs a different enforcement surface for a
+ * floor should get keel's maintainers to change the shipped floor rule,
+ * not shadow its id from a lower scope.
+ */
+function sameEnforcementSurface(existing: KeelRule, candidate: KeelRule): boolean {
+  const strip = (rule: KeelRule): Partial<KeelRule> => {
+    const copy: Partial<KeelRule> = { ...rule }
+    for (const field of OVERRIDE_COSMETIC_FIELDS) delete copy[field]
+    for (const field of OVERRIDE_STRENGTH_CHECKED_FIELDS) delete copy[field]
+    return copy
+  }
+  return JSON.stringify(strip(existing)) === JSON.stringify(strip(candidate))
 }
 
 /**
@@ -463,10 +496,12 @@ function sameMatchingSurface(existing: KeelRule, candidate: KeelRule): boolean {
  *                 `mode` per MODE_STRENGTH (e.g. add `mode: observe`,
  *                 which silently downgrades enforcement to allow —
  *                 pipeline.ts's effectiveAction()).
- *   3. match    — keep `level: protect` + the action + the mode, but
- *                 change `match`/`match_prefix`/`match_regex`/`paths`/
- *                 `patterns` (e.g. to a pattern that never fires on the
- *                 command the floor exists to catch).
+ *   3. surface  — keep `level: protect` + the action + the mode, but
+ *                 change anything else that affects when/how the floor
+ *                 fires (match/paths/patterns, exclude/operations/except,
+ *                 schedule, type, priority — see sameEnforcementSurface's
+ *                 doc comment for the full rationale and the exact
+ *                 cosmetic-field allowlist).
  * A floor may only be tightened-or-tied on ALL THREE axes by a more
  * specific scope, or it is left alone; that is the entire point of
  * `level: protect` — no project or local file can quietly downgrade it
@@ -512,8 +547,8 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
 
   // Deduplicate: more specific scope wins for same rule id, but a
   // level:protect floor can only be tightened or tied, never weakened —
-  // on action, mode, AND matching surface. See ACTION_STRENGTH,
-  // MODE_STRENGTH, sameMatchingSurface, and this function's doc comment.
+  // on action, mode, AND enforcement surface. See ACTION_STRENGTH,
+  // MODE_STRENGTH, sameEnforcementSurface, and this function's doc comment.
   const scopeOrder: Record<string, number> = { global: 0, user: 1, project: 2, folder: 3, session: 4 }
   const deduped = new Map<string, KeelRule>()
   for (const rule of all) {
@@ -527,8 +562,8 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
     if (existing.level === 'protect') {
       const actionOk = rule.level === 'protect' && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action]
       const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode)
-      const matchOk = sameMatchingSurface(existing, rule)
-      const tightensOrEqual = actionOk && modeOk && matchOk
+      const surfaceOk = sameEnforcementSurface(existing, rule)
+      const tightensOrEqual = actionOk && modeOk && surfaceOk
       if (!tightensOrEqual) continue  // weakening override on some axis — keep the floor
     }
     deduped.set(rule.id, rule)

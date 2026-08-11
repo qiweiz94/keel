@@ -6540,9 +6540,26 @@ var MODE_STRENGTH = {
 function modeStrength(mode) {
   return mode === void 0 ? MODE_STRENGTH.block : MODE_STRENGTH[mode];
 }
-var MATCHING_SURFACE_FIELDS = ["match", "match_prefix", "match_regex", "paths", "patterns"];
-function sameMatchingSurface(existing, candidate) {
-  return MATCHING_SURFACE_FIELDS.every((field) => JSON.stringify(existing[field]) === JSON.stringify(candidate[field]));
+var OVERRIDE_COSMETIC_FIELDS = /* @__PURE__ */ new Set([
+  "message",
+  "rationale",
+  "remediation",
+  "false_positives",
+  "review_by",
+  "category",
+  "severity",
+  "confidence",
+  "maturity"
+]);
+var OVERRIDE_STRENGTH_CHECKED_FIELDS = /* @__PURE__ */ new Set(["action", "mode", "level", "scope"]);
+function sameEnforcementSurface(existing, candidate) {
+  const strip = (rule) => {
+    const copy = { ...rule };
+    for (const field of OVERRIDE_COSMETIC_FIELDS) delete copy[field];
+    for (const field of OVERRIDE_STRENGTH_CHECKED_FIELDS) delete copy[field];
+    return copy;
+  };
+  return JSON.stringify(strip(existing)) === JSON.stringify(strip(candidate));
 }
 function mergeRules(hierarchy, level, context) {
   const all = [];
@@ -6576,8 +6593,8 @@ function mergeRules(hierarchy, level, context) {
     if (existing.level === "protect") {
       const actionOk = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
       const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode);
-      const matchOk = sameMatchingSurface(existing, rule);
-      const tightensOrEqual = actionOk && modeOk && matchOk;
+      const surfaceOk = sameEnforcementSurface(existing, rule);
+      const tightensOrEqual = actionOk && modeOk && surfaceOk;
       if (!tightensOrEqual) continue;
     }
     deduped.set(rule.id, rule);
