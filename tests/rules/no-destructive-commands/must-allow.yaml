@@ -23,3 +23,19 @@ cases:
     tool: Bash
     args:
       command: "echo checking the --no-preserve-root docs"
+  - note: "M1 ruleset-followups (G2 FP fix): echoing a destructive string is not running it — double-quoted. A2's quote-preservation keeps the whitespace-bearing quoted argument verbatim (quotes included), so rm is no longer at the start of that surface once the match pattern is anchored to command position."
+    tool: Bash
+    args:
+      command: 'echo "rm -rf /"'
+  - note: "M1 ruleset-followups (G2 FP fix): same case, single-quoted"
+    tool: Bash
+    args:
+      command: "echo 'rm -rf /'"
+  - note: "M1 ruleset-followups (G2 FP fix): a commit message is data, not a command — signoff included to isolate this from must-sign-commits"
+    tool: Bash
+    args:
+      command: 'git commit --signoff -m "rm -rf /"'
+  - note: "M1 ruleset-followups (G2 FP fix): printf is the same data-argument shape as echo"
+    tool: Bash
+    args:
+      command: 'printf "rm -rf /"'

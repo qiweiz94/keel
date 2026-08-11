@@ -9789,7 +9789,7 @@ rules:
 
   - id: no-destructive-commands
     type: command
-    match: "rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+/(?!tmp|var/tmp)|rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+(~|[$][{]?HOME[}]?/?([ 	]|$))|rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[.]([ 	]|$)|rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[.][.]([ 	]|/|$)|rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[.][/](([*])?([ 	]|$))|rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[*]([ 	]|$)|rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+/tmp/[^ ]*[.][.]([/ 	]|$)|chmod[ 	]+-R[ 	]+777[ 	]+([/~][^ ]*|[.])([ 	]|$)|mkfs[.0-9a-zA-Z_]*([ 	]|$)|mke2fs([ 	]|$)|newfs_[a-z0-9]+([ 	]|$)|diskutil[ 	]+(eraseDisk|eraseVolume|zeroDisk|reformat|partitionDisk)(?![A-Za-z])|rm[^|;&]*--no-preserve-root|shred([ 	]|$)|wipefs([ 	]|$)|blkdiscard([ 	]|$)|dd[ 	][^|;&]*of=/dev/(?!null([ 	]|$)|zero([ 	]|$)|stdout|stderr|tty)[^ ]+|[; ][:][ 	]*[()][ 	]*[()][ 	]*[{][ 	]*[:][ 	]*[|]:&|^[:][ 	]*[()][ 	]*[()][ 	]*[{][ 	]*[:][ 	]*[|]:&"
+    match: '(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+/(?!tmp|var/tmp)|(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+(~|[$][{]?HOME[}]?/?([ 	]|$))|(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[.]([ 	]|$)|(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[.][.]([ 	]|/|$)|(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[.][/](([*])?([ 	]|$))|(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+[*]([ 	]|$)|(?<!["''])rm[ 	]+-(rf|fr|r[ 	]+-f|-recursive[ 	]+--force|-force[ 	]+--recursive)[ 	]+/tmp/[^ ]*[.][.]([/ 	]|$)|chmod[ 	]+-R[ 	]+777[ 	]+([/~][^ ]*|[.])([ 	]|$)|mkfs[.0-9a-zA-Z_]*([ 	]|$)|mke2fs([ 	]|$)|newfs_[a-z0-9]+([ 	]|$)|diskutil[ 	]+(eraseDisk|eraseVolume|zeroDisk|reformat|partitionDisk)(?![A-Za-z])|(?<!["''])rm[^|;&]*--no-preserve-root|shred([ 	]|$)|wipefs([ 	]|$)|blkdiscard([ 	]|$)|dd[ 	][^|;&]*of=/dev/(?!null([ 	]|$)|zero([ 	]|$)|stdout|stderr|tty)[^ ]+|[; ][:][ 	]*[()][ 	]*[()][ 	]*[{][ 	]*[:][ 	]*[|]:&|^[:][ 	]*[()][ 	]*[()][ 	]*[{][ 	]*[:][ 	]*[|]:&'
     action: deny
     level: protect
     priority: 88
@@ -9802,6 +9802,23 @@ rules:
     false_positives:
       - "rm -rf node_modules, rm -rf dist, rm -rf ./build/tmp-* \u2014 all allowed by design (do-not-ship guard: no blanket rm -rf block)."
     message: "Destructive commands (including fork bombs) are blocked."
+
+  - id: no-destructive-interpreter-body
+    type: command
+    match: 'shutil[.]rmtree[(][ ]*[''"]?/[''"]?[ ]*[,)]|shutil[.]rmtree[(][ ]*[''"]?~/?[''"]?[ ]*[,)]|os[.]system[(][ ]*[''"][^''"]*rm[ ]+-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[ ]+(/|~)|subprocess[.](run|call|Popen|check_call|check_output)[(][ ]*[''"][^''"]*rm[ ]+-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[ ]+(/|~)|subprocess[.](run|call|Popen|check_call|check_output)[(][^)]*[''"]rm[''"][^)]*[''"]-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[''"][^)]*[''"](/|~)[''"]|(rmSync|rmdirSync)[(][ ]*[''"]?/[''"]?[ ]*[,)]|(rmSync|rmdirSync)[(][ ]*[''"]?~/?[''"]?[ ]*[,)]|os[.]remove[(][ ]*[''"]?/[''"]?[ ]*[,)]'
+    action: deny
+    level: protect
+    priority: 88
+    category: destructive
+    severity: critical
+    confidence: high
+    mode: block
+    rationale: "M1 follow-up to the A2 shell-parse layer: command-normalizer.ts now exposes an interpreter one-liner's decoded body (python -c, node -e, perl -e) as its own matching surface, but until this rule shipped no default pattern targeted destructive calls written IN that body instead of as a shell verb \u2014 python3 -c with shutil.rmtree('/') denied nothing. Scoped to a literal root or home target only (shutil.rmtree, os.system/subprocess running rm -rf against / or ~, os.remove('/'), fs.rmSync/rmdirSync against / or ~), mirroring no-destructive-commands' own root/home scoping so ordinary cleanup code (shutil.rmtree of a build dir, os.remove of a temp file) is untouched."
+    remediation: "Call the interpreter body against a specific named path inside the project instead of the filesystem root or home directory."
+    false_positives:
+      - "shutil.rmtree('./build'), shutil.rmtree(tmp_dir), os.remove('/tmp/tempfile.txt'), fs.rmSync('./dist') \u2014 all allowed: the target is not the literal root or home path."
+      - "subprocess.run(['terraform','apply','-refresh=true','-target=/infra']) is allowed \u2014 the rm/-rf/root-path pieces are not all present as their own quoted tokens or within one string argument."
+    message: "Destructive filesystem calls inside an interpreter one-liner body (python -c, node -e, sh -c) targeting root or home are blocked."
 
   - id: no-force-push
     type: command

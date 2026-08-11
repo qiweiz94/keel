@@ -1,0 +1,41 @@
+cases:
+  - note: "M1 ruleset-followups Task 1 flagship case: shutil.rmtree('/') inside a python3 -c one-liner — A2 exposes the interpreter body as a matching surface, this rule is the first pattern to target it"
+    tool: Bash
+    args:
+      command: 'python3 -c "import shutil; shutil.rmtree(''/'')"'
+  - note: "shutil.rmtree against home, double-quoted python string"
+    tool: Bash
+    args:
+      command: 'python3 -c "import shutil; shutil.rmtree(\"~\")"'
+  - note: "os.system running a real rm -rf / shell string from inside python"
+    tool: Bash
+    args:
+      command: 'python3 -c "import os; os.system(''rm -rf /'')"'
+  - note: "os.system running rm -rf ~ (home wipe)"
+    tool: Bash
+    args:
+      command: 'python3 -c "import os; os.system(''rm -rf ~'')"'
+  - note: "subprocess.run with shell=True and a single destructive command string, same shape as os.system"
+    tool: Bash
+    args:
+      command: "python3 -c \"import subprocess; subprocess.run('rm -rf /', shell=True)\""
+  - note: "subprocess.run with the argv-list form — rm, -rf, / each their own quoted token"
+    tool: Bash
+    args:
+      command: "python3 -c \"import subprocess; subprocess.run(['rm', '-rf', '/'])\""
+  - note: "subprocess.call with double-quoted argv-list tokens"
+    tool: Bash
+    args:
+      command: 'python3 -c "import subprocess; subprocess.call([\"rm\", \"-rf\", \"/\"])"'
+  - note: "os.remove targeting the literal root path"
+    tool: Bash
+    args:
+      command: 'python3 -c "import os; os.remove(''/'')"'
+  - note: "node -e: fs.rmSync against root"
+    tool: Bash
+    args:
+      command: "node -e \"require('fs').rmSync('/', {recursive: true, force: true})\""
+  - note: "node -e: fs.rmdirSync against home"
+    tool: Bash
+    args:
+      command: "node -e \"require('fs').rmdirSync('~', {recursive: true})\""
