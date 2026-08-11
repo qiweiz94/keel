@@ -1,0 +1,16 @@
+cases:
+  - note: "writing to /etc"
+    tool: Write
+    args:
+      path: "/etc/hosts"
+      content: "127.0.0.1 evil.example.com"
+  - note: "writing to /usr/local/bin"
+    tool: Write
+    args:
+      path: "/usr/local/bin/evil"
+      content: "#!/bin/sh"
+  - note: "writing to the user's .zshrc"
+    tool: Write
+    args:
+      path: "/Users/tester/.zshrc"
+      content: "export FOO=bar"

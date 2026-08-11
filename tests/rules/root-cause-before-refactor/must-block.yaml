@@ -1,0 +1,9 @@
+cases:
+  - note: "an active failing problem, then a refactor with no hypothesis or diagnosis evidence recorded (mode: observe — action stays allow, observed_action carries the redirect)"
+    observed_action: redirect
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "git checkout -- src/broken.ts" }

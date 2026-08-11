@@ -1,0 +1,13 @@
+cases:
+  - note: "reading an ordinary file"
+    tool: Bash
+    args:
+      command: "cat README.md"
+  - note: "a filename that merely ends in .env as a substring, not the dotfile itself (word-boundary near-miss)"
+    tool: Bash
+    args:
+      command: "cat /tmp/keel-flow-sink.env"
+  - note: "a command containing 'cat' as a substring of another word is not treated as the cat verb"
+    tool: Bash
+    args:
+      command: "npm run concatenate-assets"

@@ -1,0 +1,13 @@
+cases:
+  - note: "reset --hard on a feature branch, explicitly named"
+    tool: Bash
+    args:
+      command: "git reset --hard origin/feature-x"
+  - note: "reset --hard with no branch name in the command (known gap — cannot see ambient checkout state)"
+    tool: Bash
+    args:
+      command: "git reset --hard HEAD~1"
+  - note: "checkout of a feature branch, then reset --hard"
+    tool: Bash
+    args:
+      command: "git checkout feature/foo && git reset --hard"

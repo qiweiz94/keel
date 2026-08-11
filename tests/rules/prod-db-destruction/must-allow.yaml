@@ -1,0 +1,13 @@
+cases:
+  - note: "DROP TABLE with no production tag anywhere in the command (handled by the softer no-db-destructive warn, not this rule)"
+    tool: Bash
+    args:
+      command: "sqlite3 ./test.db \"DROP TABLE fixture_users\""
+  - note: "a read-only SELECT against a production-tagged connection"
+    tool: Bash
+    args:
+      command: "psql $PROD_DATABASE_URL -c \"SELECT * FROM users\""
+  - note: "a table named 'products' — 'prod' as a substring must not trip the tag detector"
+    tool: Bash
+    args:
+      command: "psql $DATABASE_URL -c \"DROP TABLE products\""

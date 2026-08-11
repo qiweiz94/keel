@@ -1,0 +1,13 @@
+cases:
+  - note: "bare cat of a .env file"
+    tool: Bash
+    args:
+      command: "cat .env"
+  - note: "head of an SSH private key"
+    tool: Bash
+    args:
+      command: "head ~/.ssh/id_rsa"
+  - note: "cat of AWS credentials"
+    tool: Bash
+    args:
+      command: "cat ~/.aws/credentials"

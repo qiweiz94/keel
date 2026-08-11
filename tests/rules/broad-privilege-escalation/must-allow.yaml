@@ -1,0 +1,13 @@
+cases:
+  - note: "sudo apt-get is a common package-manager sudo usage, exempted"
+    tool: Bash
+    args:
+      command: "sudo apt-get install build-essential"
+  - note: "a scoped, non-recursive chmod"
+    tool: Bash
+    args:
+      command: "chmod 644 file.txt"
+  - note: "a word starting with 'sudo' but not the command itself (word-boundary near-miss)"
+    tool: Bash
+    args:
+      command: "cat /etc/sudoers.d/readme.txt"

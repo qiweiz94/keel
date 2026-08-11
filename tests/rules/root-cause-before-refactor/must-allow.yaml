@@ -1,0 +1,14 @@
+cases:
+  - note: "an active failing problem, diagnosis evidence recorded (git log), then a refactor is allowed"
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "git log --oneline -5" }
+      - tool: Bash
+        args: { command: "git checkout -- src/broken.ts" }
+  - note: "a refactor with no active failing problem at all — nothing to diagnose"
+    tool: Bash
+    args:
+      command: "migrate the database schema"

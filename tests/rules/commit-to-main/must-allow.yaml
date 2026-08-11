@@ -1,0 +1,13 @@
+cases:
+  - note: "checkout a new feature branch, then commit"
+    tool: Bash
+    args:
+      command: 'git checkout -b feature/x && git commit -m "fix"'
+  - note: "a bare commit with no branch name in the command (known gap — cannot see ambient checkout state)"
+    tool: Bash
+    args:
+      command: 'git commit -m "fix"'
+  - note: "checkout an existing feature branch, then commit"
+    tool: Bash
+    args:
+      command: 'git checkout feature && git commit -m "wip"'

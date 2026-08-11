@@ -108,7 +108,11 @@ rules:
     const output = execFileSync(process.execPath, [CLI, 'enforce', 'init'], { cwd: project, encoding: 'utf8' })
     expect(output).toContain('Created .keel/rules.yaml')
     expect(existsSync(join(project, '.keel', 'rules.yaml'))).toBe(true)
-    expect(readFileSync(join(project, '.keel', 'rules.yaml'), 'utf8')).toContain('never-force-push')
+    // `enforce init` now emits the SAME canonical DEFAULT_RULES_YAML `keel
+    // install` writes (wave2-rules consolidation) — no-force-push is that
+    // set's id for this rule, not the old standalone template's
+    // `never-force-push`.
+    expect(readFileSync(join(project, '.keel', 'rules.yaml'), 'utf8')).toContain('no-force-push')
     expect(existsSync(join(project, 'CLAUDE.md'))).toBe(false)
   })
 

@@ -128,7 +128,14 @@ describe('agentic threat model (shipped defaults)', () => {
     it('denies force push without lease', async () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('warn')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('deny')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))).action).toBe('prompt')
+      // no-force-push (Tier 1 protect) outranks no-push-to-main (Tier 2
+      // prompt) so a force-push to a protected branch hits the floor
+      // rule's deny, not the softer prompt (fixed this wave — previously
+      // no-push-to-main shadowed no-force-push entirely for any
+      // main-targeted push). Ladder already consumed above.
+      const main = await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))
+      expect(main.action).toBe('deny')
+      expect(main.rule_id).toBe('no-force-push')
     })
     it('allows force-with-lease; force-with-lease to main still prompts', async () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force-with-lease origin feature' }))).action).toBe('allow')
@@ -169,14 +176,31 @@ describe('agentic threat model (shipped defaults)', () => {
 
   describe('claimed-done-without-evidence', () => {
     const pipeline = makeDefaultsPipeline()
-    it('warns on commit after an untested source change (commit boundary is warn-only)', async () => {
+    // source-change-requires-test ships as `mode: observe` (wave2-rules
+    // re-tier: this repo's own standing requirements already state the
+    // verification-culture expectation in prose; the hard enforcement now
+    // burns in via observed_action before it interrupts commits/pushes
+    // again). The tracker/boundary MECHANISM underneath is unchanged — only
+    // the outer verdict is: `action` stays 'allow', the action the rule
+    // would have taken is on `observed_action`. Observe mode also does not
+    // replay the warn-then-deny ladder (it reports the rule's raw boundary
+    // action every time), so both calls below show the same observed_action.
+    it('records (but does not enforce) a commit boundary after an untested source change', async () => {
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/app.ts' }))).action).toBe('allow')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))).action).toBe('warn')
+      const first = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
+      expect(first.action).toBe('allow')
+      expect(first.observed_action).toBe('warn')
+      const second = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
+      expect(second.action).toBe('allow')
+      expect(second.observed_action).toBe('warn')
     })
-    it('denies push while the obligation is unsatisfied', async () => {
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('deny')
+    it('records (but does not enforce) a push boundary while the obligation is unsatisfied', async () => {
+      const first = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
+      expect(first.action).toBe('allow')
+      expect(first.observed_action).toBe('deny')
+      const second = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
+      expect(second.action).toBe('allow')
+      expect(second.observed_action).toBe('deny')
     })
     it('clears the obligation after a passing test run', async () => {
       pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }))
@@ -195,9 +219,23 @@ describe('agentic threat model (shipped defaults)', () => {
 
   describe('speed dial over the defaults', () => {
     it('sprint downgrades deny rules to warnings', async () => {
+      // no-destructive-commands is now `level: protect` (wave2-rules Tier 1
+      // floor) and so is deliberately EXEMPT from the sprint downgrade —
+      // `rm -rf /etc` now denies immediately even at sprint, by design.
+      // no-secrets-in-code stays a plain `level: sprint` deny, so it is the
+      // rule that still demonstrates the ordinary sprint softening.
+      const pipeline = makeDefaultsPipeline('sprint')
+      expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts', content: 'const k = "AKIA1234567890ABCDEF"' }, 'threat', 'sprint'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts', content: 'const k = "AKIA1234567890ABCDEF"' }, 'threat', 'sprint'))).action).toBe('warn')
+    })
+    it('sprint no longer downgrades no-destructive-commands (now a protect floor)', async () => {
+      // level: protect only exempts the ACTION from the sprint deny->warn
+      // downgrade; the warn-then-deny ladder itself is governed by the
+      // DIAL (block-first only at the protect dial), so at the sprint dial
+      // this still warns once, then denies.
       const pipeline = makeDefaultsPipeline('sprint')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'sprint'))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'sprint'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'sprint'))).action).toBe('deny')
     })
     it('sprint never downgrades prompt gates', async () => {
       const pipeline = makeDefaultsPipeline('sprint')
@@ -321,6 +359,12 @@ rules:
 
   describe('verification honesty (satisfy must be real evidence)', () => {
     it('exit-code swallowing never satisfies the obligation', async () => {
+      // source-change-requires-test is `mode: observe` (see the
+      // claimed-done-without-evidence block above) — the underlying
+      // tracker/discharge mechanism this test exercises is unchanged, only
+      // the outer verdict is now allow+observed_action instead of
+      // warn/deny. Observe mode does not replay the warn-then-deny ladder,
+      // so both calls report the same observed_action.
       for (const fake of [
         'npm test || true',
         'npm test; exit 0',
@@ -331,10 +375,14 @@ rules:
         const p = makeDefaultsPipeline('balanced')
         await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }, 'swallow'))
         p.markVerificationSatisfied(input('Bash', { command: fake }, 'swallow'))
-        // The obligation must still be pending: the push boundary (deny)
-        // first violation warns, repeat denies.
-        expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))).action).toBe('warn')
-        expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))).action).toBe('deny')
+        // The obligation must still be pending: the push boundary would
+        // deny (recorded on observed_action), not actually block.
+        const first = await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))
+        expect(first.action, fake).toBe('allow')
+        expect(first.observed_action, fake).toBe('deny')
+        const second = await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'swallow'))
+        expect(second.action, fake).toBe('allow')
+        expect(second.observed_action, fake).toBe('deny')
       }
       // A real run clears it.
       const p = makeDefaultsPipeline('balanced')
@@ -347,11 +395,17 @@ rules:
       const p = makeDefaultsPipeline('balanced')
       await p.evaluate(input('write', { filePath: 'package.json', content: '{"scripts":{"test":"echo ok"}}' }, 'pkg'))
       // The tampered package.json write itself creates the obligation.
-      expect((await p.evaluate(input('Bash', { command: 'git commit -m "x"', cwd: '/tmp/keel-threat-model' }, 'pkg'))).action).toBe('warn')
+      const commit = await p.evaluate(input('Bash', { command: 'git commit -m "x"', cwd: '/tmp/keel-threat-model' }, 'pkg'))
+      expect(commit.action).toBe('allow')
+      expect(commit.observed_action).toBe('warn')
       // A swallowed "npm test" must not clear it.
       p.markVerificationSatisfied(input('Bash', { command: 'npm test || true' }, 'pkg'))
-      expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))).action).toBe('warn')
-      expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))).action).toBe('deny')
+      const push1 = await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))
+      expect(push1.action).toBe('allow')
+      expect(push1.observed_action).toBe('deny')
+      const push2 = await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))
+      expect(push2.action).toBe('allow')
+      expect(push2.observed_action).toBe('deny')
       // A genuine run clears it.
       p.markVerificationSatisfied(input('Bash', { command: 'npm test' }, 'pkg'))
       expect((await p.evaluate(input('Bash', { command: 'git push origin feature' }, 'pkg'))).action).toBe('allow')

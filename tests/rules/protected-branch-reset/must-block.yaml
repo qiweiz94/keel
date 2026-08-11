@@ -1,0 +1,13 @@
+cases:
+  - note: "git reset --hard against origin/main"
+    tool: Bash
+    args:
+      command: "git reset --hard origin/main"
+  - note: "git reset --hard against master"
+    tool: Bash
+    args:
+      command: "git reset --hard master"
+  - note: "checkout main then reset --hard in the same command"
+    tool: Bash
+    args:
+      command: "git checkout main && git reset --hard HEAD~3"

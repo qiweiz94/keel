@@ -19,9 +19,18 @@ import { parseRulesContent } from '@get-keel/core'
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const INSTALL_SRC = join(HERE, '..', 'commands', 'install.ts')
 const PLUGIN_SRC = join(HERE, '..', '..', '..', 'opencode-plugin', 'src', 'plugin.ts')
+const INDEX_SRC = join(HERE, '..', 'index.ts')
 const TEMPLATE = join(HERE, '..', '..', 'templates', 'keel-enforce.js')
 
-function parseYamlBlock(src: string, label: string): { match: string; action: string }[] {
+// Full rule objects, not a hand-picked field list: a `paths:`/`exclude:`/
+// `patterns:`/`vars:`/`sources:`/`sinks:`/`unless:`/`boundaries:`/etc. glob
+// or list edited in one file and forgotten in the other must fail this test
+// exactly like a match/action drift does — a field list here is a promise
+// to remember to add every new field by hand, which is exactly how the
+// paths:/exclude: gap this test used to have got in.
+type RuleRow = Record<string, unknown> & { id: string }
+
+function parseYamlBlock(src: string, label: string): RuleRow[] {
   const m = src.match(/DEFAULT_RULES_YAML = `([\s\S]*?)`\n/)
   expect(m, `no DEFAULT_RULES_YAML found in ${label}`).toBeTruthy()
   // plugin.ts interpolates `${LEGACY_PRODUCT_NAME}` at runtime; resolve it
@@ -31,15 +40,11 @@ function parseYamlBlock(src: string, label: string): { match: string; action: st
   if (legacy) yaml = yaml.replaceAll('${LEGACY_PRODUCT_NAME}', `${legacy[1]}${legacy[2]}`)
   const parsed = parseRulesContent(yaml, label)
   expect(parsed.errors, `${label} YAML invalid`).toBeUndefined()
-  return (parsed.rules as Array<Record<string, string>>).map((r) => ({
-    id: r.id,
-    match: r.match ?? '',
-    action: r.action ?? '',
-  }))
+  return (parsed.rules as Array<Record<string, unknown>>).map((r) => ({ ...r, id: String(r.id) }))
 }
 
-function ruleTable(rules: { id: string; match: string; action: string }[]) {
-  return new Map(rules.map((r) => [r.id, { match: r.match, action: r.action }]))
+function ruleTable(rules: RuleRow[]) {
+  return new Map(rules.map((r) => [r.id, r]))
 }
 
 describe('rules drift: install.ts vs plugin.ts', () => {
@@ -51,13 +56,16 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     expect([...install.keys()].sort()).toEqual([...plugin.keys()].sort())
   })
 
-  it('matches the same patterns and actions per rule', () => {
+  it('is byte-for-byte equivalent per rule — every field, not just match/action', () => {
     for (const [id, installRule] of install) {
       const pluginRule = plugin.get(id)
       expect(pluginRule, `plugin missing rule ${id}`).toBeDefined()
-      expect(installRule.match, `match drift on ${id}`).toBe(pluginRule!.match)
-      expect(installRule.action, `action drift on ${id}`).toBe(pluginRule!.action)
+      expect(pluginRule, `field drift on ${id}`).toEqual(installRule)
     }
+  })
+
+  it('has exactly 36 rules (update this count deliberately when the ruleset changes)', () => {
+    expect(install.size).toBe(36)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {
@@ -87,5 +95,45 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     expect(template).toContain('rm -rf /(?!tmp|var/tmp)')
     expect(template).toContain('gh release delete')
     expect(template).toContain('git reset (--hard|--soft|--keep|--merge|HEAD~)')
+  })
+})
+
+/**
+ * Third source: `keel enforce init` (index.ts's createEnforceInit) used to
+ * carry its own stale, hand-maintained 6-rule set that had drifted from
+ * DEFAULT_RULES_YAML — a `no-external-network` blanket network-deny that
+ * directly violated the do-not-ship guard install.ts's ruleset avoids, and
+ * a `no-delete-outside-src` rule with no equivalent anywhere else. Fixing
+ * the drift once is not the same as fixing it permanently: this asserts
+ * the STRUCTURE (imports the shared constant, defines no rules of its own)
+ * so a future edit can reintroduce a fourth ruleset only by deliberately
+ * removing the import — it can't happen by silently pasting YAML back in.
+ */
+describe('rules drift: index.ts (enforce init) has no third ruleset', () => {
+  const indexSrc = readFileSync(INDEX_SRC, 'utf-8')
+
+  it('imports DEFAULT_RULES_YAML from install.js rather than defining its own', () => {
+    expect(indexSrc).toMatch(/import\s*\{[^}]*DEFAULT_RULES_YAML[^}]*\}\s*from\s*['"]\.\/commands\/install\.js['"]/)
+  })
+
+  it('createEnforceInit contains no inline rules: YAML literal of its own', () => {
+    const fnMatch = indexSrc.match(/async function createEnforceInit\(\)[\s\S]*?\n\}/)
+    expect(fnMatch, 'createEnforceInit not found in index.ts').toBeTruthy()
+    const fnBody = fnMatch![0]
+    // The function must reference the shared constant, not spell out YAML
+    // rules of its own (no `- id:` rule entries, no standalone `rules:` key
+    // followed by a rule list).
+    expect(fnBody).toContain('DEFAULT_RULES_YAML')
+    expect(fnBody).not.toMatch(/- id:\s*\S+/)
+  })
+
+  it('writes the exact same content keel install writes', () => {
+    const installSrc = readFileSync(INSTALL_SRC, 'utf-8')
+    const m = installSrc.match(/DEFAULT_RULES_YAML = `([\s\S]*?)`\n/)
+    expect(m).toBeTruthy()
+    // install.ts's own writeFileSync(rulesPath, DEFAULT_RULES_YAML, ...) call
+    // and index.ts's writeRulesFile(rulesPath, DEFAULT_RULES_YAML, ...) call
+    // must reference the identical imported binding — not a local copy.
+    expect(indexSrc).toMatch(/writeRulesFile\(rulesPath,\s*DEFAULT_RULES_YAML,/)
   })
 })

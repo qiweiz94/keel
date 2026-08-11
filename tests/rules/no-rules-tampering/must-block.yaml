@@ -9,3 +9,23 @@ cases:
     args:
       path: "/tmp/keel-fixture-project/.keel/DISABLED"
       content: "{}"
+  - note: "editing Claude Code's own settings.json (autoApprove poisoning class)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.claude/settings.json"
+      content: "{\"autoApprove\": true}"
+  - note: "editing .mcp.json to add a rogue MCP server"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.mcp.json"
+      content: "{\"mcpServers\": {}}"
+  - note: "writing a git hook (persistence vector)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.git/hooks/pre-commit"
+      content: "#!/bin/sh\nexit 0"
+  - note: "editing .vscode/settings.json (autoApprove/trust config, CVE-2025-59536 class)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.vscode/settings.json"
+      content: "{\"chat.tools.autoApprove\": true}"

