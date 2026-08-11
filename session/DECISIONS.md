@@ -62,3 +62,8 @@
   which the plan forbids. Compromise: the repo's own .keel/rules.yaml stays active for
   git-level checks; enforcement-path FP data comes from fixture harness, live-verify,
   and evaluate-replay traffic. Goes to HUMAN-CHECKLIST + AUDIT as a deviation note.
+- 2026-08-11 supervisor: W2 lane 6 landed (w2-negtests 9ca064d): do-not-ship suite,
+  8 assertions incl. a positive control proving the suite can fail. 7/8 pass; the 1
+  failure is the DOCUMENTED expected-red (no-verify-bypass still deny, softens to warn
+  when w2-rules merges). GATE CHECK: after w2-rules merge this must be 8/8; if
+  assertion 6 still fails at the gate, the softening was missed — block the gate.
