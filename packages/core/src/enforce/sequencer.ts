@@ -1,4 +1,5 @@
 import type { KeelRule, EnforceInput } from '../types.js'
+import { commandString } from './arg-utils.js'
 
 interface ActionRecord {
   input: EnforceInput
@@ -58,7 +59,7 @@ export class SequenceDetector {
     // Check if the sequence matches
     // The last step should match the current action
     const lastStep = rule.steps[rule.steps.length - 1]
-    if (!this.matchesTool(lastStep, input.tool, input.args)) return null
+    if (!this.matchesTool(lastStep, input)) return null
 
     // The preceding steps should match recent history in order
     const precedingSteps = rule.steps.slice(0, -1)
@@ -72,7 +73,7 @@ export class SequenceDetector {
       while (historyIdx >= 0) {
         const record = recent[historyIdx]
         historyIdx--
-        if (this.matchesTool(step, record.tool, record.args)) {
+        if (this.matchesTool(step, record.input)) {
           found = true
           break
         }
@@ -85,15 +86,27 @@ export class SequenceDetector {
     return `Sequence detected: ${stepNames} (rule: ${rule.id})`
   }
 
-  private matchesTool(step: { tool: string; path?: string; pattern?: string }, tool: string, args: Record<string, unknown>): boolean {
+  private matchesTool(step: { tool: string; path?: string; pattern?: string }, input: EnforceInput): boolean {
+    const { tool, args } = input
     if (step.tool.toLowerCase() !== tool.toLowerCase()) return false
     if (step.path) {
       const argPath = String(args.path || args.filePath || args.file || args.dest || '')
       if (!argPath.includes(step.path)) return false
     }
     if (step.pattern) {
-      const argStr = JSON.stringify(args)
-      if (!argStr.match(new RegExp(step.pattern, 'i'))) return false
+      let regex: RegExp
+      try {
+        regex = new RegExp(step.pattern, 'i')
+      } catch {
+        return false
+      }
+      // Try the real command text first (arg-utils.commandString) — a raw
+      // JSON.stringify haystack breaks quoted commands and end-of-string
+      // anchors, same class as the pipeline.ts rate/diagnosis fix (see
+      // __tests__/match-surface.test.ts). The JSON surface stays as an
+      // additive fallback so a step pattern targeting a non-command arg
+      // value (e.g. a WebFetch url) keeps matching exactly as before.
+      if (!regex.test(commandString(input)) && !regex.test(JSON.stringify(args))) return false
     }
     return true
   }
