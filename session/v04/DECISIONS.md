@@ -323,3 +323,12 @@
   never matches). Supervisor CLOSED it directly (validate patterns[].regex at load + regression
   test). Suite green core 557 / cli 740. M2 progress: attribution✅, hardening✅. Remaining M2:
   B1 (verification-satisfied + claim reach live across hosts), B2 (detection benchmark at scale).
+- 2026-08-11 supervisor: M3/G1 GATE CLOSED (e729366) — side-effect safety audit. All 34 commands
+  swept; shared isInteractive() (!!TTY && !CI) gate; 4 CI-gate gaps fixed (dashboard-web/dashboard/
+  promote/rules --append). Found+fixed a REAL bug: schedule.ts logPath() getter did unconditional
+  mkdirSync(~/.keel/logs) — a read-only `keel schedule` mutated the fs every run. Invariant test
+  no-side-effects.test.ts is a source-level sweep that FAILS on any new ungated spawn/exec/raw-TTY —
+  mutation-tested (forced isInteractive→true, 3 red, reverted). Suite green core 557 / cli 752. This
+  systematizes the dashboard-web fix so the browser-flood CLASS can't recur anywhere.
+  MILESTONE STATUS: M1 ✅. M2: attribution✅ hardening✅ (B1/B2 remain). M3: C2✅ G1✅ (C1 Windows
+  remains). Transient API/DNS error killed the first G1 attempt (0 work); relaunch succeeded.
