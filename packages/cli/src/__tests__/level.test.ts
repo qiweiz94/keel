@@ -13,6 +13,21 @@ let dir: string
 let home: string
 let shim: string
 
+// chalk colors its output in this test environment regardless of TTY
+// (execSync's captured pipe isn't a terminal, but chalk still detects
+// color support from the environment), so raw stdout is interleaved with
+// ANSI escapes — e.g. "level: \x1b[37mbalanced\x1b[39m\x1b[7m →
+// \x1b[27m\x1b[37mprotect". Assertions like `toContain('balanced →
+// protect')` then fail even though the text is right there, just split
+// by color codes. Stripping escapes here (not in the CLI) keeps these
+// tests correct in BOTH color and NO_COLOR environments without changing
+// what the CLI actually prints.
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_PATTERN, '')
+}
+
 function run(args: string, opts: { cwd?: string; path?: string; home?: string } = {}) {
   try {
     const stdout = execSync(`node "${CLI}" ${args}`, {
@@ -21,9 +36,9 @@ function run(args: string, opts: { cwd?: string; path?: string; home?: string } 
       timeout: 10000,
       env: { ...process.env, HOME: opts.home ?? home, PATH: opts.path ?? `${shim}:${process.env.PATH}` },
     })
-    return { stdout, code: 0 }
+    return { stdout: stripAnsi(stdout), code: 0 }
   } catch (err: any) {
-    return { stdout: (err.stdout || '') + (err.stderr || ''), code: err.status ?? 1 }
+    return { stdout: stripAnsi((err.stdout || '') + (err.stderr || '')), code: err.status ?? 1 }
   }
 }
 
@@ -105,6 +120,56 @@ describePosixShim('keel level (the speed dial)', () => {
     expect(out.stdout).toMatch(/without --persist|--persist/i)
     expect(out.code).toBe(1)
   })
+
+  it('setting sprint records sprint_started_at next to level (the expiry clock)', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES)
+
+    const before = Date.now()
+    run('level sprint')
+    const written = readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')
+    const match = written.match(/^sprint_started_at:\s*(\S+)$/m)
+    expect(match).not.toBeNull()
+    const startedAt = Date.parse(match![1])
+    expect(startedAt).toBeGreaterThanOrEqual(before - 1000)
+    expect(startedAt).toBeLessThanOrEqual(Date.now() + 1000)
+  })
+
+  it('switching away from sprint clears a leftover sprint_started_at', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), PROJECT_RULES)
+    run('level sprint')
+    expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^sprint_started_at:/m)
+
+    run('level balanced')
+    expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).not.toMatch(/^sprint_started_at:/m)
+  })
+
+  it('prints a dial diff derived from the real merged ruleset, and never lists the protect-floor rule as softened', () => {
+    // PROJECT_RULES has one unleveled `action: deny` rule ("sample") plus
+    // its own per-rule `level: sprint` field (unrelated field, same name
+    // as the dial) — add a real `level: protect` floor rule so the
+    // "floors never soften" claim has something concrete to check.
+    const rulesWithFloor = PROJECT_RULES + `  - id: floor-rule
+    type: command
+    match: "floor-token"
+    action: deny
+    level: protect
+    message: "floor"
+`
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), rulesWithFloor)
+
+    const out = run('level sprint')
+    expect(out.stdout).toMatch(/Dial diff \(balanced → sprint\)/)
+    expect(out.stdout).toMatch(/soften deny\/block → warn/)
+    expect(out.stdout).toContain('sample')
+    // The floor is reported as unchanged, not as one of the softened ids.
+    expect(out.stdout).toMatch(/floor\(s\) unchanged.*floor-rule/)
+    const softenedLine = out.stdout.split('\n').find(l => l.includes('soften deny/block'))
+    expect(softenedLine).toBeDefined()
+    expect(softenedLine).not.toContain('floor-rule')
+  })
 })
 
 describePosixShim('keel dashboard', () => {
@@ -156,5 +221,29 @@ describePosixShim('keel status (enforcement health)', () => {
     const out = run('allow no-such-rule --once')
     expect(out.stdout).toMatch(/Unknown rule|unknown/i)
     expect(out.code).toBe(1)
+  })
+
+  it('announces an expired sprint reverting to balanced, with the resolved dial (not the raw file value)', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    const expiredSprint = PROJECT_RULES.replace('level: balanced', 'level: sprint')
+      + `sprint_started_at: ${new Date(Date.now() - 5 * 3_600_000).toISOString()}\n`
+    writeFileSync(join(home, '.keel', 'rules.yaml'), expiredSprint)
+
+    const out = run('status')
+    // The resolved dial is what enforcement actually uses — balanced, not
+    // the raw "sprint" still sitting in the file.
+    expect(out.stdout).toMatch(/Speed dial:\s*balanced/i)
+    expect(out.stdout).toMatch(/sprint expired.*balanced.*hours? ago/i)
+  })
+
+  it('does not announce expiry for a sprint that is still within its window', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    const freshSprint = PROJECT_RULES.replace('level: balanced', 'level: sprint')
+      + `sprint_started_at: ${new Date(Date.now() - 1 * 3_600_000).toISOString()}\n`
+    writeFileSync(join(home, '.keel', 'rules.yaml'), freshSprint)
+
+    const out = run('status')
+    expect(out.stdout).toMatch(/Speed dial:\s*sprint/i)
+    expect(out.stdout).not.toMatch(/sprint expired/i)
   })
 })

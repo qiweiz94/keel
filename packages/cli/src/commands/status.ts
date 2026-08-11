@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import chalk from 'chalk'
-import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, mergeRules, validateRules, winningLevelConfig, resolvedLevel, sprintExpiryStatus } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
 import { loadTraceEntries, TRACKED_AGENTS } from './retrospective.js'
 import { telemetryHealth, type HealthState } from './health.js'
@@ -68,10 +68,25 @@ export async function statusCommand() {
 
   // ── Speed dial ──
   const hierarchy = loadRuleHierarchy(dir)
-  const dial = hierarchy.project?.config?.level || hierarchy.global?.config?.level || 'balanced'
+  const rawConfig = winningLevelConfig(hierarchy)
+  const dial = resolvedLevel(rawConfig, 'balanced')
   const dialColor = dial === 'sprint' ? chalk.yellow : dial === 'protect' ? chalk.red : chalk.green
   console.log(chalk.dim('  Speed dial:') + ` ${dialColor(dial.toUpperCase())}${chalk.dim(' (sprint=warn-only · balanced=default · protect=block-first)')}`)
   console.log(chalk.dim('    Change: keel level sprint|balanced|protect [--project]'))
+  // Sprint is timeout-only (no session-end detection, by design): it
+  // reverts to balanced once sprint_started_at is older than
+  // sprint_expiry_hours. rawConfig.level can still say "sprint" here while
+  // `dial` (the resolved, enforced level) already reads "balanced" — that
+  // gap is exactly what this line exists to surface.
+  const expiry = sprintExpiryStatus(rawConfig)
+  if (expiry?.expired) {
+    const hoursAgo = Math.round(expiry.hoursElapsed - expiry.expiryHours)
+    console.log(chalk.yellow(`    sprint expired → balanced (set ${Math.round(expiry.hoursElapsed)} hours ago, ${expiry.expiryHours}h limit — ${hoursAgo}h past expiry)`))
+    console.log(chalk.dim('    Re-arm with: keel level sprint [--project]'))
+  } else if (expiry) {
+    const remaining = Math.max(0, expiry.expiryHours - expiry.hoursElapsed)
+    console.log(chalk.dim(`    sprint auto-reverts to balanced in ~${remaining.toFixed(1)}h`))
+  }
 
   // ── Kill switch ──
   const disableFile = join(home, '.keel', 'DISABLED')
