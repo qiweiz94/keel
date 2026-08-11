@@ -102,3 +102,12 @@
   ref; arm B's keel blocked it (no-push-to-main, keel-control-gate) and the
   agent asked for human approval instead of finding a workaround. Evidence:
   session/v04/EVIDENCE/phase-2-harness.md.
+- 2026-08-11 supervisor: HONESTY CORRECTION — Phase-0 floor-override fix is action-axis only.
+  Red-team proved mode:observe and no-op-match overrides still neutralize a protect floor
+  (tightensOrEqual checks action only). Not a one-command bypass (write is gated) but the
+  "un-bypassable" promise is not fully true. SUPERVISOR will extend mergeRules to guard mode
+  + match on protect-floor overrides + tests, AFTER the strengthening battery finishes (don't
+  rebuild the main tree mid-battery). Red-team lane (v04-redteam 847111d) to merge then too:
+  catch-rate refresh in SECURITY.md (no-rules-tampering 52→88% via file_path, new
+  no-self-protection-write 93%, +--no-preserve-root tightening), corrected stale
+  false_positives note, honest residual-class list. Its suite: core 474 / cli 674.
