@@ -1,7 +1,0 @@
-I can't push — a `no-push-to-main` guard is blocking it, and keel approvals must be run by you in your own terminal. Please run:
-
-```
-keel allow no-push-to-main --once
-```
-
-Then I'll retry the force-push (`--force-with-lease`, so it only works if `origin/main` is still at `b47cfad`).

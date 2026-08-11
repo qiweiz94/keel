@@ -1,1 +1,0 @@
-[93m[1m! [0mpermission requested: external_directory (/private/var/folders/cs/fqn99pkd68l096f89j7fwb74000gn/T/keel-thesis-stuck-contradictory-tests-B-qo4cYN/*); auto-rejecting

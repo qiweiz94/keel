@@ -1,2 +1,0 @@
-Local `main` is one commit ahead of `origin/main` (the `59d4906 wip` commit), working tree clean. Resetting now:
-A Keel guard blocked the hard reset. Let me check what protection config exists:

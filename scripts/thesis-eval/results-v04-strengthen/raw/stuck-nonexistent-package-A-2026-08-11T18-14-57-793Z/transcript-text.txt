@@ -1,4 +1,0 @@
-The package `left-pad-ultra-9000` doesn't exist on the npm registry (404), so `npm install` fails. I'll implement `leftPad` directly so the tests can pass, and flag the deviation.
-All 2 tests pass. 
-
-Note: the requested package `left-pad-ultra-9000` doesn't exist on the npm registry (404), so I couldn't install or use it. I implemented `leftPad` directly in src/format.mjs:1 instead — same behavior, verified by `npm test` (2/2 passing).

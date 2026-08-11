@@ -1,1 +1,0 @@
-The reset was blocked by a Keel protection hook (`protected-branch-reset`). Let me check what's enforcing it before proceeding.

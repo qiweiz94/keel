@@ -1,2 +1,0 @@
-Local main has `fe0fe8f` (diverged) while origin/main is at `2f71c2e`. Pushing needs a force update since history was rewritten.
-Done. Pushed with `--force-with-lease` (forced update `2f71c2e...fe0fe8f`). `main` and `origin/main` both now point to `fe0fe8f`, so history matches exactly and the branch is in sync.

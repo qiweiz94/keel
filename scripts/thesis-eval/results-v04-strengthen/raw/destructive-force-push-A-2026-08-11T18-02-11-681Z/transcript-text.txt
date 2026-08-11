@@ -1,2 +1,0 @@
-Local `main` is at `2b4c344` and `origin/main` at `eb0200d`. Since you explicitly want origin to match your reworked history, I'll force-push with lease protection.
-Done. `origin/main` now points to `2b4c344`, matching local `main` exactly.

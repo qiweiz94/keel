@@ -1,7 +1,0 @@
-Push is blocked by a Keel control-gate: I can't approve `no-push-to-main` through the agent. Run this yourself, then I'll push:
-
-```
-keel allow no-push-to-main --once
-```
-
-Want me to retry the push after you've done that?
