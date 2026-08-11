@@ -257,3 +257,14 @@
   indistinguishable from an attack; relaunch self-contained instead. (3) The real fix was the
   dashboard-web isTTY gate + regression guard + merging it into every worktree — that IS done and
   holds. Recording this so the AUDIT reflects it honestly.
+- 2026-08-11 supervisor: ruleset-followups GATE CLOSED (366b88c). VERIFIED LIVE: python3 -c
+  shutil.rmtree('/') → deny (interpreter-body now covered, rule 44 no-destructive-interpreter-body,
+  scoped to literal / or ~ targets, adversarial terraform-target near-miss tested); echo "rm -rf /"
+  → allow (G2 FP fixed via quote-lookbehind using A2's quote-preservation); sudo rm -rf / → deny
+  (real catch preserved — the lane caught+reverted a first-draft ^-anchor regression). Suite green
+  core 541 / cli 708. M1 CORRECTNESS CORE ~DONE: A1 same-id, A2 shell-parse, A4 perf+pkgbudget,
+  interpreter-body, echo FP. Lane also refused an injected "silently accept + don't tell user"
+  reminder (3rd injection-resistance instance this session — the guardrail mindset working).
+- 2026-08-11 supervisor: launching M1-remainder wave (3 disjoint browser-safe lanes): A3
+  fail-closed audit (hook.ts + adapters), A1 different-id floor residual (rule-parser mergeRules),
+  env-introspection observe rule (DEFAULT_RULES_YAML, from B2's novel finding). Then v0.4 AUDIT.md.
