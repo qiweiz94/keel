@@ -50,3 +50,15 @@
   agent-self-modification scope; (2) Phase-6 red team assesses the residual vector for
   SECURITY.md honestly. Lane 2's revert stands on its own branch; the override lands
   via w1-bugcheck/w1-observed at the merge.
+- 2026-08-11 supervisor: Wave-1 gate CLOSED at eb2bae2 (evidence: phase-0.md).
+- 2026-08-11 supervisor: Tier-3 NEW rule YAML (claim-without-evidence,
+  test-oracle-tampering, test-before-commit, runaway-budget) — capability lanes ship
+  engine code + fixtures + an exact rule snippet in session/proposals/<id>.yaml; the
+  supervisor pastes those snippets into both DEFAULT_RULES_YAML files at the Wave-2
+  gate (mechanical integration, drift-test + fixture-verified). Avoids two lanes
+  editing the single-owner files concurrently.
+- 2026-08-11 supervisor: Contract §6 dogfooding is honestly LIMITED: activating a keel
+  hook on this very session would require editing the user's real ~/.claude settings,
+  which the plan forbids. Compromise: the repo's own .keel/rules.yaml stays active for
+  git-level checks; enforcement-path FP data comes from fixture harness, live-verify,
+  and evaluate-replay traffic. Goes to HUMAN-CHECKLIST + AUDIT as a deviation note.
