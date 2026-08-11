@@ -11,3 +11,11 @@ cases:
     tool: Bash
     args:
       command: "git checkout main && git reset --hard HEAD~3"
+  - note: "wave-3 bypass: git -C prefix (handled by no-force-push, not by this rule)"
+    tool: Bash
+    args:
+      command: "git -C /tmp/repo reset --hard origin/main"
+  - note: "wave-3 bypass: doubled spaces between tokens"
+    tool: Bash
+    args:
+      command: "git reset  --hard  origin/main"

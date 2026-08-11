@@ -1,0 +1,76 @@
+# Wave-3 security review -- command-side companion to no-rules-tampering.
+#
+# This is a PROPOSAL, not a shipped rule. It is a NEW DENY SURFACE, not a
+# tightening of an existing pattern, so this lane did not paste it into
+# DEFAULT_RULES_YAML (packages/cli/src/commands/install.ts and
+# packages/opencode-plugin/src/plugin.ts). The supervisor pastes it into
+# BOTH, in the Tier-1 block, then rebuilds -- drift.test.ts keeps the two
+# copies identical.
+#
+# NOTE ON SPELLING: this file must stay free of backticks, backslashes and
+# a dollar-brace pair, because it gets pasted into a JS template literal
+# (proposal-fixture-harness.test.ts asserts this). That is why the
+# separator class below is written as a negated word class rather than as
+# an escaped whitespace class.
+#
+# -- Why -------------------------------------------------------------
+# no-rules-tampering is type: filesystem. Filesystem rules match on
+# argPath() -- a Write/Edit tool's path ARGUMENT. A Bash command's target
+# file is not an argument, so the ENTIRE self-protection path list is
+# invisible to the shell channel. Measured (session/EVIDENCE/
+# wave3-secreview.md section 1.2): 21 of 21 shell-side writes to protected
+# paths were allowed, including a redirect into .claude/settings.json, a cp
+# over it, a sed -i of .keel/rules.yaml, a rewrite of .git/hooks/pre-commit,
+# and git config core.hooksPath. no-enforcer-removal is the only
+# command-side cover today and it only knows the verb rm.
+#
+# -- What this rule does and does NOT close ---------------------------
+# Closes (14 attack spellings verified against the compiled pattern,
+# alongside 17 benign commands that must NOT match; the check script and
+# its output are in session/EVIDENCE/wave3-secreview.md PART 6):
+#   - redirect, append and heredoc into a protected path
+#   - cp, mv, tee, ln, install, truncate, dd, rsync
+#   - sed -i against a protected path
+#   - the three common interpreter one-liner spellings (python3 -c,
+#     node -e, perl -e) when the protected path is in the same command
+#   - git config core.hooksPath
+#   - any mention of .keel/DISABLED, the kill-switch sentinel
+#
+# Does NOT close, and no regex can:
+#   - an interpreter one-liner that builds the path at runtime, or any
+#     interpreter outside the verb list (ruby, php, a compiled helper)
+#   - a base64-encoded payload decoded into place
+#   - symlink redirection: ln -s to a NON-protected name is not matched,
+#     and a later write to that name is invisible to every path glob
+#   - intra-token quoting, e.g. a quoted letter inside the verb
+# Those stay documented in SECURITY.md as the residual class. Shipping
+# this rule must not be reported as "the shell channel is now covered".
+#
+# -- False positives this WILL cause ----------------------------------
+# A human-driven redirect into .vscode/settings.json for ordinary editor
+# prefs is blocked -- the same accepted trade-off no-rules-tampering
+# already documents for that path. Scaffolding a brand-new project's
+# .mcp.json through the shell is also blocked; the agent can ask the user
+# to run it, which is the intent.
+#
+# Indentation matches DEFAULT_RULES_YAML exactly (2-space list marker
+# under the rules key, 4-space fields) so the paste is literal.
+
+  - id: no-self-protection-write
+    type: command
+    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/)|git +config[^|;&]*core[.]hooksPath|[.]keel/DISABLED"
+    action: deny
+    level: protect
+    priority: 95
+    category: bypass
+    severity: critical
+    confidence: high
+    mode: block
+    rationale: "no-rules-tampering is a filesystem rule and therefore only sees a tool call's path ARGUMENT; a shell redirect's target is invisible to it. Measured in session/EVIDENCE/wave3-secreview.md: 21 of 21 shell writes to the self-protection path list were allowed, including a one-command write of the kill-switch sentinel that disables every rule at every dial. Same CVE-2025-59536/CVE-2026-21852 class as the filesystem rule it companions."
+    remediation: "Edit .claude/settings.json, .mcp.json, .vscode/settings.json, git hooks, or keel's own files yourself, in your own terminal."
+    false_positives:
+      - "An ordinary editor-preference write to .vscode/settings.json through the shell is blocked -- the same accepted trade-off no-rules-tampering already documents for that path."
+      - "Scaffolding a brand-new project's .mcp.json with a heredoc or redirect is blocked; ask the user to run it."
+      - "A file literally named .mcp.json anywhere outside the project root is still matched -- the path fragments are matched anywhere in the command, not anchored to the project."
+      - "A commit message that merely quotes one of these paths is NOT matched (verified: git commit -m with .mcp.json in the message passes), because a write verb must also be present."
+    message: "Writing to keel's own files, the agent's trust/approval config, or git hooks through a shell command is blocked -- these are user-owned."

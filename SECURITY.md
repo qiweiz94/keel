@@ -37,7 +37,49 @@ reasoning text. They are a gate, not an anti-virus engine:
   tools — same as any regex-based gate. Mitigations: rules should also match
   the common encodings they care about, and sensitive operations should be
   gated by rule `action: prompt` (human approval) rather than pattern-matching
-  alone.
+  alone. **Measured, not asserted** — see the table below.
+
+### Measured bypass resistance of the Tier-1 floor
+
+An adversarial sweep (228 probes, each through the real CLI with a fresh
+state directory; method and raw verdicts in
+`session/EVIDENCE/wave3-secreview.md`) deliberately tried to evade each
+`level: protect` floor rule. These are catch rates against *deliberate
+obfuscation*, not against ordinary use: a rule at 58% still blocks the
+plain-spelled command it names, every time, on the first hit, at every dial.
+Probes that are supposed to be allowed are excluded from the denominators.
+
+| floor rule | probes | caught |
+|---|---|---|
+| no-destructive-commands | 48 | 73% |
+| no-force-push | 13 | 92% |
+| protected-branch-reset | 8 | 63% |
+| protected-branch-delete | 9 | 89% |
+| pipe-to-shell | 19 | 58% |
+| keel-control-gate | 12 | 92% |
+| no-enforcer-removal | 12 | 33% |
+| agent-env-hijack | 12 | 67% |
+| prod-db-destruction | 12 | 75% |
+| no-rules-tampering | 25 | 52% |
+| no-exfil-flow | 4 | 25% |
+
+Four classes of evasion that **no regex rule closes**, and that you should
+assume an adversarial agent can use:
+
+1. **Intra-token quoting** — `r"m" -rf /` and `keel di"s"able` execute
+   normally and match no literal-token pattern.
+2. **Variable indirection** — `T=/; rm -rf $T`. A static pattern cannot
+   resolve a runtime value.
+3. **Interpreter escape hatches** — `python3 -c "…"`, `node -e "…"`,
+   `sh -c "$(base64 -d <<< …)"` reach any file or endpoint with no gated verb
+   present in the command at all.
+4. **Symlink redirection** — path globs match the path string as written;
+   they do not resolve symlinks, so a link planted by an earlier allowed
+   command redirects a write past every glob.
+
+Keel is a gate against the mistakes and the drift, not a sandbox against a
+determined adversary. For adversarial containment, run the agent in an
+OS-level sandbox and use keel's `action: prompt` gates on top.
 - **`unless_reasoning` / reasoning checks require reasoning text.** The
   OpenCode plugin has no access to the model's private chain-of-thought, so
   reasoning-based `unless` and anomaly rules run only when the integration
@@ -54,7 +96,14 @@ reasoning text. They are a gate, not an anti-virus engine:
   (`no-rules-tampering`), and from deleting enforcement files
   (`no-enforcer-removal`). A compromised agent cannot turn keel off, approve
   its own overrides, or rewrite its own rules — only the user can, in their
-  own terminal. These are `level: protect` floors, active at every dial.
+  own terminal. These are `level: protect` floors, active at every dial
+  (verified across all nine combinations of rules-file level × requested
+  level). **Two known limits on that claim, both open:** `no-rules-tampering`
+  is a `filesystem` rule, so it sees a tool call's path argument and not a
+  shell command's redirect target — writes to the protected paths through
+  Bash are not blocked today; and creating the kill-switch sentinel
+  (`~/.keel/DISABLED`) through a shell is not blocked, though deleting keel's
+  files is. See `session/EVIDENCE/wave3-secreview.md` §1.2–1.3.
 - **The agent's own process is the boundary.** In-process enforcement can be
   bypassed if the agent process itself is compromised. Git hook bypass
   (`--no-verify`, `core.hooksPath`) is blocked at the command level; see

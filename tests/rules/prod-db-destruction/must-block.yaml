@@ -11,3 +11,15 @@ cases:
     tool: Bash
     args:
       command: "psql postgres://user:pass@prod-db.example.com/app -c \"DROP DATABASE app\""
+  - note: "wave-3 bypass: doubled space inside the SQL verb"
+    tool: Bash
+    args:
+      command: "psql -h prod-db.example.com -c 'DROP  TABLE users'"
+  - note: "wave-3 bypass: a newline inside the SQL verb"
+    tool: Bash
+    args:
+      command: "psql -h prod-db.example.com -c 'DROP\nTABLE users'"
+  - note: "wave-3 bypass: DROP SCHEMA CASCADE destroys as much as DROP TABLE"
+    tool: Bash
+    args:
+      command: "psql -h prod-db.example.com -c 'DROP SCHEMA public CASCADE'"

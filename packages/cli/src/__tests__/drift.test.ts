@@ -96,7 +96,13 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     for (const id of plugin.keys()) {
       expect(template, `template missing rule ${id}`).toContain(`- id: ${id}`)
     }
-    expect(template).toContain('rm -rf /(?!tmp|var/tmp)')
+    // The rm-token group is spelled once and reused across every target
+    // branch of no-destructive-commands; asserting the group plus the
+    // root-target lookahead keeps this canary tied to real behavior rather
+    // than to one frozen spelling of the flag letters (wave-3 widened `-rf`
+    // to also cover `-fr`, `-r -f` and the long-form flags).
+    expect(template).toContain('/(?!tmp|var/tmp)')
+    expect(template).toContain('-(rf|fr|r')
     expect(template).toContain('gh release delete')
     expect(template).toContain('git reset (--hard|--soft|--keep|--merge|HEAD~)')
   })

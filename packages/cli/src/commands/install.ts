@@ -59,7 +59,7 @@ rules:
   # ── TIER 1: protect floor ──────────────────────────────────────────
   - id: keel-control-gate
     type: command
-    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)|keel rules [^|;&]*--append"
+    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
     action: deny
     level: protect
     priority: 100
@@ -102,7 +102,7 @@ rules:
 
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)"
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)|rm[^|;&]*[ \t/][.]keel([ \t]|/?$)"
     action: deny
     level: protect
     priority: 90
@@ -118,7 +118,7 @@ rules:
 
   - id: agent-env-hijack
     type: command
-    match: "(?<![A-Za-z])export +(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]bash_profile|[.]profile|[.]env)(?![A-Za-z])|(?<![A-Za-z])(echo|printf)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]bash_profile|[.]profile|[.]env|[.]mcp[.]json)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(?<![A-Za-z])tee +-a? *[^ ]*([.]bashrc|[.]zshrc|[.]bash_profile|[.]profile)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])"
+    match: "(?<![A-Za-z])export +(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile|[.]env)(?![A-Za-z])|(?<![A-Za-z])(echo|printf)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile|[.]env|[.]mcp[.]json)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(?<![A-Za-z])tee +-a? *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)[^;&]*[|][ \t]*(sudo[ \t]+)?tee[ \t]+(-a[ \t]*)?[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile)(?![A-Za-z])"
     action: deny
     level: protect
     priority: 88
@@ -134,7 +134,7 @@ rules:
 
   - id: no-destructive-commands
     type: command
-    match: "rm -rf /(?!tmp|var/tmp)|rm -rf ~|rm -rf [.]( |$)|rm -rf [.][.]( |/|$)|rm -rf [.][/](([*])?( |$))|rm -rf [*]( |$)|rm -rf /tmp/[^ ]*[.][.]([/ ]|$)|chmod -R 777 ([/~][^ ]*|[.])( |$)|mkfs[.0-9]*( |$)|mke2fs( |$)|shred( |$)|wipefs( |$)|blkdiscard( |$)|dd if=[^ ]+ of=/dev/[^ ]+|[; ][:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&|^[:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&"
+    match: "rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+/(?!tmp|var/tmp)|rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+(~|[$][{]?HOME[}]?/?([ \t]|$))|rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.]([ \t]|$)|rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.][.]([ \t]|/|$)|rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.][/](([*])?([ \t]|$))|rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[*]([ \t]|$)|rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+/tmp/[^ ]*[.][.]([/ \t]|$)|chmod[ \t]+-R[ \t]+777[ \t]+([/~][^ ]*|[.])([ \t]|$)|mkfs[.0-9a-zA-Z_]*([ \t]|$)|mke2fs([ \t]|$)|newfs_[a-z0-9]+([ \t]|$)|diskutil[ \t]+(eraseDisk|eraseVolume|zeroDisk|reformat|partitionDisk)(?![A-Za-z])|shred([ \t]|$)|wipefs([ \t]|$)|blkdiscard([ \t]|$)|dd[ \t][^|;&]*of=/dev/(?!null([ \t]|$)|zero([ \t]|$)|stdout|stderr|tty)[^ ]+|[; ][:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&|^[:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&"
     action: deny
     level: protect
     priority: 88
@@ -150,7 +150,7 @@ rules:
 
   - id: no-force-push
     type: command
-    match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)"
+    match: "git ((--no-pager )|(-C [^ ]+ ))*push.*--force(?!-with-lease)( |=|$)|git ((--no-pager )|(-C [^ ]+ ))*push.*(^| )-f( |=|$)|git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*push[^|;&]*[ \t][+](main|master)(?![A-Za-z])"
     action: deny
     level: protect
     priority: 82
@@ -166,7 +166,7 @@ rules:
 
   - id: protected-branch-reset
     type: command
-    match: "git reset --hard +(origin/)?(main|master)(?![A-Za-z])|git checkout +(origin/)?(main|master)(?![A-Za-z])[^|;&]*(&&|;) *git reset --hard|git switch +(origin/)?(main|master)(?![A-Za-z])[^|;&]*(&&|;) *git reset --hard"
+    match: "git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*reset[ \t]+--hard[ \t]+(origin/)?(main|master)(?![A-Za-z])|git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*checkout[ \t]+(origin/)?(main|master)(?![A-Za-z])[^|;&]*(&&|;)[ \t]*git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*reset[ \t]+--hard|git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*switch[ \t]+(origin/)?(main|master)(?![A-Za-z])[^|;&]*(&&|;)[ \t]*git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*reset[ \t]+--hard"
     action: deny
     level: protect
     priority: 88
@@ -182,7 +182,7 @@ rules:
 
   - id: protected-branch-delete
     type: command
-    match: "git push[^|;&]*(--delete|-d) +(origin +)?(main|master)(?![A-Za-z])|git push[^|;&]* :(main|master)(?![A-Za-z])|git branch (-D|--delete) +(main|master)(?![A-Za-z])"
+    match: "git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*push[^|;&]*(--delete|-d)[ \t]+(origin[ \t]+)?(refs/heads/)?(main|master)(?![A-Za-z])|git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*push[^|;&]*[ \t]:(refs/heads/)?(main|master)(?![A-Za-z])|git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*branch[ \t]+(-D|--delete)[ \t]+(main|master)(?![A-Za-z])|git[ \t]+((--no-pager|-C[ \t]+[^ ]+|-c[ \t]+[^ ]+)[ \t]+)*update-ref[ \t]+-d[ \t]+refs/heads/(main|master)(?![A-Za-z])"
     action: deny
     level: protect
     priority: 88
@@ -198,7 +198,7 @@ rules:
 
   - id: pipe-to-shell
     type: command
-    match: "(curl|wget)[^|;&]*[|] *(sudo )*(ba)?sh( |$)|bash <[(](curl|wget)|(?<![A-Za-z])(ba)?sh(?![A-Za-z]) +-c +.*[$][(][^)]*(curl|wget)|(?<![A-Za-z])eval(?![A-Za-z]) +.*[$][(][^)]*(curl|wget)"
+    match: "(curl|wget)[^;&]*[|][ \t]*(sudo[ \t]+)*(ba|z|k|da|a)?sh([ \t]|$)|(ba|z|k|da|a)?sh <[(](curl|wget)|(?<![A-Za-z])(ba|z|k|da|a)?sh(?![A-Za-z])[ \t]+-c[ \t]+.*[$][(][^)]*(curl|wget)|(?<![A-Za-z])eval(?![A-Za-z])[ \t]+.*[$][(][^)]*(curl|wget)"
     action: deny
     level: protect
     priority: 88
@@ -241,7 +241,7 @@ rules:
 
   - id: prod-db-destruction
     type: command
-    match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP TABLE|TRUNCATE(?![A-Za-z])|DROP DATABASE))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"
+    match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP[ \t\\n]+(TABLE|DATABASE|SCHEMA)|TRUNCATE(?![A-Za-z])))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"
     action: deny
     level: protect
     priority: 86
