@@ -143,3 +143,18 @@
   B2 fixed detection graders; D1 wiring claude.sh). Fix: `CI=1 BROWSER=none OPENCODE_TERMINAL=dumb`
   suppresses the server/tab (verified). STANDING CONSTRAINT: every opencode/child-agent-running
   lane must bake this env in. Resume B2/D1 later only after the suppression is in their harness.
+- 2026-08-11 supervisor: BROWSER-FLOOD ROOT CAUSE — it was NOT opencode (that was a red herring/
+  secondary). The real repeat offender is keel's OWN command: dashboard-web.ts:306 spawned
+  `open <127.0.0.1/#token=url>` gated ONLY on platform==darwin. The dashboard-web test sets
+  KEEL_DASHBOARD_ALLOW_NON_TTY=1 to exercise the server, bypassing the TTY guard, so EVERY
+  `npm test` (the lanes' 11+ runs AND my own gate suite runs) opened a browser tab. FIXED
+  (245be94): gate the convenience open on process.stdin.isTTY && !CI && KEEL_NO_OPEN!=1. Verified:
+  dashboard-web test passes 4/4, zero tabs. ALL lanes stopped during cleanup. Real product bug —
+  belongs in the v0.4 CHANGELOG. Lesson: a "convenience" side effect (browser open) firing in
+  automation is a fail-open-ish UX bug; gate every such side effect on interactivity.
+- 2026-08-11 supervisor: C2 GATE CLOSED (2dd79c9). File-lock (O_EXCL + stale-reclaim + token
+  release + jitter backoff) for state + ledger; fail-safe = unlocked write on timeout (documented);
+  5-process contention tests red→green (113/36/138→250); fixed a real ProblemLedger.load() data-loss
+  bug. Suite green core 496 / cli 674. Out-of-lane FP flagged: no-destructive-commands blocks a safe
+  `git checkout -- <file>` (git restore works) — rules-tuning follow-up. Perf lane (A4) STOPPED
+  mid-work (0 commits) during the browser cleanup — relaunch later with browser-safe test env.
