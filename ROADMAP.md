@@ -29,15 +29,18 @@ release and covered by tests; anything under **Planned** is not built yet.
   trail, never applies them automatically
 - `keel schedule` — periodic analysis via launchd/cron
 
-**Problem-solving rules** (`stuck`, `research`, `diagnosis`) ship via
-`keel rules harness` in `mode: observe` rather than in the default install, so they
-accumulate a false-positive record before they ever interrupt anyone.
+**Problem-solving rules** (`stuck`, `research`, `diagnosis`, plus `claim`, `oracle`,
+budget, and verification checks — 9 rules total) ship inside the default install as
+Tier 3, `mode: observe`: evaluated and recorded on every matching call without ever
+interrupting, so they accumulate a real hit record (`docs/tiers.md`) before anyone
+raises them to `warn` or `block`. `keel rules harness` / `--append` now exist only to
+backfill a rules.yaml created before this shipped as a default.
 
 ## Planned
 
 **Near term**
-- Promote the problem-solving rules into the default install once observe-mode data
-  on real traffic justifies it
+- A guided way to raise a Tier-3 rule's `mode:` from `observe` to `warn`/`block` once
+  its observed-hit record justifies it — today that's a manual rules.yaml edit
 - Additional stuck detectors: oscillation (A→B→A) and semantic livelock
 - Week-over-week deltas in `keel retrospective`
 - Windows test coverage. Fixture plumbing is portable now (Node APIs, not `mktemp`/
