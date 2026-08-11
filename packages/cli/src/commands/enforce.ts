@@ -93,6 +93,16 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
       currentLevel = next.project?.config.level || next.global?.config.level || currentLevel
       return next
     },
+    // A mid-session rules.yaml edit that fails to validate keeps enforcing
+    // on the last-known-good ruleset (checkRuleVersion's fail-safe — see
+    // pipeline.ts) but was previously silent about it: nothing told the
+    // user their edit didn't take. Surface it on stderr so a long-lived
+    // caller in this process (keel test, keel allow, an interactive
+    // session) doesn't mistake "still enforcing" for "the new rules are
+    // live."
+    onRulesError: (errors) => {
+      console.error(`[keel] rules reload failed — keeping last-known-good rules: ${errors.join('; ')}`)
+    },
     ruleFingerprint: () => [
       join(dir, '.keel', 'rules.yaml'), join(dir, 'AGENTS.md'), join(dir, 'CLAUDE.md'),
       join(dir, '.keel.local.yaml'), join(dir, 'AGENTS.local.md'), join(dir, 'CLAUDE.local.md'),

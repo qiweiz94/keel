@@ -185,6 +185,7 @@ export function validateRules(rules: unknown): string[] {
       rule.match,
       rule.match_regex,
       rule.unless_reasoning,
+      ...(rule.unless || []).map(u => u.regex),
       ...(rule.steps || []).map(step => step.pattern),
       rule.trigger?.pattern,
       rule.satisfy?.pattern,

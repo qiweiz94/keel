@@ -38,6 +38,38 @@ rules:
     expect(issues.some(issue => issue.includes('invalid regex'))).toBe(true)
   })
 
+  it('rejects a command rule with an uncompilable unless[].regex', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-unless
+    type: command
+    match: "rm -rf"
+    unless:
+      - regex: "(unclosed"
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues).toContain('Rule "bad-unless" contains invalid regex: (unclosed')
+  })
+
+  it('accepts a command rule with a valid unless[].regex', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: good-unless
+    type: command
+    match: "rm -rf"
+    unless:
+      - regex: "--dry-run"
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(issue => issue.includes('invalid regex'))).toBe(false)
+  })
+
   it('surfaces malformed YAML instead of silently accepting it', () => {
     const parsed = parseRulesContent('rules: [', '/tmp/rules.yaml')
     expect(parsed.errors?.some(error => error.startsWith('Invalid YAML:'))).toBe(true)

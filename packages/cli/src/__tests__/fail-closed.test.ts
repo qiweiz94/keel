@@ -112,20 +112,20 @@ describePosixShim('fail-closed: real built CLI, real error paths', () => {
     })
   })
 
-  describe('(c) an exception thrown mid-evaluation (not a load-time validation error)', () => {
+  describe('(c) formerly an exception thrown mid-evaluation, now closed at load time', () => {
     // `unless[].regex` (KeelRule.unless, used at pipeline.ts:631 via a bare
-    // `new RegExp(u.regex, 'i')`) is NOT among the fields rule-parser.ts's
-    // validateRules() checks for regex validity (only match/match_regex/
-    // unless_reasoning/steps/trigger/satisfy/boundaries patterns are). A
-    // rule with an invalid `unless[].regex` therefore LOADS successfully —
-    // validateRules raises no error, initEnforce does not throw — and only
-    // throws once a call reaches line 631, i.e. once `rule.match` actually
-    // matches. That makes this a genuine mid-evaluation throw, distinct
-    // from (b)'s load-time rejection, reachable with no core edits and no
-    // mocks. Flagged for the supervisor as a rule-parser.ts validation gap
-    // (see EVIDENCE) — not itself a fail-open bug, since the throw
-    // propagates to hook.ts's fail-closed catch either way, but the
-    // catalog of validated regex fields should include it.
+    // `new RegExp(u.regex, 'i')`) used to be the one pattern field
+    // rule-parser.ts's validateRules() did NOT check for regex validity
+    // (match/match_regex/unless_reasoning/steps/trigger/satisfy/boundaries
+    // patterns all were). A rule with an invalid `unless[].regex` used to
+    // LOAD successfully and only throw once a call reached line 631, i.e.
+    // once `rule.match` actually matched — a genuine mid-evaluation throw,
+    // distinct from (b)'s load-time rejection. That gap is now closed
+    // (rule-parser.ts's pattern-validity loop includes `...(rule.unless ||
+    // []).map(u => u.regex)`), so this scenario is now case (b): the whole
+    // rules file is rejected at load, before any command is evaluated —
+    // stronger, not weaker, since a non-matching command is now ALSO
+    // blocked instead of sailing through on a silently-broken rule.
     const home = newHome(`version: 1
 level: protect
 rules:
@@ -139,12 +139,13 @@ rules:
       - regex: "(unclosed"
 `)
 
-    it('the rule loads cleanly — a non-matching command is unaffected (proves this is NOT case (b))', () => {
+    it('rejected at load — even a non-matching command is blocked (this is now case (b), not a mid-eval throw)', () => {
       const r = runHook('claude-code', home, JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }))
-      expect(r.status).toBe(0)
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('Keel could not evaluate')
     })
 
-    it('claude-code: a matching command hits the broken regex mid-evaluation and still blocks — exit 2, COULD_NOT_EVALUATE (not "Invalid Keel rules")', () => {
+    it('claude-code: a matching command is blocked the same way — exit 2, COULD_NOT_EVALUATE (not "Invalid Keel rules")', () => {
       const r = runHook('claude-code', home, JSON.stringify({
         tool_name: 'Bash', tool_input: { command: 'rm -rf /tmp/keel-fail-closed-marker' },
       }))
