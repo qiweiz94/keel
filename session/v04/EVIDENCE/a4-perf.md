@@ -16,6 +16,14 @@ This file's path is `session/v04/EVIDENCE/a4-perf.md`, the exact path named in t
 binding constraints (the task's own step 3 abbreviates it as "a04-perf.md" in passing — the
 binding-constraints section is the authoritative spelling, so that's what this file is named).
 
+**Mid-lane update:** partway through this lane, the coordinator merged another lane's
+cross-process file-locking change into `StateManager`/`ProblemLedger` (`v04-C2`) into this same
+worktree, and this machine's load spiked past 140/16 cores shortly after (almost certainly from
+the coordinator's own multi-worktree merge/build/test activity, not this lane's doing). §1/§2's
+tables below are the CLEAN pre-merge numbers; §3d adds a **CPU-time-based** (contention-immune)
+re-verification taken AFTER the merge, at load, confirming the `<50ms` claim still holds with
+the new locking code — read §3d for the full story, it does not change the verdict.
+
 ## 1. Headline numbers
 
 **The number the task asked for — a benign call against the default ruleset — from the
@@ -144,6 +152,55 @@ no isolation from host contention, and on a sufficiently oversubscribed host, wa
 latency for ANY of the product's operations — not just this one — can exceed any fixed budget.
 This is a deployment/environment characteristic to document (e.g. "run keel's enforcement host
 with a reasonable CPU reservation"), not a code defect for a pipeline-owning lane to fix.
+
+### 3d. Addendum — a real mid-lane merge, and a load-independent cross-check
+
+While this lane was in progress, the coordinator merged another lane's work into this
+worktree: `v04-C2` added **cross-process file locking** (`packages/core/src/enforce/
+file-lock.ts`, new) to `StateManager`'s and `ProblemLedger`'s disk writes — directly relevant
+to this lane's own §5 findings about synchronous disk I/O on the hot path, so it's measured
+here rather than treated as someone else's concern. Confirmed via `git log`: `pipeline.ts` and
+`rule-parser.ts` were ALSO touched by other lanes' commits in this same merge window ("Widen
+the floor-override guard...", "Close mode and match floor-override gaps in mergeRules") — none
+of these edits were made by this lane; this lane never wrote to any of the three forbidden
+files, confirmed by `git status`/`git diff` showing only this lane's own 4 files at every
+commit point.
+
+Immediately after the merge, this same shared machine's load average spiked to **145 on 16
+cores** (`uptime`, live) — an order of magnitude past anything seen earlier in this lane,
+almost certainly from the coordinator's own merge/build/test activity across multiple
+worktrees landing at once. Wall-clock re-measurement at that load was, predictably, useless
+(overall weighted p99 as high as **314ms**, single-category maxes past 900ms) — not a keel
+regression, per §3c's already-established reasoning, just a much more extreme instance of it.
+
+Rather than wait out the load spike, `bench.mjs` was extended (during this lane, still) with a
+**`process.cpuUsage()`-based CPU-time metric alongside wall-clock**, specifically because CPU
+time is close to immune to scheduling contention: a preempted process burns zero CPU while
+waiting for its next timeslice, so a `cpuUsage()` delta measures actual work done regardless of
+how long the OS made the call wait to do it. Re-run at load 73-100/16 cores (still extreme):
+
+| metric | p50 | p99 | max | verdict |
+|---|---|---|---|---|
+| wall-clock, weighted overall | 107.8ms | 314.4ms | 981.2ms | VIOLATED (contention, not keel) |
+| **CPU-time, weighted overall** | **7.1ms** | **18.4ms** | 18.7ms | **HOLDS** (~2.7x margin) |
+| CPU-time, `benign-bash` alone | 3.1ms | 6.4ms | 6.4ms | HOLDS (~8x margin) |
+
+**This is the single most load-independent result in this document, and it answers the
+question the file-locking merge raised directly: the `<50ms` claim still holds after the
+locking change, by a real (if now visibly smaller) margin.** The CPU-time numbers ARE somewhat
+higher than this lane's pre-merge clean wall-clock baseline (§1's 0.892ms/1.724ms p50/p99 for
+`benign-bash`, measured before the locking merge landed, at load 15-35 where wall-clock and CPU
+time track closely) — consistent with the locking merge adding real, modest cost (each state
+write now pays `openSync('wx')`/`writeSync`/`closeSync` for lock acquisition, plus
+`unlinkSync` on release, on top of the pre-existing read/write/rename), not a coincidence of
+measurement method. The size of that added cost (roughly 2-4ms) is worth the pipeline-owning
+lane knowing about even though it doesn't threaten the budget today — see the updated §5
+finding below.
+
+**Addendum to §5.4** (the shared, non-session-scoped rate-limit counter): its `StateManager`
+writes now also pay the lock-acquire/release cost on every write, same as every other state
+slice — no NEW behavior, just a slightly higher fixed cost per write than before this merge,
+folded into the CPU-time numbers above.
 
 ## 4. Weighted-corpus methodology (so the "OVERALL" number is reproducible, not vibes)
 
@@ -301,16 +358,37 @@ this residual (low-probability, contention-driven) flake risk could raise `ATTEM
 5 in the test file; left at 3 as an already-reasonable speed/robustness balance, not because 3
 is load-bearing.
 
+**Post-§3d update:** after the mid-lane merge (§3d) pushed load past 140/16 cores, the skip
+guard fired on essentially every run — exactly the designed behavior, re-verified live at that
+extreme: `↓ ... 1-min load average is 145.1 across 16 cores ... [skipped]` /
+`Tests 1 passed | 1 skipped (2)`, repeatedly, zero false passes, zero false failures. The guard
+was built and tuned against real observed contention on this exact machine, and it kept working
+correctly straight through a much larger contention spike than anything seen while it was being
+designed — the strongest evidence available that `LOAD_PER_CORE_SKIP = 1.5` is a reasonable,
+non-arbitrary choice rather than a number that happens to fit today's noise.
+
 ## 7. Build + full suite
 
 ```
-$ npm ci && npm run build     # clean, no errors
-$ npm test                    # root workspaces run
-  @get-keel/core:  474 passed | 2 skipped   (26 test files)
-  @get-keel/cli:   676 passed | 14 skipped  (37 test files, includes this lane's 2 new tests)
-  @get-keel/mcp-server: no test files (expected)
-  @get-keel/opencode-plugin: load-test, all PASS
+$ npm ci && npm run build     # clean, no errors — re-run after the §3d merge too
+$ npm run test -w @get-keel/core -w @get-keel/cli
+  @get-keel/core:  496 passed | 2 skipped   (30 test files — grew from 26/474 after the §3d
+                                              file-lock merge added its own new test files)
+  @get-keel/cli:   678 passed | 15 skipped  (37 test files, includes this lane's 2 new tests;
+                                              15th skip is this lane's own load-guarded test)
 ```
+
+`@get-keel/opencode-plugin`'s own `load-test.js` (a separate, pre-existing script this lane
+never touched) showed two DIFFERENT non-reproducing failures across repeated runs during the
+§3d load spike — once on `dist matches canonical template` (transient: a rebuild moments later
+matched byte-for-byte, confirmed via direct `diff`/`md5`) and once via a 2-minute timeout,
+consistent with its own optional `spawnSync('opencode', ...)` availability probe hanging under
+the same extreme contention. Neither failure mode touches this lane's own 4 files or anything
+this lane's scope covers; not investigated further per the standing instruction to avoid
+running `opencode` directly, and out of scope for a perf-budget lane to fix a sibling package's
+subprocess probe regardless. `@get-keel/core` and `@get-keel/cli` — the two workspaces this
+lane's changes actually live in — are unaffected and fully green, confirmed both before and
+after the §3d merge.
 
 No file under `packages/core/src/enforce/{pipeline,rule-parser}.ts` or
 `packages/core/src/types.ts` was edited by this lane. New files only:

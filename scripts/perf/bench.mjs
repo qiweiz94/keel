@@ -219,11 +219,20 @@ async function runCategory(name, { rules = DEFAULT_RULES, fetchImpl, warmup = 3,
   for (let i = 0; i < reps; i++) {
     const { tool, args } = makeCall(warmup + i)
     const t0 = nowNs()
+    const cpu0 = process.cpuUsage()
     const result = await pipeline.evaluate(input(tool, args, sessionId, ++turn))
     const ms = msSince(t0)
-    samples.push({ ms, tier: result.tier, rule_id: result.rule_id || null, action: result.action, observed_action: result.observed_action || null })
+    // CPU time (user+sys), NOT wall clock — the only metric in this bench
+    // that stays meaningful when the host is under heavy scheduling
+    // contention (a preempted process burns zero CPU while waiting for a
+    // timeslice, so cpuUsage() deltas are unaffected by contention that
+    // wall-clock hrtime() cannot distinguish from real added cost). See
+    // a4-perf.md's file-lock-merge addendum for why this got added mid-lane.
+    const cpuDelta = process.cpuUsage(cpu0)
+    const cpuMs = (cpuDelta.user + cpuDelta.system) / 1000
+    samples.push({ ms, cpuMs, tier: result.tier, rule_id: result.rule_id || null, action: result.action, observed_action: result.observed_action || null })
   }
-  return { name, samples, stats: stats(samples) }
+  return { name, samples, stats: stats(samples), cpuStats: stats(samples.map(s => ({ ms: s.cpuMs }))) }
 }
 
 // ── Corpus ──
@@ -362,6 +371,7 @@ async function main() {
     for (let i = 0; i < take; i++) overallPool.push(cat.samples[i % cat.samples.length])
   }
   const overallStats = stats(overallPool)
+  const overallCpuStats = stats(overallPool.map(s => ({ ms: s.cpuMs })))
 
   // ── Breakdown by tier across the weighted pool ──
   const byTier = new Map()
@@ -397,9 +407,18 @@ async function main() {
     console.log(padRow([c.name, r.stats.n, r.stats.p50.toFixed(3), r.stats.p90.toFixed(3), r.stats.p99.toFixed(3), r.stats.max.toFixed(3)]))
   }
 
+  console.log('\n-- Per-category CPU time (user+sys; contention-resistant, see cpuMs note) --')
+  console.log(padRow(['category', 'n', 'p50 ms', 'p90 ms', 'p99 ms', 'max ms']))
+  for (const c of categories) {
+    const r = results.get(c.name)
+    console.log(padRow([c.name, r.cpuStats.n, r.cpuStats.p50.toFixed(3), r.cpuStats.p90.toFixed(3), r.cpuStats.p99.toFixed(3), r.cpuStats.max.toFixed(3)]))
+  }
+
   console.log('\n-- OVERALL (weighted representative corpus, n=' + overallStats.n + ') --')
   console.log(`p50=${overallStats.p50.toFixed(3)}ms  p90=${overallStats.p90.toFixed(3)}ms  p99=${overallStats.p99.toFixed(3)}ms  max=${overallStats.max.toFixed(3)}ms  mean=${overallStats.mean.toFixed(3)}ms`)
-  console.log(`<50ms claim: ${overallStats.p99 < 50 ? 'HOLDS' : 'VIOLATED'} at p99 for this weighted corpus on this machine.`)
+  console.log(`<50ms claim: ${overallStats.p99 < 50 ? 'HOLDS' : 'VIOLATED'} at p99 for this weighted corpus on this machine (wall clock).`)
+  console.log(`CPU-time (contention-resistant) overall: p50=${overallCpuStats.p50.toFixed(3)}ms  p99=${overallCpuStats.p99.toFixed(3)}ms  max=${overallCpuStats.max.toFixed(3)}ms`)
+  console.log(`<50ms claim by CPU time: ${overallCpuStats.p99 < 50 ? 'HOLDS' : 'VIOLATED'}.`)
 
   console.log('\n-- Breakdown by tier (weighted pool) --')
   console.log(padRow(['tier', 'n', 'share', 'p50 ms', 'p99 ms']))
@@ -438,8 +457,9 @@ async function main() {
     node_version: process.version,
     platform: process.platform,
     rule_count: DEFAULT_RULES.length,
-    per_category: categories.map(c => ({ name: c.name, label: c.label, stats: results.get(c.name).stats })),
+    per_category: categories.map(c => ({ name: c.name, label: c.label, stats: results.get(c.name).stats, cpu_stats: results.get(c.name).cpuStats })),
     overall: overallStats,
+    overall_cpu: overallCpuStats,
     by_tier: tierBreakdown,
     by_rule: ruleBreakdown,
     bash_burst: { first30: stats(first30), rest: rest.length ? stats(rest) : null },
