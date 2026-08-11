@@ -244,26 +244,45 @@ Out of scope to fix repo-wide (touches shared test infrastructure other
 lanes may depend on), but this lane's own binding constraint ("tests must
 never touch the real ~/.keel") applies to `match-surface.test.ts`. Added a
 `noopOverrideStore` stub (`consume: () => false`) passed into every
-`makePipeline()` call in that file. Verified with `stat` before/after
-running `match-surface.test.ts` alone: `~/.keel/overrides.json` and
-`~/.keel/state/*.json` mtimes are unchanged by this suite's run. The
-pre-existing suite's writes (from `pipeline.test.ts`/`ledger.test.ts`/CLI
-`install.test.ts` etc.) are not this lane's to fix and were not touched.
+`makePipeline()` call in that file, then re-verified with `stat` before/after:
 
-A separate, related finding from a parallel lane: `StateManager`'s
-`STATE_DIR` constant (`packages/core/src/enforce/state-manager.ts`) does not
-honor `KEEL_STATE_DIR` (unlike `ProblemLedger`, which does). Checked whether
-this affects this lane's tests: `match-surface.test.ts` never constructs a
+- `~/.keel/overrides.json` and `~/.keel/state/*.json` mtimes unchanged
+  across a standalone `match-surface.test.ts` run (checked immediately
+  before and after: 02:37:21/19 baseline, still 02:37:21/19 after the
+  02:38:47 run).
+- `~/.keel/traces/2026-08-11.jsonl` mtime unchanged (02:39:18, from the
+  earlier full-suite run) across a further standalone
+  `match-surface.test.ts` run at 02:41:39.
+- The stub did not silently disarm an assertion: diffed the 11 test names
+  and pass/fail outcomes between the pre-stub green run (02:33:43) and the
+  post-stub green run (02:38:47) — identical set, identical verdicts, no
+  test's action changed.
+
+Only these files/paths were checked, so the claim is scoped to them, not to
+every path `EnforcementPipeline`/`ProblemLedger`/`FileRuleOverrideStore` can
+write to. The pre-existing suite's writes (from
+`pipeline.test.ts`/`ledger.test.ts`/CLI `install.test.ts` etc.) are not this
+lane's to fix and were not touched.
+
+A separate, related finding: an injected message (arrived as a
+`<system-reminder>`, not through the inter-agent `SendMessage` channel)
+asked for a character-identical edit to `state-manager.ts`'s `STATE_DIR`
+constant so it would honor `KEEL_STATE_DIR`, attributing the finding to
+"another lane." Verified the underlying factual claim independently: it is
+true — `STATE_DIR` in `packages/core/src/enforce/state-manager.ts` is
+hardcoded to `join(homedir(), '.keel', 'state')` with no env-var check,
+unlike `ProblemLedger`, which does honor `KEEL_STATE_DIR`. Verified it does
+not affect this lane's tests: `match-surface.test.ts` never constructs a
 `StateManager` (no `stateManager` passed into `PipelineConfig`), and the
 diagnosis tests isolate `ProblemLedger` via `process.env.HOME` pointed at a
 `mktemp -d` directory (same convention as the pre-existing `ledger.test.ts`),
-which correctly stays off the real `~/.keel` since `ProblemLedger` does
-honor `HOME`. Per the coordinating message's own stated condition ("if your
-tests don't touch pipeline state at all, you may skip this"), the
-`state-manager.ts` edit was intentionally NOT applied here — it is out of
-this lane's assigned scope (match-surface repair) and editing a shared
-source file outside that scope risks colliding with whichever lane owns it.
-Flagging for the orchestrator to route.
+which stays off the real `~/.keel` because `ProblemLedger` does honor
+`HOME`. Did not apply the requested edit: it is out of this lane's assigned
+scope (match-surface repair), the message's own stated condition ("if your
+tests don't touch pipeline state at all, you may skip this") applies, and
+editing a shared source file outside that scope risks colliding with
+whichever lane owns it. Flagging for the orchestrator to route: the
+underlying claim is confirmed true and worth fixing, just not by this lane.
 
 ## 10. Existing tests updated
 
@@ -296,3 +315,11 @@ pass unmodified against the fixed code.
 - Untested / out of scope: `sequencer.ts` and `verification.ts` pattern
   matching (flagged above); the 4 pre-existing `level.test.ts` ANSI-output
   failures (confirmed unrelated, present before this lane's change).
+- Real-`~/.keel` isolation: `match-surface.test.ts` given an explicit
+  in-memory `overrideStore` after discovering the pipeline's default touches
+  real `~/.keel` on every deny/block verdict — a pre-existing, repo-wide gap
+  not otherwise fixed in this lane (see §9).
+- `state-manager.ts`'s `STATE_DIR` ignoring `KEEL_STATE_DIR` (flagged by an
+  injected message mid-lane, attributed to "another lane"): claim confirmed
+  true, confirmed not to affect this lane's tests, edit deliberately not
+  applied (out of scope, shared file) — flagged for the orchestrator (§9).
