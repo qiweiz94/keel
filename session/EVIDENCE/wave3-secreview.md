@@ -581,9 +581,21 @@ KEEL_STATE_DIR=$(mktemp -d) npx vitest run same  x3  ->  pass, pass, pass
    the built CLI, across all nine dial combinations — but the suite's proof
    of it is not trustworthy until this is fixed.
 
-Fix direction (test infrastructure, not touched by this lane): give each
-vitest project a `setupFiles` entry that points `KEEL_STATE_DIR` at a
-per-worker temp directory before any module loads, or make `STATE_DIR` a
-function evaluated per `StateManager` construction rather than a
-module-level const. The second is the more durable of the two and would also
-stop a long-lived daemon from pinning a stale directory.
+**A global `KEEL_STATE_DIR` is NOT the fix — it was tried and it is worse.**
+Running the suite with one shared `KEEL_STATE_DIR=$(mktemp -d)` turns 2
+intermittent failures into 6+ deterministic ones, in all 3 runs. The reason
+is that the isolation strategy is already split three ways:
+`match-surface.test.ts` isolates by swapping `process.env.HOME` and building
+a `ProblemLedger`, which only works while `KEEL_STATE_DIR` is UNSET (the
+module-level const takes the env var in preference to `homedir()`, so
+setting it makes the swapped HOME inert and every ledger test in that file
+fails); five other files isolate by setting `KEEL_STATE_DIR` themselves; the
+rest isolate not at all. Confirmed: `match-surface.test.ts` alone passes
+17/17 with the default and fails the same 2 with ANY `KEEL_STATE_DIR` set.
+
+Fix direction (test infrastructure plus a one-line source change, neither
+touched by this lane): make `STATE_DIR` a function evaluated per
+`StateManager` construction rather than a module-level const captured at
+import, then give each test file one explicit isolation mechanism. Evaluating
+it per construction also stops a long-lived daemon from pinning a stale
+directory across a `keel level` change.
