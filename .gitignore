@@ -18,3 +18,5 @@ __pycache__/
 
 # thesis-eval raw scratch workdirs (bulky; per-run JSON + aggregate.md are the kept evidence)
 scripts/thesis-eval/results*/raw/
+scripts/thesis-eval/**/final-workdir/
+scripts/thesis-eval/**/raw/
