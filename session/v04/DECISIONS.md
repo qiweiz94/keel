@@ -121,3 +121,49 @@
   into EXPERIMENT.md. Red-team merged (5afca41): SECURITY.md catch rates + --no-preserve-root +
   honest mode/match residual. mergeRules mode/match guard lane launched (v04-mergeguard) to close
   that residual = M1/A1. thesis-eval raw scratch now gitignored.
+- 2026-08-11 supervisor: MAX-PARALLEL FAN-OUT (user: run many agents for speed+quality). Honest
+  ceiling: parallelism is capped by FILE DISJOINTNESS, not agent count — 20-30 agents on shared
+  hot files (pipeline.ts/rule-parser.ts/types.ts/DEFAULT_RULES_YAML) = merge chaos + drift
+  failures = LOWER quality. So fanning across DISJOINT subsystems ("a different thing altogether"):
+  5 concurrent lanes, each exclusive files — v04-mergeguard (rule-parser), v04-concurrency
+  (state-manager/ledger), v04-perf (scripts/perf), v04-benchmark (thesis-eval), v04-liveverify
+  (live-verify/integrations). Hot-file items (A2 shell-parse, A3 fail-closed, F1 mask) roll in
+  SERIALLY behind mergeRules as it clears. Rolling wave, not a single 30-wide blast. All Sonnet
+  workers per routing (Opus reserved for security review/red-team of the merged result).
+- 2026-08-11 supervisor: M1/A1 GATE CLOSED (860b60e). mergeRules floor guard merged:
+  MODE_STRENGTH + exclusion-based sameEnforcementSurface check. Floors now un-bypassable on
+  action + mode + enforcement-surface for same-id overrides. VERIFIED LIVE by supervisor: a
+  .keel.local.yaml adding mode:observe to no-force-push is rejected — floor still denies (exit 2).
+  Suite green core 484 / cli 674. Honest residual (documented in SECURITY.md): DIFFERENT-id
+  priority-shadowing (a lower-scope rule with a different id + higher priority shadowing a floor)
+  is still open — a separate engine change, queued for M1.
+- 2026-08-11 supervisor: BROWSER-FLOOD INCIDENT — parallel opencode-running lanes (B2 benchmark,
+  D1 live-verify) opened a 127.0.0.1/#token= tab per `opencode run`, flooding the user with 40+
+  dead tabs. Killed opencode + STOPPED both lanes (partial progress preserved on branches:
+  B2 fixed detection graders; D1 wiring claude.sh). Fix: `CI=1 BROWSER=none OPENCODE_TERMINAL=dumb`
+  suppresses the server/tab (verified). STANDING CONSTRAINT: every opencode/child-agent-running
+  lane must bake this env in. Resume B2/D1 later only after the suppression is in their harness.
+- 2026-08-11 supervisor: BROWSER-FLOOD ROOT CAUSE — it was NOT opencode (that was a red herring/
+  secondary). The real repeat offender is keel's OWN command: dashboard-web.ts:306 spawned
+  `open <127.0.0.1/#token=url>` gated ONLY on platform==darwin. The dashboard-web test sets
+  KEEL_DASHBOARD_ALLOW_NON_TTY=1 to exercise the server, bypassing the TTY guard, so EVERY
+  `npm test` (the lanes' 11+ runs AND my own gate suite runs) opened a browser tab. FIXED
+  (245be94): gate the convenience open on process.stdin.isTTY && !CI && KEEL_NO_OPEN!=1. Verified:
+  dashboard-web test passes 4/4, zero tabs. ALL lanes stopped during cleanup. Real product bug —
+  belongs in the v0.4 CHANGELOG. Lesson: a "convenience" side effect (browser open) firing in
+  automation is a fail-open-ish UX bug; gate every such side effect on interactivity.
+- 2026-08-11 supervisor: C2 GATE CLOSED (2dd79c9). File-lock (O_EXCL + stale-reclaim + token
+  release + jitter backoff) for state + ledger; fail-safe = unlocked write on timeout (documented);
+  5-process contention tests red→green (113/36/138→250); fixed a real ProblemLedger.load() data-loss
+  bug. Suite green core 496 / cli 674. Out-of-lane FP flagged: no-destructive-commands blocks a safe
+  `git checkout -- <file>` (git restore works) — rules-tuning follow-up. Perf lane (A4) STOPPED
+  mid-work (0 commits) during the browser cleanup — relaunch later with browser-safe test env.
+- 2026-08-11 supervisor: Post-fix relaunch (MEASURED, browser-safe). Environment confirmed quiet
+  after the dashboard-web fix. Launched 3 BROWSER-SAFE disjoint lanes (no opencode): v04-shellparse
+  (M1/A2 shell-parse normalization — THE highest-leverage correctness item: closes intra-token
+  quoting / variable-indirection / interpreter-body / compound-split bypass classes by matching a
+  NORMALIZED command; must avoid the echo-"rm -rf /" data-vs-command FP), v04-releasedocs (fold
+  measured numbers into README + CHANGELOG + 0.4.0 bump, NO publish), v04-perf (resumed A4).
+  HELD for next tick (staggered to confirm no residual tabs): benchmark (B2) + live-verify (D1) —
+  the opencode lanes — will resume with CI=1 BROWSER=none + the dashboard-web fix. Measured pace
+  after 2 browser incidents; not a 30-wide blast.

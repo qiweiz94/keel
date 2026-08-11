@@ -1,0 +1,165 @@
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync } from 'node:fs'
+
+/**
+ * file-lock — a dependency-light cross-process advisory lock built on
+ * O_EXCL lockfiles, used by StateManager and ProblemLedger to serialize
+ * the load -> mutate -> save cycle against a shared JSON file so
+ * concurrent hook/agent processes don't clobber each other's writes
+ * (lost updates).
+ *
+ * Mechanism: `openSync(lockPath, 'wx')` atomically creates the lockfile
+ * only if it does not already exist (POSIX O_CREAT|O_EXCL) — the OS, not
+ * this process, arbitrates the race when two processes attempt it at the
+ * same instant. The loser retries with a short bounded backoff.
+ *
+ * Stale locks (holder crashed/was killed, or was paused by the OS for
+ * longer than `staleMs`) are reclaimed so a single dead holder can't
+ * wedge every future writer forever. Each acquire writes a unique TOKEN
+ * into the lockfile; release only unlinks the file if its contents still
+ * match the token this process wrote. Without that check, a reclaim can
+ * cascade: holder A stalls past `staleMs`, waiter B reclaims (unlinks A's
+ * lock, creates its own), A finally wakes up and calls release — if
+ * release unconditionally unlinks, it deletes B's live lock, not its own,
+ * and a third process can now enter while B still thinks it's inside.
+ * Token verification makes A's late release a no-op instead.
+ *
+ * FAIL-SAFE CHOICE (binding for all callers): if the lock cannot be
+ * acquired within `timeoutMs`, `withFileLock` still runs the callback
+ * WITHOUT the lock rather than skipping it or throwing/hanging.
+ * Enforcement state must never be silently dropped (a skipped write is a
+ * warn-once or circuit-breaker count that quietly never happened) and a
+ * hook invocation must never hang (an agent tool call blocked
+ * indefinitely is worse than a rare, narrow race). Losing the lock only
+ * reintroduces the lost-update race this module exists to close, and
+ * only in the improbable case of sustained contention beyond the
+ * timeout window (stale locks are already reclaimed well before that) —
+ * an acceptable, explicitly-chosen trade against hanging or dropping.
+ * See file-lock.test.ts for both this fail-safe and the stale-reclaim
+ * path exercised directly (deterministically, no child processes needed
+ * — state-manager-concurrency.test.ts / ledger-concurrency.test.ts cover
+ * the actual cross-process lost-update property those depend on).
+ */
+
+export interface LockOptions {
+  /** Max total time to wait for the lock before giving up, in ms. */
+  timeoutMs?: number
+  /** A held lock older than this is assumed abandoned and is reclaimed. */
+  staleMs?: number
+}
+
+const DEFAULT_TIMEOUT_MS = 5000
+const DEFAULT_STALE_MS = 8000
+const INITIAL_BACKOFF_MS = 4
+const MAX_BACKOFF_MS = 60
+
+/**
+ * Blocks the calling thread for `ms` milliseconds. The state-manager /
+ * problem-ledger read-modify-write cycle is already synchronous
+ * (readFileSync/writeFileSync); a short bounded busy-wait here preserves
+ * that invariant instead of forcing every caller through async/await.
+ * `Atomics.wait` on a throwaway SharedArrayBuffer is the standard sync
+ * sleep primitive in Node; environments without it fall back to a spin
+ * loop (identical cost profile for waits this short).
+ */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    const end = Date.now() + ms
+    while (Date.now() < end) { /* spin */ }
+  }
+}
+
+let tokenCounter = 0
+
+function makeToken(): string {
+  tokenCounter += 1
+  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * Attempt to acquire an exclusive lockfile at `lockPath`, retrying with
+ * backoff until `timeoutMs` elapses. Returns the token written into the
+ * lockfile on success (pass it to `releaseLock`), or `null` on timeout /
+ * an unexpected error. Callers MUST treat `null` per the fail-safe
+ * contract above (proceed unlocked), never as license to skip the
+ * operation.
+ */
+export function acquireLock(lockPath: string, options: LockOptions = {}): string | null {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const staleMs = options.staleMs ?? DEFAULT_STALE_MS
+  const deadline = Date.now() + timeoutMs
+  let backoff = INITIAL_BACKOFF_MS
+
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx')
+      const token = makeToken()
+      try {
+        writeSync(fd, token)
+      } finally {
+        closeSync(fd)
+      }
+      return token
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        // Unexpected error (EACCES, missing parent dir, ...) — don't spin
+        // on something backoff can't fix.
+        return null
+      }
+    }
+
+    // Someone else holds the lock. Reclaim it if it looks abandoned.
+    try {
+      const heldFor = Date.now() - statSync(lockPath).mtimeMs
+      if (heldFor > staleMs) {
+        try { unlinkSync(lockPath) } catch { /* raced another reclaimer; loop and retry */ }
+        continue // no backoff — try to create it again immediately
+      }
+    } catch {
+      continue // lock vanished between EEXIST and stat — retry immediately
+    }
+
+    if (Date.now() >= deadline) return null
+    // Full jitter (not just capped exponential backoff): under N-way
+    // contention, unjittered retries synchronize — every waiter wakes at
+    // the same instant and loses the race to the same single winner
+    // again, so the LOSERS' wait time grows with N instead of shrinking.
+    // Randomizing within [0, backoff] desynchronizes retries so the
+    // group drains in roughly backoff/N per waiter instead.
+    const jittered = Math.random() * backoff
+    sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())))
+    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
+  }
+}
+
+/**
+ * Release the lock at `lockPath`. If `token` is given, only unlinks when
+ * the lockfile still contains that exact token — protects against the
+ * reclaim-cascade described in the file header (a late release from a
+ * holder that was already reclaimed as stale must not delete the new
+ * holder's live lock).
+ */
+export function releaseLock(lockPath: string, token?: string): void {
+  try {
+    if (token !== undefined) {
+      const current = readFileSync(lockPath, 'utf-8')
+      if (current !== token) return // reclaimed by someone else — not ours to remove
+    }
+    unlinkSync(lockPath)
+  } catch { /* already gone, never acquired, or vanished while we read it — all fine */ }
+}
+
+/**
+ * Run `fn` while holding the lock at `lockPath`. See the fail-safe note
+ * above: on timeout, `fn` still runs, unlocked.
+ */
+export function withFileLock<T>(lockPath: string, fn: () => T, options: LockOptions = {}): T {
+  const token = acquireLock(lockPath, options)
+  try {
+    return fn()
+  } finally {
+    if (token !== null) releaseLock(lockPath, token)
+  }
+}
