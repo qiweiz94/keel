@@ -275,10 +275,17 @@ npm run build          # regenerates packages/cli/src/core and
                         # edited packages/opencode-plugin/src/plugin.ts —
                         # clean, no errors
 npm run test -w @get-keel/core   # 541 passed | 2 skipped (543) — unchanged
-npm run test -w @get-keel/cli    # 719 passed | 15 skipped (734)
+npm run test -w @get-keel/cli    # 719 passed | 15 skipped OR 720 passed |
+                                  # 14 skipped (734 total either way) —
                                   # baseline ~708 + 7 fixture cases + 5
-                                  # reachability-probe cases = 719
-npm test                          # full workspace: core 541, cli 719,
+                                  # reachability-probe cases = 720; the
+                                  # single-test swing between these two
+                                  # counts is perf-budget.test.ts's own
+                                  # load-average skip() guard firing (or
+                                  # not) depending on host load at run
+                                  # time — see the load-flake paragraph
+                                  # above, same cause, not a second issue
+npm test                          # full workspace: core 541, cli 719-720,
                                    # mcp-server 0 (no tests, pre-existing),
                                    # opencode-plugin load-test — 61/61 PASS
                                    # including "dist matches canonical
