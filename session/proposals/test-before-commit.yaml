@@ -1,0 +1,57 @@
+# Proposal: test-before-commit (Wave-2 Lane 5 — sequence + budget rules)
+#
+# Observe-mode sibling of the shipped `source-change-requires-test` rule
+# (packages/cli/src/commands/install.ts DEFAULT_RULES_YAML). That rule
+# hard-blocks (`action: deny`) a `git commit`/`git push` when a src/ or
+# package.json edit has no passing test run in the preceding window. This
+# proposal narrows the surface to the commit boundary only and runs it in
+# `mode: observe`: the pipeline records what WOULD have happened
+# (`observed_action: warn`) but never interrupts the commit. That is the
+# burn-in step false-success research and "do not ship a rule you haven't
+# measured" consensus both call for — a hard block on this trigger shape
+# would also catch WIP commits, docs-only commits, and fixture/data-only
+# changes that happen to touch a path under src/.
+#
+# No core changes were needed for this rule. `packages/core/src/enforce/
+# pipeline.ts`'s `violation()` already handles `mode: observe` generically
+# at the verification-boundary call site (the same code path
+# source-change-requires-test uses) — setting `mode: observe` here is
+# sufficient. `verification.ts` itself was NOT touched; it is out of scope
+# for this lane (owned elsewhere this wave) and no extension there was
+# needed to express this rule. See session/EVIDENCE/wave2-seq.md for the
+# match-and-boundary trace and the fixture results.
+#
+# Paste this list item into DEFAULT_RULES_YAML in BOTH
+# packages/cli/src/commands/install.ts and packages/cli/src/commands/
+# plugin.ts at the Wave-2 gate (mechanical integration only).
+
+- id: test-before-commit
+  type: verification
+  mode: observe
+  category: verification
+  severity: medium
+  confidence: medium
+  rationale: >
+    False-success research and do-not-ship consensus: hard-blocking a
+    commit on "no test run since the last src/ edit" also catches WIP
+    commits, docs-only commits, and fixture/data-only changes that merely
+    happen to touch a path under src/. Observe mode measures this rule's
+    real false-positive rate against live commit traffic before anyone
+    lets it interrupt a commit.
+  false_positives:
+    - WIP commits
+    - docs-only commits
+    - fixture/data-only changes
+  trigger:
+    tools: [write, edit, apply_patch, WriteFile]
+    path: "src/"
+  satisfy:
+    tools: [Bash]
+    pattern: "(npm test|npm run test|vitest|jest)"
+  boundaries:
+    commit:
+      pattern: "git commit"
+      action: warn
+  verification_window_seconds: 300
+  action: warn
+  message: "Source changes under src/ were committed without a passing test run in this session."

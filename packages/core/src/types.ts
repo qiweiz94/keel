@@ -36,7 +36,7 @@ export type RuleMode = 'observe' | 'warn' | 'block'
 
 export type RuleCategory =
   | 'destructive' | 'exfil' | 'escalation' | 'injection'
-  | 'resource' | 'bypass' | 'discipline' | 'workflow'
+  | 'resource' | 'bypass' | 'discipline' | 'workflow' | 'verification'
 
 export interface KeelRule {
   id: string

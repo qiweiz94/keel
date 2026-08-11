@@ -95,7 +95,7 @@ export function validateRules(rules: unknown): string[] {
   const validMaturity = new Set(['stable', 'incubating', 'sandbox', 'deprecated'])
   const validCategories = new Set([
     'destructive', 'exfil', 'escalation', 'injection',
-    'resource', 'bypass', 'discipline', 'workflow',
+    'resource', 'bypass', 'discipline', 'workflow', 'verification',
   ])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
