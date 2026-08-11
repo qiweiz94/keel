@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { commandFingerprint } from './command-fingerprint.js'
+import { withFileLock } from './file-lock.js'
 
 /**
  * ProblemLedger — the session/task memory of the harness.
@@ -15,6 +16,18 @@ import { commandFingerprint } from './command-fingerprint.js'
  *
  * "I guessed" becomes visible: hypotheses are falsified when the next
  * verification still fails.
+ *
+ * CROSS-PROCESS SAFETY: every mutating method (recordOutcome,
+ * addHypothesis, recordDiagnosis, falsifyStaleHypotheses) runs its whole
+ * read-modify-write body inside `withLock()`, which holds an O_EXCL
+ * lockfile (`ledger.json.lock`, see file-lock.ts) for the duration and
+ * re-reads `ledger.json` fresh from disk before mutating. Without this, a
+ * concurrent process's own in-memory copy — loaded at its construction
+ * time or last read — would blindly overwrite whatever the other process
+ * wrote in between, silently dropping ledger entries (lost update). If the
+ * lock can't be acquired within its bounded timeout, the mutation still
+ * runs unlocked rather than being skipped or hung — see file-lock.ts's
+ * fail-safe note.
  */
 
 export interface Hypothesis {
@@ -65,23 +78,28 @@ export class ProblemLedger {
         this.data = { problems: {}, active: {} }
         return
       }
-      this.lastMtimeMs = new Date().getTime()
       this.data = JSON.parse(readFileSync(this.path, 'utf-8')) as LedgerData
       if (!this.data.problems) this.data.problems = {}
       if (!this.data.active) this.data.active = {}
+      this.lastMtimeMs = statSync(this.path).mtimeMs
     } catch {
       this.data = { problems: {}, active: {} }
     }
   }
 
-  /** Re-read if another instance (plugin vs daemon) wrote the file. */
+  /**
+   * Re-read if another instance (plugin vs daemon) wrote the file since we
+   * last loaded/saved. Read-only callers (activeProblemKey,
+   * hasFreshHypothesis, hasFreshDiagnosis) use this for best-effort
+   * freshness; it is NOT what makes mutations safe under concurrency —
+   * that's `withLock()` below, which always reloads under the lock
+   * regardless of mtime.
+   */
   private reloadIfChanged(): void {
     try {
       if (!existsSync(this.path)) return
-      const mtime = new Date().getTime()
-      if (mtime !== this.lastMtimeMs && this.lastMtimeMs !== 0) {
-        // mtime granularity is coarse; also compare size is overkill — just
-        // re-read when the file changed since our last save/load.
+      const mtime = statSync(this.path).mtimeMs
+      if (mtime !== this.lastMtimeMs) {
         this.load()
       }
     } catch { /* best effort */ }
@@ -93,8 +111,22 @@ export class ProblemLedger {
       const tmp = `${this.path}.${process.pid}.tmp`
       writeFileSync(tmp, JSON.stringify(this.data), { mode: 0o600 })
       renameSync(tmp, this.path)
-      this.lastMtimeMs = new Date().getTime()
+      this.lastMtimeMs = statSync(this.path).mtimeMs
     } catch { /* best effort */ }
+  }
+
+  /**
+   * Run `fn` holding the ledger's lockfile, having first reloaded
+   * `this.data` fresh from disk under that lock. This is the unit of
+   * cross-process safety for every mutating method below: lock, reload,
+   * mutate `this.data`, save, unlock.
+   */
+  private withLock<T>(fn: () => T): T {
+    try { mkdirSync(join(this.path, '..'), { recursive: true }) } catch { /* save() also tries */ }
+    return withFileLock(`${this.path}.lock`, () => {
+      this.load()
+      return fn()
+    })
   }
 
   private touch(problem: LedgerProblem): void {
@@ -103,35 +135,37 @@ export class ProblemLedger {
 
   /** Record a command outcome for a problem; exit 0 marks it resolved. */
   recordOutcome(cwd: string, command: string, exitCode: number | null, sessionId?: string): string {
-    const fp = commandFingerprint(command)
-    const key = problemKey(cwd, fp)
-    let problem = this.data.problems[key]
-    if (!problem) {
-      problem = {
-        problem_key: key,
-        first_seen: Date.now(),
-        last_seen: Date.now(),
-        fingerprint: fp,
-        status: 'opened',
-        failures: 0,
-        last_exit: null,
-        hypotheses: [],
-        recent_diagnosis: [],
+    return this.withLock(() => {
+      const fp = commandFingerprint(command)
+      const key = problemKey(cwd, fp)
+      let problem = this.data.problems[key]
+      if (!problem) {
+        problem = {
+          problem_key: key,
+          first_seen: Date.now(),
+          last_seen: Date.now(),
+          fingerprint: fp,
+          status: 'opened',
+          failures: 0,
+          last_exit: null,
+          hypotheses: [],
+          recent_diagnosis: [],
+        }
+        this.data.problems[key] = problem
       }
-      this.data.problems[key] = problem
-    }
-    this.touch(problem)
-    if (sessionId) this.data.active[sessionId] = key
-    if (exitCode === 0) {
-      problem.status = 'resolved'
-      problem.last_exit = 0
-    } else if (exitCode !== null && exitCode !== 0) {
-      problem.failures += 1
-      problem.last_exit = exitCode
-      if (problem.failures >= 3) problem.status = 'stuck'
-    }
-    this.save()
-    return key
+      this.touch(problem)
+      if (sessionId) this.data.active[sessionId] = key
+      if (exitCode === 0) {
+        problem.status = 'resolved'
+        problem.last_exit = 0
+      } else if (exitCode !== null && exitCode !== 0) {
+        problem.failures += 1
+        problem.last_exit = exitCode
+        if (problem.failures >= 3) problem.status = 'stuck'
+      }
+      this.save()
+      return key
+    })
   }
 
   /** The problem the session touched most recently (its failing command). */
@@ -142,29 +176,31 @@ export class ProblemLedger {
 
   /** Record a root-cause hypothesis (keel_hypothesis). */
   addHypothesis(problem_key: string, statement: string, evidence: string[] = []): Hypothesis {
-    this.reloadIfChanged()
-    const problem = this.data.problems[problem_key] || this.ensureProblem(problem_key)
-    const hypothesis: Hypothesis = {
-      id: `hyp_${createHash('sha256').update(`${problem_key}:${statement}:${Date.now()}`).digest('hex').slice(0, 12)}`,
-      statement,
-      evidence,
-      at: Date.now(),
-      status: 'unverified',
-    }
-    problem.hypotheses.push(hypothesis)
-    // Keep the last 5 per problem.
-    problem.hypotheses = problem.hypotheses.slice(-5)
-    this.save()
-    return hypothesis
+    return this.withLock(() => {
+      const problem = this.data.problems[problem_key] || this.ensureProblem(problem_key)
+      const hypothesis: Hypothesis = {
+        id: `hyp_${createHash('sha256').update(`${problem_key}:${statement}:${Date.now()}`).digest('hex').slice(0, 12)}`,
+        statement,
+        evidence,
+        at: Date.now(),
+        status: 'unverified',
+      }
+      problem.hypotheses.push(hypothesis)
+      // Keep the last 5 per problem.
+      problem.hypotheses = problem.hypotheses.slice(-5)
+      this.save()
+      return hypothesis
+    })
   }
 
   /** Record diagnosis evidence (git log/blame/bisect style investigation). */
   recordDiagnosis(problem_key: string, command: string): void {
-    this.reloadIfChanged()
-    const problem = this.data.problems[problem_key] || this.ensureProblem(problem_key)
-    problem.recent_diagnosis.push({ at: Date.now(), command })
-    problem.recent_diagnosis = problem.recent_diagnosis.slice(-10)
-    this.save()
+    this.withLock(() => {
+      const problem = this.data.problems[problem_key] || this.ensureProblem(problem_key)
+      problem.recent_diagnosis.push({ at: Date.now(), command })
+      problem.recent_diagnosis = problem.recent_diagnosis.slice(-10)
+      this.save()
+    })
   }
 
   /** A fresh hypothesis exists for the problem within the window. */
@@ -186,14 +222,16 @@ export class ProblemLedger {
   }
 
   falsifyStaleHypotheses(): void {
-    // Hypotheses older than 24h with no confirmation become falsified.
-    const day = 24 * 3600_000
-    for (const problem of Object.values(this.data.problems)) {
-      for (const h of problem.hypotheses) {
-        if (h.status === 'unverified' && Date.now() - h.at > day) h.status = 'falsified'
+    this.withLock(() => {
+      // Hypotheses older than 24h with no confirmation become falsified.
+      const day = 24 * 3600_000
+      for (const problem of Object.values(this.data.problems)) {
+        for (const h of problem.hypotheses) {
+          if (h.status === 'unverified' && Date.now() - h.at > day) h.status = 'falsified'
+        }
       }
-    }
-    this.save()
+      this.save()
+    })
   }
 
   problem(problem_key: string): LedgerProblem | undefined {
