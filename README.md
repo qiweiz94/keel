@@ -91,7 +91,7 @@ machine where that host isn't installed.
 |---|---|---|---|
 | OpenCode | `--opencode` | plugin throws at `tool.execute.before` | **live** |
 | OpenClaw | `--openclaw` | `block: true` / `requireApproval` | **live** |
-| Claude Code | `--claude-code` | `PreToolUse` hook, exit 2 | types |
+| Claude Code | `--claude-code` | `PreToolUse` hook, exit 2 | **live** |
 | Cline | `--cline` | `HOOK_CONTROL` + `cancel: true` | types |
 | Gemini CLI | `--gemini` | `PreToolUse` hook, exit 2 | types |
 | Cursor | `--cursor` | `{permission: deny\|ask}` | docs |
@@ -132,37 +132,47 @@ rules:
 
 **Actions:** `allow` (log) · `warn` (warn once, then block) · `deny` (same, stricter
 default) · `block` (always) · `prompt` (always block until a human runs
-`keel allow <id> --once`) · `fix` (rewrite the command) · `report` (log only).
+`keel allow <id> --once`) · `fix` (rewrite the command) · `redirect` (interrupt with a
+suggested next step) · `research` (block on a stale knowledge-freshness gate) ·
+`report` (log only).
 
 **Rule types:** `command`, `filesystem`, `content`, `network`, `env`, `rate`, `time`,
-`sequence`, `flow`, `session`, `verification`, `context`, plus the problem-solving
-types below.
+`sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
+problem-solving types below (`stuck`, `research`, `diagnosis`, `claim`, `oracle`).
 
-The shipped defaults cover destructive commands, `curl | sh`, hardcoded secrets and
-credential files, secret exfiltration, force-push and hook-bypass, and approval gates
-for DB destruction, protected-branch pushes, publishing, and `npx`/`bunx` of unpinned
-packages. Run `keel validate` after editing.
+`keel install` ships 42 rules by default, split into three tiers — what's an
+un-bypassable floor, what warns-then-blocks, and what only observes today:
+**[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
+`curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
+and hook-bypass, and approval gates for DB destruction, protected-branch pushes,
+publishing, and `npx`/`bunx` of unpinned packages. Run `keel validate` after editing.
 
 ### Stopping agents that circle
 
-Three rule types target the failure everyone recognises — an agent retrying the same
-broken command forever:
+Several rule types target the failure everyone recognises — an agent retrying the same
+broken command forever. Three ship as part of the default 42:
 
-- **`stuck`** — N identical failures in a window → redirect, then deny
-- **`research`** — armed only by a *failing* command; blocks patching before looking anything up
-- **`diagnosis`** — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
+- **`stuck`** (`no-repeat-loops`) — N identical failures in a window → redirect, then deny
+- **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
+- **`diagnosis`** (`root-cause-before-refactor`) — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
 
-They aren't in the default install because they're behavioural and need burn-in.
+They — plus six more behavioural rules (`claim`, `oracle`, budget, and verification
+checks) — ship as `mode: observe`: evaluated and recorded on every matching call, never
+interrupting anything, until a human decides otherwise. `keel rules harness --append` is
+kept only for a rules.yaml created before this shipped as a default — it checks by rule
+id, so it's a no-op if you already have them.
 
 ```bash
-keel rules harness            # print them, with what they'd have caught in your history
-keel rules harness --append   # add them to ~/.keel/rules.yaml (run in your own terminal)
+keel rules harness            # print the legacy standalone set, with what they'd have caught in your history
+keel rules harness --append   # add any that are missing to ~/.keel/rules.yaml (run in your own terminal)
 ```
 
-They arrive as `mode: observe` — recording what they *would* have done, interrupting
-nothing. Check the hit rate on your own traffic with `keel retrospective`, then raise
-`mode` to `warn` or `block`. `--append` edits your rules file, so like every keel
-control surface it requires a TTY and an agent cannot run it.
+Check what an observe-mode rule *would* have done in `~/.keel/traces/*.jsonl`
+(`observed_action` on each entry) or the workflow signal in `keel retrospective`
+(stuck-loops/session, research-before-solve rate, and more). Once you trust it,
+raise its `mode:` to `warn` or `block` yourself in rules.yaml — like every keel
+control surface, editing rules requires your own hands; `keel-control-gate` denies
+an agent running `keel rules ... --append` on your behalf.
 
 ## The speed dial
 
@@ -182,8 +192,13 @@ keel level protect      # before a deploy
 | `balanced` | warn once, then block | full | day to day |
 | `protect` | **block on first violation** | full + reasoning heuristics | high-stakes work |
 
-A rule's own `level:` is a **floor** — `level: protect` rules are never softened by a
-lower dial. Changes take effect on the next tool call; no restart.
+A rule's own `level:` (11 rules ship with it, unrelated to the `keel level` dial you
+just set) is a **floor** — `level: protect` rules deny on the very first hit at *any*
+dial, sprint included, and are the only rules a lower dial can't soften or drop.
+`keel level sprint` auto-reverts to `balanced` after 4 hours (`sprint_expiry_hours`
+overrides it; `0` disables the revert) — `keel status` shows the countdown. Changes
+take effect on the next tool call; no restart. Full tier table, defaults, and how
+observe-mode rules get promoted: **[docs/tiers.md](docs/tiers.md)**.
 
 `keel dashboard` is an interactive panel for the dial and enforcement state;
 `keel dashboard --web` is the same thing in a browser. Both bind 127.0.0.1, require a
@@ -221,7 +236,9 @@ More in [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
+- [docs/tiers.md](docs/tiers.md) — the three rule tiers, the speed dial, and how observe-mode rules get promoted
 - [docs/integrations.md](docs/integrations.md) — every host, what it can block, how well it's verified
+- [docs/comparison.md](docs/comparison.md) — how keel relates to Cupcake, agentsh, Semgrep, and others
 - [SECURITY.md](SECURITY.md) — threat model, enforcement limits, reporting
 - [CONTRIBUTING.md](CONTRIBUTING.md) — build, test, adding a rule type or host
 - [CHANGELOG.md](CHANGELOG.md)
