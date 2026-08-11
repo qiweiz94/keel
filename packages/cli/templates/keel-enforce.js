@@ -6354,15 +6354,9 @@ function validateRules(rules) {
     "research",
     "stuck",
     "diagnosis",
-<<<<<<< HEAD
-<<<<<<< HEAD
-    "claim"
-=======
-    "oracle"
->>>>>>> w2-oracle
-=======
+    "claim",
+    "oracle",
     "package"
->>>>>>> w2-slop
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6379,11 +6373,8 @@ function validateRules(rules) {
     "bypass",
     "discipline",
     "workflow",
-<<<<<<< HEAD
-    "verification"
-=======
+    "verification",
     "supply-chain"
->>>>>>> w2-slop
   ]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -7268,15 +7259,9 @@ var FileRuleOverrideStore = class {
   directory;
   file;
   lock;
-<<<<<<< HEAD
-  constructor(home = homedir()) {
-    this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, ".keel");
-    this.file = join(this.directory, "overrides.json");
-=======
   constructor(home = homedir2()) {
-    this.directory = join2(home, ".keel");
+    this.directory = process.env.KEEL_OVERRIDES_DIR || join2(home, ".keel");
     this.file = join2(this.directory, "overrides.json");
->>>>>>> w2-slop
     this.lock = `${this.file}.lock`;
   }
   consume(ruleId) {
@@ -7518,11 +7503,7 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
-<<<<<<< HEAD
-      (rule) => ["verification", "claim", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
-=======
-      (rule) => ["verification", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow", "oracle"].includes(rule.type)
->>>>>>> w2-oracle
+      (rule) => ["verification", "claim", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow", "oracle"].includes(rule.type)
     );
     const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
@@ -7815,8 +7796,8 @@ var EnforcementPipeline = class {
             const patchText = String(args.patchText || "");
             const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? "");
             const explicitOld = typeof args.oldString === "string" ? args.oldString : void 0;
-            const isFile = explicitOld === void 0 && existsSync3(resolvedPath) && statSync2(resolvedPath).isFile();
-            const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync3(resolvedPath, "utf-8") : "";
+            const isFile = explicitOld === void 0 && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
+            const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync4(resolvedPath, "utf-8") : "";
             if (newText || oldText) {
               const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
               if (signals.length) {
@@ -8773,15 +8754,9 @@ function receiptsLogPath() {
 }
 function loadReceiptChainHead(session) {
   try {
-<<<<<<< HEAD
-    const lines2 = readFileSync8(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync9(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
-=======
-    const lines = readFileSync9(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const r = JSON.parse(lines[i]);
->>>>>>> w2-slop
       if ((r.session ?? "default") !== session) continue;
       return r.receipt_hash ?? null;
     }
@@ -9035,11 +9010,7 @@ var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
 var DISABLED_PATH = path.join(KEEL_DIR, "DISABLED");
 var sentinelCorrupted = false;
-<<<<<<< HEAD
 var TRACES_DIR = process.env.KEEL_TRACES_DIR || path.join(KEEL_DIR, "traces");
-var DEFAULT_RULES_YAML = `version: 1
-=======
-var TRACES_DIR = path.join(KEEL_DIR, "traces");
 var DEFAULT_RULES_YAML = `# Keel rules \u2014 enforced OUTSIDE the agent's context window.
 # Evaluated before every tool call, so they cannot be forgotten, overridden,
 # or degraded by context rot. Edit freely: this file is yours.
@@ -9054,7 +9025,6 @@ var DEFAULT_RULES_YAML = `# Keel rules \u2014 enforced OUTSIDE the agent's conte
 #     on the trace) but never interrupts. Promote to warn/block once
 #     'keel retrospective' shows the hit rate is real.
 version: 1
->>>>>>> w2-rules
 level: balanced
 rules:
   # \u2500\u2500 TIER 1: protect floor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
