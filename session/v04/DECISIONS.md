@@ -225,3 +225,15 @@
   checked") immediately + background-fill the cache; respects <50ms AND the slopsquatting gate's
   "unverified→prompt" intent. Also flagged (perf-opt, not urgent): Tier-1 stateless cache dead for
   shipped ruleset; regex patterns recompiled every call (no cache).
+- 2026-08-11 supervisor: package-budget fix GATE CLOSED (c556077). cache-first + miss→prompt+
+  background-fill; evaluate() returns 5.5ms vs a hanging registry (was 2003ms) — <50ms now holds
+  on EVERY path. Honest tradeoff: uncached nonexistent pkg PROMPTS on first attempt, DENIES on
+  retry after background fill. Suite green core 539 / cli 678.
+  IMPORTANT CAVEAT (queued follow-up): the background-fill retry guarantee holds ONLY for
+  long-lived hosts (opencode plugin, MCP daemon). On EXIT-CODE hosts (claude-code/codex/gemini/
+  cursor), hook.ts calls process.exit() after the first verdict, killing the background promise —
+  so the cache never persists and the slopsquatting gate degrades to "prompt on EVERY uncached
+  install" (SAFE — prompt gates it — but never the deterministic deny). Same class as the
+  exit-code-hosts-don't-discharge-obligations gap (markVerificationSatisfied). Fix belongs with
+  B1 (host verification wiring): persist the cache before process.exit on the hook path. Not urgent
+  (prompt is safe); logged for M2.
