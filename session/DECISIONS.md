@@ -84,3 +84,13 @@
   identified: FORCE_COLOR=3 present in worker/supervisor shells; reproduced on base.
   w2-dial's ANSI-strip fix is the durable cure — gate expects level.test.ts green in
   FORCE_COLOR=3 env only after w2-dial merges.
+- 2026-08-11 supervisor: W2 lane 7 landed (w2-dial 6e332f4): sprint expiry stored IN
+  rules.yaml beside level: (same scoping, survives copies, reuses per-call reload —
+  correct for process-per-call hosts; verified live: expired sprint enforces like
+  balanced on the next evaluate). Transparency diff computed from the real merged
+  ruleset via the same pure dialAction() the pipeline enforces with. Floor tests
+  assert protect rules never soften and never appear in the diff. level.test.ts
+  ANSI-hardened: 27/27 in colored AND NO_COLOR envs. All workspaces green in its
+  tree (core 264, cli 649, plugin 56). GATE NOTE: touches types.ts/rule-parser.ts/
+  pipeline.ts — expect small overlaps with w2-seq (enum) and possibly w2-claim;
+  merge dial after seq/claim, before rules.
