@@ -316,3 +316,10 @@
   real block; EXPERIMENT.md:48 already names the right rule). Net: the 0%-vs-75% headline is HONEST
   and keel-attributed for the cheap-model arm. Model-self-censorship caveat from the AUDIT is now
   RESOLVED (checked, not a problem for this arm; flagged for future frontier arms).
+- 2026-08-11 supervisor: M1 hardening GATE CLOSED (33c3036) + supervisor follow-up. Lane fixed:
+  unless[].regex validated at load; onRulesError wired (mid-session rules typo now VISIBLE on
+  stderr, last-known-good unchanged). Lane FLAGGED a worse related bug — patterns[].regex on
+  content rules had the same gap but fail-OPEN (bad regex → swallowed to false → rule silently
+  never matches). Supervisor CLOSED it directly (validate patterns[].regex at load + regression
+  test). Suite green core 557 / cli 740. M2 progress: attribution✅, hardening✅. Remaining M2:
+  B1 (verification-satisfied + claim reach live across hosts), B2 (detection benchmark at scale).
