@@ -36,3 +36,17 @@
   ~/.keel on deny verdicts in tests — ASSIGN with traces-dir override work.
   Lane 1 correctly declined the state-manager one-liner (its tests unaffected); the fix
   arrives via w1-bugcheck and w1-observed branches, identical content.
+- 2026-08-11 supervisor: Lane 2 landed (w1-fixtures 76fe304, 86cbdd1): 22 rule dirs,
+  46 fixtures, 53/53 tests, wired into root npm test; per-rule isolated pipeline (full
+  ruleset would pass vacuously via first-match short-circuit); warn-then-deny ladder
+  replayed; mutation-tested the harness itself. Substring-FP class: ALREADY fixed in
+  flow-tracker.ts with \b (probes are plain regression guards now); rsync-not-a-sink
+  coverage gap documented in a labeled probe.
+- 2026-08-11 supervisor RULING on the KEEL_STATE_DIR override (lane 2 reverted it as a
+  bypass vector; lanes 3+7 carry it): KEEP the override. Rationale: subprocess state
+  tests and isolation genuinely require it, and the enforcement path inherits the HOST
+  process env, which the guarded agent does not control mid-session. The bypass concern
+  is REAL enough to mitigate: (1) Wave-2 lane 1 adds KEEL_* env mutation to the Tier-1
+  agent-self-modification scope; (2) Phase-6 red team assesses the residual vector for
+  SECURITY.md honestly. Lane 2's revert stands on its own branch; the override lands
+  via w1-bugcheck/w1-observed at the merge.
