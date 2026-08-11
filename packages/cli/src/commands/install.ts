@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import chalk from 'chalk'
+import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detector.js'
 
 /**
  * `keel install` — set up Keel enforcement in the environment.
@@ -394,6 +395,17 @@ export async function installCommand(options: {
     console.log(chalk.dim('    2. Run `keel install --opencode` to wire the OpenCode plugin'))
   }
   console.log(chalk.dim('    3. Run `keel validate` to check for conflicts'))
+
+  // Print-only: never writes to rules.yaml (DEFAULT_RULES_YAML above is
+  // untouched). If the install environment is already sandboxed at the OS
+  // level, say so once, here, so it's visible before the user starts
+  // hitting prompts they may not need. Silent when nothing is detected.
+  const suggestion = sandboxSuggestion(detectSandbox())
+  if (suggestion) {
+    console.log()
+    console.log(chalk.dim('    ') + chalk.yellow(suggestion))
+  }
+
   console.log()
 }
 

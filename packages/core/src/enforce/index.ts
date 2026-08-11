@@ -8,6 +8,19 @@ export { FlowTracker } from './flow-tracker.js'
 export { Suggester } from './suggester.js'
 export { StateManager } from './state-manager.js'
 export {
+  detectSandbox,
+  detectContainer,
+  detectAnthropicSandboxRuntime,
+  detectCodexSandbox,
+  detectCI,
+  sandboxSuggestion,
+  type SandboxKind,
+  type Confidence,
+  type SandboxSignal,
+  type SandboxDetectionResult,
+  type SandboxProbe,
+} from './sandbox-detector.js'
+export {
   parseRulesFile,
   parseRulesContent,
   loadRuleHierarchy,

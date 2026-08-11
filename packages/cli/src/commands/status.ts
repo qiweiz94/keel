@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
+import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detector.js'
 import { loadTraceEntries, TRACKED_AGENTS } from './retrospective.js'
 import { telemetryHealth, type HealthState } from './health.js'
 import { findTemplateSource } from './install.js'
@@ -72,6 +73,18 @@ export async function statusCommand() {
   const dialColor = dial === 'sprint' ? chalk.yellow : dial === 'protect' ? chalk.red : chalk.green
   console.log(chalk.dim('  Speed dial:') + ` ${dialColor(dial.toUpperCase())}${chalk.dim(' (sprint=warn-only · balanced=default · protect=block-first)')}`)
   console.log(chalk.dim('    Change: keel level sprint|balanced|protect [--project]'))
+
+  // ── Sandbox suggestion (print-only — never written to rules.yaml) ──
+  // When an OS-level sandbox already contains the blast radius of a
+  // command, keel's prompt-heavy Tier-2 rules are redundant friction on
+  // top of it. This never changes anything by itself; it just tells the
+  // user the relaxation options exist. Silent when nothing is detected —
+  // this screen has enough lines already.
+  const sandbox = detectSandbox()
+  const suggestion = sandboxSuggestion(sandbox)
+  if (suggestion) {
+    console.log(chalk.dim('  ') + chalk.yellow(suggestion))
+  }
 
   // ── Kill switch ──
   const disableFile = join(home, '.keel', 'DISABLED')
