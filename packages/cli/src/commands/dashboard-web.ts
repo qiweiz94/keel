@@ -302,16 +302,30 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
   console.log()
 
   // Convenience: open the browser automatically (macOS) — but ONLY for a real
-  // interactive user at a TTY. The TTY guard above can be bypassed for tests /
-  // automation via KEEL_DASHBOARD_ALLOW_NON_TTY=1; in that path (and under CI,
-  // or when KEEL_NO_OPEN=1) a real `open` would spawn a browser tab per run,
-  // which floods a developer running the suite. Gate the convenience open on an
-  // actual interactive terminal so automated server starts never open a tab.
-  const interactive = process.stdin.isTTY && !process.env.CI && process.env.KEEL_NO_OPEN !== '1'
-  if (process.platform === 'darwin' && interactive) {
+  // interactive user at a TTY. See shouldAutoOpenBrowser() for the gate and the
+  // regression test that pins it: the dashboard-web TEST sets
+  // KEEL_DASHBOARD_ALLOW_NON_TTY=1 to exercise the server, so an ungated open
+  // would spawn a browser tab on every `npm test` run and flood the developer.
+  if (shouldAutoOpenBrowser()) {
     try {
       const { spawn } = await import('node:child_process')
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
     } catch {}
   }
+}
+
+/**
+ * Whether `keel dashboard --web` may auto-open a browser. Off in every
+ * non-interactive context — a real TTY is required, and CI / KEEL_NO_OPEN
+ * force it off. This is the ONLY gate on the `spawn('open')` above; pinned by a
+ * regression test (dashboard-web.test.ts) so it can never be silently removed.
+ * A side effect that fires in automation is a trust bug, not a convenience.
+ */
+export function shouldAutoOpenBrowser(): boolean {
+  return (
+    process.platform === 'darwin'
+    && !!process.stdin.isTTY
+    && !process.env.CI
+    && process.env.KEEL_NO_OPEN !== '1'
+  )
 }

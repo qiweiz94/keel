@@ -167,3 +167,12 @@
   HELD for next tick (staggered to confirm no residual tabs): benchmark (B2) + live-verify (D1) —
   the opencode lanes — will resume with CI=1 BROWSER=none + the dashboard-web fix. Measured pace
   after 2 browser incidents; not a 30-wide blast.
+- 2026-08-11 supervisor: BROWSER-FLOOD (3rd report) — DEFINITIVE root cause: the resumed lanes
+  (perf/benchmark/live-verify) were on WORKTREES BRANCHED BEFORE the dashboard-web fix (245be94),
+  so their `npm test` ran the OLD tab-opening code. My fix was correct but never reached those
+  worktrees. FIXED FOR REAL: (1) stopped all 3; (2) committed each lane's WIP then merged
+  v0.4-thesis into all 3 worktrees (fix now present, verified per-worktree); (3) PREVENTION:
+  extracted shouldAutoOpenBrowser() + 3 regression tests pinning "no auto-open in non-interactive
+  contexts" so it can never regress or lag again. STANDING RULE: a resumed/long-lived worktree
+  MUST merge current base before running the suite. Holding ALL pre-fix lanes until confirmed
+  stable; only the post-fix lanes (shellparse A2, releasedocs) continue.
