@@ -6532,6 +6532,35 @@ var ACTION_STRENGTH = {
   report: 0,
   research: 0
 };
+var MODE_STRENGTH = {
+  block: 2,
+  warn: 1,
+  observe: 0
+};
+function modeStrength(mode) {
+  return mode === void 0 ? MODE_STRENGTH.block : MODE_STRENGTH[mode];
+}
+var OVERRIDE_COSMETIC_FIELDS = /* @__PURE__ */ new Set([
+  "message",
+  "rationale",
+  "remediation",
+  "false_positives",
+  "review_by",
+  "category",
+  "severity",
+  "confidence",
+  "maturity"
+]);
+var OVERRIDE_STRENGTH_CHECKED_FIELDS = /* @__PURE__ */ new Set(["action", "mode", "level", "scope"]);
+function sameEnforcementSurface(existing, candidate) {
+  const strip = (rule) => {
+    const copy = { ...rule };
+    for (const field of OVERRIDE_COSMETIC_FIELDS) delete copy[field];
+    for (const field of OVERRIDE_STRENGTH_CHECKED_FIELDS) delete copy[field];
+    return copy;
+  };
+  return JSON.stringify(strip(existing)) === JSON.stringify(strip(candidate));
+}
 function mergeRules(hierarchy, level, context) {
   const all = [];
   const dialRank = { sprint: 0, balanced: 1, protect: 2 };
@@ -6562,7 +6591,10 @@ function mergeRules(hierarchy, level, context) {
     const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || "global"];
     if (!moreSpecific) continue;
     if (existing.level === "protect") {
-      const tightensOrEqual = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
+      const actionOk = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
+      const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode);
+      const surfaceOk = sameEnforcementSurface(existing, rule);
+      const tightensOrEqual = actionOk && modeOk && surfaceOk;
       if (!tightensOrEqual) continue;
     }
     deduped.set(rule.id, rule);

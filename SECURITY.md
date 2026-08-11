@@ -80,19 +80,106 @@ Code / Gemini CLI — 8/8 blocking where v0.3 was 0/8; (2) a new Tier-1 floor
 `sed -i`, `python3 -c`, `node -e`, `ln`, `git config core.hooksPath`) to keel's
 files, the host's trust/approval config, and git hooks, while allowing *reads*
 of those paths; (3) `mergeRules` refuses a lower-scope config that would *weaken*
-a `level: protect` floor's action.
+a `level: protect` floor on any of three independent axes — action, mode, or
+matching surface (see below).
 
-**Residual on floor overrides, host-agnostic and open:** the `mergeRules` guard
-in (3) compares the **action field only**. An override of a floor id that keeps
-`action: deny` + `level: protect` but adds `mode: observe` (which suppresses
-interruption) or replaces `match` with a pattern that never fires still
-neutralizes that floor. This requires a *pre-existing* `.keel.local.yaml` (or
-lower-scope `rules.yaml`); **writing** such a file is blocked on every agent path
-(shell via `no-self-protection-write`, tool via `no-rules-tampering` incl. the
-Claude Code `file_path` channel), so it is a user's own-config choice, not a
-one-command agent bypass. But floors are non-overridable only on the *action*
-axis; the *mode* and *match* axes are not yet closed (an engine change to
-`mergeRules`). See `session/v04/EVIDENCE/phase-3-redteam.md` §(a).
+**Residual on floor overrides, host-agnostic — CLOSED (mode + enforcement
+surface) in v0.4's mergeguard pass.** The `mergeRules` guard in (3)
+originally compared the **action field only**: an override of a floor id
+that kept `action: deny` + `level: protect` but added `mode: observe`
+(which suppresses interruption — `pipeline.ts`'s `effectiveAction()`
+short-circuits an observe-mode match to `allow`) or replaced
+`match`/`paths`/`patterns` with a pattern that never fires still
+neutralized that floor. Both vectors are now closed by extending the same
+dedup-loop check (`packages/core/src/enforce/rule-parser.ts`, `mergeRules`)
+that already guarded the action field:
+
+- **Mode axis** — `MODE_STRENGTH` gives `block`/undefined (2, tied — an
+  absent `mode` on a floor is fully enforcing, not weaker than a rule that
+  spells out `mode: block`) > `warn` (1) > `observe` (0, weakest). A
+  lower-scope override of a floor may not *lower* this rank.
+- **Enforcement-surface axis** — everything about a floor that affects
+  *when or how it fires*, beyond action and mode, must be **byte-identical**
+  between the floor and the override (`sameEnforcementSurface`, compared via
+  `JSON.stringify` — which is field-order sensitive, so the same fields
+  written in a different order in the override's YAML also compare unequal
+  and are rejected; this fails closed, the floor stands, not a security
+  gap — after stripping action/mode/level/scope and a small,
+  explicit allowlist of pure catalog metadata — `message`, `rationale`,
+  `remediation`, `false_positives`, `review_by`, `category`, `severity`,
+  `confidence`, `maturity`). This is deliberately an **exclusion list, not
+  an enumeration** of match-shaped field names: `match`/`match_prefix`/
+  `match_regex`/`paths`/`patterns` are covered, but so are `exclude` and
+  `operations` narrowing a filesystem floor, `except` widening a network
+  floor's allowlist, `schedule` retiming a time floor, `type` swapping a
+  floor's check class outright, and `priority` on the floor's OWN id —
+  `pipeline.ts`'s tier-2/3 loop is first-match-wins over the full
+  priority-sorted rule list, so an override of the floor's id that demotes
+  its priority below an unrelated weaker rule matching the same command
+  means the floor is never reached on that call at all (see the "Not
+  covered" paragraph below for what this does NOT close on the priority
+  axis). There is no
+  principled way for `mergeRules` to tell a legitimate narrowing from an
+  adversarial no-op from inside the merge function alone — it has no model
+  of "the dangerous command" to test candidates against — so any change
+  outside the metadata allowlist is rejected outright, not just a
+  narrowing. A field added to `KeelRule` after this guard was written is
+  frozen by default (the allowlist must be extended deliberately to loosen
+  the guard for it), not silently exempt.
+- **Combined rule**: a `level: protect` floor is overridable by a
+  lower scope **only** if the override is `level: protect` AND
+  same-or-stronger on action (existing `ACTION_STRENGTH` check) AND
+  same-or-stronger on mode (`MODE_STRENGTH`) AND has an **identical**
+  enforcement surface. Failing any one axis rejects the whole override —
+  the floor already in the merged map stands untouched, with no partial
+  field-level merging. Tightening (e.g. `warn` action → `deny`, or
+  `mode: observe` → unset/`block`) is still honored, matching the existing
+  action-tightening behavior — a floor authored under `mode: observe` to
+  burn in can still be promoted to enforcing by a project or local file.
+
+This still requires a *pre-existing* `.keel.local.yaml` (or lower-scope
+`rules.yaml`); **writing** such a file is blocked on every agent path (shell
+via `no-self-protection-write`, tool via `no-rules-tampering` incl. the Claude
+Code `file_path` channel), so authoring the override remains a user's own-
+config choice, not a one-command agent bypass — this pass closes what such an
+override can *do* to a floor, not who can write one. Verified end-to-end
+through the real `EnforcementPipeline` (not just `mergeRules`' return value):
+a `.keel.local.yaml` cloning `no-force-push` with only `mode: observe`
+changed (everything else, including `match`, byte-identical to the shipped
+floor — isolating the mode axis from the surface axis), and a separate one
+replacing its `match` with a pattern that never fires, both
+still deny a matching `git push --force`. See
+`packages/core/src/enforce/__tests__/rule-parser.test.ts` (unit-level dedup
+cases) and `packages/core/src/enforce/__tests__/protect-floor-mode-match-override.test.ts`
+(pipeline-level), and `session/v04/EVIDENCE/phase-3-mergeguard.md` for
+before/after evidence. Original finding: `session/v04/EVIDENCE/phase-3-redteam.md` §(a).
+
+Not covered by this pass, and worth stating precisely: the enforcement-
+surface rule is deliberately blunt (identical-or-rejected, not "narrower is
+fine") — a project with a genuine need for a different floor pattern, path
+scope, or priority cannot express it from a lower scope at all; it has to go
+through keel's shipped defaults. That is treated as the correct tradeoff for
+a floor, not a gap.
+
+Also not covered, and a distinct residual from the one this pass closes:
+`mergeRules` only ever arbitrates collisions on a **matching rule id** — it
+never compares a floor to a rule with a **different** id. A lower-scope
+config can still add a brand-new rule, under its own id, with a higher
+`priority` and `action: allow` whose `match` happens to overlap a floor's —
+`pipeline.ts`'s tier-2/3 loop is first-match-wins over the full
+priority-sorted list of ALL rules regardless of id, so that new rule can
+still return before the floor is ever reached on a matching call. This
+pass closes an override *of a floor's own id* demoting that floor's own
+priority; it does not, and by construction cannot, close a same-priority-class
+race between two independently-authored rule ids — that is an engine-level
+property of the tier loop, not a gap in this id-collision guard, and is out
+of scope for this pass.
+
+The metadata allowlist itself (which fields count as
+"cosmetic") is a judgment call, not a proof — `category`/`severity`/
+`confidence`/`maturity` are informational tags with no read path in
+`pipeline.ts` today; if a future feature starts branching enforcement
+behavior on one of them, it would need to move out of the allowlist.
 
 Four classes of evasion that **no regex rule closes**, and that you should
 assume an adversarial agent can use:
