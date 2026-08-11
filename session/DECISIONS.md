@@ -75,3 +75,12 @@
   verification.ts boundary() lines ~126/130 confirmed same bug — w2-claim messaged
   to cover both sites + use the identical RuleCategory token. GATE NOTE: expect a
   small types.ts/rule-parser.ts overlap between w2-seq and w2-claim.
+- 2026-08-11 supervisor: W2 lane 8 landed (w2-sandbox 0db6cfd): sandbox-detector with
+  injectable probes, 25 tests, print-only suggestion wiring in status + install (no
+  DEFAULT_RULES_YAML overlap, 12-line surgical diff). Honest design: detectSandbox()
+  returns true|'unknown', never false (finite marker list cannot prove absence);
+  Anthropic sandbox-runtime marker SANDBOX_RUNTIME=1 is conditional (proxy-bridge
+  path only) — confidence low, documented. ROOT CAUSE of the 4 level.test.ts fails
+  identified: FORCE_COLOR=3 present in worker/supervisor shells; reproduced on base.
+  w2-dial's ANSI-strip fix is the durable cure — gate expects level.test.ts green in
+  FORCE_COLOR=3 env only after w2-dial merges.
