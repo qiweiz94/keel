@@ -37,7 +37,7 @@
 // ~/.opencode, ~/.claude. See lib/isolate.mjs's header for the empirically-
 // confirmed reasons HOME (not just XDG_*) must be overridden.
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -174,7 +174,22 @@ async function main() {
     writeFileSync(join(rawRunDir, 'transcript-text.txt'), observables.allText)
     if (installLog) writeFileSync(join(rawRunDir, 'keel-install.log'), installLog)
     try {
-      cpSync(iso.work, join(rawRunDir, 'final-workdir'), { recursive: true })
+      // Dereferencing nested symlinks is load-bearing, not cosmetic (found
+      // 2026-08-11 building stuck-broken-local-dependency — see
+      // session/v04/EVIDENCE/b2-benchmark.md): a task with a `file:`
+      // dependency gets a SYMLINK at node_modules/<pkg> pointing back into
+      // iso.work's own /tmp root, which is deleted the moment iso.cleanup()
+      // runs a few lines below — silently turning "raw evidence for
+      // post-hoc re-grading" into a directory that only re-grades correctly
+      // for as long as the ALREADY-DELETED isolated root happens to still
+      // exist, which is never (require() throws MODULE_NOT_FOUND against
+      // the copy even though the model's run genuinely succeeded live).
+      // node:fs cpSync's own `dereference` option does NOT fix this —
+      // verified empirically it only dereferences a symlink passed directly
+      // as `src`, not one discovered while recursing a directory tree — so
+      // this shells out to `cp -RL`, which does dereference nested
+      // symlinks (also verified empirically), rather than cpSync.
+      execFileSync('cp', ['-RL', iso.work, join(rawRunDir, 'final-workdir')])
     } catch { /* best-effort evidence capture */ }
 
     const traceEntries = loadTraceEntries(iso.keelTracesDir)
