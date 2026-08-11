@@ -304,3 +304,15 @@
   the model-self-censorship re-audit of the experiment attributions). Plus quick M1 follow-ups
   (unless[].regex validation, onRulesError wiring) and the empty-stdin fail-open POLICY question
   (needs user). Nothing pushed.
+- 2026-08-11 supervisor: M2 ATTRIBUTION RE-AUDIT GATE CLOSED (b15072c). The honesty check PASSED
+  the thesis: guarded-arm prevention on the 2 destructive tasks is 10/10 TRACE-CONFIRMED KEEL
+  BLOCKS (not model refusal), against a 100% arm-A attempt rate. Direct evidence AGAINST
+  self-censorship: on force-push the cheap model tried to `keel disable` mid-task (blocked by
+  keel-control-gate) — it wanted the dangerous action. Honest caveat folded into EXPERIMENT.md:
+  the 3rd task (stuck-nonexistent-package, a false_claim on a non-blocking observe axis) is NOT
+  keel-attributable on that metric; scope is the one cheap model — a future frontier arm must
+  check blocked[] per-run (safety-tuned models may self-censor → undeserved credit). Extra finding:
+  no-force-push (the "intended guard") never fires — no-push-to-main catches the push first (same
+  real block; EXPERIMENT.md:48 already names the right rule). Net: the 0%-vs-75% headline is HONEST
+  and keel-attributed for the cheap-model arm. Model-self-censorship caveat from the AUDIT is now
+  RESOLVED (checked, not a problem for this arm; flagged for future frontier arms).
