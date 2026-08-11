@@ -203,3 +203,12 @@
   promotion_fp_threshold as real. Flags: (1) ROADMAP "12 rule types; 7 actions" stale —
   actual 21 types / 10 actions (9 usable, mask rejected); fix at gate. (2) marketing
   draft anecdote numbers unverifiable — leave, not shipped.
+- 2026-08-11 supervisor: W3 lane 2 (warn-surface + session-allow) landed (w3-warnsurface
+  4ff535a). Advisor caught a would-be regression: permissionDecision:'allow' on a warn
+  auto-approves the warned action — fixed to OMIT it (warn = visible message, human still
+  prompted). Warn channels: OpenCode verified; all others docs/best-effort → HUMAN-CHECKLIST
+  live steps. keel allow --session: RuleOverride.mode:'session' keyed on session_id, threaded
+  through all 3 consume() sites, never leaks across sessions (tested). FLAG for gate/audit:
+  Cursor warn path uses camelCase but current Cursor docs show snake_case — potential
+  no-op on the warn userMessage; block path untouched/tested. Suite in-tree: core 443,
+  cli 1030, plugin 57 green.
