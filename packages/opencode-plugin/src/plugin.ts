@@ -1019,10 +1019,10 @@ rules:
       - "A test-infrastructure or fixtures file that legitimately combines __dirname or import.meta with a __tests__/.test. path constant AND an unrelated if statement anywhere else in the same file for other reasons — the three signals are ANDed by co-occurrence anywhere in the whole write, not by proximity or causal connection, so an unrelated combination in one file can still fire."
     review_by: "2026-11-11"
     patterns:
-      - regex: "(?=[^]*(?:new[ ]+Error[(][)][.]stack|Error[(][)][.]stack|Error[.]captureStackTrace))(?=[^]*(?:[.]test[.]|[.]spec[.]|__tests__|currentTestName|testPath))(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
-      - regex: "(?=[^]*process[.]argv)(?=[^]*(?:[.]test[.]|[.]spec[.]|__tests__|currentTestName|testPath))(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
-      - regex: "(?=[^]*(?:require[.]main|module[.]parent|import[.]meta))(?=[^]*(?:[.]test[.]|[.]spec[.]|__tests__|currentTestName|testPath))(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
-      - regex: "(?=[^]*expect[.]getState[(][)])(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
+      - regex: "^(?=[^]*(?:new[ ]+Error[(][)][.]stack|Error[(][)][.]stack|Error[.]captureStackTrace))(?=[^]*(?:[.]test[.]|[.]spec[.]|__tests__|currentTestName|testPath))(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
+      - regex: "^(?=[^]*process[.]argv)(?=[^]*(?:[.]test[.]|[.]spec[.]|__tests__|currentTestName|testPath))(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
+      - regex: "^(?=[^]*(?:require[.]main|module[.]parent|import[.]meta))(?=[^]*(?:[.]test[.]|[.]spec[.]|__tests__|currentTestName|testPath))(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
+      - regex: "^(?=[^]*expect[.]getState[(][)])(?=[^]*(?:(?<![A-Za-z0-9_])if(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])switch(?![A-Za-z0-9_])))"
 
   - id: test-before-commit
     type: verification

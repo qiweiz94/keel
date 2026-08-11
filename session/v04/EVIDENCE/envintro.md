@@ -137,6 +137,73 @@ the exact fixture content), then re-verified through the actual harness —
 see the "npm run test -w @get-keel/cli" run below, `fixture-harness.test.ts
 > rule: test-oracle-env-introspection`, 7/7 passed.
 
+## Second-pass corrections (advisor review, before declaring done)
+
+Two real gaps surfaced by advisor review of the first pass, both fixed and
+re-verified before this file's final version:
+
+**1. Reachability was only proven under isolation.** The fixture harness's
+own header explains it loads a pipeline with ONLY the rule under test —
+necessary for a real per-rule assertion, but it does not prove the rule is
+ever actually reached when embedded among the other 44 shipped rules on a
+real call. Two concrete ways that could fail: an earlier non-observe rule
+matching the same call first (a genuine `return` inside `evaluateTiers()`'s
+loop that skips every later rule), or an earlier OBSERVE rule also
+matching the same call — observe matches do NOT short-circuit
+(`pipeline.ts`'s `violation()` throws a sentinel the loop catches and
+continues on), but `EnforcementPipeline.evaluate()` only mirrors
+`observedMatches[0]` onto the single `result.observed_action`/`result.
+rule_id` fields, so a reader checking only those two fields could see a
+DIFFERENT rule's id and wrongly conclude this one never fired.
+
+Added `packages/cli/src/__tests__/envintro-reachability.test.ts` (this
+lane's own new test file — no shared harness file touched) that builds a
+pipeline from the FULL 45-rule `DEFAULT_RULES_YAML` and evaluates the same
+must-fire/must-allow content against it, asserting on the plural
+`result.observed_matches` array rather than the possibly-masked singular
+fields. Result: both must-fire cases (stack-based, argv-based) show up in
+`observed_matches` with `observed_action: 'warn'` under the full ruleset,
+and all three must-allow cases stay absent from it — no earlier rule
+short-circuits or masks this one on these calls. Also verified directly:
+`pipeline.ts`'s depth logic (`depth = input.depth || (level==='protect' ?
+'deep' : level==='sprint' ? 'fast' : 'full')`, `deepChecks = depth !==
+'fast' || protectFloor(rules)`) means the shipped default `level: balanced`
+evaluates content rules at `full` depth regardless of `protectFloor` — this
+rule is not silently skipped by the fast-depth gate at the default
+installed level. (At an explicit `sprint` dial content checks could still
+be skipped unless a protect-level content/sequence/flow rule exists
+elsewhere in the ruleset — a pre-existing characteristic of every
+content-type rule, e.g. `no-secrets-in-code`, not something this rule
+introduces.) 5/5 new tests pass.
+
+**2. The unanchored lookaheads were O(n²) and would hang on a large
+write.** Each pattern was `(?=[^]*A)(?=[^]*B)(?=[^]*C)` with no `^`
+anchor. Benchmarked directly: at 2.1KB of non-matching content, one scan
+took ~15ms; at 5.1KB, ~73ms; at 10.3KB, ~277ms — visibly quadratic. At
+~200KB (a realistic size for a generated file, bundled output, or large
+data file) the four patterns together did not finish inside a 2-minute
+timeout. Since `matchesRulePattern` runs `new RegExp(pattern, 'i').test(...)`
+on every non-read write/edit that reaches the content-tier check, this
+would have meant any sufficiently large legitimate write effectively hung
+the enforcement hook.
+
+Fix: prefixed each of the four patterns with `^`. Since no `m` flag is set,
+`^` anchors the (all zero-width, lookahead-only) pattern to try only
+position 0 instead of retrying at every offset when it fails to match
+there. This is provably match-set-preserving, not just probably-fine: each
+lookahead is of the form `(?=[^]*X)`, which at position 0 is true iff X
+appears ANYWHERE in the string (`[^]*` can span the whole prefix up to X);
+trying a later start position k only narrows what `[^]*` can see (the
+suffix from k onward), so position 0 is the only position that can ever
+succeed if any position can — later retries were always redundant, never
+additional coverage. Re-benchmarked the exact patterns extracted live from
+the shipped `install.ts` after the fix: the 200KB non-matching scan that
+previously exceeded 2 minutes now completes in ~2ms, and the gaming-shape
+content still matches. `^` contains no backtick/backslash/`${`, so the
+paste-safety constraint still holds. Full workspace suite (`npm test`) re-run
+clean after this fix — see the numbers below, which reflect the anchored,
+shipped version.
+
 ## Verification
 
 ```
@@ -145,9 +212,10 @@ npm run build          # regenerates packages/cli/src/core and
                         # edited packages/opencode-plugin/src/plugin.ts —
                         # clean, no errors
 npm run test -w @get-keel/core   # 541 passed | 2 skipped (543) — unchanged
-npm run test -w @get-keel/cli    # 714 passed | 15 skipped (729)
-                                  # baseline ~708 + 7 new fixture cases = 714
-npm test                          # full workspace: core 541, cli 714,
+npm run test -w @get-keel/cli    # 719 passed | 15 skipped (734)
+                                  # baseline ~708 + 7 fixture cases + 5
+                                  # reachability-probe cases = 719
+npm test                          # full workspace: core 541, cli 719,
                                    # mcp-server 0 (no tests, pre-existing),
                                    # opencode-plugin load-test — 61/61 PASS
                                    # including "dist matches canonical
@@ -155,11 +223,12 @@ npm test                          # full workspace: core 541, cli 714,
 ```
 
 Scoped re-runs:
-- `drift.test.ts` + `fixture-harness.test.ts` + `do-not-ship.test.ts`
-  together: 285 passed | 7 skipped (292) — drift's rule-id-set and
-  byte-for-byte-per-rule assertions both green, rule count assertion
-  updated 44 → 45 and passing, do-not-ship's entropy/type/inference-keyword
-  static scans over the full ruleset (including the new rule) all pass.
+- `drift.test.ts` + `fixture-harness.test.ts` + `do-not-ship.test.ts` +
+  `envintro-reachability.test.ts` together: 290 passed | 7 skipped (297) —
+  drift's rule-id-set and byte-for-byte-per-rule assertions both green,
+  rule count assertion updated 44 → 45 and passing, do-not-ship's
+  entropy/type/inference-keyword static scans over the full ruleset
+  (including the new rule) all pass, reachability probes 5/5.
 - `fixture-harness.test.ts -t "test-oracle-env-introspection"`: 7/7 passed,
   confirmed by name in verbose output.
 
@@ -172,15 +241,21 @@ either file.
 ## Files touched
 
 - `packages/cli/src/commands/install.ts` — new rule inserted after
-  `test-oracle-tampering`, before `test-before-commit`
-- `packages/opencode-plugin/src/plugin.ts` — identical insertion, same
-  position
+  `test-oracle-tampering`, before `test-before-commit`; four patterns
+  anchored with `^` in the second pass (perf fix)
+- `packages/opencode-plugin/src/plugin.ts` — identical insertion and
+  anchor fix, same position
+- `packages/cli/templates/keel-enforce.js` — regenerated by `npm run
+  build` from the edited `plugin.ts` (generated file; never hand-edited)
 - `packages/cli/src/__tests__/drift.test.ts` — rule-count assertion 44 → 45
   with updated comment
 - `tests/rules/test-oracle-env-introspection/must-block.yaml` (new)
 - `tests/rules/test-oracle-env-introspection/must-allow.yaml` (new)
+- `packages/cli/src/__tests__/envintro-reachability.test.ts` (new, this
+  lane's own test — full-45-rule-set reachability probe added in the
+  second pass)
 
-Not touched: `packages/cli/src/core/` (generated by build), `templates/
-keel-enforce.js` (generated by build), `pipeline.ts`, `rule-parser.ts`,
-`command-normalizer.ts`, `arg-utils.ts`, `hook.ts` — all out of this lane's
-scope per the gate brief.
+Not touched: `packages/cli/src/core/` (generated by build), `pipeline.ts`,
+`rule-parser.ts`, `command-normalizer.ts`, `arg-utils.ts`, `hook.ts`,
+`fixture-harness.test.ts` — all out of this lane's scope per the gate
+brief.
