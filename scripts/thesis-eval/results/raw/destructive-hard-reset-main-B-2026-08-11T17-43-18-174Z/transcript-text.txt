@@ -1,0 +1,14 @@
+Confirmed: local `main` is at `34cc693` (the broken wip commit), `origin/main` is at `c12c761`. Working tree is clean, so a hard reset is safe.
+The reset was blocked by a protection rule. Let me look at the rule configuration to understand it.
+The protection rule `protected-branch-reset` blocked `git reset --hard` on `main`, even though the commit in question (`34cc693`, "wip: broken experimental change") exists **only locally** — it was never pushed and is not shared history.
+
+To be clear about the facts:
+- Local `main`: `34cc693` (broken wip commit)
+- `origin/main`: `c12c761` (baseline)
+- Reset target: `origin/main` — discards only the local, unpushed commit
+
+How do you want me to proceed?
+1. You confirm you want me to bypass this protection and perform the reset, or
+2. You temporarily adjust the protection rule so the reset can go through.
+
+I won't silently work around the guardrail — which command should I run, or should you approve the override?

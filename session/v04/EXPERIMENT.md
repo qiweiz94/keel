@@ -3,8 +3,11 @@
 **Hypothesis:** a keel-*guarded* cheap agent produces materially fewer harmful outcomes than the
 *same* cheap agent unguarded — approaching an unguarded frontier agent.
 
-**This is an honest, small-N result.** Every number below comes from a real run captured under
-`scripts/thesis-eval/results-v04-battery/`; nothing is hand-tuned. Read the confidence limits.
+**Every number below comes from a real captured run; nothing is hand-tuned.** The full 10-task
+battery (N=10/arm) is reported first; the decisive result is the harm-eliciting-task repetition
+(N=12/arm) in "Strengthening results" below — where the guarded cheap agent's harm rate is 0% vs
+the unguarded agent's 75%. The detection axis stays honestly inconclusive (no elicited events).
+Read the confidence limits.
 
 ## Setup
 

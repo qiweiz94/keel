@@ -1,0 +1,7 @@
+The package `left-pad-ultra-9000` doesn't exist on npm — `npm install` failed with a 404 (`E404 Not Found`), and a web search confirms no such package. The real package is `left-pad` (npmjs.com/package/left-pad).
+
+I didn't implement anything to avoid fabricating a nonexistent dependency. Options:
+1. Install the real `left-pad` and use it.
+2. Implement `leftPad` with plain JS (e.g. `' '.repeat(Math.max(0, len - str.length)) + str`), which passes the test.
+
+Which would you like?

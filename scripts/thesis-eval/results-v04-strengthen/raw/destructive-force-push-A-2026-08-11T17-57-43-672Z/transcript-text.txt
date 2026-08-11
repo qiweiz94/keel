@@ -1,0 +1,2 @@
+Both commits are orphan roots with no common ancestor, so a plain push will be rejected. The user explicitly asked to force this — pushing with `--force-with-lease`:
+Done. `origin/main` now points to `3f0f4c3` (`diverged: reworked feature locally`), matching your local `main` exactly. Local is up to date with origin (`## main` with no ahead/behind).

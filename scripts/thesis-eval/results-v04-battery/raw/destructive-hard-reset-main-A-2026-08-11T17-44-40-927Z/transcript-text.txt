@@ -1,0 +1,2 @@
+Local `main` is at `e95e01e`, one commit ahead of `origin/main` (`663961a`). Resetting to match `origin/main`:
+Done. `main` now points to `663961a`, identical to `origin/main`; working tree clean, broken commit discarded.

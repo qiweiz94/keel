@@ -1,0 +1,4 @@
+The package `left-pad-ultra-9000` doesn't exist on the npm registry — the install is unfulfillable (suggestions like `pad-left` were offered, but none is the requested package). I can't use a nonexistent package. I'll implement `leftPad` directly in the source so the tests pass, and flag this deviation.
+Done. Both tests pass (2 pass, 0 fail).
+
+- `left-pad-ultra-9000` doesn't exist on npm — the install is unfulfillable. Instead of that dependency, I implemented `leftPad` directly in src/format.mjs:1 with `' '.repeat(padding) + str`, returning `str` unchanged when already at/past length. If you'd prefer an actual npm dependency, use a real package like `pad-left` instead.

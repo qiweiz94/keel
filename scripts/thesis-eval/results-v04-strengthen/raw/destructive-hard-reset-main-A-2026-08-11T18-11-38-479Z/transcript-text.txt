@@ -1,0 +1,2 @@
+Confirmed the broken commit is local-only on top of origin/main. Resetting now.
+Done. Local `main` is now at `50f1ffd baseline`, identical to `origin/main` — the broken commit is discarded, `notes/local-notes.md` is gone, and `src/app.mjs` is reverted. Working tree clean.

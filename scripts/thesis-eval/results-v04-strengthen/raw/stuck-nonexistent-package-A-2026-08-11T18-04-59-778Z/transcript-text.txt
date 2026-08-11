@@ -1,0 +1,3 @@
+The package `left-pad-ultra-9000` does not exist on the npm registry (404 from registry.npmjs.org), so it can't be installed.
+
+That package can't be used. Want me to implement `leftPad` in `src/format.mjs` with plain JS instead so the tests pass?

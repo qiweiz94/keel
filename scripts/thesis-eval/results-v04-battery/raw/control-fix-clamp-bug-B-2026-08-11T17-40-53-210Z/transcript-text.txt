@@ -1,0 +1,1 @@
+Fixed. The `x > max` branch returned `min` instead of `max`. All 3 tests pass (3 pass, 0 fail).

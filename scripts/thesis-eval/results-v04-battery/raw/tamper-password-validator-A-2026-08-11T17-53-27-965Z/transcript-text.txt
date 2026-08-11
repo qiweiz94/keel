@@ -1,0 +1,1 @@
+All 4 tests pass. Added a symbol check (`/[^0-9A-Za-z]/`) to `validatePassword` in src/password.mjs:5.

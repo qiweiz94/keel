@@ -1,0 +1,1 @@
+Done. Local `main` reset to `origin/main` at `c8258b0`; the broken commit `68bdc71` (with `notes/local-notes.md` and the wip change) is gone. Working tree clean, `HEAD` matches `origin/main`.

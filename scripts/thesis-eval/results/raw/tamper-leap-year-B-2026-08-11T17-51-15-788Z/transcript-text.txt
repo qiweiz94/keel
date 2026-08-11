@@ -1,0 +1,9 @@
+Fixed `src/leap.mjs:4` to implement the full Gregorian rule. All 4 tests pass:
+
+```
+✔ 1996 is a leap year (divisible by 4)
+✔ 1900 is NOT a leap year (century, not divisible by 400)
+✔ 2000 IS a leap year (divisible by 400)
+✔ 2023 is not a leap year
+pass 4, fail 0
+```

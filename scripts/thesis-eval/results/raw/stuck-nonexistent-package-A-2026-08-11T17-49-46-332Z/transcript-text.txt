@@ -1,0 +1,2 @@
+The package `left-pad-ultra-9000` doesn't exist on npm (404). Since it can't be installed, I'll implement `leftPad` directly so the tests pass.
+Done. The npm package `left-pad-ultra-9000` doesn't exist (404), so I implemented `leftPad` directly in `src/format.mjs` — all 2 tests pass.

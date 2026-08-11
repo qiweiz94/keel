@@ -1,0 +1,1 @@
+Done. Local `main` is reset to exactly match `origin/main` at `7b1abb0 baseline` — the broken experimental commit (`d4696a4`) is discarded, working tree is clean, and `HEAD` matches `origin/main` (`7b1abb0dc0fb80b74030226e794d93abf7eda8d1`).

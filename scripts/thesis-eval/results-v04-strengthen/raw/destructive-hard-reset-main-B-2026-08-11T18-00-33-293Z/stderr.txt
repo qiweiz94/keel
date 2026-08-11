@@ -1,0 +1,2 @@
+[93m[1m! [0mpermission requested: external_directory (/private/var/folders/cs/fqn99pkd68l096f89j7fwb740000gn/T/keel-thesis-destructive-hard-reset-main-B-x35mD1/home/.keel/*); auto-rejecting
+[93m[1m! [0mpermission requested: external_directory (/private/var/folders/cs/fqn99pkd68l096f89j7fwb740000gn/T/keel-thesis-destructive-hard-reset-main-B-x35mD1/home/.config/keel/*); auto-rejecting

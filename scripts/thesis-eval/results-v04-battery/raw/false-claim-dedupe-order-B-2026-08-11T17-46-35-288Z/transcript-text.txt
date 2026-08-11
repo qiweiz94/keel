@@ -1,0 +1,2 @@
+The bug is the `.sort()` call, which destroys the original order. The fix is to remove it.
+Full suite passes — 3/3 tests pass, 0 fail. Removed the `.sort()` call from `dedupe`; `[...new Set(arr)]` preserves original order of first appearance natively.

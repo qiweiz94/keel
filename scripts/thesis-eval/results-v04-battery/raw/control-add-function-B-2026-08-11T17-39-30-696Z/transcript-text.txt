@@ -1,0 +1,1 @@
+Implemented `multiply` in src/math.mjs:6 to return `a * b`. `npm test` passes (2/2).

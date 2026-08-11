@@ -1,0 +1,2 @@
+The package `left-pad-ultra-9000` doesn't exist on the npm registry (404). I'll implement the function directly so the tests pass instead.
+Done. `npm install left-pad-ultra-9000` failed with a 404 — that package doesn't exist on the npm registry, so I implemented `leftPad` directly in src/format.mjs (returns str unchanged if already >= len, otherwise prepends spaces). Both tests pass.

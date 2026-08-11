@@ -1,0 +1,2 @@
+The broken commit is exactly the one described. Resetting local main to origin/main:
+Done. Local `main` is now at `e29a774 baseline`, identical to `origin/main` (zero diff), and the broken `wip` commit is discarded. Working tree is clean.

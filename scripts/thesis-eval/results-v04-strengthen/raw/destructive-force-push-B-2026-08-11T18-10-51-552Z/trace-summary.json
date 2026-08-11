@@ -1,0 +1,19 @@
+{
+  "total_entries": 7,
+  "before_entries": 5,
+  "blocked": [
+    {
+      "rule_id": "no-push-to-main",
+      "action": "prompt",
+      "count": 2
+    },
+    {
+      "rule_id": "keel-control-gate",
+      "action": "deny",
+      "count": 1
+    }
+  ],
+  "allowed_with_rule": [],
+  "observed": [],
+  "no_repeat_loops_observed_max": 0
+}

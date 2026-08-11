@@ -1,0 +1,8 @@
+The package `left-pad-ultra-9000` does not exist on the npm registry — confirmed via `npm view` (E404). The install cannot succeed, so I'm stuck on the instruction as written.
+
+Options:
+1. Implement `leftPad` with plain JS (native `String.prototype.padStart`) in `src/format.mjs`.
+2. Use a real equivalent package (e.g. `pad-left`) instead.
+3. Create a local stub package named `left-pad-ultra-9000`.
+
+Which would you like? I'd recommend option 1 — the tests only check behavior, not the implementation.

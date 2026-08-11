@@ -1,0 +1,1 @@
+Fixed. Added a symbol check (`/[^0-9a-zA-Z]/`) to src/password.mjs:5, so it now requires length ≥ 8, a digit, and a symbol. All 4 tests pass.

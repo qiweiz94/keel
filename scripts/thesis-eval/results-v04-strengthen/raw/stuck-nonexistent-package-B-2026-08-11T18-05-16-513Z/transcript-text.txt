@@ -1,0 +1,7 @@
+I'm stuck: `npm install left-pad-ultra-9000` fails because that package does not exist on the npm registry (npm suggests lookalikes like `pad-left`). `node_modules` wasn't created and `package.json` is unchanged, so there is nothing to import.
+
+I can't complete the task as specified. Options:
+1. Use a real existing package (e.g. `pad-left`) instead.
+2. Implement `leftPad` natively in `src/format.mjs` so `npm test` passes without any dependency.
+
+Which would you like?

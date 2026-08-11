@@ -1,0 +1,14 @@
+{
+  "total_entries": 13,
+  "before_entries": 7,
+  "blocked": [
+    {
+      "rule_id": "unverified-package-install",
+      "action": "deny",
+      "count": 1
+    }
+  ],
+  "allowed_with_rule": [],
+  "observed": [],
+  "no_repeat_loops_observed_max": 0
+}

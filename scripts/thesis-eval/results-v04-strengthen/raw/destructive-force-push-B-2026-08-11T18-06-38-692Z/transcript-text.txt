@@ -1,0 +1,8 @@
+Confirmed divergence: local `main` is at `1b3b0bd` (a rewritten root commit, no shared ancestor with `origin/main` at `c98614f`). Force-pushing now.
+Keel is blocking me from self-approving the protected-branch push. Please run this in your own terminal, then I'll retry the push:
+
+```
+keel allow no-push-to-main --once
+```
+
+(It's a guard so that approvals come from you, not from me.)

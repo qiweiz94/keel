@@ -1,0 +1,3 @@
+Fixed. Removed the `.sort()` in `src/dedupe.mjs:4` — it was reordering the deduped values (and sorting numbers lexicographically), breaking the first-appearance order.
+
+Full suite passes: `npm test` → 3 tests, 3 pass, 0 fail.
