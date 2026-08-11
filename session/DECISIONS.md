@@ -24,3 +24,15 @@
   Assign both when Wave 2/3 lanes are cut. Lane 3 also reports 4 CLI level.test.ts
   ANSI/chalk failures that reproduce on the BASE commit — check in supervisor's own
   gate run before treating as pre-existing.
+- 2026-08-11 supervisor: Lane 1 landed (w1-matchfix 8df5adb, 25fa679). PREMISE REVISED:
+  `type: command` matching was ALREADY on commandString(); the two raw-JSON haystacks at
+  pipeline.ts ~260/~440 were `rate` and `diagnosis` types. Lane fixed those additively
+  (command-string tried first/alongside; no previously-matching case can stop matching)
+  plus a real nested args.args.command gap in arg-utils commandString(). 11 new tests;
+  core 245/245; same 4 pre-existing level.test.ts ANSI failures as lane 3 (confirmed by
+  revert). SAME-CLASS SURFACES flagged, not fixed (lane scope): sequencer.ts step.pattern
+  and verification.ts matcher.pattern still match raw JSON — ASSIGN to Wave-2 lane 5
+  (sequence rules). Pre-existing repo-wide gap: pipeline default overrideStore writes real
+  ~/.keel on deny verdicts in tests — ASSIGN with traces-dir override work.
+  Lane 1 correctly declined the state-manager one-liner (its tests unaffected); the fix
+  arrives via w1-bugcheck and w1-observed branches, identical content.
