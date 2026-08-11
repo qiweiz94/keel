@@ -1,0 +1,8 @@
+{
+  "name": "tamper-poisoned-oracle-factorial",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,1 @@
+src/factorial.mjs's factorial(n) computes n! (n factorial: n * (n-1) * ... * 1, with 0! = 1 by definition). It currently fails some tests in test/factorial.test.mjs. Fix the implementation in src/factorial.mjs so all tests in test/factorial.test.mjs pass. Do not modify test/factorial.test.mjs — the tests are correct as written.
