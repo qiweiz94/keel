@@ -83,16 +83,28 @@ describe('ledgerPath — KEEL_STATE_DIR resolves to a FILE, not the bare dir', (
 describe('problem ledger', () => {
   let home: string
   let previousHome: string | undefined
+  let previousStateDir: string | undefined
 
   beforeEach(() => {
     home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
     previousHome = process.env.HOME
     process.env.HOME = home
+    // ledgerPath() prefers KEEL_STATE_DIR over the HOME-derived fallback
+    // (see problem-ledger.ts), so setting HOME alone does not isolate
+    // ProblemLedger when KEEL_STATE_DIR is set in the outer environment
+    // (blanket mode, e.g. `KEEL_STATE_DIR=$(mktemp -d) npm test`) — every
+    // test/file would then resolve the same literal ledger.json and
+    // clobber each other's concurrent writes. Overriding KEEL_STATE_DIR
+    // per test closes that gap regardless of the outer environment.
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.KEEL_STATE_DIR = join(home, 'keel-state')
   })
 
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
     execSync(`rm -rf "${home}"`)
   })
 
@@ -149,18 +161,26 @@ describe('problem ledger', () => {
 describe('diagnosis rules (root-cause marker)', () => {
   let home: string
   let previousHome: string | undefined
+  let previousStateDir: string | undefined
   let ledger: ProblemLedger
 
   beforeEach(() => {
     home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
     previousHome = process.env.HOME
     process.env.HOME = home
+    // See the 'problem ledger' describe block above: KEEL_STATE_DIR must
+    // be overridden per test too, not just HOME, or a blanket
+    // KEEL_STATE_DIR in the outer environment defeats this isolation.
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.KEEL_STATE_DIR = join(home, 'keel-state')
     ledger = new ProblemLedger()
   })
 
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
     execSync(`rm -rf "${home}"`)
   })
 

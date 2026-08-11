@@ -23,12 +23,23 @@ describe('dial level changes apply on the next call (no one-call lag)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'level-reload-'))
   const rulesPath = join(dir, '.keel', 'rules.yaml')
   const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  // Isolate ~/.keel (state, overrides, sentinel) so the test never touches
-  // the host's real enforcement state.
-  const previousHome = process.env.HOME
-  process.env.HOME = home
+  let previousHome: string | undefined
+  let previousStateDir: string | undefined
   const results: Array<{ label: string; action: string }> = []
   beforeAll(async () => {
+    // Isolate ~/.keel (state, overrides, sentinel) so the test never
+    // touches the host's real enforcement state. Set HERE, inside
+    // beforeAll — not at describe-body (collection-time) scope, where a
+    // sibling describe block's own collection-time set/afterAll-reset can
+    // interleave with this one and leave process.env.HOME (and therefore
+    // StateManager's default state dir, via homedir()) pointed at the
+    // wrong place, including the real host home. KEEL_STATE_DIR is set
+    // explicitly too so state-dir resolution never falls through to
+    // homedir() at all.
+    previousHome = process.env.HOME
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.HOME = home
+    process.env.KEEL_STATE_DIR = join(home, '.keel', 'state')
     mkdirSync(join(dir, '.keel'), { recursive: true })
     const mkRules = (level: string, id: string) => `version: 1
 level: ${level}
@@ -87,6 +98,8 @@ rules:
   afterAll(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
     rmSync(home, { recursive: true, force: true })
     rmSync(dir, { recursive: true, force: true })
   })
@@ -205,11 +218,17 @@ describe('sprint auto-expiry reverts enforcement to balanced (timeout-only, no d
   const dir = mkdtempSync(join(tmpdir(), 'sprint-expiry-'))
   const rulesPath = join(dir, '.keel', 'rules.yaml')
   const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const previousHome = process.env.HOME
-  process.env.HOME = home
+  let previousHome: string | undefined
+  let previousStateDir: string | undefined
   const results: Record<string, string> = {}
 
   beforeAll(async () => {
+    // See the sibling describe block above for why HOME/KEEL_STATE_DIR are
+    // set here, inside beforeAll, rather than at describe-body scope.
+    previousHome = process.env.HOME
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.HOME = home
+    process.env.KEEL_STATE_DIR = join(home, '.keel', 'state')
     mkdirSync(join(dir, '.keel'), { recursive: true })
     const rules = (startedAtIso: string) => `version: 1
 level: sprint
@@ -253,6 +272,8 @@ rules:
   afterAll(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
     rmSync(home, { recursive: true, force: true })
     rmSync(dir, { recursive: true, force: true })
   })

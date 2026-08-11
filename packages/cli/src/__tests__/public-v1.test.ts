@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +13,33 @@ function tempProject(): string {
 }
 
 describe('public v1 behavior', () => {
+  // Isolate ~/.keel: `evaluateToolCall`/`initEnforce` default-construct a
+  // StateManager per call from KEEL_STATE_DIR/HOME (state-manager.ts's
+  // stateDir(), read correctly at call time) — but this file never
+  // overrode either, so every call below was landing on the developer's
+  // REAL ~/.keel/state. Overriding process.env for the whole file also
+  // covers the two execFileSync calls further down: they pass no `env`
+  // option, so they inherit process.env as mutated here.
+  let tempHome: string
+  let previousHome: string | undefined
+  let previousStateDir: string | undefined
+
+  beforeAll(() => {
+    tempHome = mkdtempSync(join(tmpdir(), 'keel-public-v1-home-'))
+    previousHome = process.env.HOME
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.HOME = tempHome
+    process.env.KEEL_STATE_DIR = join(tempHome, '.keel', 'state')
+  })
+
+  afterAll(() => {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
+    rmSync(tempHome, { recursive: true, force: true })
+  })
+
   it('learn mode observes a deny without blocking it', async () => {
     const project = tempProject()
     mkdirSync(join(project, '.keel'), { recursive: true })

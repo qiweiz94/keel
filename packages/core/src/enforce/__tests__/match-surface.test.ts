@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execSync } from 'node:child_process'
+import { join } from 'node:path'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -300,12 +301,21 @@ describe('diagnosis rule match surface (type: diagnosis)', () => {
     const home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
     const previousHome = process.env.HOME
     process.env.HOME = home
+    // ledgerPath() (problem-ledger.ts) prefers KEEL_STATE_DIR over the
+    // HOME-derived fallback, so HOME alone does not isolate ProblemLedger
+    // when KEEL_STATE_DIR is set in the outer environment (blanket mode).
+    // Override it per call too, mirroring ledger.test.ts's fix for the
+    // same gap.
+    const previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.KEEL_STATE_DIR = join(home, 'keel-state')
     const ledger = new ProblemLedger()
     return {
       ledger,
       cleanup: () => {
         if (previousHome === undefined) delete process.env.HOME
         else process.env.HOME = previousHome
+        if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+        else process.env.KEEL_STATE_DIR = previousStateDir
         execSync(`rm -rf "${home}"`)
       },
     }

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 let testDir: string
+let tempHome: string
 
 interface RunResult {
   stdout: string
@@ -24,6 +25,18 @@ function run(args: string): RunResult {
       encoding: 'utf-8',
       cwd: testDir,
       timeout: 10000,
+      // Isolate ~/.keel (state, rules, audit): several tests below run
+      // `check --command "rm -rf /"` / `--no-verify` repeatedly to exercise
+      // warn-then-deny escalation. Without an isolated HOME (and
+      // KEEL_STATE_DIR, which state-manager.ts's stateDir() prefers over
+      // the HOME-derived path — see the same isolation note in
+      // hook.test.ts) those calls hit the developer's REAL
+      // ~/.keel/state/deny-first-time.json and friends.
+      env: {
+        ...process.env,
+        HOME: tempHome,
+        KEEL_STATE_DIR: join(tempHome, '.keel', 'state'),
+      },
     })
     return { stdout, code: 0 }
   } catch (err: any) {
@@ -36,6 +49,7 @@ describe('CLI Integration', () => {
   beforeAll(() => {
     // Create temp git repo
     testDir = mkdtempSync(join(tmpdir(), 'keel-test-'))
+    tempHome = mkdtempSync(join(tmpdir(), 'keel-test-home-'))
     execSync('git init', { cwd: testDir })
     execSync('git config user.email test@test.com', { cwd: testDir })
     execSync('git config user.name test', { cwd: testDir })
@@ -43,6 +57,7 @@ describe('CLI Integration', () => {
 
   afterAll(() => {
     rmSync(testDir, { recursive: true, force: true })
+    rmSync(tempHome, { recursive: true, force: true })
   })
 
   it('shows version', () => {
