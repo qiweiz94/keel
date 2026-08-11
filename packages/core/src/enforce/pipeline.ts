@@ -14,6 +14,7 @@ import { StuckTracker } from './stuck-tracker.js'
 import { ProblemLedger } from './problem-ledger.js'
 import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
+import { extractPackageInstalls, checkPackages, decidePackageAction, PackageVerifierCache } from './package-verifier.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
 import { OracleTracker } from './oracle-tracker.js'
@@ -42,6 +43,10 @@ export interface PipelineConfig {
   researchTracker?: ResearchTracker
   stuckTracker?: StuckTracker
   oracleTracker?: OracleTracker
+  /** Disk-backed verdict cache for `type: package` rules. Defaults to KEEL_STATE_DIR/package-verifier.json. */
+  packageVerifierCache?: PackageVerifierCache
+  /** Injection point for tests — never hits the real registry unless explicitly provided (or KEEL_NPM_REGISTRY is set outside vitest). */
+  packageVerifierFetch?: typeof fetch
   ledger?: ProblemLedger
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
@@ -76,6 +81,7 @@ export class EnforcementPipeline {
   private lastRulesHash: string = ''
   private previousRulesHash: string = ''
   private readonly overrideStore
+  private readonly packageVerifierCache: PackageVerifierCache
 
   constructor(config: PipelineConfig) {
     this.config = config
@@ -86,6 +92,7 @@ export class EnforcementPipeline {
     // pass `stateManager`, which is all OracleTracker needs.
     this.oracleTracker = config.oracleTracker || new OracleTracker(config.stateManager)
     this.overrideStore = config.overrideStore || new FileRuleOverrideStore()
+    this.packageVerifierCache = config.packageVerifierCache || new PackageVerifierCache()
     this.lastRulesHash = this.computeRulesHash()
     this.loadState()
   }
@@ -433,6 +440,56 @@ export class EnforcementPipeline {
         }
 
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3)
+      }
+
+      // Match against package-install commands (slopsquatting gate). Lazy
+      // by construction: extractPackageInstalls is a cheap regex/tokenizer
+      // pass, and the network-touching checkPackages() call only happens
+      // when it actually found a candidate install. See
+      // enforce/package-verifier.ts for the full verdict semantics.
+      //
+      // Action mapping is PARTIALLY fixed, not fully rule-configurable:
+      //   - not_found  -> forced 'deny', skipFirstWarning (unfulfillable
+      //     regardless of intent — the first hallucinated install is
+      //     already blocked, not just warned).
+      //   - unverified -> forced 'prompt' (network failure / timeout /
+      //     scoped-404 / budget-exhausted must NEVER deny).
+      //   - age_gate   -> the rule's own declared `action` (this is the
+      //     "configurable" axis the rule author controls, e.g. downgrade
+      //     to `warn` or escalate to `deny` for the age check specifically).
+      //
+      // Tier-1 cache note: `gatedRules` (above, computed from each rule's
+      // STATIC declared `action`) already excludes this rule from the
+      // stateless allow-cache as long as it ships `action: prompt` (the
+      // default) — a network verdict must never be cached forever by
+      // (tool, args) alone, since the age-gate outcome for the same
+      // command changes as the package ages past the threshold. If a rule
+      // author overrides the top-level `action` to something other than
+      // `prompt` (e.g. `warn`), that automatic exclusion no longer applies
+      // and an identical install command CAN cache a stale tier-1 `allow`
+      // until the rules file changes — acceptable for the shipped default
+      // (`action: prompt`), called out here for anyone reconfiguring it.
+      if (rule.type === 'package') {
+        const cmdStr = commandString(input)
+        const specs = extractPackageInstalls(cmdStr)
+        if (specs.length === 0) continue
+        const ageThresholdDays = rule.age_days ?? 30
+        const results = await checkPackages(specs, {
+          ageThresholdDays,
+          totalTimeoutMs: 2000,
+          cache: this.packageVerifierCache,
+          fetchImpl: this.config.packageVerifierFetch,
+        })
+        const decision = decidePackageAction(results, ageThresholdDays)
+        if (decision.reason === 'ok') continue
+        if (decision.reason === 'not_found') {
+          return this.violation(input, { ...rule, action: 'deny' }, decision.message, start, 3, rule.id, undefined, true)
+        }
+        if (decision.reason === 'unverified') {
+          return this.violation(input, { ...rule, action: 'prompt' }, decision.message, start, 3)
+        }
+        // age_gate — rule.action stands as declared.
+        return this.violation(input, rule, decision.message, start, 3)
       }
 
       // Match against stuck-loop rules: the same failing command fingerprint

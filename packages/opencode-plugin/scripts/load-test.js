@@ -21,6 +21,18 @@ const TEMPLATE = join(HERE, '..', '..', 'cli', 'templates', 'keel-enforce.js')
 const tmpHome = fs.mkdtempSync(join(os.tmpdir(), 'keel-pkg-test-'))
 process.env.HOME = tmpHome
 
+// This script runs under plain `node`, not vitest — package-verifier.ts's
+// VITEST-only registry safety net does not apply here. Nothing in this
+// file currently exercises the real self-bootstrap DEFAULT_RULES_YAML path
+// (every rules.yaml used below is pre-written before plugin.server() is
+// called, so the write-when-missing bootstrap in plugin.ts never fires —
+// see session/EVIDENCE/wave2-slop.md for the trace), but a `type: package`
+// rule will land in that constant once the unverified-package-install
+// proposal is pasted in, and a future edit to this script could easily
+// start relying on real bootstrap. Set this defensively now rather than
+// depend on that absence staying true.
+process.env.KEEL_NPM_REGISTRY = 'http://127.0.0.1:1'
+
 let failures = 0
 function check(name, ok) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`)

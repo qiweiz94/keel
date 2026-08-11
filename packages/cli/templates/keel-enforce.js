@@ -5,9 +5,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 // ../core/src/enforce/pipeline.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3, rmSync, statSync as statSync2 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { join as join2, resolve } from "node:path";
+import { existsSync as existsSync4, readFileSync as readFileSync4, rmSync, statSync as statSync2 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join3, resolve } from "node:path";
 
 // ../core/src/enforce/rule-parser.ts
 import { readFileSync, existsSync } from "node:fs";
@@ -6349,10 +6349,14 @@ function validateRules(rules) {
     "stuck",
     "diagnosis",
 <<<<<<< HEAD
+<<<<<<< HEAD
     "claim"
 =======
     "oracle"
 >>>>>>> w2-oracle
+=======
+    "package"
+>>>>>>> w2-slop
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6369,7 +6373,11 @@ function validateRules(rules) {
     "bypass",
     "discipline",
     "workflow",
+<<<<<<< HEAD
     "verification"
+=======
+    "supply-chain"
+>>>>>>> w2-slop
   ]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -6423,6 +6431,9 @@ function validateRules(rules) {
     if (rule.type === "filesystem" && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`);
     if (rule.type === "content" && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`);
     if (rule.type === "network" && typeof rule.match !== "string") errors.push(`Rule "${label}" is a network rule but has no match`);
+    if (rule.type === "package" && rule.age_days !== void 0 && (typeof rule.age_days !== "number" || !Number.isFinite(rule.age_days) || rule.age_days < 0)) {
+      errors.push(`Rule "${label}" is a package rule but has an invalid age_days (expected a non-negative number)`);
+    }
     if (rule.type === "env" && (!Array.isArray(rule.vars) || rule.vars.length === 0)) errors.push(`Rule "${label}" is an env rule but has no vars`);
     if (rule.type === "flow" && (!Array.isArray(rule.sources) || !Array.isArray(rule.sinks))) errors.push(`Rule "${label}" is a flow rule but is missing sources or sinks`);
     if (rule.type === "sequence" && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {
@@ -6523,6 +6534,318 @@ function hashRulesFile(filePath) {
     hash |= 0;
   }
   return hash.toString(36);
+}
+
+// ../core/src/enforce/package-verifier.ts
+import { readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2, mkdirSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun"]);
+var ADD_SUBCOMMANDS = {
+  npm: /* @__PURE__ */ new Set(["install", "i"]),
+  pnpm: /* @__PURE__ */ new Set(["add"]),
+  yarn: /* @__PURE__ */ new Set(["add"]),
+  bun: /* @__PURE__ */ new Set(["add"])
+};
+var QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun)\b/;
+function tokenize(segment) {
+  const tokens = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while (m = re.exec(segment)) {
+    const tok = m[1] ?? m[2] ?? m[3];
+    if (tok) tokens.push(tok);
+  }
+  return tokens;
+}
+function managerFromToken(token) {
+  const base = token.split("/").pop() ?? token;
+  return MANAGERS.has(base) ? base : null;
+}
+function isNonRegistrySpec(spec) {
+  if (!spec) return true;
+  if (spec.startsWith("./") || spec.startsWith("../") || spec.startsWith("/") || spec.startsWith("~")) return true;
+  if (/^(file|git|git\+ssh|git\+https|git\+http|github|http|https):/i.test(spec)) return true;
+  if (/\.(tgz|tar\.gz|tar)$/i.test(spec)) return true;
+  if (!spec.startsWith("@") && /^[^@/\s]+\/[^@/\s]+(#.*)?$/.test(spec)) return true;
+  return false;
+}
+function parseSpec(spec) {
+  let name;
+  let version;
+  if (spec.startsWith("@")) {
+    const secondAt = spec.indexOf("@", 1);
+    if (secondAt === -1) {
+      name = spec;
+      version = void 0;
+    } else {
+      name = spec.slice(0, secondAt);
+      version = spec.slice(secondAt + 1);
+    }
+  } else {
+    const at = spec.indexOf("@");
+    if (at <= 0) {
+      name = spec;
+      version = void 0;
+    } else {
+      name = spec.slice(0, at);
+      version = spec.slice(at + 1);
+    }
+  }
+  if (!name) return null;
+  if (version && /^(workspace|link|file|git|git\+ssh|git\+https|github):/i.test(version)) return null;
+  if (!/^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i.test(name)) return null;
+  return { name, requestedVersion: version || void 0 };
+}
+function extractSegmentInstalls(segment) {
+  const tokens = tokenize(segment);
+  let i = 0;
+  while (i < tokens.length && (tokens[i] === "sudo" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) i++;
+  if (i >= tokens.length) return [];
+  const manager = managerFromToken(tokens[i]);
+  if (!manager) return [];
+  i++;
+  if (i >= tokens.length) return [];
+  const subcommand = tokens[i].toLowerCase();
+  if (!ADD_SUBCOMMANDS[manager].has(subcommand)) return [];
+  i++;
+  const specs = [];
+  for (; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (!tok || tok.startsWith("-")) continue;
+    if (isNonRegistrySpec(tok)) continue;
+    const parsed = parseSpec(tok);
+    if (parsed) specs.push({ ...parsed, manager, raw: tok });
+  }
+  return specs;
+}
+function extractPackageInstalls(command) {
+  if (!command || !QUICK_PREFILTER.test(command)) return [];
+  const segments = command.split(/&&|\|\||;|\|/);
+  const out = [];
+  for (const seg of segments) out.push(...extractSegmentInstalls(seg.trim()));
+  return out;
+}
+function defaultRegistryBaseUrl() {
+  if (process.env.KEEL_NPM_REGISTRY) return process.env.KEEL_NPM_REGISTRY;
+  if (process.env.VITEST) return "http://127.0.0.1:1";
+  return "https://registry.npmjs.org";
+}
+var DEFAULT_MAX_RESPONSE_BYTES = 1e7;
+function registryPath(name) {
+  if (name.startsWith("@")) {
+    const [scope, pkg] = name.slice(1).split("/");
+    return `@${encodeURIComponent(scope)}/${encodeURIComponent(pkg ?? "")}`;
+  }
+  return encodeURIComponent(name);
+}
+async function fetchJsonCapped(url, timeoutMs, fetchImpl, maxBytes) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(0, timeoutMs));
+  try {
+    const res = await fetchImpl(url, { signal: controller.signal, headers: { "User-Agent": "keel-package-verifier/0.1" } });
+    if (!res.ok) return { ok: false, status: res.status, kind: "http_error" };
+    if (!res.body || typeof res.body.getReader !== "function") {
+      const json = await res.json();
+      return { ok: true, status: res.status, json };
+    }
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return { ok: false, kind: "too_large" };
+      }
+      chunks.push(value);
+    }
+    const text = Buffer.concat(chunks).toString("utf-8");
+    return { ok: true, status: res.status, json: JSON.parse(text) };
+  } catch (err) {
+    if (controller.signal.aborted) return { ok: false, kind: "timeout" };
+    return { ok: false, kind: "network_error" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function checkPackageExistence(name, opts, timeoutMs) {
+  if (timeoutMs <= 0) return { verdict: "unverified", reason: "budget_exhausted" };
+  const url = `${opts.registryBaseUrl}/${registryPath(name)}`;
+  const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes);
+  if (outcome.ok) {
+    const created = outcome.json?.time?.created;
+    if (!created) return { verdict: "exists" };
+    const createdMs = Date.parse(created);
+    if (Number.isNaN(createdMs)) return { verdict: "exists" };
+    return { verdict: "exists", createdAt: created, ageDays: (Date.now() - createdMs) / 864e5 };
+  }
+  if (outcome.kind === "http_error" && outcome.status === 404) {
+    if (name.startsWith("@")) return { verdict: "unverified", reason: "scoped_not_public" };
+    return { verdict: "not_found" };
+  }
+  if (outcome.kind === "timeout") return { verdict: "unverified", reason: "timeout" };
+  if (outcome.kind === "too_large") return { verdict: "unverified", reason: "too_large" };
+  return { verdict: "unverified", reason: "network_error" };
+}
+async function searchDidYouMean(name, opts, timeoutMs) {
+  if (timeoutMs <= 0) return [];
+  try {
+    const url = `${opts.registryBaseUrl}/-/v1/search?text=${encodeURIComponent(name)}&size=5`;
+    const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes);
+    if (!outcome.ok) return [];
+    const objects = outcome.json?.objects;
+    if (!Array.isArray(objects)) return [];
+    return objects.map((o) => o?.package?.name).filter((n) => typeof n === "string" && n.length > 0).slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+var CACHE_TTL_MS = {
+  exists: 24 * 60 * 60 * 1e3,
+  not_found: 60 * 60 * 1e3,
+  unverified: 5 * 60 * 1e3
+};
+function packageVerifierStateDir() {
+  return process.env.KEEL_STATE_DIR || join(homedir(), ".keel", "state");
+}
+var PackageVerifierCache = class {
+  constructor(stateDir = packageVerifierStateDir()) {
+    this.stateDir = stateDir;
+  }
+  stateDir;
+  filePath() {
+    return join(this.stateDir, "package-verifier.json");
+  }
+  load() {
+    try {
+      const p = this.filePath();
+      if (!existsSync2(p)) return {};
+      return JSON.parse(readFileSync2(p, "utf-8"));
+    } catch {
+      return {};
+    }
+  }
+  save(data) {
+    try {
+      mkdirSync(this.stateDir, { recursive: true });
+      const p = this.filePath();
+      const tmp = `${p}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(data));
+      renameSync(tmp, p);
+    } catch {
+    }
+  }
+  expired(entry, now) {
+    return now - entry.checkedAt > CACHE_TTL_MS[entry.verdict];
+  }
+  get(name, now = Date.now()) {
+    const entry = this.load()[name];
+    if (!entry) return null;
+    if (this.expired(entry, now)) return null;
+    return entry;
+  }
+  set(entry, now = Date.now()) {
+    const all = this.load();
+    all[entry.name] = entry;
+    for (const [k, v] of Object.entries(all)) {
+      if (this.expired(v, now)) delete all[k];
+    }
+    this.save(all);
+  }
+};
+async function checkPackages(specs, opts = {}) {
+  const now = opts.now ?? Date.now;
+  const totalTimeoutMs = opts.totalTimeoutMs ?? 2e3;
+  const registryBaseUrl = opts.registryBaseUrl ?? defaultRegistryBaseUrl();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const cache = opts.cache ?? new PackageVerifierCache();
+  const maxBytes = opts.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const lookupOpts = { registryBaseUrl, fetchImpl, maxBytes };
+  const deadline = now() + totalTimeoutMs;
+  const seen = /* @__PURE__ */ new Map();
+  const results = [];
+  for (const spec of specs) {
+    const already = seen.get(spec.name);
+    if (already) {
+      results.push({ ...already, requestedVersion: spec.requestedVersion });
+      continue;
+    }
+    const cached = cache.get(spec.name, now());
+    let result;
+    if (cached) {
+      result = {
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: cached.verdict,
+        reason: cached.reason,
+        ageDays: cached.ageDays,
+        createdAt: cached.createdAt,
+        didYouMean: cached.didYouMean,
+        fromCache: true
+      };
+    } else {
+      const remaining = deadline - now();
+      const existence = await checkPackageExistence(spec.name, lookupOpts, remaining);
+      let didYouMean;
+      if (existence.verdict === "not_found") {
+        didYouMean = await searchDidYouMean(spec.name, lookupOpts, deadline - now());
+      }
+      result = {
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: existence.verdict,
+        reason: existence.reason,
+        ageDays: existence.ageDays,
+        createdAt: existence.createdAt,
+        didYouMean,
+        fromCache: false
+      };
+      cache.set({
+        name: spec.name,
+        verdict: result.verdict,
+        reason: result.reason,
+        ageDays: result.ageDays,
+        createdAt: result.createdAt,
+        didYouMean: result.didYouMean,
+        checkedAt: now()
+      }, now());
+    }
+    seen.set(spec.name, result);
+    results.push(result);
+  }
+  return results;
+}
+function buildNotFoundMessage(r) {
+  const suggestion = r.didYouMean?.length ? ` Did you mean: ${r.didYouMean.join(", ")}?` : "";
+  return `Package "${r.name}" does not exist on the npm registry \u2014 this install is unfulfillable regardless of intent.${suggestion}`;
+}
+function buildUnverifiedMessage(r) {
+  if (r.reason === "scoped_not_public") {
+    return `unverified \u2014 "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist \u2014 treating as unverified, not denying.`;
+  }
+  if (r.reason === "budget_exhausted") {
+    return `unverified \u2014 registry lookup budget exhausted before "${r.name}" could be checked`;
+  }
+  if (r.reason === "too_large") {
+    return `unverified \u2014 registry response for "${r.name}" exceeded the size cap before it could be checked`;
+  }
+  return `unverified \u2014 registry unreachable (could not verify "${r.name}": ${r.reason ?? "unknown error"})`;
+}
+function buildAgeGateMessage(r, ageThresholdDays) {
+  const days = r.ageDays !== void 0 ? Math.max(0, Math.floor(r.ageDays)) : void 0;
+  return `Package "${r.name}" was published ${days ?? "?"} day(s) ago (younger than the ${ageThresholdDays}-day threshold) \u2014 verify this isn't a fresh, potentially attacker-registered release before installing.`;
+}
+function decidePackageAction(results, ageThresholdDays) {
+  const notFound = results.find((r) => r.verdict === "not_found");
+  if (notFound) return { reason: "not_found", message: buildNotFoundMessage(notFound), result: notFound };
+  const unverified = results.find((r) => r.verdict === "unverified");
+  if (unverified) return { reason: "unverified", message: buildUnverifiedMessage(unverified), result: unverified };
+  const young = results.find((r) => r.verdict === "exists" && r.ageDays !== void 0 && r.ageDays < ageThresholdDays);
+  if (young) return { reason: "age_gate", message: buildAgeGateMessage(young, ageThresholdDays), result: young };
+  return { reason: "ok", message: "All installed packages verified against the npm registry." };
 }
 
 // ../core/src/enforce/arg-utils.ts
@@ -6903,23 +7226,29 @@ function matchesAnyTestGlob(value, patterns) {
 }
 
 // ../core/src/enforce/overrides.ts
-import { closeSync, existsSync as existsSync2, mkdirSync, openSync, readFileSync as readFileSync2, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join2 } from "node:path";
 var FileRuleOverrideStore = class {
   directory;
   file;
   lock;
+<<<<<<< HEAD
   constructor(home = homedir()) {
     this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, ".keel");
     this.file = join(this.directory, "overrides.json");
+=======
+  constructor(home = homedir2()) {
+    this.directory = join2(home, ".keel");
+    this.file = join2(this.directory, "overrides.json");
+>>>>>>> w2-slop
     this.lock = `${this.file}.lock`;
   }
   consume(ruleId) {
     let descriptor;
     let acquired = false;
     try {
-      mkdirSync(this.directory, { recursive: true });
+      mkdirSync2(this.directory, { recursive: true });
       try {
         descriptor = openSync(this.lock, "wx");
       } catch (error) {
@@ -6971,9 +7300,9 @@ var FileRuleOverrideStore = class {
     }
   }
   read() {
-    if (!existsSync2(this.file)) return {};
+    if (!existsSync3(this.file)) return {};
     try {
-      const parsed = JSON.parse(readFileSync2(this.file, "utf8"));
+      const parsed = JSON.parse(readFileSync3(this.file, "utf8"));
       return parsed && typeof parsed === "object" ? parsed : {};
     } catch {
       return {};
@@ -6981,8 +7310,8 @@ var FileRuleOverrideStore = class {
   }
   write(overrides) {
     const temporary = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(overrides, null, 2));
-    renameSync(temporary, this.file);
+    writeFileSync2(temporary, JSON.stringify(overrides, null, 2));
+    renameSync2(temporary, this.file);
   }
 };
 
@@ -7062,11 +7391,13 @@ var EnforcementPipeline = class {
   lastRulesHash = "";
   previousRulesHash = "";
   overrideStore;
+  packageVerifierCache;
   constructor(config) {
     this.config = config;
     this.verificationTracker = config.verificationTracker || new VerificationTracker(config.stateManager);
     this.oracleTracker = config.oracleTracker || new OracleTracker(config.stateManager);
     this.overrideStore = config.overrideStore || new FileRuleOverrideStore();
+    this.packageVerifierCache = config.packageVerifierCache || new PackageVerifierCache();
     this.lastRulesHash = this.computeRulesHash();
     this.loadState();
   }
@@ -7132,10 +7463,10 @@ var EnforcementPipeline = class {
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const protectFloor = (rules2) => rules2.some((rule) => rule.level === "protect" && (rule.type === "content" || rule.type === "sequence" || rule.type === "flow"));
     const reasoningChecks = depth === "deep";
-    const sentinelPath = this.config.disableFile || join2(homedir2(), ".keel", "DISABLED");
-    if (existsSync3(sentinelPath)) {
+    const sentinelPath = this.config.disableFile || join3(homedir3(), ".keel", "DISABLED");
+    if (existsSync4(sentinelPath)) {
       try {
-        const sentinel = JSON.parse(readFileSync3(sentinelPath, "utf-8"));
+        const sentinel = JSON.parse(readFileSync4(sentinelPath, "utf-8"));
         if (sentinel.expires_at && new Date(sentinel.expires_at) < /* @__PURE__ */ new Date()) {
           rmSync(sentinelPath);
         } else {
@@ -7321,6 +7652,27 @@ var EnforcementPipeline = class {
         }
         if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3);
       }
+      if (rule.type === "package") {
+        const cmdStr = commandString(input);
+        const specs = extractPackageInstalls(cmdStr);
+        if (specs.length === 0) continue;
+        const ageThresholdDays = rule.age_days ?? 30;
+        const results = await checkPackages(specs, {
+          ageThresholdDays,
+          totalTimeoutMs: 2e3,
+          cache: this.packageVerifierCache,
+          fetchImpl: this.config.packageVerifierFetch
+        });
+        const decision = decidePackageAction(results, ageThresholdDays);
+        if (decision.reason === "ok") continue;
+        if (decision.reason === "not_found") {
+          return this.violation(input, { ...rule, action: "deny" }, decision.message, start, 3, rule.id, void 0, true);
+        }
+        if (decision.reason === "unverified") {
+          return this.violation(input, { ...rule, action: "prompt" }, decision.message, start, 3);
+        }
+        return this.violation(input, rule, decision.message, start, 3);
+      }
       if (rule.type === "stuck" && rule.match && this.config.stuckTracker) {
         const cmdStr = commandString(input);
         if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
@@ -7396,11 +7748,11 @@ var EnforcementPipeline = class {
         const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
         const patchText = String(args.patchText || "");
         const inlineContent = String(args.content || args.text || patchText || "");
-        const isFile = resolvedPath && existsSync3(resolvedPath) && statSync2(resolvedPath).isFile();
+        const isFile = resolvedPath && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
         const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
         if (inlineContent || diskChanged) {
           for (const pattern of rule.patterns) {
-            const content = inlineContent || (isFile ? readFileSync3(resolvedPath, "utf-8") : "");
+            const content = inlineContent || (isFile ? readFileSync4(resolvedPath, "utf-8") : "");
             if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
               return this.violation(input, rule, rule.message, start, 5);
             }
@@ -7737,7 +8089,7 @@ var EnforcementPipeline = class {
 };
 
 // ../core/src/enforce/cache.ts
-import { readFileSync as readFileSync4, existsSync as existsSync4, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2 } from "node:fs";
+import { readFileSync as readFileSync5, existsSync as existsSync5, writeFileSync as writeFileSync3, mkdirSync as mkdirSync3 } from "node:fs";
 import { createHash } from "node:crypto";
 var ActionCache = class {
   session = /* @__PURE__ */ new Map();
@@ -7748,9 +8100,9 @@ var ActionCache = class {
   constructor(opts) {
     this.maxSize = opts?.maxSize || 1e4;
     this.persistentPath = opts?.persistentPath || null;
-    if (this.persistentPath && existsSync4(this.persistentPath)) {
+    if (this.persistentPath && existsSync5(this.persistentPath)) {
       try {
-        const data = JSON.parse(readFileSync4(this.persistentPath, "utf-8"));
+        const data = JSON.parse(readFileSync5(this.persistentPath, "utf-8"));
         if (typeof data === "object") {
           for (const [k, v] of Object.entries(data)) {
             this.persistent.set(k, v);
@@ -7805,12 +8157,12 @@ var ActionCache = class {
   flush() {
     if (!this.persistentPath) return;
     const dir = this.persistentPath.substring(0, this.persistentPath.lastIndexOf("/"));
-    if (!existsSync4(dir)) mkdirSync2(dir, { recursive: true });
+    if (!existsSync5(dir)) mkdirSync3(dir, { recursive: true });
     const data = {};
     for (const [k, v] of this.persistent) {
       data[k] = v;
     }
-    writeFileSync2(this.persistentPath, JSON.stringify(data, null, 0));
+    writeFileSync3(this.persistentPath, JSON.stringify(data, null, 0));
   }
   clear() {
     this.session.clear();
@@ -7843,8 +8195,8 @@ var ActionCache = class {
 var ContentTracker = class {
   hashes = /* @__PURE__ */ new Map();
   hasChanged(filePath) {
-    if (!existsSync4(filePath)) return true;
-    const content = readFileSync4(filePath, "utf-8");
+    if (!existsSync5(filePath)) return true;
+    const content = readFileSync5(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
       h = (h << 5) - h + content.charCodeAt(i);
@@ -7856,8 +8208,8 @@ var ContentTracker = class {
     return prev !== hash;
   }
   markUnchanged(filePath) {
-    if (!existsSync4(filePath)) return;
-    const content = readFileSync4(filePath, "utf-8");
+    if (!existsSync5(filePath)) return;
+    const content = readFileSync5(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
       h = (h << 5) - h + content.charCodeAt(i);
@@ -7951,7 +8303,7 @@ var SequenceDetector = class {
 };
 
 // ../core/src/enforce/flow-tracker.ts
-import { existsSync as existsSync5 } from "node:fs";
+import { existsSync as existsSync6 } from "node:fs";
 import { resolve as resolve2 } from "node:path";
 var FlowTracker = class {
   taggedValues = /* @__PURE__ */ new Map();
@@ -7965,7 +8317,7 @@ var FlowTracker = class {
     const args = input.args;
     const rawPath = String(args.path || args.file || args.filePath || "");
     const path2 = rawPath && !rawPath.startsWith("/") ? resolve2(input.cwd, rawPath) : rawPath;
-    if (path2 && existsSync5(path2)) {
+    if (path2 && existsSync6(path2)) {
       const configuredSources = typeof rule === "object" ? rule.sources : void 0;
       const matchedRule = configuredSources?.find((source) => this.pathMatches(path2, source)) || (!configuredSources ? this.matchesSensitivePath(path2) : null);
       if (matchedRule) {
@@ -8282,15 +8634,15 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync3, renameSync as renameSync2 } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4, renameSync as renameSync3 } from "node:fs";
+import { join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, readdirSync } from "node:fs";
-import { join as join4 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { appendFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync8, readdirSync } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -8330,19 +8682,19 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync8, readFileSync as readFileSync8, writeFileSync as writeFileSync5, mkdirSync as mkdirSync5, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync3 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { existsSync as existsSync9, readFileSync as readFileSync9, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
 var signingKey = null;
 function keyPath() {
-  return join5(homedir5(), ".keel", "receipt-key.json");
+  return join6(homedir6(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join5(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join6(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync8(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync9(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -8376,22 +8728,28 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join5(homedir5(), ".keel");
-    if (!existsSync8(dir)) mkdirSync5(dir, { recursive: true });
-    writeFileSync5(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join6(homedir6(), ".keel");
+    if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
+    writeFileSync6(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join5(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join6(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
+<<<<<<< HEAD
     const lines2 = readFileSync8(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
+=======
+    const lines = readFileSync9(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const r = JSON.parse(lines[i]);
+>>>>>>> w2-slop
       if ((r.session ?? "default") !== session) continue;
       return r.receipt_hash ?? null;
     }
@@ -8422,20 +8780,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join5(process.cwd(), ".keel", "receipts");
-    if (!existsSync8(dir)) mkdirSync5(dir, { recursive: true });
-    appendFileSync2(join5(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join6(process.cwd(), ".keel", "receipts");
+    if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
+    appendFileSync2(join6(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync9 } from "node:fs";
-import { extname, basename, dirname, join as join6 } from "node:path";
+import { readFileSync as readFileSync10 } from "node:fs";
+import { extname, basename, dirname, join as join7 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join6(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join7(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -8469,7 +8827,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync9(filePath, "utf-8");
+        const source = readFileSync10(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -8479,11 +8837,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync9(filePath, "utf-8"));
+        JSON.parse(readFileSync10(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync9(filePath, "utf-8"));
+        parse(readFileSync10(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -8515,10 +8873,10 @@ function isVerifiableFile(filePath) {
 }
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
-import { join as join7 } from "node:path";
-import { homedir as homedir6 } from "node:os";
-var STATE_DIR = process.env.KEEL_STATE_DIR || join7(homedir6(), ".keel", "state");
+import { readFileSync as readFileSync11, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
+import { join as join8 } from "node:path";
+import { homedir as homedir7 } from "node:os";
+var STATE_DIR = process.env.KEEL_STATE_DIR || join8(homedir7(), ".keel", "state");
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -8530,13 +8888,13 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join7(STATE_DIR, `${name}.json`);
+    return join8(STATE_DIR, `${name}.json`);
   }
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
-      if (existsSync9(p)) {
-        return JSON.parse(readFileSync10(p, "utf-8"));
+      if (existsSync10(p)) {
+        return JSON.parse(readFileSync11(p, "utf-8"));
       }
     } catch {
     }
@@ -8544,11 +8902,11 @@ var StateManager = class {
   }
   saveFile(name, data) {
     try {
-      mkdirSync6(STATE_DIR, { recursive: true });
+      mkdirSync7(STATE_DIR, { recursive: true });
       const p = this.statePath(name);
       const tmp = p + ".tmp";
-      writeFileSync6(tmp, JSON.stringify(data));
-      renameSync4(tmp, p);
+      writeFileSync7(tmp, JSON.stringify(data));
+      renameSync5(tmp, p);
     } catch {
     }
   }
