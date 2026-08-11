@@ -6898,7 +6898,9 @@ function pathFromPatch(patchText) {
   return m ? m[1].trim() : "";
 }
 function argPath(args) {
-  return String(args.path || args.filePath || args.file || args.dest || pathFromPatch(args.patchText) || "");
+  return String(
+    args.path || args.file_path || args.filePath || args.file || args.dest || args.destination || args.target_file || args.notebook_path || pathFromPatch(args.patchText) || ""
+  );
 }
 function stripContentArgs(args) {
   if (typeof args !== "object" || args === null) return args;
