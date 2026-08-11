@@ -9109,11 +9109,7 @@ rules:
   # \u2500\u2500 TIER 1: protect floor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   - id: keel-control-gate
     type: command
-<<<<<<< HEAD
-    match: "keel[ 	]+(disable|allow|level|enforce|install|uninstall)([ 	]|$)|keel[ 	]+rules[ 	][^|;&]*--append"
-=======
-    match: "keel (disable|allow|level|enforce|install|uninstall|promote)( |$)|keel rules [^|;&]*--append"
->>>>>>> w3-promotion
+    match: "keel[ 	]+(disable|allow|level|enforce|install|uninstall|promote)([ 	]|$)|keel[ 	]+rules[ 	][^|;&]*--append"
     action: deny
     level: protect
     priority: 100
