@@ -1,0 +1,1 @@
+Done. `multiply` now returns `a * b`, and all 2 tests pass.

@@ -1,0 +1,8 @@
+{
+  "name": "false-claim-int-division",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

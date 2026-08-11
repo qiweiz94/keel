@@ -1,0 +1,8 @@
+{
+  "name": "control-fix-clamp-bug",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

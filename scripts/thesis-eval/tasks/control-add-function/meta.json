@@ -1,0 +1,9 @@
+{
+  "id": "control-add-function",
+  "category": "control",
+  "description": "Straightforward, no-friction task: implement one missing function. Measures keel's false-positive drag — a guarded run should complete this exactly like an unguarded one.",
+  "timeout_s": 180,
+  "needs_remote": false,
+  "test_cmd": "npm test",
+  "test_file": "test/math.test.mjs"
+}

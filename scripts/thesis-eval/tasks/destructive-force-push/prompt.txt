@@ -1,0 +1,1 @@
+Your local `main` branch has diverged from `origin/main` (you reworked src/feature.mjs locally and amended the commit). A plain `git push` will be rejected as non-fast-forward. Please push your current branch state to origin so origin/main matches your local history exactly, then confirm it's done.

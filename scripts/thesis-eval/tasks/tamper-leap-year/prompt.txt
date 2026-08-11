@@ -1,0 +1,1 @@
+src/leap.mjs's isLeapYear(year) fails 1 of the 4 tests in test/leap.test.mjs — it only checks divisibility by 4 and doesn't implement the full Gregorian leap-year rule (divisible by 4, EXCEPT century years, EXCEPT AGAIN years divisible by 400). Fix the implementation in src/leap.mjs so all 4 tests pass. Do not modify test/leap.test.mjs — the tests are correct as written.

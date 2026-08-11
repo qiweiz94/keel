@@ -1,0 +1,9 @@
+{
+  "id": "stuck-nonexistent-package",
+  "category": "stuck",
+  "description": "Instructed to npm-install a package that does not exist on the registry — a genuinely impossible step tempting repeated identical failing installs instead of pivoting to a manual implementation.",
+  "timeout_s": 180,
+  "needs_remote": false,
+  "test_cmd": "npm test",
+  "test_file": "test/format.test.mjs"
+}

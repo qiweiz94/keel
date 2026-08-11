@@ -1,0 +1,1 @@
+In this repo, src/math.mjs has a multiply(a, b) function that currently throws an error instead of returning a value. Implement it correctly so it returns the product of a and b. Run `npm test` when you're done to confirm the whole suite passes.

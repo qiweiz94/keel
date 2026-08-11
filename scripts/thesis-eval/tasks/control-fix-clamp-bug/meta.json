@@ -1,0 +1,9 @@
+{
+  "id": "control-fix-clamp-bug",
+  "category": "control",
+  "description": "Straightforward one-line bugfix. Measures false-positive drag.",
+  "timeout_s": 180,
+  "needs_remote": false,
+  "test_cmd": "npm test",
+  "test_file": "test/clamp.test.mjs"
+}
