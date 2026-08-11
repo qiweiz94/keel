@@ -149,9 +149,10 @@ describe('shell-normalization closes bypasses of the shipped defaults (M1/A2)', 
       expect(r.action).toBe('deny')
       expect(r.rule_id).toBe('no-destructive-commands')
     })
-    it("python3 -c \"import shutil; shutil.rmtree('/')\" — honest verdict: allow. The normalizer exposes the interpreter body as a matching surface (proven directly in command-normalizer.test.ts), but no SHIPPED default rule's pattern targets `shutil.rmtree` or `rmtree` at all, and this lane may not edit DEFAULT_RULES_YAML to add one. Closing this specific payload needs a new rule — a separate, out-of-scope change; the surface it would need to match against now exists.", async () => {
+    it("python3 -c \"import shutil; shutil.rmtree('/')\" denies — M1 ruleset-followups (Task 1): this WAS the honest 'allow' documented here before this lane. The interpreter-body surface A2 exposes was real (proven in command-normalizer.test.ts) but no shipped rule targeted it. A new rule, no-destructive-interpreter-body, now matches destructive python/node calls (shutil.rmtree, os.system/subprocess running rm -rf, os.remove, fs.rmSync/rmdirSync) against a literal root or home target — see DEFAULT_RULES_YAML and tests/rules/no-destructive-interpreter-body/.", async () => {
       const r = await pipeline.evaluate(input('Bash', { command: `python3 -c "import shutil; shutil.rmtree('/')"` }, 'i3'))
-      expect(r.action).toBe('allow')
+      expect(r.action).toBe('deny')
+      expect(r.rule_id).toBe('no-destructive-interpreter-body')
     })
   })
 
@@ -165,8 +166,16 @@ describe('shell-normalization closes bypasses of the shipped defaults (M1/A2)', 
       const r = await pipeline.evaluate(input('Bash', { command: 'git commit --signoff -m "force push is bad"' }, 'b2'))
       expect(r.action).toBe('allow')
     })
-    it('echo "rm -rf /" — measured: this ALREADY denies today on the raw string alone (no-destructive-commands has no anchor after the path alternatives it hunts for, so a quoted echo argument matches the same as a real invocation). This is a PRE-EXISTING false positive, not one the normalizer introduces — the additive constraint (never remove a prior catch) means this lane cannot narrow it away, and the quoting decision documented in command-normalizer.ts (preserve quotes around any whitespace-bearing span) guarantees the normalizer does not make it WORSE. Asserting the honest current verdict.', async () => {
+    it('echo "rm -rf /" stays allow — M1 ruleset-followups (Task 2, the G2 false positive): this WAS a denied pre-existing false positive documented here before this lane (no-destructive-commands had no anchor requiring "rm" to sit at a real command position, so a quoted echo argument matched the same as a real invocation). Fixed with a negative lookbehind excluding "rm" immediately preceded by a quote character — exactly the A2 quote-preservation signal (a whitespace-bearing quoted argument keeps its quotes verbatim, so "rm" in echo "rm -rf /" is always quote-adjacent on every surface, while a real invocation, including through sudo/compound-splitting/interpreter-body surfaces, never is).', async () => {
       const r = await pipeline.evaluate(input('Bash', { command: 'echo "rm -rf /"' }, 'b3'))
+      expect(r.action).toBe('allow')
+    })
+    it("echo 'rm -rf /' (single-quoted) stays allow — same fix, other quote style", async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: "echo 'rm -rf /'" }, 'b3b'))
+      expect(r.action).toBe('allow')
+    })
+    it('a real rm -rf / behind a sudo prefix still denies — the regression guard for the lookbehind fix: "rm" here is preceded by a space, not a quote, so the fix must not touch it', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: 'sudo rm -rf /' }, 'b3c'))
       expect(r.action).toBe('deny')
       expect(r.rule_id).toBe('no-destructive-commands')
     })

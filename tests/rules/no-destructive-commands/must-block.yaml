@@ -55,3 +55,11 @@ cases:
     tool: Bash
     args:
       command: "rm --no-preserve-root -rf /"
+  - note: "M1 ruleset-followups (G2 regression guard): the real thing (no quotes) must keep denying after the anchor fix — this is the discriminator that proves the fix didn't weaken the real catch"
+    tool: Bash
+    args:
+      command: "x && rm -rf /"
+  - note: "M1 ruleset-followups (G2 regression guard): a real destructive command inside a shell -c body must keep denying — the interpreter-body surface exposes the DECODED (unquoted) value, so the anchor still sees rm at the start of that surface"
+    tool: Bash
+    args:
+      command: 'sh -c "rm -rf /"'

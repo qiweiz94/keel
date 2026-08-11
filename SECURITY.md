@@ -217,22 +217,28 @@ before this landed can stop matching):
    agent's real process environment, or a value produced by command
    substitution (`` $(...) ``/backticks — not parsed at all) is invisible to
    this module and stays unresolved, same as before.
-3. **Interpreter escape hatches — surface exposed, default-rule coverage
-   unchanged.** `sh|bash|dash|zsh|ksh -c "<cmd>"` is now recursed one level
+3. **Interpreter escape hatches — CLOSED for the shipped default `type:
+   command` rules.** `sh|bash|dash|zsh|ksh -c "<cmd>"` is recursed one level
    deep and its body re-normalized through the same pipeline, so an
    *obfuscated* payload inside a shell one-liner is caught
    (`sh -c 'r"m" -rf /'` denies; a plain `sh -c "rm -rf /"` already denied
    pre-A2 via the shipped pattern's lack of a trailing anchor — not a new
    catch by itself). For non-shell interpreters — `python(2/3)? -c`,
-   `node -e/--eval`, `perl -e/-E/-p` — the decoded code argument is now
-   exposed as an additional matching surface (e.g. `import shutil;
-   shutil.rmtree('/')` is a string a rule CAN match today), but **no shipped
-   default rule's pattern targets interpreter-body content** — `not-yet
-   containing "rm -rf" or "rmtree"` regexes were never in `DEFAULT_RULES_YAML`
-   and this lane does not add any (out of scope; owned by a different file).
-   So `python3 -c "import shutil; shutil.rmtree('/')"` is still `allow`
-   today — the surface a future rule would need now exists; the rule itself
-   does not.
+   `node -e/--eval`, `perl -e/-E/-p` — the decoded code argument is exposed as
+   an additional matching surface, and as of the M1 ruleset-followups lane a
+   new floor rule, `no-destructive-interpreter-body`, targets it:
+   `shutil.rmtree(...)`, `os.system(...)`/`subprocess.run/call/Popen/
+   check_call/check_output(...)` running `rm -rf` (string form or an argv
+   list with `rm`, a `-*r*f*` flag, and the target as their own quoted
+   tokens), `os.remove(...)`, and `fs.rmSync`/`rmdirSync(...)` — each scoped
+   to a **literal root (`/`) or home (`~`) target only**, mirroring
+   `no-destructive-commands`' own root/home scoping so ordinary interpreter
+   code (`shutil.rmtree('./build')`, `os.remove('/tmp/x')`, a `subprocess.run`
+   call with an unrelated `-r`/`-f`-shaped flag and an unrelated absolute
+   path, e.g. `terraform apply -refresh=true -target=/infra`) is untouched.
+   `python3 -c "import shutil; shutil.rmtree('/')"` now denies (see
+   `tests/rules/no-destructive-interpreter-body/`); `python3 -c "print(1)"`
+   and `node -e "console.log(1)"` still allow.
 4. **Symlink redirection — untouched, out of scope.** Path globs match the
    path string as written; they do not resolve symlinks. A string
    normalizer cannot see the filesystem, so this is unaffected by A2 — it
@@ -241,21 +247,27 @@ before this landed can stop matching):
    `no-self-protection-write`; a link planted earlier and written through
    later is not.)
 
-One honest caveat that predates A2 and is NOT introduced by it: several of
-the shipped `type: command` patterns (`no-destructive-commands` in
-particular) are unanchored substring regexes with no trailing `( |$)` after
-some of their alternatives — `echo "rm -rf /"` (echoing the string, not
-running it) already denies on the raw string alone, before this module ever
-runs, because the pattern doesn't require what follows the matched text to
-be a real word boundary. A2's additive constraint means this cannot be
-narrowed away here (that would remove an existing catch, and the fix belongs
-to whoever owns `DEFAULT_RULES_YAML`, which this lane may not touch); what
-A2 *does* guarantee is that the normalizer does not make this class of
-pre-existing false positive any *worse* — the same whitespace-preservation
-rule from class 1 above means a quoted argument with internal spaces (e.g.
-`git commit -m "rm -rf ."` or `git commit -m "git push --force"`) is never
-quote-stripped into a bare token that would newly satisfy an anchor it
-didn't satisfy on the raw string.
+One false-positive caveat that predated A2 and was closed by the M1
+ruleset-followups lane: `no-destructive-commands`' `rm` alternatives had no
+trailing `( |$)` after some of their path targets, so `echo "rm -rf /"`
+(echoing the string, not running it) denied on the raw string alone — the
+pattern didn't require what precedes the matched "rm" to be a real command
+position either. The fix uses exactly the signal A2's quoting design
+provides: a negative lookbehind, `(?<!["'])`, excluding an "rm" immediately
+preceded by a quote character. Class 1's whitespace-preservation rule (a
+whitespace-bearing quoted argument keeps its quotes verbatim on every
+surface) means that adjacency is a reliable data-argument signal — `echo
+"rm -rf /"`, `echo 'rm -rf /'`, `git commit -m "rm -rf /"`, and `printf
+"rm -rf /"` now allow, while a real invocation never has a quote
+immediately before its verb: `rm -rf /`, `sudo rm -rf /` (a plain-space
+prefix, unaffected by the lookbehind), `x && rm -rf /` (the compound-split
+surface starts clean at `rm`), and `sh -c "rm -rf /"` (the interpreter-body
+surface exposes the DECODED, unquoted value) all still deny. See
+`tests/rules/no-destructive-commands/` and
+`packages/core/src/enforce/__tests__/shell-normalize-bypass.test.ts`. The
+`git commit -m "rm -rf ."`/`"git push --force"` discriminator cases from
+class 1 above were unaffected by this fix (they never matched at all) and
+still allow.
 
 Keel is a gate against the mistakes and the drift, not a sandbox against a
 determined adversary. For adversarial containment, run the agent in an
