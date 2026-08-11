@@ -68,6 +68,9 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
   if (config.sprint_started_at !== undefined && (typeof config.sprint_started_at !== 'string' || !Number.isFinite(Date.parse(config.sprint_started_at)))) {
     errors.push(`sprint_started_at must be an ISO 8601 timestamp, got: ${String(config.sprint_started_at)}`)
   }
+  if (config.promotion_fp_threshold !== undefined && (typeof config.promotion_fp_threshold !== 'number' || !Number.isFinite(config.promotion_fp_threshold) || config.promotion_fp_threshold <= 0 || config.promotion_fp_threshold > 1)) {
+    errors.push(`promotion_fp_threshold must be a number in (0, 1] (a fraction of evaluations, e.g. 0.001 for 1 per 1000), got: ${String(config.promotion_fp_threshold)}`)
+  }
 
   return {
     config,
@@ -241,6 +244,26 @@ export interface RuleHierarchy {
 // up the reversion on its very next invocation for free.
 
 export const DEFAULT_SPRINT_EXPIRY_HOURS = 4
+
+/**
+ * Default `promotion_fp_threshold`: 1 would-block per 1000 evaluations.
+ * `keel retrospective`'s promotion section and `keel promote`'s guidance
+ * both read this when the winning rules.yaml (project over global,
+ * mirroring `level` precedence — see winningLevelConfig) declares none.
+ */
+export const DEFAULT_PROMOTION_FP_THRESHOLD = 0.001
+
+/**
+ * Which config's `promotion_fp_threshold` wins across the hierarchy:
+ * project over global, identical precedence to winningLevelConfig(). A
+ * project's rules.yaml is the one a team actually tunes; the global config
+ * is the fallback for projects that never override it.
+ */
+export function winningPromotionThreshold(hierarchy: RuleHierarchy): number {
+  return hierarchy.project?.config?.promotion_fp_threshold
+    ?? hierarchy.global?.config?.promotion_fp_threshold
+    ?? DEFAULT_PROMOTION_FP_THRESHOLD
+}
 
 export interface SprintExpiryStatus {
   expired: boolean

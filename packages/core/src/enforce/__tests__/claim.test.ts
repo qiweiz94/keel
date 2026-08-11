@@ -447,41 +447,34 @@ describe('gate-integration ordering: claim-without-evidence alongside the shippe
     })
   }
 
-  it('on the production-reachable commit-message channel, the shipped verification rule preempts the claim rule (file order, both priority 0)', async () => {
-    const shipped = loadShippedRule('source-change-requires-test')
-    const proposal = loadProposalRule()
-    // File order matters for a stable sort at equal priority — shipped
-    // rule first, matching where it actually sits in DEFAULT_RULES_YAML
-    // relative to where a paste would land the proposal (appended after).
-    const p = buildCombined([shipped, proposal])
+  // Previously (pre observe-continue fix): whichever of these two `mode:
+  // observe` rules matched FIRST short-circuited evaluate() entirely and
+  // swallowed the other's observed_action — an order-dependent finding
+  // ("gate-integration ordering"). Fixed by pipeline.ts's evaluate()/
+  // violation(): a matched observe rule records and evaluation CONTINUES
+  // (OPA Gatekeeper dryrun / Cloudflare WAF log-mode semantics) instead of
+  // returning, so BOTH observed_matches entries land regardless of file
+  // order — that is the proof the ordering finding no longer applies. Both
+  // variants below assert the SAME invariant on purpose; that sameness
+  // (not the pre-fix "which one wins") is what changed. Neither rule is
+  // non-observe, so with nothing definitive to decide the call, the verdict
+  // is a bare allow either way — not asserted on `observed_action`
+  // (singular), since which entry lands in slot 0 is still order-dependent
+  // and re-encodes exactly the coupling this fix removed; observed_matches
+  // is the complete, order-independent picture.
+  it.each([
+    ['shipped rule declared first, matching where it actually sits in DEFAULT_RULES_YAML', () => buildCombined([loadShippedRule('source-change-requires-test'), loadProposalRule()])],
+    ['proposal rule declared first (reversed)', () => buildCombined([loadProposalRule(), loadShippedRule('source-change-requires-test')])],
+  ])('%s: both observe rules record on the production-reachable commit-message channel', async (_label, build) => {
+    const p = build()
     await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
     const r = await p.evaluate(input('bash', { command: 'git commit -m "all tests pass"' }))
-    // This is the finding, not a desired behavior: the shipped rule's
-    // commit-boundary match short-circuits evaluate() first. The claim
-    // rule's own observed_action never gets recorded on this call.
-    // Post-restructure the shipped rule itself carries mode: observe
-    // (Tier 3), so the boundary verdict surfaces as allow + observed_action
-    // rather than a live warn — the preemption is unchanged.
-    expect(r.rule_id).toBe('source-change-requires-test')
     expect(r.action).toBe('allow')
-    expect(r.observed_action).toBeDefined()
-  })
-
-  it('reversing file order does not fix it: an earlier-declared claim rule (mode: observe) swallows the shipped rule\'s warn instead', async () => {
-    const shipped = loadShippedRule('source-change-requires-test')
-    const proposal = loadProposalRule()
-    const p = buildCombined([proposal, shipped])
-    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
-    const r = await p.evaluate(input('bash', { command: 'git commit -m "all tests pass"' }))
-    // mode: observe short-circuits evaluate() too (pipeline.ts's
-    // violation() returns the allow result for observe rules) — so
-    // reordering trades one suppressed rule for the other, it does not
-    // let both fire. Documented in the proposal's gate-integration note,
-    // not fixed here: changing that shared short-circuit is out of this
-    // lane's scope (other rules across the catalog depend on it).
-    expect(r.action).toBe('allow')
-    expect(r.observed_action).toBe('warn')
-    expect(r.rule_id).toBe('claim-without-evidence')
+    expect(r.observed_matches).toHaveLength(2)
+    expect(r.observed_matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: 'source-change-requires-test', observed_action: 'warn' }),
+      expect.objectContaining({ rule_id: 'claim-without-evidence', observed_action: 'warn' }),
+    ]))
   })
 })
 

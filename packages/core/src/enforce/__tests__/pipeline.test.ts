@@ -1090,6 +1090,88 @@ rules:
       })
     })
 
+    // ── Observe-continue (Wave-3): a matched observe rule records and
+    // evaluation CONTINUES instead of short-circuiting — the OPA Gatekeeper
+    // dryrun / Cloudflare WAF log-mode shape. Before this fix, ANY matching
+    // observe rule (regardless of priority or evaluation order) returned
+    // straight out of evaluate(), blinding every lower-priority rule on
+    // that same call — including unrelated REAL enforcement rules, not
+    // just other observe rules (see agentic-eval.test.ts / threat-model.
+    // test.ts, where the shipped must-sign-commits / no-push-to-main rules
+    // were being silently bypassed this way).
+    it('an observe match no longer blinds a later real deny rule on the same call — it records and the deny still fires', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: obs-blind-check
+    type: command
+    match: "danger"
+    action: warn
+    mode: observe
+    message: "Observed first, should not blind."
+  - id: real-deny-after-observe
+    type: command
+    match: "danger"
+    action: deny
+    level: protect
+    message: "Actually blocked."
+`)
+      const result = await pipeline.evaluate(input('bash', { command: 'danger' }, 'obs-6'))
+      // The definitive verdict comes from the REAL (non-observe) rule.
+      expect(result.action).toBe('deny')
+      expect(result.rule_id).toBe('real-deny-after-observe')
+      // The observe rule's own would-be action is STILL recorded —
+      // observing and blocking on the same call are not mutually exclusive.
+      expect(result.observed_action).toBe('warn')
+      expect(result.observed_matches).toEqual([
+        expect.objectContaining({ rule_id: 'obs-blind-check', observed_action: 'warn' }),
+      ])
+    })
+
+    it('two observe rules on the same call both record, independent of which one (if either) fires first', async () => {
+      const pipeline = makePipelineFromYaml(`version: 1
+rules:
+  - id: obs-a
+    type: command
+    match: "danger"
+    action: warn
+    mode: observe
+    message: "A."
+  - id: obs-b
+    type: command
+    match: "danger"
+    action: deny
+    mode: observe
+    message: "B."
+`)
+      const result = await pipeline.evaluate(input('bash', { command: 'danger' }, 'obs-7'))
+      // Neither rule is non-observe, so nothing definitive matches — the
+      // verdict is a bare allow, same as a single observe match would be.
+      expect(result.action).toBe('allow')
+      expect(result.observed_matches).toHaveLength(2)
+      expect(result.observed_matches).toEqual(expect.arrayContaining([
+        expect.objectContaining({ rule_id: 'obs-a', observed_action: 'warn' }),
+        expect.objectContaining({ rule_id: 'obs-b', observed_action: 'deny' }),
+      ]))
+    })
+
+    it('a repeated identical call re-evaluates and re-records instead of returning a stale cached allow', async () => {
+      // The tier-1 allow-cache must never suppress an observe rule's shadow
+      // count on a repeat call — see pipeline.ts's cache-write guard
+      // (`!this.observedMatches.length`). Pre-guard, the first call would
+      // fall through to the bottom "Allowed — cache and return" block
+      // (unreachable pre-fix, since the observe branch used to return
+      // directly) and cache a bare allow verdict; the SECOND identical call
+      // would then hit tier 1 and never re-run the rules loop at all —
+      // exactly the traffic an observe rule burning in most needs to count.
+      const pipeline = makePipelineFromYaml(observeRules('observe'))
+      const first = await pipeline.evaluate(input('bash', { command: 'rm -rf /' }, 'obs-8'))
+      const second = await pipeline.evaluate(input('bash', { command: 'rm -rf /' }, 'obs-8'))
+      expect(first.observed_action).toBe('deny')
+      expect(first.cache_hit).toBe(false)
+      expect(second.observed_action).toBe('deny')
+      expect(second.cache_hit).toBe(false)
+    })
+
     it('rejects a typo in mode rather than silently enforcing', () => {
       // A guardrail that silently does the opposite of what the config says
       // is the single most trust-destroying failure shape. Catch it at parse.

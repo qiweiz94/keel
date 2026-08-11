@@ -38,6 +38,15 @@ export interface KeelConfig {
    * is deliberately no session-end detection.
    */
   sprint_expiry_hours?: number
+  /**
+   * False-positive threshold (would-block count ÷ total evaluations) below
+   * which `keel retrospective`'s promotion section recommends a `mode:
+   * observe` rule as eligible for promotion to `warn`. Default 0.001 (1 per
+   * 1000 evaluations) — read fresh from whichever rules.yaml wins
+   * precedence (project over global, mirroring `level`), never hardcoded
+   * per-rule. See enforce/rule-parser.ts's DEFAULT_PROMOTION_FP_THRESHOLD.
+   */
+  promotion_fp_threshold?: number
 }
 
 /**
@@ -281,8 +290,28 @@ export interface EnforceResult {
    * enforced. The verdict itself is `allow`, so nothing is interrupted —
    * this is what lets the dashboard report "would have blocked N times"
    * and measure a rule's false-positive rate before promoting it.
+   *
+   * When exactly one `mode: observe` rule matched during this evaluate()
+   * call, this mirrors `observed_matches[0]` (kept for every pre-existing
+   * single-match consumer). When MULTIPLE observe rules matched — now
+   * possible since a matched observe rule records and evaluation
+   * CONTINUES instead of short-circuiting — this single slot cannot hold
+   * all of them; `observed_matches` is the complete picture.
    */
   observed_action?: EnforcementAction
+  /**
+   * Every `mode: observe` rule that matched during this evaluate() call,
+   * in evaluation order. A matched observe rule no longer blinds
+   * lower-priority rules on the same call (see pipeline.ts's evaluate()/
+   * violation() — the OPA Gatekeeper dryrun / Cloudflare WAF log-mode
+   * shape: shadow policies record and evaluation continues), so a single
+   * call can carry more than one observation before the real verdict (a
+   * later non-observe match, or `allow` if none) is decided. Present only
+   * when at least one observe rule matched; absent (not an empty array)
+   * otherwise, so JSON.stringify drops it and old trace lines stay
+   * byte-identical.
+   */
+  observed_matches?: Array<{ rule_id: string; observed_action: EnforcementAction; message: string }>
 }
 
 export interface RedirectDirective {

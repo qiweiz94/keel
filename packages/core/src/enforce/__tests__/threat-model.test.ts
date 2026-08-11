@@ -182,26 +182,38 @@ describe('agentic threat model (shipped defaults)', () => {
     // re-tier: this repo's own standing requirements already state the
     // verification-culture expectation in prose; the hard enforcement now
     // burns in via observed_action before it interrupts commits/pushes
-    // again). The tracker/boundary MECHANISM underneath is unchanged — only
-    // the outer verdict is: `action` stays 'allow', the action the rule
-    // would have taken is on `observed_action`. Observe mode also does not
-    // replay the warn-then-deny ladder (it reports the rule's raw boundary
-    // action every time), so both calls below show the same observed_action.
+    // again). The tracker/boundary MECHANISM underneath is unchanged, but
+    // the outer verdict is no longer pinned to 'allow': a matched `mode:
+    // observe` rule records and evaluation CONTINUES (pipeline.ts's
+    // evaluate()/violation() — OPA Gatekeeper dryrun / Cloudflare WAF
+    // log-mode semantics), so a REAL rule on the same call now gets to
+    // decide the verdict instead of being silently blinded. Both `git
+    // commit` (must-sign-commits, mode: block, action: fix) and `git push
+    // origin main` (no-push-to-main, mode: block, action: prompt) are
+    // exactly such real rules — pre-fix they never even got the chance to
+    // fire whenever this observe rule ALSO matched, which is a real
+    // instance of the bug this fix removes, not a hypothetical. Observe
+    // mode also does not replay the warn-then-deny ladder (it reports the
+    // rule's raw boundary action every time), so both calls below show the
+    // same observed_action.
     it('records (but does not enforce) a commit boundary after an untested source change', async () => {
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/app.ts' }))).action).toBe('allow')
       const first = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
-      expect(first.action).toBe('allow')
+      // must-sign-commits (real, mode: block) no longer blinded — it fires.
+      expect(first.action).toBe('fix')
+      expect(first.fix_result?.fixed).toContain('--signoff')
       expect(first.observed_action).toBe('warn')
       const second = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
-      expect(second.action).toBe('allow')
+      expect(second.action).toBe('fix')
       expect(second.observed_action).toBe('warn')
     })
     it('records (but does not enforce) a push boundary while the obligation is unsatisfied', async () => {
       const first = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
-      expect(first.action).toBe('allow')
+      // no-push-to-main (real, mode: block) no longer blinded — it fires.
+      expect(first.action).toBe('prompt')
       expect(first.observed_action).toBe('deny')
       const second = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
-      expect(second.action).toBe('allow')
+      expect(second.action).toBe('prompt')
       expect(second.observed_action).toBe('deny')
     })
     it('clears the obligation after a passing test run', async () => {
@@ -405,7 +417,8 @@ rules:
       await p.evaluate(input('write', { filePath: 'package.json', content: '{"scripts":{"test":"echo ok"}}' }, 'pkg'))
       // The tampered package.json write itself creates the obligation.
       const commit = await p.evaluate(input('Bash', { command: 'git commit -m "x"', cwd: '/tmp/keel-threat-model' }, 'pkg'))
-      expect(commit.action).toBe('allow')
+      // must-sign-commits (real, mode: block) no longer blinded — it fires.
+      expect(commit.action).toBe('fix')
       expect(commit.observed_action).toBe('warn')
       // A swallowed "npm test" must not clear it.
       p.markVerificationSatisfied(input('Bash', { command: 'npm test || true' }, 'pkg'))

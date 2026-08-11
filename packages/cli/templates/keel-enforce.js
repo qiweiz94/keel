@@ -6323,6 +6323,9 @@ function parseRulesContent(content, sourcePath) {
   if (config.sprint_started_at !== void 0 && (typeof config.sprint_started_at !== "string" || !Number.isFinite(Date.parse(config.sprint_started_at)))) {
     errors.push(`sprint_started_at must be an ISO 8601 timestamp, got: ${String(config.sprint_started_at)}`);
   }
+  if (config.promotion_fp_threshold !== void 0 && (typeof config.promotion_fp_threshold !== "number" || !Number.isFinite(config.promotion_fp_threshold) || config.promotion_fp_threshold <= 0 || config.promotion_fp_threshold > 1)) {
+    errors.push(`promotion_fp_threshold must be a number in (0, 1] (a fraction of evaluations, e.g. 0.001 for 1 per 1000), got: ${String(config.promotion_fp_threshold)}`);
+  }
   return {
     config,
     rules: Array.isArray(config.rules) ? config.rules : [],
@@ -7406,6 +7409,7 @@ function detectClaim(input) {
 }
 
 // ../core/src/enforce/pipeline.ts
+var OBSERVE_CONTINUE = /* @__PURE__ */ Symbol("keel:observe-continue");
 var EnforcementPipeline = class {
   config;
   verificationTracker;
@@ -7415,6 +7419,17 @@ var EnforcementPipeline = class {
   rateCounts = /* @__PURE__ */ new Map();
   lastRulesHash = "";
   previousRulesHash = "";
+  /**
+   * `mode: observe` matches recorded during the CURRENT evaluate() call.
+   * Reset at the top of evaluate() and read back at the bottom to decorate
+   * the result — see OBSERVE_CONTINUE's header comment for why this is an
+   * instance field rather than a threaded parameter. Not concurrency-safe
+   * across overlapping evaluate() calls on the same instance, same as
+   * every other per-call instance field here (denyFirstTime,
+   * circuitBreaker, rateCounts) — this pipeline is built for one call at a
+   * time per host process, not concurrent evaluate() calls.
+   */
+  observedMatches = [];
   overrideStore;
   packageVerifierCache;
   constructor(config) {
@@ -7480,8 +7495,43 @@ var EnforcementPipeline = class {
   }
   /**
    * Evaluate an action against all active rules.
+   *
+   * Thin wrapper around evaluateTiers(): resets the per-call observed-match
+   * accumulator, runs the real tiered evaluation, then decorates the
+   * result with everything that was observed along the way. Splitting it
+   * this way means the many `return this.violation(...)` / `return
+   * this.result(...)` sites inside evaluateTiers() need no per-site
+   * awareness of observe recording — they just stop short of completing
+   * when violation() throws OBSERVE_CONTINUE (see its header comment), and
+   * this one place is where the accumulated observations get attached to
+   * whatever verdict actually won.
    */
   async evaluate(input) {
+    const start = Date.now();
+    this.observedMatches = [];
+    let result;
+    try {
+      result = await this.evaluateTiers(input);
+    } catch (err) {
+      if (err === OBSERVE_CONTINUE) {
+        result = this.result("allow", "", "Allowed (observe-only match)", start, false, 0);
+      } else {
+        throw err;
+      }
+    }
+    if (this.observedMatches.length) {
+      result.observed_matches = this.observedMatches.map((m) => ({ ...m }));
+      result.observed_action = this.observedMatches[0].observed_action;
+      if (result.action === "allow" && !result.rule_id) {
+        const first = this.observedMatches[0];
+        result.rule_id = first.rule_id;
+        result.rule_name = first.rule_id;
+        result.message = first.message;
+      }
+    }
+    return result;
+  }
+  async evaluateTiers(input) {
     const start = Date.now();
     this.checkRuleVersion();
     const level = this.effectiveLevel(input);
@@ -7517,37 +7567,42 @@ var EnforcementPipeline = class {
       this.config.sequenceDetector.record(input);
     }
     for (const rule of statefulRules) {
-      if (rule.type === "verification") {
-        const boundaryMessage = this.verificationTracker.boundary(rule, input);
-        if (boundaryMessage) {
-          const stateKey = `${rule.id}:${input.cwd}`;
-          const boundaryRule = boundaryMessage.action ? { ...rule, action: boundaryMessage.action } : rule;
-          return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey);
+      try {
+        if (rule.type === "verification") {
+          const boundaryMessage = this.verificationTracker.boundary(rule, input);
+          if (boundaryMessage) {
+            const stateKey = `${rule.id}:${input.cwd}`;
+            const boundaryRule = boundaryMessage.action ? { ...rule, action: boundaryMessage.action } : rule;
+            return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey);
+          }
         }
-      }
-      if (rule.type === "claim" && this.verificationTracker.isPending(rule, input)) {
-        const claim = detectClaim(input);
-        if (claim) {
-          const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`;
-          return this.violation(input, rule, message, start, 6, rule.id);
+        if (rule.type === "claim" && this.verificationTracker.isPending(rule, input)) {
+          const claim = detectClaim(input);
+          if (claim) {
+            const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`;
+            return this.violation(input, rule, message, start, 6, rule.id);
+          }
         }
-      }
-      if (rule.type === "research" && rule.trigger && this.config.researchTracker) {
-        const researchTracker = this.config.researchTracker;
-        if (researchTracker.discharge(rule, input)) continue;
-        const boundaryMessage = researchTracker.boundary(rule, input);
-        if (boundaryMessage) {
-          const boundaryRule = boundaryMessage.action ? { ...rule, action: boundaryMessage.action } : { ...rule, action: "redirect" };
-          const directive = {
-            kind: "research",
-            required_tools: rule.satisfy?.tools?.length ? rule.satisfy.tools : ["keel_research"],
-            target: `fix action while a failing command still lacks fresh research`,
-            rationale: rule.message,
-            rule_id: rule.id,
-            suggested_call: `keel_research({ query: "<the failing module or error>" })`
-          };
-          return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, rule.id, directive, true);
+        if (rule.type === "research" && rule.trigger && this.config.researchTracker) {
+          const researchTracker = this.config.researchTracker;
+          if (researchTracker.discharge(rule, input)) continue;
+          const boundaryMessage = researchTracker.boundary(rule, input);
+          if (boundaryMessage) {
+            const boundaryRule = boundaryMessage.action ? { ...rule, action: boundaryMessage.action } : { ...rule, action: "redirect" };
+            const directive = {
+              kind: "research",
+              required_tools: rule.satisfy?.tools?.length ? rule.satisfy.tools : ["keel_research"],
+              target: `fix action while a failing command still lacks fresh research`,
+              rationale: rule.message,
+              rule_id: rule.id,
+              suggested_call: `keel_research({ query: "<the failing module or error>" })`
+            };
+            return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, rule.id, directive, true);
+          }
         }
+      } catch (err) {
+        if (err === OBSERVE_CONTINUE) continue;
+        throw err;
       }
     }
     const cached = statefulRules.length || gatedRules.length || input.action_override ? null : this.config.cache.get(
@@ -7568,273 +7623,278 @@ var EnforcementPipeline = class {
       }
     }
     for (const rule of rules) {
-      if (rule.type === "rate") {
-        const matchPattern = rule.match || input.tool;
-        if (rule.match && !this.matchesRulePattern(rule.match, `${input.tool} ${commandString(input)}`) && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue;
-        const windowSec = rule.window_seconds || 60;
-        const maxCalls = rule.max_calls || 10;
-        const rateKey = `rate:${rule.id}:${matchPattern}`;
-        const now = Date.now();
-        const existing = this.rateCounts.get(rateKey);
-        const exceeded = this.config.stateManager ? this.config.stateManager.checkRateLimit(rule.id, matchPattern, windowSec, maxCalls) : (() => {
-          if (existing && now - existing.windowStart < windowSec * 1e3) {
-            existing.count++;
-            return existing.count > maxCalls;
-          }
-          this.rateCounts.set(rateKey, { count: 1, windowStart: now });
-          return false;
-        })();
-        if (this.config.stateManager) {
-          const persisted = this.config.stateManager.rateCounts[rateKey];
-          if (persisted) this.rateCounts.set(rateKey, { ...persisted });
-        }
-        if (exceeded) {
-          return this.violation(input, rule, `Rate limit: ${maxCalls} calls per ${windowSec}s for "${matchPattern}"`, start, 2);
-        }
-        continue;
-      }
-      if (rule.type === "time" && rule.schedule) {
-        const now = /* @__PURE__ */ new Date();
-        const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-        const currentDay = dayNames[now.getDay()];
-        const currentTime = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
-        const { start: windowStart, end: windowEnd, days } = rule.schedule;
-        if (rule.match) {
-          const cmdStr = commandString(input);
-          if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
-        }
-        if (days && !days.some((d) => d.toLowerCase() === currentDay)) {
-          return this.violation(input, rule, `Outside schedule: ${days.join(", ")} ${windowStart}-${windowEnd}`, start, 2);
-        }
-        if (windowStart && windowEnd) {
-          const inside = windowStart <= windowEnd ? currentTime >= windowStart && currentTime <= windowEnd : currentTime >= windowStart || currentTime <= windowEnd;
-          if (!inside) {
-            return this.violation(input, rule, `Outside schedule window: ${windowStart}-${windowEnd}`, start, 2);
-          }
-        } else if (windowStart && currentTime < windowStart) {
-          return this.violation(input, rule, `Before schedule start: ${windowStart}`, start, 2);
-        } else if (windowEnd && currentTime > windowEnd) {
-          return this.violation(input, rule, `After schedule end: ${windowEnd}`, start, 2);
-        }
-        continue;
-      }
-      if (rule.type === "command" && (rule.match || rule.match_regex || rule.match_prefix)) {
-        const cmdStr = commandString(input);
-        const pattern = rule.match_regex || rule.match;
-        const matches2 = rule.match_prefix ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase()) : !!pattern && this.matchesRulePattern(pattern, cmdStr);
-        if (matches2) {
-          if (rule.unless_reasoning && input.reasoning) {
-            const unlessRegex = new RegExp(rule.unless_reasoning, "i");
-            if (unlessRegex.test(input.reasoning)) {
-              continue;
+      try {
+        if (rule.type === "rate") {
+          const matchPattern = rule.match || input.tool;
+          if (rule.match && !this.matchesRulePattern(rule.match, `${input.tool} ${commandString(input)}`) && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue;
+          const windowSec = rule.window_seconds || 60;
+          const maxCalls = rule.max_calls || 10;
+          const rateKey = `rate:${rule.id}:${matchPattern}`;
+          const now = Date.now();
+          const existing = this.rateCounts.get(rateKey);
+          const exceeded = this.config.stateManager ? this.config.stateManager.checkRateLimit(rule.id, matchPattern, windowSec, maxCalls) : (() => {
+            if (existing && now - existing.windowStart < windowSec * 1e3) {
+              existing.count++;
+              return existing.count > maxCalls;
             }
+            this.rateCounts.set(rateKey, { count: 1, windowStart: now });
+            return false;
+          })();
+          if (this.config.stateManager) {
+            const persisted = this.config.stateManager.rateCounts[rateKey];
+            if (persisted) this.rateCounts.set(rateKey, { ...persisted });
           }
-          if (rule.unless) {
-            let shouldSkip = false;
-            for (const u of rule.unless) {
-              if (u.regex) {
-                const unlessRegex = new RegExp(u.regex, "i");
-                if (unlessRegex.test(cmdStr)) {
-                  shouldSkip = true;
-                  break;
-                }
-              }
-            }
-            if (shouldSkip) continue;
+          if (exceeded) {
+            return this.violation(input, rule, `Rate limit: ${maxCalls} calls per ${windowSec}s for "${matchPattern}"`, start, 2);
           }
-          if (this.effectiveAction(rule, input) === "fix" && rule.fix) {
-            return this.fixAction(input, rule, cmdStr, start);
-          }
-          return this.violation(input, rule, rule.message, start, 2);
-        }
-      }
-      if (rule.type === "filesystem" && rule.paths && !/^read/i.test(input.tool)) {
-        const args = input.args;
-        const pathStr = argPath(args);
-        const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
-        const operation = String(args.operation || "");
-        const excluded = (rule.exclude || []).some((p) => this.pathMatches(resolvedPath, p));
-        const pathMatched = rule.paths.some((p) => p.startsWith("!") ? !this.pathMatches(resolvedPath, p.slice(1)) : this.pathMatches(resolvedPath, p));
-        const operationMatched = !rule.operations?.length || rule.operations.includes(operation);
-        if (pathMatched && operationMatched && !excluded) return this.violation(input, rule, rule.message, start, 3);
-      }
-      if (rule.type === "network" && rule.match) {
-        const url = typeof input.args === "object" && input.args !== null ? input.args.url || input.args.host || "" : "";
-        const urlStr = String(url);
-        if (rule.except) {
-          let isExcepted = false;
-          for (const ex of rule.except) {
-            if (urlStr.includes(ex)) {
-              isExcepted = true;
-              break;
-            }
-          }
-          if (isExcepted) continue;
-        }
-        if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3);
-      }
-      if (rule.type === "package") {
-        const cmdStr = commandString(input);
-        const specs = extractPackageInstalls(cmdStr);
-        if (specs.length === 0) continue;
-        const ageThresholdDays = rule.age_days ?? 30;
-        const results = await checkPackages(specs, {
-          ageThresholdDays,
-          totalTimeoutMs: 2e3,
-          cache: this.packageVerifierCache,
-          fetchImpl: this.config.packageVerifierFetch
-        });
-        const decision = decidePackageAction(results, ageThresholdDays);
-        if (decision.reason === "ok") continue;
-        if (decision.reason === "not_found") {
-          return this.violation(input, { ...rule, action: "deny" }, decision.message, start, 3, rule.id, void 0, true);
-        }
-        if (decision.reason === "unverified") {
-          return this.violation(input, { ...rule, action: "prompt" }, decision.message, start, 3);
-        }
-        return this.violation(input, rule, decision.message, start, 3);
-      }
-      if (rule.type === "stuck" && rule.match && this.config.stuckTracker) {
-        const cmdStr = commandString(input);
-        if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
-        const escalation = this.config.stuckTracker.check(rule, input);
-        if (escalation) {
-          const directive = {
-            kind: "stuck",
-            required_tools: ["keel_research", "keel_hypothesis"],
-            target: `identical failing command (${escalation.attempts} attempts)`,
-            rationale: rule.message,
-            rule_id: rule.id,
-            attempts: escalation.attempts,
-            suggested_call: 'keel_research({ query: "<the exact error text>" })'
-          };
-          return this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, directive, true);
-        }
-        continue;
-      }
-      if (rule.type === "diagnosis" && this.config.ledger) {
-        const cmdStr = commandString(input);
-        if (rule.fallback_tools?.includes(input.tool) && rule.fallback_pattern && this.matchesRulePattern(rule.fallback_pattern, cmdStr)) {
-          const activeKey = this.config.ledger.activeProblemKey(input.session_id);
-          if (activeKey) this.config.ledger.recordDiagnosis(activeKey, cmdStr);
           continue;
         }
-        if (!rule.match) continue;
-        const cmdHaystack = `${input.tool} ${cmdStr}`;
-        const jsonHaystack = `${input.tool} ${JSON.stringify(input.args)}`;
-        if (!this.matchesRulePattern(rule.match, jsonHaystack) && !this.matchesRulePattern(rule.match, cmdHaystack)) continue;
-        const windowSec = rule.hypothesis_window_seconds ?? 900;
-        const problemKey2 = this.config.ledger.activeProblemKey(input.session_id);
-        if (!problemKey2) continue;
-        const hasHypothesis = this.config.ledger.hasFreshHypothesis(problemKey2, windowSec);
-        const hasDiagnosis = this.config.ledger.hasFreshDiagnosis(problemKey2, windowSec);
-        if (hasHypothesis || hasDiagnosis) continue;
-        const directive = {
-          kind: "diagnosis",
-          required_tools: rule.hypothesis_tools ?? ["keel_hypothesis"],
-          target: "complex fix without a stated root cause",
-          rationale: rule.message,
-          rule_id: rule.id,
-          suggested_call: 'keel_hypothesis({ statement: "Because X, Y fails. Fix: Z." })'
-        };
-        return this.violation(input, { ...rule, action: rule.action || "redirect" }, rule.message, start, 2, rule.id, directive, true);
-      }
-      if (rule.type === "research" && rule.topics?.length) {
-        const haystack = `${commandString(input)} ${input.reasoning || ""}`;
-        if (!rule.topics.some((t) => this.matchesRulePattern(t, haystack))) continue;
-        if (rule.except?.some((d) => haystack.includes(d))) continue;
-        if (!this.config.researchCache) continue;
-        const maxAgeHours = rule.max_age_hours ?? (Number(process.env.KEEL_RESEARCH_MAX_AGE_HOURS) || 24);
-        const probe = this.config.researchCache.probe(input.session_id, rule.topics, maxAgeHours);
-        if (probe.hit) continue;
-        const topic = rule.topics[0];
-        const missing = probe.entries.length === 0;
-        const directive = {
-          topic,
-          missing,
-          stalenessHours: probe.stalenessHours,
-          maxAgeHours,
-          suggestion: `Run keel_research { query: "${topic}" } (or your platform web_search), then re-run this action.`
-        };
-        return this.result("research", rule.id, `Knowledge freshness gate: ${missing ? "no research" : `research ${probe.stalenessHours?.toFixed(1)}h old (max ${maxAgeHours}h)`} for "${topic}". ${directive.suggestion}`, start, false, 3, void 0, directive);
-      }
-      if (rule.type === "env" && rule.vars?.length) {
-        const cmdStr = commandString(input);
-        const varHit = rule.vars.some((v) => cmdStr.toLowerCase().includes(String(v).toLowerCase()));
-        if (varHit) return this.violation(input, rule, rule.message, start, 3);
-      }
-      if (deepChecks && rule.type === "content" && rule.patterns && !/^read/i.test(input.tool)) {
-        const args = input.args;
-        const pathStr = argPath(args);
-        const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
-        const patchText = String(args.patchText || "");
-        const inlineContent = String(args.content || args.text || patchText || "");
-        const isFile = resolvedPath && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
-        const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
-        if (inlineContent || diskChanged) {
-          for (const pattern of rule.patterns) {
-            const content = inlineContent || (isFile ? readFileSync4(resolvedPath, "utf-8") : "");
-            if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
-              return this.violation(input, rule, rule.message, start, 5);
-            }
+        if (rule.type === "time" && rule.schedule) {
+          const now = /* @__PURE__ */ new Date();
+          const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+          const currentDay = dayNames[now.getDay()];
+          const currentTime = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
+          const { start: windowStart, end: windowEnd, days } = rule.schedule;
+          if (rule.match) {
+            const cmdStr = commandString(input);
+            if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
           }
-          if (isFile) this.config.contentTracker.markUnchanged(resolvedPath);
+          if (days && !days.some((d) => d.toLowerCase() === currentDay)) {
+            return this.violation(input, rule, `Outside schedule: ${days.join(", ")} ${windowStart}-${windowEnd}`, start, 2);
+          }
+          if (windowStart && windowEnd) {
+            const inside = windowStart <= windowEnd ? currentTime >= windowStart && currentTime <= windowEnd : currentTime >= windowStart || currentTime <= windowEnd;
+            if (!inside) {
+              return this.violation(input, rule, `Outside schedule window: ${windowStart}-${windowEnd}`, start, 2);
+            }
+          } else if (windowStart && currentTime < windowStart) {
+            return this.violation(input, rule, `Before schedule start: ${windowStart}`, start, 2);
+          } else if (windowEnd && currentTime > windowEnd) {
+            return this.violation(input, rule, `After schedule end: ${windowEnd}`, start, 2);
+          }
+          continue;
         }
-      }
-      if (deepChecks && rule.type === "oracle") {
-        if (rule.match) {
+        if (rule.type === "command" && (rule.match || rule.match_regex || rule.match_prefix)) {
           const cmdStr = commandString(input);
-          if (cmdStr && this.matchesRulePattern(rule.match, cmdStr)) {
-            const recent = this.oracleTracker.recentFailure(rule, input);
-            if (recent) {
-              const age = Math.round(recent.ageMs / 1e3);
-              return this.violation(input, rule, `${rule.message} [command-surface: "${cmdStr}" ran ${age}s after failing run "${recent.command}"]`, start, 5);
+          const pattern = rule.match_regex || rule.match;
+          const matches2 = rule.match_prefix ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase()) : !!pattern && this.matchesRulePattern(pattern, cmdStr);
+          if (matches2) {
+            if (rule.unless_reasoning && input.reasoning) {
+              const unlessRegex = new RegExp(rule.unless_reasoning, "i");
+              if (unlessRegex.test(input.reasoning)) {
+                continue;
+              }
             }
+            if (rule.unless) {
+              let shouldSkip = false;
+              for (const u of rule.unless) {
+                if (u.regex) {
+                  const unlessRegex = new RegExp(u.regex, "i");
+                  if (unlessRegex.test(cmdStr)) {
+                    shouldSkip = true;
+                    break;
+                  }
+                }
+              }
+              if (shouldSkip) continue;
+            }
+            if (this.effectiveAction(rule, input) === "fix" && rule.fix) {
+              return this.fixAction(input, rule, cmdStr, start);
+            }
+            return this.violation(input, rule, rule.message, start, 2);
           }
         }
-        if (rule.paths && !/^read/i.test(input.tool)) {
+        if (rule.type === "filesystem" && rule.paths && !/^read/i.test(input.tool)) {
           const args = input.args;
           const pathStr = argPath(args);
           const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
-          const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths);
-          if (pathMatched) {
-            const patchText = String(args.patchText || "");
-            const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? "");
-            const explicitOld = typeof args.oldString === "string" ? args.oldString : void 0;
-            const isFile = explicitOld === void 0 && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
-            const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync4(resolvedPath, "utf-8") : "";
-            if (newText || oldText) {
-              const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
-              if (signals.length) {
-                const recent = this.oracleTracker.recentFailure(rule, input);
-                if (recent) {
-                  const age = Math.round(recent.ageMs / 1e3);
-                  const detail = signals.map((s) => s.detail).join("; ");
-                  return this.violation(input, rule, `${rule.message} [${detail}; ${age}s after failing run "${recent.command}"]`, start, 5);
+          const operation = String(args.operation || "");
+          const excluded = (rule.exclude || []).some((p) => this.pathMatches(resolvedPath, p));
+          const pathMatched = rule.paths.some((p) => p.startsWith("!") ? !this.pathMatches(resolvedPath, p.slice(1)) : this.pathMatches(resolvedPath, p));
+          const operationMatched = !rule.operations?.length || rule.operations.includes(operation);
+          if (pathMatched && operationMatched && !excluded) return this.violation(input, rule, rule.message, start, 3);
+        }
+        if (rule.type === "network" && rule.match) {
+          const url = typeof input.args === "object" && input.args !== null ? input.args.url || input.args.host || "" : "";
+          const urlStr = String(url);
+          if (rule.except) {
+            let isExcepted = false;
+            for (const ex of rule.except) {
+              if (urlStr.includes(ex)) {
+                isExcepted = true;
+                break;
+              }
+            }
+            if (isExcepted) continue;
+          }
+          if (this.matchesRulePattern(rule.match, urlStr)) return this.violation(input, rule, rule.message, start, 3);
+        }
+        if (rule.type === "package") {
+          const cmdStr = commandString(input);
+          const specs = extractPackageInstalls(cmdStr);
+          if (specs.length === 0) continue;
+          const ageThresholdDays = rule.age_days ?? 30;
+          const results = await checkPackages(specs, {
+            ageThresholdDays,
+            totalTimeoutMs: 2e3,
+            cache: this.packageVerifierCache,
+            fetchImpl: this.config.packageVerifierFetch
+          });
+          const decision = decidePackageAction(results, ageThresholdDays);
+          if (decision.reason === "ok") continue;
+          if (decision.reason === "not_found") {
+            return this.violation(input, { ...rule, action: "deny" }, decision.message, start, 3, rule.id, void 0, true);
+          }
+          if (decision.reason === "unverified") {
+            return this.violation(input, { ...rule, action: "prompt" }, decision.message, start, 3);
+          }
+          return this.violation(input, rule, decision.message, start, 3);
+        }
+        if (rule.type === "stuck" && rule.match && this.config.stuckTracker) {
+          const cmdStr = commandString(input);
+          if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
+          const escalation = this.config.stuckTracker.check(rule, input);
+          if (escalation) {
+            const directive = {
+              kind: "stuck",
+              required_tools: ["keel_research", "keel_hypothesis"],
+              target: `identical failing command (${escalation.attempts} attempts)`,
+              rationale: rule.message,
+              rule_id: rule.id,
+              attempts: escalation.attempts,
+              suggested_call: 'keel_research({ query: "<the exact error text>" })'
+            };
+            return this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, directive, true);
+          }
+          continue;
+        }
+        if (rule.type === "diagnosis" && this.config.ledger) {
+          const cmdStr = commandString(input);
+          if (rule.fallback_tools?.includes(input.tool) && rule.fallback_pattern && this.matchesRulePattern(rule.fallback_pattern, cmdStr)) {
+            const activeKey = this.config.ledger.activeProblemKey(input.session_id);
+            if (activeKey) this.config.ledger.recordDiagnosis(activeKey, cmdStr);
+            continue;
+          }
+          if (!rule.match) continue;
+          const cmdHaystack = `${input.tool} ${cmdStr}`;
+          const jsonHaystack = `${input.tool} ${JSON.stringify(input.args)}`;
+          if (!this.matchesRulePattern(rule.match, jsonHaystack) && !this.matchesRulePattern(rule.match, cmdHaystack)) continue;
+          const windowSec = rule.hypothesis_window_seconds ?? 900;
+          const problemKey2 = this.config.ledger.activeProblemKey(input.session_id);
+          if (!problemKey2) continue;
+          const hasHypothesis = this.config.ledger.hasFreshHypothesis(problemKey2, windowSec);
+          const hasDiagnosis = this.config.ledger.hasFreshDiagnosis(problemKey2, windowSec);
+          if (hasHypothesis || hasDiagnosis) continue;
+          const directive = {
+            kind: "diagnosis",
+            required_tools: rule.hypothesis_tools ?? ["keel_hypothesis"],
+            target: "complex fix without a stated root cause",
+            rationale: rule.message,
+            rule_id: rule.id,
+            suggested_call: 'keel_hypothesis({ statement: "Because X, Y fails. Fix: Z." })'
+          };
+          return this.violation(input, { ...rule, action: rule.action || "redirect" }, rule.message, start, 2, rule.id, directive, true);
+        }
+        if (rule.type === "research" && rule.topics?.length) {
+          const haystack = `${commandString(input)} ${input.reasoning || ""}`;
+          if (!rule.topics.some((t) => this.matchesRulePattern(t, haystack))) continue;
+          if (rule.except?.some((d) => haystack.includes(d))) continue;
+          if (!this.config.researchCache) continue;
+          const maxAgeHours = rule.max_age_hours ?? (Number(process.env.KEEL_RESEARCH_MAX_AGE_HOURS) || 24);
+          const probe = this.config.researchCache.probe(input.session_id, rule.topics, maxAgeHours);
+          if (probe.hit) continue;
+          const topic = rule.topics[0];
+          const missing = probe.entries.length === 0;
+          const directive = {
+            topic,
+            missing,
+            stalenessHours: probe.stalenessHours,
+            maxAgeHours,
+            suggestion: `Run keel_research { query: "${topic}" } (or your platform web_search), then re-run this action.`
+          };
+          return this.result("research", rule.id, `Knowledge freshness gate: ${missing ? "no research" : `research ${probe.stalenessHours?.toFixed(1)}h old (max ${maxAgeHours}h)`} for "${topic}". ${directive.suggestion}`, start, false, 3, void 0, directive);
+        }
+        if (rule.type === "env" && rule.vars?.length) {
+          const cmdStr = commandString(input);
+          const varHit = rule.vars.some((v) => cmdStr.toLowerCase().includes(String(v).toLowerCase()));
+          if (varHit) return this.violation(input, rule, rule.message, start, 3);
+        }
+        if (deepChecks && rule.type === "content" && rule.patterns && !/^read/i.test(input.tool)) {
+          const args = input.args;
+          const pathStr = argPath(args);
+          const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
+          const patchText = String(args.patchText || "");
+          const inlineContent = String(args.content || args.text || patchText || "");
+          const isFile = resolvedPath && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
+          const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
+          if (inlineContent || diskChanged) {
+            for (const pattern of rule.patterns) {
+              const content = inlineContent || (isFile ? readFileSync4(resolvedPath, "utf-8") : "");
+              if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
+                return this.violation(input, rule, rule.message, start, 5);
+              }
+            }
+            if (isFile) this.config.contentTracker.markUnchanged(resolvedPath);
+          }
+        }
+        if (deepChecks && rule.type === "oracle") {
+          if (rule.match) {
+            const cmdStr = commandString(input);
+            if (cmdStr && this.matchesRulePattern(rule.match, cmdStr)) {
+              const recent = this.oracleTracker.recentFailure(rule, input);
+              if (recent) {
+                const age = Math.round(recent.ageMs / 1e3);
+                return this.violation(input, rule, `${rule.message} [command-surface: "${cmdStr}" ran ${age}s after failing run "${recent.command}"]`, start, 5);
+              }
+            }
+          }
+          if (rule.paths && !/^read/i.test(input.tool)) {
+            const args = input.args;
+            const pathStr = argPath(args);
+            const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
+            const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths);
+            if (pathMatched) {
+              const patchText = String(args.patchText || "");
+              const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? "");
+              const explicitOld = typeof args.oldString === "string" ? args.oldString : void 0;
+              const isFile = explicitOld === void 0 && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
+              const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync4(resolvedPath, "utf-8") : "";
+              if (newText || oldText) {
+                const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
+                if (signals.length) {
+                  const recent = this.oracleTracker.recentFailure(rule, input);
+                  if (recent) {
+                    const age = Math.round(recent.ageMs / 1e3);
+                    const detail = signals.map((s) => s.detail).join("; ");
+                    return this.violation(input, rule, `${rule.message} [${detail}; ${age}s after failing run "${recent.command}"]`, start, 5);
+                  }
                 }
               }
             }
           }
         }
-      }
-      if (deepChecks && rule.type === "sequence" && rule.steps) {
-        const seqResult = this.config.sequenceDetector.check(input, rule);
-        if (seqResult) {
-          return this.violation(input, rule, seqResult, start, 6);
+        if (deepChecks && rule.type === "sequence" && rule.steps) {
+          const seqResult = this.config.sequenceDetector.check(input, rule);
+          if (seqResult) {
+            return this.violation(input, rule, seqResult, start, 6);
+          }
         }
-      }
-      if (rule.type === "verification" || rule.type === "claim") {
-        this.verificationTracker.observeTrigger(rule, input);
-      }
-      if (deepChecks && rule.type === "flow" && rule.sources && rule.sinks) {
-        this.config.flowTracker.record(input, rule);
-        const flowResult = this.config.flowTracker.check(input, rule);
-        if (flowResult) {
-          return this.violation(input, rule, flowResult, start, 6);
+        if (rule.type === "verification" || rule.type === "claim") {
+          this.verificationTracker.observeTrigger(rule, input);
         }
-      }
-      if (rule.type === "session" && rule.max_duration_minutes) {
-        continue;
+        if (deepChecks && rule.type === "flow" && rule.sources && rule.sinks) {
+          this.config.flowTracker.record(input, rule);
+          const flowResult = this.config.flowTracker.check(input, rule);
+          if (flowResult) {
+            return this.violation(input, rule, flowResult, start, 6);
+          }
+        }
+        if (rule.type === "session" && rule.max_duration_minutes) {
+          continue;
+        }
+      } catch (err) {
+        if (err === OBSERVE_CONTINUE) continue;
+        throw err;
       }
     }
     if (reasoningChecks && level === "protect" && input.reasoning) {
@@ -7852,7 +7912,7 @@ var EnforcementPipeline = class {
         }
       }
     }
-    if (!statefulRules.length && !gatedRules.length) {
+    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
       this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
         verdict: "allow",
         rule_id: null,
@@ -7990,9 +8050,8 @@ var EnforcementPipeline = class {
   violation(input, rule, message, start, tier, warningKey = rule.id, directive, skipFirstWarning = false) {
     if (rule.mode === "observe") {
       const would = this.enforcedAction(rule, input);
-      const observed = this.result("allow", rule.id, `[observe] would ${would}: ${message}`, start, false, tier);
-      observed.observed_action = would;
-      return observed;
+      this.observedMatches.push({ rule_id: rule.id, observed_action: would, message: `[observe] would ${would}: ${message}` });
+      throw OBSERVE_CONTINUE;
     }
     const action = this.effectiveAction(rule, input);
     if (action === "fix") {
@@ -9050,7 +9109,11 @@ rules:
   # \u2500\u2500 TIER 1: protect floor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   - id: keel-control-gate
     type: command
+<<<<<<< HEAD
     match: "keel[ 	]+(disable|allow|level|enforce|install|uninstall)([ 	]|$)|keel[ 	]+rules[ 	][^|;&]*--append"
+=======
+    match: "keel (disable|allow|level|enforce|install|uninstall|promote)( |$)|keel rules [^|;&]*--append"
+>>>>>>> w3-promotion
     action: deny
     level: protect
     priority: 100
@@ -10238,7 +10301,7 @@ var plugin_default = {
       const args = output?.args || {};
       const enforceInput = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
       const result = await pipeline.evaluate(enforceInput);
-      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, observed_action: result.observed_action, message: result.message, hook: "tool.execute.before" });
+      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, observed_action: result.observed_action, observed_matches: result.observed_matches, message: result.message, hook: "tool.execute.before" });
       if (result.action === "warn" && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID);
       if (result.action === "fix") applyFix(args, result);
       if (result.action === "warn" && result.rule_id && verificationIds.has(result.rule_id)) {

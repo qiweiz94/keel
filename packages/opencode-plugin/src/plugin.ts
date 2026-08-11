@@ -53,7 +53,7 @@ rules:
   # ── TIER 1: protect floor ──────────────────────────────────────────
   - id: keel-control-gate
     type: command
-    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
+    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall|promote)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
     action: deny
     level: protect
     priority: 100
@@ -1274,7 +1274,15 @@ export default {
       const args = output?.args || {}
       const enforceInput = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)
       const result = await pipeline.evaluate(enforceInput)
-      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, observed_action: result.observed_action, message: result.message, hook: 'tool.execute.before' })
+      // observed_matches carries EVERY `mode: observe` rule that matched
+      // this call (pipeline.ts's evaluate()/violation() — a matched
+      // observe rule records and evaluation continues instead of
+      // short-circuiting, so more than one can land on one call).
+      // observed_action stays as the single-slot legacy view (the first
+      // match, or the only one) for every existing trace reader; the
+      // promotion pipeline (`keel retrospective`'s promotion section,
+      // retrospective.ts's computePromotionReport) reads both.
+      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, observed_action: result.observed_action, observed_matches: result.observed_matches, message: result.message, hook: 'tool.execute.before' })
       if (result.action === 'warn' && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID)
       if (result.action === 'fix') applyFix(args, result)
       if (result.action === 'warn' && result.rule_id && verificationIds.has(result.rule_id)) {
