@@ -212,3 +212,23 @@
   Cursor warn path uses camelCase but current Cursor docs show snake_case — potential
   no-op on the warn userMessage; block path untouched/tested. Suite in-tree: core 443,
   cli 1030, plugin 57 green.
+- 2026-08-11 supervisor: W3 lane 1 (promotion) landed (w3-promotion 88638eb):
+  observe-continue fix (observe rules record + CONTINUE; verdict from first non-observe
+  match) — found TWO MORE shipped bugs: must-sign-commits + no-push-to-main were blinded
+  by the observe rule source-change-requires-test (a push to main sailed through as bare
+  allow). 5 stale tests corrected. Promotion pipeline: computePromotionReport (would-block
+  rate, eligible/stay_observe/insufficient_data w/ min-eval floor; redirect counts as
+  would-block; cwd-scoped denominator). keel promote TTY-gated + added to keel-control-gate
+  in both copies. core 439, cli 1027 green (--no-file-parallelism; pre-existing public-v1
+  parallel flake noted).
+- 2026-08-11 supervisor: W3 lane 5 (opus secreview) landed (w3-secreview, 5 commits).
+  CRITICAL findings: (1) argPath missed file_path → ALL filesystem floors dead on
+  claude-code/gemini — SUPERVISOR HOTFIXED in main tree + test (verified live). (2) TWO
+  one-command disarms: `echo {} > ~/.keel/DISABLED` and a .keel.local.yaml redefining a
+  floor id both neutralize protect floors — self-protection is invisible to Bash (21/21
+  shell writes to protected paths allowed). Proposal self-protection-write-gate.yaml
+  written (14 catch / 17 benign) — PASTE at gate. (3) 28 regex bypasses FIXED (both copies,
+  additive, 26+12 fixtures); catch rates honestly up (destructive 46→73%, force-push
+  85→92%, etc.) → SECURITY.md. (4) --level flag inert (rules-file level wins) — documented.
+  (5) FLAKE root cause: STATE_DIR module-level races on real ~/.keel/state — fix at gate.
+  Floor-first confirmed at all 9 level combinations.
