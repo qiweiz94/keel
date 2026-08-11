@@ -64,12 +64,12 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 42 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 43 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
     // runaway-budget-bash-calls (session/DECISIONS.md, gate-2).
-    expect(install.size).toBe(42)
+    expect(install.size).toBe(43)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

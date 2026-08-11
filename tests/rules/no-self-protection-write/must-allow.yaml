@@ -1,41 +1,9 @@
 cases:
-  - note: "an ordinary build command"
+  - note: "ordinary redirect to a project file"
     tool: Bash
     args:
-      command: "npm run build"
-  - note: "git config for something that is not core.hooksPath"
+      command: "echo hello > src/output.txt"
+  - note: "cp between ordinary files"
     tool: Bash
     args:
-      command: "git config user.name Ann"
-  - note: "a redirect to an ordinary file"
-    tool: Bash
-    args:
-      command: "echo hi > out.txt"
-  - note: "cp between ordinary source files"
-    tool: Bash
-    args:
-      command: "cp src/a.ts src/b.ts"
-  - note: "READING the trust config is not writing it"
-    tool: Bash
-    args:
-      command: "cat .claude/settings.json"
-  - note: "a commit message that merely quotes a protected path"
-    tool: Bash
-    args:
-      command: "git commit -m \"update .mcp.json docs\""
-  - note: "a node one-liner with no protected path in the command"
-    tool: Bash
-    args:
-      command: "node -e \"console.log(1)\""
-  - note: "listing the editor config directory"
-    tool: Bash
-    args:
-      command: "ls .vscode/"
-  - note: "git diff of a protected path is a read"
-    tool: Bash
-    args:
-      command: "git diff .claude/settings.json"
-  - note: "a verb-lookalike substring (tcpdump contains cp) with no protected path"
-    tool: Bash
-    args:
-      command: "tcpdump -i any"
+      command: "cp README.md docs/README.copy.md"

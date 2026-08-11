@@ -110,6 +110,27 @@ rules:
       - "A genuine 'keel uninstall' run by the human — this rule only blocks the agent's own 'rm', not the CLI's own uninstall code path."
     message: "Removing keel's enforcement files is blocked."
 
+
+  # ── self-protection write gate (Tier 1; supervisor paste at gate-3, secreview) ──
+  - id: no-self-protection-write
+    type: command
+    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/)|git +config[^|;&]*core[.]hooksPath|[.]keel/DISABLED"
+    action: deny
+    level: protect
+    priority: 95
+    category: bypass
+    severity: critical
+    confidence: high
+    mode: block
+    rationale: "no-rules-tampering is a filesystem rule and therefore only sees a tool call's path ARGUMENT; a shell redirect's target is invisible to it. Measured in session/EVIDENCE/wave3-secreview.md: 21 of 21 shell writes to the self-protection path list were allowed, including a one-command write of the kill-switch sentinel that disables every rule at every dial. Same CVE-2025-59536/CVE-2026-21852 class as the filesystem rule it companions."
+    remediation: "Edit .claude/settings.json, .mcp.json, .vscode/settings.json, git hooks, or keel's own files yourself, in your own terminal."
+    false_positives:
+      - "An ordinary editor-preference write to .vscode/settings.json through the shell is blocked -- the same accepted trade-off no-rules-tampering already documents for that path."
+      - "Scaffolding a brand-new project's .mcp.json with a heredoc or redirect is blocked; ask the user to run it."
+      - "A file literally named .mcp.json anywhere outside the project root is still matched -- the path fragments are matched anywhere in the command, not anchored to the project."
+      - "A commit message that merely quotes one of these paths is NOT matched (verified: git commit -m with .mcp.json in the message passes), because a write verb must also be present."
+      - "The .keel/DISABLED clause is the one alternative with NO write-verb requirement, so a diagnostic READ of the sentinel (cat or ls of it) is also blocked. Intended -- the sentinel should be untouchable through the agent -- but it is a read being denied, which no other clause here does."
+    message: "Writing to keel's own files, the agent's trust/approval config, or git hooks through a shell command is blocked -- these are user-owned."
   - id: agent-env-hijack
     type: command
     match: "(?<![A-Za-z])export +(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile|[.]env)(?![A-Za-z])|(?<![A-Za-z])(echo|printf)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile|[.]env|[.]mcp[.]json)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(?<![A-Za-z])tee +-a? *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)[^;&]*[|][ \t]*(sudo[ \t]+)?tee[ \t]+(-a[ \t]*)?[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile)(?![A-Za-z])"

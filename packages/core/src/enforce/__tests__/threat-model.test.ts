@@ -349,7 +349,14 @@ rules:
           expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe('deny')
           const second = await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))
           expect(second.action).toBe('deny')
-          expect(second.rule_id).toBe('no-rules-tampering')
+          // Two protect-floor self-protection rules now cover these paths:
+          // no-rules-tampering (filesystem) and, since gate-3, the
+          // higher-priority no-self-protection-write (command) whose bare
+          // `.keel/DISABLED` alternative also matches a write-tool's
+          // serialized path. Either denying is correct — the invariant is
+          // "a protected path is blocked at every dial", not which floor rule
+          // wins the race.
+          expect(['no-rules-tampering', 'no-self-protection-write']).toContain(second.rule_id)
         }
       }
     })
