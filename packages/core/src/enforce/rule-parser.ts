@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { parse as parseYaml } from 'yaml'
-import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext } from '../types.js'
+import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext, RuleMode } from '../types.js'
 
 export interface ParsedRules {
   config: KeelConfig
@@ -395,16 +395,85 @@ const ACTION_STRENGTH: Record<EnforcementAction, number> = {
 }
 
 /**
+ * Relative strength of a rule's `mode` (RuleMode — the enforcement axis,
+ * independent of `action`; see types.ts's KeelRule.mode doc). Used only to
+ * decide whether a more-specific-scope override of a `level: protect`
+ * floor TIGHTENS or WEAKENS its effective enforcement (mergeRules' dedup
+ * loop, below) — the second neutralization vector the ACTION_STRENGTH
+ * check alone does not close: an override can keep `action: deny` +
+ * `level: protect` and still silence the floor by adding `mode: observe`,
+ * which short-circuits pipeline.ts's effectiveAction() to `allow` no
+ * matter how strong the action is.
+ *   block / undefined (2, tied) — strongest: fully enforcing (undefined
+ *                                  `mode` IS enforcing — see RuleMode's
+ *                                  doc comment; a floor with no `mode` at
+ *                                  all must not be treated as weaker than
+ *                                  one that spells out `mode: block`)
+ *   > warn (1)                  — surfaced with escalation, not yet a hard
+ *                                  block (see KeelRule.mode's doc comment)
+ *   > observe (0)                — weakest: evaluated and recorded, never
+ *                                  interrupts
+ */
+const MODE_STRENGTH: Record<RuleMode, number> = {
+  block: 2,
+  warn: 1,
+  observe: 0,
+}
+
+function modeStrength(mode: RuleMode | undefined): number {
+  return mode === undefined ? MODE_STRENGTH.block : MODE_STRENGTH[mode]
+}
+
+/**
+ * The fields that make up a command/filesystem/content rule's matching
+ * surface — what a rule actually fires on. Used only to decide whether a
+ * more-specific-scope override of a `level: protect` floor changes WHAT
+ * the floor watches (mergeRules' dedup loop, below) — the third
+ * neutralization vector: an override can keep `action: deny` +
+ * `level: protect` (and even `mode: block`) and still disable the floor
+ * for the dangerous command by replacing `match`/`paths`/`patterns` with
+ * a pattern that never fires on it.
+ *
+ * The safe default, and the one implemented here: a `level: protect`
+ * floor's matching surface may not be altered AT ALL by a lower scope —
+ * not narrowed, not widened, not rephrased. There is no principled way to
+ * tell a legitimate narrowing (a project genuinely needs a tighter regex)
+ * from an adversarial no-op (a pattern crafted to never fire) from inside
+ * mergeRules — it has no notion of "the same dangerous command" to test
+ * candidate patterns against. Any change to these fields is therefore
+ * rejected outright, exactly like a weakening action or mode. A project
+ * that legitimately needs a different matching surface for a floor should
+ * get keel's maintainers to change the shipped floor rule, not shadow its
+ * id from a lower scope.
+ */
+const MATCHING_SURFACE_FIELDS = ['match', 'match_prefix', 'match_regex', 'paths', 'patterns'] as const
+
+function sameMatchingSurface(existing: KeelRule, candidate: KeelRule): boolean {
+  return MATCHING_SURFACE_FIELDS.every(field => JSON.stringify(existing[field]) === JSON.stringify(candidate[field]))
+}
+
+/**
  * Merge rules from hierarchy into a single flat list.
  * More specific scopes override less specific ones for same rule id —
  * UNLESS the existing rule is a `level: protect` floor and the override
- * would WEAKEN it (drop `level: protect`, or pick a strictly weaker
- * action per ACTION_STRENGTH). A floor may only be tightened or left
- * alone by a more specific scope; that is the entire point of
- * `level: protect` — no project or local file can quietly downgrade it.
- * A weakening override is simply skipped and the floor already in the
- * map stands untouched (no partial field-merging — the simplest correct
- * rule). Non-floor rules keep the original free-override behavior.
+ * would WEAKEN it on ANY of three independent axes:
+ *   1. action   — drop `level: protect`, or pick a strictly weaker action
+ *                 per ACTION_STRENGTH (e.g. deny -> warn).
+ *   2. mode     — keep `level: protect` + the action, but add/loosen
+ *                 `mode` per MODE_STRENGTH (e.g. add `mode: observe`,
+ *                 which silently downgrades enforcement to allow —
+ *                 pipeline.ts's effectiveAction()).
+ *   3. match    — keep `level: protect` + the action + the mode, but
+ *                 change `match`/`match_prefix`/`match_regex`/`paths`/
+ *                 `patterns` (e.g. to a pattern that never fires on the
+ *                 command the floor exists to catch).
+ * A floor may only be tightened-or-tied on ALL THREE axes by a more
+ * specific scope, or it is left alone; that is the entire point of
+ * `level: protect` — no project or local file can quietly downgrade it
+ * on any vector, not just the declared `action`. A weakening override is
+ * simply skipped and the floor already in the map stands untouched (no
+ * partial field-merging — the simplest correct rule). Non-floor rules
+ * keep the original free-override behavior.
  */
 export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext): KeelRule[] {
   const all: KeelRule[] = []
@@ -443,7 +512,8 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
 
   // Deduplicate: more specific scope wins for same rule id, but a
   // level:protect floor can only be tightened or tied, never weakened —
-  // see ACTION_STRENGTH and this function's doc comment above.
+  // on action, mode, AND matching surface. See ACTION_STRENGTH,
+  // MODE_STRENGTH, sameMatchingSurface, and this function's doc comment.
   const scopeOrder: Record<string, number> = { global: 0, user: 1, project: 2, folder: 3, session: 4 }
   const deduped = new Map<string, KeelRule>()
   for (const rule of all) {
@@ -455,8 +525,11 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
     const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || 'global']
     if (!moreSpecific) continue
     if (existing.level === 'protect') {
-      const tightensOrEqual = rule.level === 'protect' && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action]
-      if (!tightensOrEqual) continue  // weakening override — keep the floor
+      const actionOk = rule.level === 'protect' && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action]
+      const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode)
+      const matchOk = sameMatchingSurface(existing, rule)
+      const tightensOrEqual = actionOk && modeOk && matchOk
+      if (!tightensOrEqual) continue  // weakening override on some axis — keep the floor
     }
     deduped.set(rule.id, rule)
   }

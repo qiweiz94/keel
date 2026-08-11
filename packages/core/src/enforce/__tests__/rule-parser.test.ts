@@ -209,4 +209,57 @@ describe('mergeRules — floor rules cannot be weakened by scope', () => {
     expect(rule?.action).toBe('allow')
     expect(rule?.message).toBe('local relaxes it')
   })
+
+  // ── mode + match: the two neutralization vectors ACTION_STRENGTH alone
+  // does not close. An override can keep `action: deny` + `level: protect`
+  // (passing the action check) and still disarm the floor by adding
+  // `mode: observe` (which short-circuits enforcement to allow — see
+  // pipeline.ts's effectiveAction) or by swapping the matching surface for
+  // a pattern that never fires. Both must be rejected exactly like an
+  // action-weakening override.
+
+  it('a local override that KEEPS action deny + level:protect but adds mode:observe is rejected', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', message: 'global floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', mode: 'observe', message: 'local silences via mode' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.mode).toBeUndefined()
+    expect(rule?.message).toBe('global floor')
+  })
+
+  it('a local override that KEEPS action deny + level:protect but replaces `match` with a non-matching pattern is rejected', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', message: 'global floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'this-never-matches-anything', message: 'local narrows match' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.match).toBe('push.*--force')
+    expect(rule?.message).toBe('global floor')
+  })
+
+  it('a local override that strictly tightens mode (observe -> block/undefined) with the same match is still honored', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', mode: 'observe', message: 'global floor, burning in' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', match: 'push.*--force', message: 'local promotes out of observe' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.mode).toBeUndefined()
+    expect(rule?.message).toBe('local promotes out of observe')
+  })
+
+  it('a NON-floor rule is still freely overridable on mode and match by a more specific scope (regression)', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'some-style-rule', type: 'command', action: 'warn', match: 'foo', message: 'global default' }],
+      [{ id: 'some-style-rule', type: 'command', action: 'warn', match: 'bar', mode: 'observe', message: 'local relaxes match and mode' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'some-style-rule')
+    expect(rule?.match).toBe('bar')
+    expect(rule?.mode).toBe('observe')
+    expect(rule?.message).toBe('local relaxes match and mode')
+  })
 })

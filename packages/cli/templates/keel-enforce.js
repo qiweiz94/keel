@@ -6532,6 +6532,18 @@ var ACTION_STRENGTH = {
   report: 0,
   research: 0
 };
+var MODE_STRENGTH = {
+  block: 2,
+  warn: 1,
+  observe: 0
+};
+function modeStrength(mode) {
+  return mode === void 0 ? MODE_STRENGTH.block : MODE_STRENGTH[mode];
+}
+var MATCHING_SURFACE_FIELDS = ["match", "match_prefix", "match_regex", "paths", "patterns"];
+function sameMatchingSurface(existing, candidate) {
+  return MATCHING_SURFACE_FIELDS.every((field) => JSON.stringify(existing[field]) === JSON.stringify(candidate[field]));
+}
 function mergeRules(hierarchy, level, context) {
   const all = [];
   const dialRank = { sprint: 0, balanced: 1, protect: 2 };
@@ -6562,7 +6574,10 @@ function mergeRules(hierarchy, level, context) {
     const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || "global"];
     if (!moreSpecific) continue;
     if (existing.level === "protect") {
-      const tightensOrEqual = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
+      const actionOk = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
+      const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode);
+      const matchOk = sameMatchingSurface(existing, rule);
+      const tightensOrEqual = actionOk && modeOk && matchOk;
       if (!tightensOrEqual) continue;
     }
     deduped.set(rule.id, rule);
