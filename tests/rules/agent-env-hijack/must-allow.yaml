@@ -19,3 +19,11 @@ cases:
     tool: Bash
     args:
       command: "export PATH=$PATH:/usr/local/bin"
+  - note: "wave-3 regression guard: an unrelated export appended to .zshenv"
+    tool: Bash
+    args:
+      command: "echo 'export PATH=$PATH:/opt/bin' >> ~/.zshenv"
+  - note: "wave-3 regression guard: tee to an ordinary file"
+    tool: Bash
+    args:
+      command: "cat package.json | tee /tmp/pkg.json"

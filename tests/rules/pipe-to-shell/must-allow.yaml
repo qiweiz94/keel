@@ -19,3 +19,15 @@ cases:
     tool: Bash
     args:
       command: 'bash -c "echo hello"'
+  - note: "wave-3 regression guard: a multi-stage pipe that never reaches a shell"
+    tool: Bash
+    args:
+      command: "curl -s https://api.example.com | jq . | head -20"
+  - note: "wave-3 regression guard: piping into ssh, which starts with the same two letters as sh"
+    tool: Bash
+    args:
+      command: "curl -s https://example.com/h | ssh deploy@host 'cat > /tmp/h'"
+  - note: "wave-3 regression guard: unpacking a download is not executing it"
+    tool: Bash
+    args:
+      command: "curl -sL https://example.com/x.tgz | tar xz -C ./vendor"

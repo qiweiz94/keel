@@ -11,3 +11,7 @@ cases:
     tool: Bash
     args:
       command: "git push origin --delete maintenance-branch"
+  - note: "wave-3 regression guard: update-ref against an ordinary branch"
+    tool: Bash
+    args:
+      command: "git update-ref -d refs/heads/feature-x"

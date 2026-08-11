@@ -3,3 +3,7 @@ cases:
     tool: Bash
     args:
       command: "rm -rf node_modules"
+  - note: "wave-3 regression guard: a backup directory whose name merely starts with .keel"
+    tool: Bash
+    args:
+      command: "rm -rf .keel-backup-2026"

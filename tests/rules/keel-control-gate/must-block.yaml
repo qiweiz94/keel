@@ -7,3 +7,7 @@ cases:
     tool: Bash
     args:
       command: "keel disable"
+  - note: "wave-3 bypass: a tab instead of a space after the verb"
+    tool: Bash
+    args:
+      command: "keel\tdisable"

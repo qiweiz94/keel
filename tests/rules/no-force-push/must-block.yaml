@@ -3,3 +3,7 @@ cases:
     tool: Bash
     args:
       command: "git push --force"
+  - note: "wave-3 bypass: the +refspec force form carries no --force flag"
+    tool: Bash
+    args:
+      command: "git push origin +main:main"
