@@ -45,6 +45,42 @@ describe('hook payload parsing', () => {
     expect(parsePayload('cline', 'not json at all')).toEqual({ tool: 'unknown', args: {} })
     expect(parsePayload('cursor', '')).toEqual({ tool: 'unknown', args: {} })
   })
+
+  describe('claude-code Stop payload (v0.4 Phase 1 — claim-to-evidence real reach)', () => {
+    it('extracts last_assistant_message as `reasoning` when hook_event_name is Stop', () => {
+      const call = parsePayload('claude-code', JSON.stringify({
+        hook_event_name: 'Stop', session_id: 'ses_1', last_assistant_message: 'Done, all tests pass.',
+      }))
+      expect(call.reasoning).toBe('Done, all tests pass.')
+      expect(call.tool).toBe('assistant-message')
+      expect(call.args).toEqual({})
+      expect(call.sessionId).toBe('ses_1')
+    })
+
+    it('an ordinary PreToolUse payload never sets `reasoning` — the Stop branch is gated on hook_event_name, not on tool_name being absent', () => {
+      const call = parsePayload('claude-code', JSON.stringify({
+        tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'ses_2',
+      }))
+      expect(call.reasoning).toBeUndefined()
+      expect(call.tool).toBe('Bash')
+    })
+
+    it('a payload claiming hook_event_name: Stop but missing last_assistant_message falls back to the ordinary tool-call shape rather than fabricating an empty claim', () => {
+      const call = parsePayload('claude-code', JSON.stringify({
+        hook_event_name: 'Stop', session_id: 'ses_3',
+      }))
+      expect(call.reasoning).toBeUndefined()
+    })
+
+    it('codex and gemini do NOT get the Stop branch this phase — same citation tier as claude-code, but out of this phase’s wired/verified scope', () => {
+      for (const host of ['codex', 'gemini'] as const) {
+        const call = parsePayload(host, JSON.stringify({
+          hook_event_name: 'Stop', session_id: 'ses_4', last_assistant_message: 'Done, all tests pass.',
+        }))
+        expect(call.reasoning).toBeUndefined()
+      }
+    })
+  })
 })
 
 describe('verdict rendering per host', () => {

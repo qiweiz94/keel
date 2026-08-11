@@ -192,6 +192,57 @@ export async function evaluateToolCall(
 }
 
 /**
+ * Evaluate a claim-to-evidence obligation against the agent's own completed
+ * output OUTSIDE a tool call (v0.4 Phase 1: "give claim-to-evidence real
+ * reach") — e.g. Claude Code's `Stop` hook `last_assistant_message`.
+ *
+ * Deliberately NOT `evaluateToolCall`: that routes through `pipeline.
+ * evaluate()`'s full tier stack, which would treat one call per assistant
+ * turn as a phantom tool call for flow/sequence/rate state (see
+ * EnforcementPipeline.evaluateClaim's own header comment in pipeline.ts) —
+ * corrupting exactly the trace-derived counters (runaway-budget, stuck-
+ * loop) the v0.4 thesis experiment measures off keel's own traces. This
+ * only ever touches `type: claim` rules and the VerificationTracker
+ * pending state they share with `type: verification` rules.
+ */
+export async function evaluateClaimText(
+  text: string,
+  extra?: { cwd?: string; agent?: string; sessionId?: string },
+): Promise<EnforceResult> {
+  if (!pipeline || !auditLog) {
+    throw new Error('Enforcement not initialized. Call initEnforce() first.')
+  }
+  const sessionId = extra?.sessionId || currentSessionId
+  const input: EnforceInput = {
+    tool: 'assistant-message',
+    args: {},
+    cwd: extra?.cwd || process.cwd(),
+    session_id: sessionId,
+    turn_number: 0,
+    context_tokens: 0,
+    level: currentLevel,
+    context: 'local',
+    agent: extra?.agent || 'unknown',
+    subagent_of: null,
+    reasoning: text,
+  }
+  const result = await pipeline.evaluateClaim(input)
+  auditLog.record(result, {
+    session_id: sessionId,
+    turn_number: input.turn_number,
+    tool: input.tool,
+    args: input.args,
+    level: input.level,
+    context: input.context,
+    agent: input.agent,
+    subagent_of: input.subagent_of,
+    context_tokens: input.context_tokens,
+    reasoning: input.reasoning,
+  })
+  return result
+}
+
+/**
  * CLI handler for `keel enforce`.
  */
 export async function enforceCommand(options: {

@@ -1,4 +1,4 @@
-import { initEnforce, evaluateToolCall } from './enforce.js'
+import { initEnforce, evaluateToolCall, evaluateClaimText } from './enforce.js'
 import { BLOCKING_ACTIONS } from './evaluate.js'
 import type { EnforceResult, ProtectionLevel } from '../core/types.js'
 
@@ -43,6 +43,24 @@ export interface ParsedCall {
    * cannot participate in a `keel allow --session` grant.
    */
   sessionId?: string
+  /**
+   * The agent's own completed-turn text, when this payload is a claim-
+   * reach event rather than a pre-tool-call one (v0.4 Phase 1). Set ONLY
+   * for a Claude Code `Stop` hook payload today (`hook_event_name ===
+   * 'Stop'`, carrying `last_assistant_message` — confirmed via
+   * code.claude.com/docs/en/hooks and the CHANGELOG entry cited in
+   * anthropics/claude-code#61152, "docs" confidence: not yet exercised
+   * against a live Claude Code session, see session/v04/EVIDENCE/
+   * phase-1.md). When set, `hookCommand` below routes to the claim-only
+   * evaluator instead of a tool-call verdict — see its own comment for why
+   * that must stay a structurally-can't-block path.
+   *
+   * Codex CLI documents the IDENTICAL `Stop`/`last_assistant_message`
+   * shape (developers.openai.com/codex/hooks) but is deliberately NOT
+   * wired here this phase — same citation tier, just out of this phase's
+   * verified scope (see phase-1.md's host matrix).
+   */
+  reasoning?: string
 }
 
 /** What the host must do, expressed uniformly so tests can assert it. */
@@ -107,15 +125,39 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
         sessionId,
       }
     }
+    case 'claude-code': {
+      // A Stop-shaped payload (`hook_event_name: "Stop"`) carries no
+      // tool_name at all — it fires once per assistant turn, after the
+      // model finishes, not before a tool call. `last_assistant_message`
+      // is the agent's own completed text for that turn (v0.4 Phase 1's
+      // claim-to-evidence channel — see ParsedCall.reasoning's comment for
+      // the citations). Checked by hook_event_name specifically, not by
+      // absence of tool_name, so a malformed/truncated PreToolUse payload
+      // never gets misread as a Stop event.
+      if (body.hook_event_name === 'Stop' && typeof body.last_assistant_message === 'string') {
+        return {
+          tool: 'assistant-message',
+          args: {},
+          sessionId: stringField(body.session_id),
+          reasoning: body.last_assistant_message,
+        }
+      }
+      return {
+        tool: typeof body.tool_name === 'string' ? body.tool_name : 'unknown',
+        args: asRecord(body.tool_input),
+        sessionId: stringField(body.session_id),
+      }
+    }
     case 'codex':
-    case 'claude-code':
     case 'gemini': {
       // Gemini CLI ships `gemini hooks migrate --from-claude`, which
       // advertises equivalence with the Claude Code hook format, so it
       // reads the same payload rather than a guessed one of its own.
       // `session_id` is on the base PreToolUse schema for both Claude Code
       // (code.claude.com/docs/en/hooks) and Codex (which converged on the
-      // same hookSpecificOutput-shaped hook contract).
+      // same hookSpecificOutput-shaped hook contract). Neither host's Stop
+      // shape is wired here (see ParsedCall.reasoning's comment) — this
+      // branch stays PreToolUse-only for both.
       return {
         tool: typeof body.tool_name === 'string' ? body.tool_name : 'unknown',
         args: asRecord(body.tool_input),
@@ -340,6 +382,28 @@ export async function hookCommand(hostArg: string, options: { cwd?: string; leve
     : await readStdin()
 
   const call = parsePayload(host, raw)
+
+  // Claim-reach event (v0.4 Phase 1 — today only a Claude Code `Stop`
+  // payload sets `call.reasoning`, see ParsedCall's comment). This is
+  // structurally NOT a pre-tool-call verdict: the agent has already
+  // finished its turn, `type: claim` is `mode: observe` and never blocks,
+  // and this detector's own binding contract is "observe-mode ONLY — never
+  // blocks." Exiting non-zero here would tell Claude Code's Stop hook to
+  // keep the agent going with keel's own internal failure as the reason —
+  // a self-inflicted loop for a detector that structurally cannot block —
+  // so this path ALWAYS exits 0, even if evaluation throws, and never
+  // touches renderVerdict's PreToolUse-shaped block/advisory envelopes.
+  if (call.reasoning !== undefined) {
+    try {
+      const cwd = options.cwd || process.cwd()
+      const level = (options.level as ProtectionLevel | undefined)
+      initEnforce(cwd, level ? { level } : undefined)
+      await evaluateClaimText(call.reasoning, { cwd, agent: host, sessionId: call.sessionId })
+    } catch {
+      // Fail open, on purpose — see the comment above.
+    }
+    process.exit(0)
+  }
 
   let result: EnforceResult | null = null
   try {

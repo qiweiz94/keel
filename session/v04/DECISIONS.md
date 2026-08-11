@@ -54,3 +54,27 @@
   didn't drop UNIQUE coverage — core tests still run in core pkg; only the redundant generated
   re-run removed; cross-check total unique test count. (2) verify daemon.ts lazy-singleton change
   behaves (daemon.test.ts + a real daemon smoke). Cli own-scope now ~662 (was ~1127 incl dups).
+- 2026-08-11 phase-1 lane (v04-claim worktree): claim-to-evidence real reach shipped.
+  Corrected the plan's own groundwork table: PostToolUse does NOT carry the agent's
+  own output (only the tool's) — the real channel is Claude Code's separate `Stop`
+  hook (`last_assistant_message`, docs-confidence, 2 sources). Wired OpenCode's
+  `experimental.text.complete` (LIVE-confirmed via a real `opencode run` probe with
+  the free model, session/transcripts/opencode-text-complete-probe.txt) and a new
+  Claude Code `Stop` hook (`claude-stop.sh`, docs-confidence, always exits 0 — fails
+  OPEN by design since the claim rule is observe-only and can never legitimately
+  block). Both routed through a NEW `EnforcementPipeline.evaluateClaim()` — NOT the
+  full `evaluate()` — specifically so a phantom "call" per assistant utterance cannot
+  contaminate the flow/sequence/rate trace counters the Phase-2 thesis experiment
+  measures off keel's own traces (proven by a dedicated no-contamination test).
+  Codex/Gemini/Cursor each have a real documented post-action channel (Codex: same
+  Stop/last_assistant_message shape; Gemini: AfterAgent/prompt_response, a DIFFERENT
+  native hook; Cursor: afterAgentResponse/text) that this phase intentionally left
+  unwired — recorded honestly in session/v04/EVIDENCE/phase-1.md's matrix rather than
+  silently skipped. Cline: genuinely no such channel exists. OpenClaw: only a low-
+  confidence proxy (reply_payload_sending.text), also unwired. Found and flagged (not
+  fixed, out of scope) a pre-existing gap: no exit-code host's `keel hook <host>` ever
+  calls `markVerificationSatisfied` — verification/claim obligations for Claude
+  Code/Cline/Cursor/Codex/Gemini are never discharged by a real passing test run
+  today, only by the OpenCode plugin's `tool.execute.after`. Full monorepo suite green
+  (core 474, cli 1145, opencode-plugin load-test all-PASS including the live opencode
+  auto-load probe) — evidence in session/v04/EVIDENCE/phase-1.md.
