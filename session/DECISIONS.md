@@ -14,3 +14,13 @@
   a failing test). Same character-identical line pushed to lanes 1/2/3 mid-flight so
   parallel duplicates merge cleanly. Gate check: line must appear exactly once after
   merge; re-run lane 7's two-subprocess warn→deny repro on the merged tree.
+- 2026-08-11 supervisor: Lane 3 landed observed_action persistence (w1-observed 4e9e479).
+  Scope correction accepted pending gate re-verification: receipts/signing are a SEPARATE
+  legacy trail (SignedEntry, written by PolicyEngine.audit only; `keel verify` reads only
+  that) — AuditEntry/traces compat tested against its real readers instead. Two gaps
+  flagged for later waves: (1) MCP/daemon /v1/check writes NO AuditEntry at all
+  (pre-existing); (2) traces dir (plugin TRACES_DIR + AuditLog default) has no env
+  override — tests exercising the plugin hook directly would write real ~/.keel/traces.
+  Assign both when Wave 2/3 lanes are cut. Lane 3 also reports 4 CLI level.test.ts
+  ANSI/chalk failures that reproduce on the BASE commit — check in supervisor's own
+  gate run before treating as pre-existing.
