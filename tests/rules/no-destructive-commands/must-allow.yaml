@@ -19,3 +19,7 @@ cases:
     tool: Bash
     args:
       command: "dd if=/dev/zero of=/dev/null bs=1m count=10"
+  - note: "v0.4 red-team guard: the --no-preserve-root clause requires the rm verb, so a bare mention without rm does not fire"
+    tool: Bash
+    args:
+      command: "echo checking the --no-preserve-root docs"

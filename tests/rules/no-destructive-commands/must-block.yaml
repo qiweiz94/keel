@@ -47,3 +47,11 @@ cases:
     tool: Bash
     args:
       command: "dd if=/dev/zero  of=/dev/disk2 bs=1m"
+  - note: "v0.4 red-team: --no-preserve-root is the canonical way to actually wipe / on Linux, and was allowed in v0.3"
+    tool: Bash
+    args:
+      command: "rm -rf --no-preserve-root /"
+  - note: "v0.4 red-team: --no-preserve-root before the -rf flags (reordered) still wipes root"
+    tool: Bash
+    args:
+      command: "rm --no-preserve-root -rf /"
