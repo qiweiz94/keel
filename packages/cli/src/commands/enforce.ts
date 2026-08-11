@@ -124,17 +124,28 @@ export async function evaluateToolCall(
     subagentOf?: string | null
     reasoning?: string
     depth?: EnforcementDepth
+    /**
+     * The host's OWN session id (Claude Code's `session_id`, Codex's
+     * `session_id`, Cursor's `conversation_id`, ...), when the caller has
+     * one. `keel hook <host>` is a fresh process per tool call, so without
+     * this the pipeline would see a different random session_id (below)
+     * on every single call — which silently defeats anything scoped to a
+     * session, including `keel allow <id> --session`. Falls back to the
+     * per-process id when the host payload carries none.
+     */
+    sessionId?: string
   },
 ): Promise<EnforceResult> {
   if (!pipeline || !auditLog || !contextManager) {
     throw new Error('Enforcement not initialized. Call initEnforce() first.')
   }
 
+  const sessionId = extra?.sessionId || currentSessionId
   const input: EnforceInput = {
     tool,
     args,
     cwd: extra?.cwd || process.cwd(),
-    session_id: currentSessionId,
+    session_id: sessionId,
     turn_number: extra?.turnNumber || 0,
     context_tokens: extra?.contextTokens || 0,
     level: extra?.level || currentLevel,
@@ -158,7 +169,7 @@ export async function evaluateToolCall(
 
   // Record in audit log
   auditLog.record(result, {
-    session_id: currentSessionId,
+    session_id: sessionId,
     turn_number: input.turn_number,
     tool: input.tool,
     args: input.args,

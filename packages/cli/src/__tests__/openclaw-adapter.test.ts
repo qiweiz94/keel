@@ -121,6 +121,34 @@ describe('openclaw adapter', () => {
     delete process.env.KEEL_TIMEOUT_MS
   })
 
+  it('emitFor(api) routes a warn verdict through api.logger.warn when the host provides one', () => {
+    // The installed before_tool_call return type has no field for "allow
+    // but show a message" (see the module header) — api.logger.warn is
+    // the best confirmed channel OpenClaw's plugin SDK actually exposes,
+    // and register() wires it as translate()'s `emit`. Not fully verified
+    // here whether logger.warn reaches the end user's chat surface vs.
+    // only an operator log — see session/EVIDENCE/wave3-warnsurface.md
+    // and HUMAN-CHECKLIST.md.
+    const logged: string[] = []
+    const api = { logger: { warn: (text: string) => { logged.push(text) } } }
+    const emit = plugin.emitFor(api)
+    plugin.translate({ action: 'warn', message: 'first violation', rule_id: 'no-destructive-commands' }, emit)
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toContain('no-destructive-commands')
+  })
+
+  it('emitFor(api) falls back to console.warn when the host has no logger', () => {
+    const said: string[] = []
+    const original = console.warn
+    console.warn = (text: string) => { said.push(text) }
+    try {
+      plugin.emitFor({})('[keel:x] fallback message')
+    } finally {
+      console.warn = original
+    }
+    expect(said).toEqual(['[keel:x] fallback message'])
+  })
+
   it('derives an exit code from after_tool_call, which carries no exit', () => {
     // The real event has { result?, error?, durationMs? } — no exit code.
     // Without deriving one, every attempt looks successful and the

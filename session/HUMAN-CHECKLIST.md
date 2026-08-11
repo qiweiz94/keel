@@ -197,3 +197,67 @@ OAuth) or a real Codex login copied into an isolated `CODEX_HOME`:
 
 ---
 
+## Wave-3 warn-visibility lane — live verification needed
+
+Full write-up: `session/EVIDENCE/wave3-warnsurface.md`. This lane made a
+`warn` verdict's message use each host's real non-blocking, visible-message
+channel instead of the previously-invisible `stderr`-on-exit-0. Every
+change below is `docs`/`best-effort` confidence — none of it was exercised
+against a live, real installation of the host. When one of these hosts is
+next live-verified (as Claude Code and OpenCode already were, for the
+*blocking* path, in earlier waves), also check the **warn** path:
+
+1. **Claude Code / Gemini**: trigger a `warn`-action rule (any deny rule's
+   first violation) through the real hook and confirm (a) Claude/Gemini's
+   own transcript actually shows the `systemMessage` text to the human,
+   and (b) the model's next turn reflects awareness of the
+   `additionalContext` text (e.g. by asking it to explain why it just saw
+   a warning). If either is silent, the field name or wrapper shape is
+   wrong despite matching the currently-published docs.
+2. **Codex CLI**: same, but also specifically check whether Codex's
+   PreToolUse hook accepts the omission of `hookSpecificOutput` (this lane
+   deliberately did not include it, based on an external bug report, not
+   a live repro — see EVIDENCE §1). If Codex marks the hook "failed" even
+   without `hookSpecificOutput`, or if `systemMessage` alone is silently
+   dropped, both need reconciling.
+3. **Cursor**: trigger a warn and confirm `userMessage`/`agentMessage`
+   actually surface for a `permission: 'allow'` response, not only for
+   `deny`/`ask` (only the latter were previously tested). Also resolve the
+   camelCase-vs-snake_case discrepancy flagged in EVIDENCE §1 — a live
+   Cursor install can settle definitively whether `userMessage`/
+   `agentMessage` (current shipped, block path AND this lane's warn path)
+   or `user_message`/`agent_message` (current published docs) is correct,
+   and both paths should be fixed together if so.
+4. **Cline**: trigger a warn and confirm the added `systemMessage` field
+   on the `HOOK_CONTROL` line reaches the user. This field was added on
+   external-docs confidence only — the block path's `HOOK_CONTROL`
+   envelope itself was verified against installed `@cline/core` types by
+   an earlier wave, but that verification never covered a warn/allow
+   message, so `systemMessage` specifically is unconfirmed. Also confirm
+   or correct the `sessionId` field guess used for `keel allow --session`
+   (`pre.sessionId`/`pre.session_id`/`body.sessionId`/`body.session_id` —
+   whichever, if any, cline's real PreToolUse payload actually sends).
+5. **OpenClaw**: confirm whether `api.logger.warn` (now wired as
+   `translate()`'s `emit`) reaches the actual end-user chat surface, or
+   only an operator/gateway-side log. If it's the latter, OpenClaw
+   currently has **no** confirmed non-blocking user-visible channel at
+   all, and that should be recorded as a real gap in `docs/integrations.md`
+   rather than left implied by the presence of `emitFor`. While there,
+   also check the openclaw/openclaw#5943 finding from this lane's research
+   (title: "Wire up `before_tool_call` plugin hook in tool execution
+   pipeline") — if `before_tool_call` doesn't fire in the installed
+   OpenClaw version, that's a bigger, pre-existing problem than
+   warn-visibility (it would affect the block path too), and
+   `docs/integrations.md`'s current "live" rating for OpenClaw (justified
+   only by `openclaw plugins list` reporting the plugin loaded) should be
+   revisited.
+6. **`keel allow --session` cross-host**: pick any live-verified host,
+   trigger a warn, run `keel allow <id> --session` in a separate terminal,
+   and confirm the NEXT violation from that same agent session is allowed
+   while a concurrent second session (or a fresh one after restarting the
+   agent) still gets denied. This is unit- and pipeline-tested in this
+   lane (`session/EVIDENCE/wave3-warnsurface.md` §2–3) but never exercised
+   against a real host's actual `session_id`/`conversation_id` value.
+
+---
+

@@ -103,7 +103,20 @@ pushes, remote execution, history rewrites and publishing all passed through.
 **Advisory verdicts never block, but are never silent either.** keel's ladder is
 warn-once-then-block, so the first violation of every deny rule arrives as `warn`.
 Swallowing it would mean you see nothing, then a hard block on the repeat, with no
-warning in between.
+warning in between. This is not just an audit-log entry: `stderr` on `exit 0` is
+provably invisible on Claude Code (its own hook docs confirm it goes to a debug log
+only), so each host's `warn` uses that host's real non-blocking, human/model-visible
+channel instead — Claude Code/Gemini's `hookSpecificOutput.additionalContext` +
+`systemMessage`, Codex's `systemMessage`, Cursor's `userMessage`/`agentMessage`,
+Cline's `systemMessage`, OpenClaw's `api.logger.warn`. See
+`session/EVIDENCE/wave3-warnsurface.md` for the full per-host matrix and confidence
+levels (several of these are `docs`-confidence best-effort additions, not yet
+live-verified — HUMAN-CHECKLIST.md carries the follow-up).
+
+**`keel allow <id> --session`** scopes an override to the exact agent session that
+triggered it (resolved from the most recent session_id in the audit trail), rather
+than every session for the next 24h. It never leaks to a different session_id, even
+a concurrent one — see the same evidence file for the lifecycle.
 
 **Hermes and OpenClaw fail open by design** — a plugin that throws is skipped and the
 call proceeds. Since a thin client cannot bundle the rule engine, both keel plugins

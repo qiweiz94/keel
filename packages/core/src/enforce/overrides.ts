@@ -2,14 +2,23 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, s
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-export type OverrideMode = 'once' | 'window'
+export type OverrideMode = 'once' | 'window' | 'session'
 
 export interface RuleOverride {
   expires_at: number
   /** `once`: consumed on the first matching violation. `window`: all
-   *  violations are allowed until expiry. Absent/legacy entries are treated
-   *  as `once` (the conservative reading). */
+   *  violations are allowed until expiry. `session`: all violations are
+   *  allowed until expiry, but ONLY for calls carrying the exact
+   *  `session_id` recorded in `session_id` below — a different session's
+   *  call does not match, even while this entry is unexpired. Absent/legacy
+   *  entries are treated as `once` (the conservative reading). */
   mode?: OverrideMode
+  /** Set when `mode === 'session'`. The one session_id this override is
+   *  scoped to — set by `keel allow <id> --session`, which resolves "the
+   *  current session" from the most recent audit trail entry (this CLI
+   *  never runs inside the agent's own process, so it cannot read a
+   *  session_id off a live call). */
+  session_id?: string
 }
 
 export interface RuleOverrideStore {
@@ -20,10 +29,13 @@ export interface RuleOverrideStore {
    *   - `once`  — the override is deleted on first match (single use).
    *   - `window` — the override is kept until `expires_at` (all violations
    *     allowed, every one still audited by the pipeline).
+   *   - `session` — kept until `expires_at`, but only matches when
+   *     `sessionId` equals the override's own `session_id`. A call from a
+   *     different (or missing) session_id does not consume or clear it.
    *   - expired — deleted, returns false.
    * Never throws: enforcement must not depend on the override store.
    */
-  consume(ruleId: string): boolean
+  consume(ruleId: string, sessionId?: string): boolean
   /** Non-destructive check — does an unexpired override exist? */
   peek(ruleId: string): RuleOverride | null
   /** Snapshot of all overrides (for `keel status`). */
@@ -41,19 +53,20 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
     // does not supply its own overrideStore) from the real ~/.keel —
     // deny/block verdicts call `consume()` unconditionally, which touches
     // disk even when no override is ever armed. Deliberately a SEPARATE
-    // env var from KEEL_STATE_DIR, not the same one: `keel allow` (the
-    // real writer, packages/cli/src/commands/allow.ts) always writes
-    // ~/.keel/overrides.json unchanged this wave, so reusing KEEL_STATE_DIR
-    // here would silently split reader and writer onto different files the
-    // moment a host or test set it for state isolation. This constructor's
-    // explicit `home` parameter (used by existing callers/tests) still
-    // takes precedence, exactly as before.
+    // env var from KEEL_STATE_DIR, not the same one. `keel allow` (the real
+    // writer, packages/cli/src/commands/allow.ts) now honors this same
+    // KEEL_OVERRIDES_DIR too (wave-3 warnsurface lane) — it did not
+    // originally, which meant an isolated/test environment could arm an
+    // override the pipeline's default store would never see (reader and
+    // writer on different files). This constructor's explicit `home`
+    // parameter (used by existing callers/tests) still takes precedence,
+    // exactly as before.
     this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, '.keel')
     this.file = join(this.directory, 'overrides.json')
     this.lock = `${this.file}.lock`
   }
 
-  consume(ruleId: string): boolean {
+  consume(ruleId: string, sessionId?: string): boolean {
     let descriptor: number | undefined
     let acquired = false
     try {
@@ -74,6 +87,13 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
         if (override) delete overrides[ruleId]
         this.write(overrides)
         return false
+      }
+      if (override.mode === 'session') {
+        // Scoped to one exact session_id. A different (or absent) caller
+        // session_id does not match — and, importantly, does NOT delete or
+        // otherwise disturb the entry, so the owning session can still use
+        // it on a later call.
+        return sessionId !== undefined && override.session_id === sessionId
       }
       if (override.mode === 'window') return true
       delete overrides[ruleId]

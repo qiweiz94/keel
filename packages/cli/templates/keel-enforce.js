@@ -7266,7 +7266,7 @@ var FileRuleOverrideStore = class {
     this.file = join2(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
   }
-  consume(ruleId) {
+  consume(ruleId, sessionId) {
     let descriptor;
     let acquired = false;
     try {
@@ -7288,6 +7288,9 @@ var FileRuleOverrideStore = class {
         if (override) delete overrides[ruleId];
         this.write(overrides);
         return false;
+      }
+      if (override.mode === "session") {
+        return sessionId !== void 0 && override.session_id === sessionId;
       }
       if (override.mode === "window") return true;
       delete overrides[ruleId];
@@ -7555,8 +7558,8 @@ var EnforcementPipeline = class {
     );
     if (cached) {
       if (cached.verdict === "deny" || cached.verdict === "block") {
-        if (cached.rule_id && this.overrideStore.consume(cached.rule_id)) {
-          return this.result("allow", cached.rule_id, `One-time override consumed for "${cached.rule_id}"`, start, true, 1);
+        if (cached.rule_id && this.overrideStore.consume(cached.rule_id, input.session_id)) {
+          return this.result("allow", cached.rule_id, this.overrideMessage(cached.rule_id), start, true, 1);
         }
         return this.result("deny", cached.rule_id || "", "Cached deny verdict", start, true, 1);
       }
@@ -7954,6 +7957,21 @@ var EnforcementPipeline = class {
     return result;
   }
   /**
+   * The result message for a consumed override, worded for the mode that
+   * actually consumed it — `--once` is spent, `--session`/the 24h window
+   * form are not, and telling the user "one-time" when it is neither is a
+   * control that lies about its own state.
+   */
+  overrideMessage(ruleId) {
+    try {
+      const remaining = this.overrideStore.peek(ruleId);
+      if (remaining?.mode === "session") return `Session override consumed for "${ruleId}" (this agent session only)`;
+      if (remaining?.mode === "window") return `Standing override consumed for "${ruleId}" (active until it expires)`;
+    } catch {
+    }
+    return `One-time override consumed for "${ruleId}"`;
+  }
+  /**
    * Approval gate (`action: prompt`). Behaves like a deny (blocks, tracks the
    * circuit breaker, caches a deny verdict for override consumption) but is
    * reported as `prompt` and always requires explicit user approval via
@@ -7992,8 +8010,8 @@ var EnforcementPipeline = class {
       return action === "warn" ? this.warn(input, rule, message, start, tier) : this.result(action, rule.id, message, start, false, tier);
     }
     if (action === "prompt") {
-      if (this.overrideStore.consume(rule.id)) {
-        return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
+      if (this.overrideStore.consume(rule.id, input.session_id)) {
+        return this.result("allow", rule.id, this.overrideMessage(rule.id), start, false, tier);
       }
       return this.gate(input, rule, message, start, tier);
     }
@@ -8006,8 +8024,8 @@ var EnforcementPipeline = class {
         return this.warn(input, rule, `First violation of "${rule.id}" \u2014 warning only. Next time will be blocked.`, start, tier);
       }
       this.denyFirstTime.set(warningKey, true);
-      if (this.overrideStore.consume(rule.id)) {
-        return this.result("allow", rule.id, `One-time override consumed for "${rule.id}"`, start, false, tier);
+      if (this.overrideStore.consume(rule.id, input.session_id)) {
+        return this.result("allow", rule.id, this.overrideMessage(rule.id), start, false, tier);
       }
       return this.block(input, rule, message, start, tier);
     }

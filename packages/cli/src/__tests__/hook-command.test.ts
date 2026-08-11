@@ -132,3 +132,129 @@ describe('verdict rendering per host', () => {
     }
   })
 })
+
+describe('session_id extraction (keel allow --session plumbing)', () => {
+  // Absence is honest, not a bug: a host whose real session field isn't
+  // confirmed (or genuinely omitted from a payload) must not fabricate one
+  // — evaluateToolCall falls back to a fresh per-process id, which simply
+  // cannot participate in a `keel allow --session` grant. That is the
+  // correct, safe failure mode (never a false match onto some OTHER
+  // session), not a defect this suite should paper over.
+  it('reads session_id off the Claude-Code-shaped payload (claude-code, gemini, codex)', () => {
+    for (const host of ['claude-code', 'gemini', 'codex'] as const) {
+      const call = parsePayload(host, JSON.stringify({
+        tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'ses_abc123',
+      }))
+      expect(call.sessionId).toBe('ses_abc123')
+    }
+  })
+
+  it('reads conversation_id off the Cursor payload, for either shell or MCP shape', () => {
+    const shell = parsePayload('cursor', JSON.stringify({ command: 'ls', conversation_id: 'conv_1' }))
+    expect(shell.sessionId).toBe('conv_1')
+
+    const mcp = parsePayload('cursor', JSON.stringify({
+      tool_name: 'search', tool_input: {}, conversation_id: 'conv_2',
+    }))
+    expect(mcp.sessionId).toBe('conv_2')
+  })
+
+  it('reads a generic session_id when present, without requiring one', () => {
+    const withId = parsePayload('generic', JSON.stringify({ tool: 'bash', args: {}, session_id: 'g1' }))
+    expect(withId.sessionId).toBe('g1')
+
+    const withoutId = parsePayload('generic', JSON.stringify({ tool: 'bash', args: {} }))
+    expect(withoutId.sessionId).toBeUndefined()
+  })
+
+  it('carries no session_id when a payload has none, rather than inventing one', () => {
+    for (const host of HOSTS) {
+      const call = parsePayload(host, JSON.stringify({ tool_name: 'Bash', tool_input: {}, command: 'ls' }))
+      expect(call.sessionId).toBeUndefined()
+    }
+  })
+})
+
+describe('warn-visibility per host', () => {
+  // The verdict rendered for a non-blocking result whose message must
+  // reach a human-or-model-visible field, not stderr-on-exit-0 — proven
+  // invisible for the exit-code hosts (see the long comment in hook.ts
+  // above renderVerdict's `!blocked` branch, and
+  // session/EVIDENCE/wave3-warnsurface.md for the citations).
+  const warned = verdict({ action: 'warn', rule_id: 'no-destructive-commands', message: 'First violation — warning only.' })
+
+  it('claude-code: systemMessage (user) AND hookSpecificOutput.additionalContext (model), never bare stderr', () => {
+    const v = renderVerdict('claude-code', warned)
+    expect(v.exitCode).toBe(0)
+    expect(v.stderr).toBe('')     // exit-0 stderr is the confirmed-invisible channel
+    const payload = JSON.parse(v.stdout)
+    expect(payload.systemMessage).toContain('no-destructive-commands')
+    expect(payload.systemMessage).toContain('First violation')
+    expect(payload.hookSpecificOutput.additionalContext).toContain('First violation')
+  })
+
+  it('claude-code/gemini: a warn NEVER sets permissionDecision:allow — that would short-circuit Claude Code\'s own permission prompt and auto-approve the very violation keel is warning about', () => {
+    // This is the discriminator: `warn` means "first violation, not yet
+    // blocked," not "keel has decided this call is fine." Before this
+    // lane, a first-violation warn exited 0 with plain stderr and Claude
+    // Code's own permission system still asked the human before e.g.
+    // `git commit --no-verify` ran. An explicit `permissionDecision:
+    // 'allow'` would have skipped that ask entirely — trading an invisible
+    // warning for a visible-but-auto-approved one, which is a net
+    // weakening of the guard this lane exists to strengthen.
+    for (const host of ['claude-code', 'gemini'] as const) {
+      const payload = JSON.parse(renderVerdict(host, warned).stdout)
+      expect(payload.hookSpecificOutput.permissionDecision).toBeUndefined()
+    }
+  })
+
+  it('gemini: same Claude-Code-shaped envelope', () => {
+    const payload = JSON.parse(renderVerdict('gemini', warned).stdout)
+    expect(payload.systemMessage).toContain('no-destructive-commands')
+    expect(payload.hookSpecificOutput.additionalContext).toContain('no-destructive-commands')
+  })
+
+  it('codex: systemMessage only — deliberately omits hookSpecificOutput (see the rejected-permissionDecision citation in hook.ts)', () => {
+    const v = renderVerdict('codex', warned)
+    expect(v.exitCode).toBe(0)
+    expect(v.stderr).toBe('')
+    const payload = JSON.parse(v.stdout)
+    expect(payload.systemMessage).toContain('no-destructive-commands')
+    expect(payload.hookSpecificOutput).toBeUndefined()
+  })
+
+  it('cursor: userMessage and agentMessage on the allow response, not stderr', () => {
+    const v = renderVerdict('cursor', warned)
+    expect(v.stderr).toBe('')
+    const payload = JSON.parse(v.stdout)
+    expect(payload.permission).toBe('allow')
+    expect(payload.userMessage).toContain('no-destructive-commands')
+    expect(payload.agentMessage).toContain('no-destructive-commands')
+  })
+
+  it('cline: systemMessage on a non-cancelling HOOK_CONTROL line, not stderr', () => {
+    const v = renderVerdict('cline', warned)
+    expect(v.stderr).toBe('')
+    const control = JSON.parse(v.stdout.replace(/^HOOK_CONTROL\t/, ''))
+    expect(control.cancel).toBe(false)
+    expect(control.systemMessage).toContain('no-destructive-commands')
+  })
+
+  it('generic: advisory text on stdout — no named channel is documented, but stdout beats a stderr nobody promised to read either', () => {
+    const v = renderVerdict('generic', warned)
+    expect(v.stderr).toBe('')
+    expect(v.stdout).toContain('no-destructive-commands')
+  })
+
+  it('a true allow (no rule_id) stays silent on every host — nothing to warn about', () => {
+    const clean = verdict({ action: 'allow', rule_id: null as unknown as string, message: '' })
+    for (const host of HOSTS) {
+      const v = renderVerdict(host, clean)
+      expect(v.blocked).toBe(false)
+      expect(v.stderr).toBe('')
+      // No advisory text anywhere — stdout is either empty or a bare
+      // envelope with no message field carrying content.
+      expect(v.stdout).not.toContain('no-destructive-commands')
+    }
+  })
+})
