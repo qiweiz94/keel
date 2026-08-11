@@ -6454,6 +6454,11 @@ function validateRules(rules) {
       rule.match_regex,
       rule.unless_reasoning,
       ...(rule.unless || []).map((u) => u.regex),
+      // content-rule patterns: a typo'd regex here is worse than unless —
+      // matchesRulePattern swallows a bad regex into `false` at eval, so the
+      // rule loads clean and SILENTLY never matches (a quiet fail-OPEN: a
+      // security rule that stops catching what it should). Reject at load.
+      ...(rule.patterns || []).map((p) => p.regex),
       ...(rule.steps || []).map((step) => step.pattern),
       rule.trigger?.pattern,
       rule.satisfy?.pattern,

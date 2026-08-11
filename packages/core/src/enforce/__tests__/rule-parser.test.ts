@@ -70,6 +70,23 @@ rules:
     expect(issues.some(issue => issue.includes('invalid regex'))).toBe(false)
   })
 
+  it('rejects a content rule with an uncompilable patterns[].regex (quiet fail-open closed)', () => {
+    // Without load-time validation this loads clean and silently never
+    // matches — a security rule that stops catching what it should.
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-content
+    type: content
+    patterns:
+      - regex: "(unclosed"
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues).toContain('Rule "bad-content" contains invalid regex: (unclosed')
+  })
+
   it('surfaces malformed YAML instead of silently accepting it', () => {
     const parsed = parseRulesContent('rules: [', '/tmp/rules.yaml')
     expect(parsed.errors?.some(error => error.startsWith('Invalid YAML:'))).toBe(true)
