@@ -36,7 +36,19 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
   private readonly lock: string
 
   constructor(home = homedir()) {
-    this.directory = join(home, '.keel')
+    // KEEL_OVERRIDES_DIR isolates the DEFAULT construction site
+    // (pipeline.ts: `new FileRuleOverrideStore()`, used whenever a caller
+    // does not supply its own overrideStore) from the real ~/.keel —
+    // deny/block verdicts call `consume()` unconditionally, which touches
+    // disk even when no override is ever armed. Deliberately a SEPARATE
+    // env var from KEEL_STATE_DIR, not the same one: `keel allow` (the
+    // real writer, packages/cli/src/commands/allow.ts) always writes
+    // ~/.keel/overrides.json unchanged this wave, so reusing KEEL_STATE_DIR
+    // here would silently split reader and writer onto different files the
+    // moment a host or test set it for state isolation. This constructor's
+    // explicit `home` parameter (used by existing callers/tests) still
+    // takes precedence, exactly as before.
+    this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, '.keel')
     this.file = join(this.directory, 'overrides.json')
     this.lock = `${this.file}.lock`
   }

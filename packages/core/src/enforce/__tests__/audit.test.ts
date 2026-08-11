@@ -18,6 +18,53 @@ function todayFilename(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}.jsonl`
 }
 
+describe('KEEL_TRACES_DIR override (Wave-2 Lane-3 cleanup)', () => {
+  // AuditLog's default trace dir used to always resolve to real
+  // ~/.keel/traces when no `logDir` was passed — every caller that
+  // constructs `new AuditLog()` with no argument (the plugin's real
+  // default, enforce.ts's `auditLog = new AuditLog()`) had no way to
+  // redirect it. Read INSIDE the constructor (not as a module-level
+  // const, unlike state-manager.ts:21 — see the code comment there for
+  // why) so setting the env var anywhere before construction works,
+  // regardless of what else in the test file already imported this module.
+  it('redirects the default trace dir, off real ~/.keel/traces', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'keel-traces-env-'))
+    const previous = process.env.KEEL_TRACES_DIR
+    process.env.KEEL_TRACES_DIR = directory
+    try {
+      const audit = new AuditLog()  // no logDir — the default site
+      audit.record({ action: 'allow', message: 'ok', timestamp: new Date().toISOString() }, {
+        session_id: 's', turn_number: 1, tool: 'Bash', args: {},
+        level: 'balanced', context: 'local', agent: 'test', subagent_of: null, context_tokens: 0,
+      })
+      const files = readdirSync(directory).filter(name => name.endsWith('.jsonl'))
+      expect(files.length).toBe(1)
+    } finally {
+      if (previous === undefined) delete process.env.KEEL_TRACES_DIR
+      else process.env.KEEL_TRACES_DIR = previous
+    }
+  })
+
+  it('an explicit logDir argument still wins over KEEL_TRACES_DIR', () => {
+    const explicitDir = mkdtempSync(join(tmpdir(), 'keel-traces-explicit-'))
+    const envDir = mkdtempSync(join(tmpdir(), 'keel-traces-env2-'))
+    const previous = process.env.KEEL_TRACES_DIR
+    process.env.KEEL_TRACES_DIR = envDir
+    try {
+      const audit = new AuditLog(explicitDir)
+      audit.record({ action: 'allow', message: 'ok', timestamp: new Date().toISOString() }, {
+        session_id: 's', turn_number: 1, tool: 'Bash', args: {},
+        level: 'balanced', context: 'local', agent: 'test', subagent_of: null, context_tokens: 0,
+      })
+      expect(readdirSync(explicitDir).some(name => name.endsWith('.jsonl'))).toBe(true)
+      expect(readdirSync(envDir).some(name => name.endsWith('.jsonl'))).toBe(false)
+    } finally {
+      if (previous === undefined) delete process.env.KEEL_TRACES_DIR
+      else process.env.KEEL_TRACES_DIR = previous
+    }
+  })
+})
+
 describe('audit privacy', () => {
   it('redacts sensitive arguments and reasoning before writing JSONL', () => {
     const directory = mkdtempSync(join(tmpdir(), 'keel-audit-'))

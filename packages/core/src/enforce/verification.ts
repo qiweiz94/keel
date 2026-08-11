@@ -1,6 +1,16 @@
 import type { EnforceInput, KeelRule, VerificationMatcher } from '../types.js'
 import type { StateManager } from './state-manager.js'
-import { stripContentArgs, mcpToolString, argPath } from './arg-utils.js'
+import { stripContentArgs, mcpToolString, argPath, commandString } from './arg-utils.js'
+
+// `type: claim` (enforce/claim.ts) reuses this tracker's trigger/satisfy/
+// pending state machine verbatim — same edit-arms / test-discharges shape,
+// see types.ts's comment on the verification-obligation fields for why.
+// Every gate below that used to read `rule.type !== 'verification'` is
+// broadened to accept both types; `boundary()` is left verification-only
+// since claim rules never declare `boundaries`.
+function isObligationRule(rule: KeelRule): boolean {
+  return rule.type === 'verification' || rule.type === 'claim'
+}
 
 // File-modification tools under their real names. opencode calls them
 // write/edit/apply_patch; Claude Code calls them WriteFile/Write/Edit; MCP
@@ -36,11 +46,20 @@ export function matches(matcher: VerificationMatcher | undefined, input: Enforce
     if (!pathTargets.some(target => value.includes(target))) return false
   }
   if (matcher.pattern) {
+    let re: RegExp
     try {
-      if (!new RegExp(matcher.pattern, 'i').test(JSON.stringify(args))) return false
+      re = new RegExp(matcher.pattern, 'i')
     } catch {
       return false
     }
+    // Match-surface repair (same class as pipeline.ts's rate/diagnosis fix,
+    // see match-surface.test.ts): a raw JSON.stringify(args) haystack
+    // distorts quoted commands (escaped `"`) and defeats end-of-string
+    // anchors (the JSON string always continues with a closing quote/brace).
+    // The real command text is tried ADDITIVELY — nothing that matched the
+    // JSON surface before stops matching; an anchored pattern that could
+    // only ever match the command text now can too.
+    if (!re.test(JSON.stringify(args)) && !re.test(commandString(input))) return false
   }
   return true
 }
@@ -64,7 +83,7 @@ export class VerificationTracker {
   }
 
   observeTrigger(rule: KeelRule, input: EnforceInput): void {
-    if (rule.type !== 'verification' || !matches(rule.trigger, input)) return
+    if (!isObligationRule(rule) || !matches(rule.trigger, input)) return
     const key = this.key(rule, input)
     const previous = this.stateManager?.verification[key]
     const generation = Math.max(this.generations.get(key) || 0, previous?.generation || 0) + 1
@@ -80,7 +99,7 @@ export class VerificationTracker {
   }
 
   markSatisfied(rule: KeelRule, input: EnforceInput): void {
-    if (rule.type !== 'verification' || !matches(rule.satisfy, input)) return
+    if (!isObligationRule(rule) || !matches(rule.satisfy, input)) return
     if (this.isFakeSatisfy(input)) return
     this.pending.delete(this.key(rule, input))
     this.stateManager?.clearVerification(this.key(rule, input))
@@ -108,7 +127,7 @@ export class VerificationTracker {
   }
 
   isPending(rule: KeelRule, input: EnforceInput): boolean {
-    if (rule.type !== 'verification') return false
+    if (!isObligationRule(rule)) return false
     const key = this.key(rule, input)
     const pending = this.pending.get(key) || this.stateManager?.verification[key]
     if (!pending) return false
@@ -124,11 +143,19 @@ export class VerificationTracker {
   boundary(rule: KeelRule, input: EnforceInput): { message: string; action?: string } | null {
     if (!this.isPending(rule, input) || !rule.boundaries) return null
     const args = JSON.stringify(stripContentArgs(input.args || {}))
+    // Same match-surface class as `matches()`'s matcher.pattern fix above
+    // (see match-surface.test.ts): the JSON haystack distorts quoted
+    // commands and defeats end-of-string anchors. Tried additively —
+    // nothing that matched the JSON surface before stops matching.
+    const cmd = commandString(input)
     const mcp = mcpToolString(input)
     for (const boundary of Object.values(rule.boundaries)) {
       try {
-        if (boundary.pattern && new RegExp(boundary.pattern, 'i').test(args)) {
-          return { message: rule.message, action: boundary.action }
+        if (boundary.pattern) {
+          const re = new RegExp(boundary.pattern, 'i')
+          if (re.test(args) || re.test(cmd)) {
+            return { message: rule.message, action: boundary.action }
+          }
         }
       } catch {}
       // MCP-shaped calls (`mcp__github__create_commit`) don't carry a shell
