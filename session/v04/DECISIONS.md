@@ -130,3 +130,16 @@
   (live-verify/integrations). Hot-file items (A2 shell-parse, A3 fail-closed, F1 mask) roll in
   SERIALLY behind mergeRules as it clears. Rolling wave, not a single 30-wide blast. All Sonnet
   workers per routing (Opus reserved for security review/red-team of the merged result).
+- 2026-08-11 supervisor: M1/A1 GATE CLOSED (860b60e). mergeRules floor guard merged:
+  MODE_STRENGTH + exclusion-based sameEnforcementSurface check. Floors now un-bypassable on
+  action + mode + enforcement-surface for same-id overrides. VERIFIED LIVE by supervisor: a
+  .keel.local.yaml adding mode:observe to no-force-push is rejected — floor still denies (exit 2).
+  Suite green core 484 / cli 674. Honest residual (documented in SECURITY.md): DIFFERENT-id
+  priority-shadowing (a lower-scope rule with a different id + higher priority shadowing a floor)
+  is still open — a separate engine change, queued for M1.
+- 2026-08-11 supervisor: BROWSER-FLOOD INCIDENT — parallel opencode-running lanes (B2 benchmark,
+  D1 live-verify) opened a 127.0.0.1/#token= tab per `opencode run`, flooding the user with 40+
+  dead tabs. Killed opencode + STOPPED both lanes (partial progress preserved on branches:
+  B2 fixed detection graders; D1 wiring claude.sh). Fix: `CI=1 BROWSER=none OPENCODE_TERMINAL=dumb`
+  suppresses the server/tab (verified). STANDING CONSTRAINT: every opencode/child-agent-running
+  lane must bake this env in. Resume B2/D1 later only after the suppression is in their harness.
