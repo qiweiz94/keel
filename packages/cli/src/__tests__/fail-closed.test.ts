@@ -35,7 +35,14 @@ function runHook(
   input: string,
   extraEnv: Record<string, string> = {},
 ) {
-  const result = spawnSync(process.execPath, [CLI, 'hook', host], {
+  // `--cwd <home>` pins the project-scope rule lookup (`loadRuleHierarchy`
+  // reads `<cwd>/.keel/rules.yaml`, `<cwd>/AGENTS.md`, `<cwd>/CLAUDE.md`) to
+  // the same temp dir as HOME's global scope, instead of letting the child
+  // inherit this process's real cwd (`packages/cli`). Without this, these
+  // tests were only hermetic by accident — correct today because
+  // packages/cli has no AGENTS.md/CLAUDE.md/.keel/rules.yaml of its own,
+  // but silently wrong the moment a sibling lane adds one.
+  const result = spawnSync(process.execPath, [CLI, 'hook', host, '--cwd', home], {
     input,
     encoding: 'utf-8',
     env: { ...process.env, HOME: home, KEEL_STATE_DIR: join(home, '.keel', 'state'), ...extraEnv },
@@ -277,6 +284,50 @@ rules:
 
     it('the SAME rule, same host, DOES block when the payload actually arrives — isolates the gap to "stdin was empty", not "the rule is broken"', () => {
       const r = runHook('claude-code', home, JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }))
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('would have blocked a real rm -rf /')
+    })
+  })
+
+  describe('(a3) truncated TOOL_INPUT env var — the same silent-payload-loss class as (a2), through the OTHER input door, and worse', () => {
+    // hookVerdict's env-var branch (claude-code/gemini with TOOL_NAME set —
+    // the real contract `templates/claude-pretooluse.sh` uses, and the one
+    // `hook.test.ts`/`hook-contract.test.ts` already drive) does:
+    //   tool_input: safeJson(process.env.TOOL_INPUT)
+    // safeJson() returns `{}` on a parse failure, so a truncated
+    // TOOL_INPUT produces a payload that LOOKS well-formed: a real tool
+    // name, empty args. Unlike (a2)'s empty-stdin case — where the tool
+    // name itself degrades to the visibly-synthetic `unknown` — this looks
+    // exactly like a legitimate argument-less call, and nothing downstream
+    // can tell the args were dropped. Measured and flagged for the
+    // supervisor (see EVIDENCE flag #4) — NOT changed here, same policy
+    // question as (a2).
+    const home = newHome(`version: 1
+level: protect
+rules:
+  - id: t-truncated-tool-input
+    type: command
+    match: "rm -rf /"
+    action: deny
+    level: sprint
+    message: "would have blocked a real rm -rf /, had TOOL_INPUT survived"
+`)
+
+    it('measures the actual exit code for a truncated TOOL_INPUT: allows, with a payload that looks legitimate rather than degenerate', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: '{"command":"rm -rf /"',   // truncated mid-string — invalid JSON
+      })
+      expect(r.status).toBe(0)
+      expect(r.stdout).toBe('')
+      expect(r.stderr).toBe('')
+    })
+
+    it('the SAME rule, same host, DOES block when TOOL_INPUT is complete — isolates the gap to "the value was truncated", not "the rule is broken"', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+      })
       expect(r.status).toBe(2)
       expect(r.stderr).toContain('would have blocked a real rm -rf /')
     })

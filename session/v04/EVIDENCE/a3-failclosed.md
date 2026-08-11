@@ -90,6 +90,7 @@ private `HOME`/`KEEL_STATE_DIR` (never `~/.keel`). See
 | stdin-error | stdin stream error (readStdin throws) escaping BEFORE hookCommand's try | **FAIL OPEN** — exit 1, unhandled rejection, no envelope on any host | **FAIL CLOSED** — exit 2 / stdout deny envelope on every host, `COULD_NOT_EVALUATE` message | in-process, `hookVerdict` + fake throwing stdin (deterministic; OS pipe-error timing isn't) |
 | (a) | malformed/unparseable JSON on stdin | Degrades to `tool:'unknown'` (documented, pre-existing design — "a hook that crashes is a hook the host skips"). Whether it then blocks depends on the loaded ruleset; typically allows since `unknown` rarely matches a real rule's command pattern. | Unchanged — this lane's invariant is "must not crash into exit 1," not "must block," and that already held. Verified no raw stack trace / uncaught-exception signature. | `fail-closed.test.ts` "(a) malformed/unparseable input JSON" |
 | (a2) | **empty** stdin (misconfigured host sends nothing) | Same `unknown`/empty-args path as (a); measured exit **0 (allow)**, with a real `rm -rf /` rule proven to fire correctly given a real payload. No signal distinguishes "stdin was empty" from "nothing to block." | Unchanged — measured, not fixed (policy call, flagged below, not this lane's to decide). | `fail-closed.test.ts` "(a2) empty stdin" |
+| (a3) | **truncated `TOOL_INPUT` env var** (claude-code/gemini's fallback input path — real, not theoretical: `templates/claude-pretooluse.sh` uses exactly this, and `hook.test.ts`/`hook-contract.test.ts` already drive it) | `safeJson(process.env.TOOL_INPUT)` returns `{}` on a parse failure, so a truncated value produces a payload that LOOKS legitimate — a real tool name, empty args — rather than the visibly-synthetic `unknown` tool (a2) degrades to. Measured exit **0 (allow)**; same rule blocks (exit 2) given a complete `TOOL_INPUT`. | Unchanged — measured, not fixed (same policy question as (a2), flagged below). | `fail-closed.test.ts` "(a3) truncated TOOL_INPUT env var" |
 | (b) | rules file fails to parse (bad YAML) | `initEnforce` throws (`ruleErrors.length` from `parseRulesFile`'s `errors` + `validateRules`); caught by hook.ts's own try/catch → `result = null` → blocked. **Already fail-closed before this lane** — the stdin-error bug (above) was a DIFFERENT gap, not this one. | Unchanged (verified, not touched) — exit 2 claude-code, `permission:'deny'` cursor, exit 2 generic. Every subsequent call ALSO blocks (no last-known-good on this path — see note below). | `fail-closed.test.ts` "(b) a rules file that fails to parse" |
 | (c) | exception thrown mid-evaluation | pipeline.ts's per-rule try/catch (evaluateTiers, two loops) re-throws any non-`OBSERVE_CONTINUE` error; `evaluate()`'s own outer catch also re-throws. Nothing in core swallows a real error into a false "allow." Propagates to hook.ts's catch → blocked. **Already fail-closed before this lane**, confirmed by reading pipeline.ts end to end (not assumed). | Unchanged (verified with a REAL trigger, not a mock — see below) — exit 2, `COULD_NOT_EVALUATE`, discriminated from (b) by NOT containing "Invalid Keel rules." | `fail-closed.test.ts` "(c) an exception thrown mid-evaluation" |
 | (d) | missing/corrupt state dir | `StateManager`'s file I/O is wrapped in best-effort try/catch (`state-manager.ts`: "corrupt — use defaults" / "state persistence is non-critical"); base rule matching (command/filesystem/content) doesn't read state at all, only escalation counters (rate limit, warn-once-then-deny) do. A `deny`-action command rule still fires. | Unchanged (verified) — `KEEL_STATE_DIR` pointed at a plain file (not a directory); a matching `deny` rule still blocked, exit 2. | `fail-closed.test.ts` "(d) a missing/corrupt state dir" |
@@ -121,11 +122,29 @@ calls both block, to make this concrete.
    `hookCommand` given their own try/catch, separate from `process.exit`,
    so a broken pipe on the write itself cannot suppress the exit code.
 
-No other hook.ts changes. `parsePayload`, `renderVerdict`, and the
-claim-reach branch's deliberate `exit 0` are behaviorally unchanged —
-verified by the full pre-existing suite (`hook.test.ts`,
-`hook-command.test.ts`, `hook-contract.test.ts`, `claude-stop-hook.test.ts`)
-passing unmodified.
+No other hook.ts changes besides one trimmed comment: the write/exit split
+in `hookCommand` originally claimed its try/catch "catches EPIPE on a
+broken pipe" — inaccurate, since a broken stdout/stderr pipe surfaces as an
+async `'error'` event on the stream, not a synchronous throw `.write()`
+raises. What actually protects the exit code is the synchronous
+`process.exit()` immediately after, which runs before Node's event loop
+ever gets back around to emit that error event. Comment corrected to say
+that; the code itself (which still guards a genuine synchronous throw out
+of `.write()`, a narrower but real case) is unchanged.
+
+`parsePayload`, `renderVerdict`, and the claim-reach branch's deliberate
+`exit 0` are behaviorally unchanged — verified by the full pre-existing
+suite (`hook.test.ts`, `hook-command.test.ts`, `hook-contract.test.ts`,
+`claude-stop-hook.test.ts`) passing unmodified.
+
+`fail-closed.test.ts`'s subprocess helper (`runHook`) passes `--cwd <home>`
+to every spawn. Without it the child inherited this test RUNNER's own cwd
+(`packages/cli`) for `loadRuleHierarchy`'s project-scope lookup
+(`<cwd>/.keel/rules.yaml`, `<cwd>/AGENTS.md`, `<cwd>/CLAUDE.md`) while only
+the global scope (`$HOME/.keel/rules.yaml`) pointed at the temp dir — every
+assertion below happened to be correct only because `packages/cli` has none
+of those project-scope files today, which is an accident of the current
+tree, not a property this suite should depend on.
 
 ## Core findings flagged for the supervisor (NOT edited — pipeline.ts / rule-parser.ts are other lanes' files)
 
@@ -182,16 +201,22 @@ passing unmodified.
    signal that their edit was rejected. `enforce.ts` is outside this lane's
    owned files (hook.ts + the new test file only) — flagged, not touched.
 
-4. **Empty stdin is a silent, total, indistinguishable-from-normal allow.**
-   Measured directly (see matrix row (a2)): a host that sends nothing on
-   stdin (a real integration bug, not a garbled payload) allows every
-   single call, forever, with no stderr, no stdout, no exit-code signal
-   different from a genuine "nothing to block" verdict. This is a policy
-   question — should `keel hook` distinguish "stdin had zero bytes" from
-   "stdin had bytes that failed to parse" and treat the former as louder
-   evidence of a broken integration? — not something this lane changed
-   unilaterally, since sibling lanes may depend on today's behavior for a
-   legitimate host that sometimes has nothing to report.
+4. **Empty stdin, and a truncated `TOOL_INPUT` env var, are both a silent,
+   total, indistinguishable-from-normal allow.** Measured directly (matrix
+   rows (a2) and (a3)): a host that sends nothing on stdin, or a host whose
+   `TOOL_INPUT` gets cut off mid-write (both are real integration bugs, not
+   garbled payloads), allows every affected call, forever, with no stderr,
+   no stdout, no exit-code signal different from a genuine "nothing to
+   block" verdict. (a3) is the sharper case: `safeJson()`'s `{}` fallback
+   makes a truncated `TOOL_INPUT` produce a payload that looks like a
+   legitimate argument-less call rather than the visibly-synthetic
+   `unknown` tool (a2) degrades to — nothing downstream can tell the args
+   were dropped. This is a policy question — should `keel hook` distinguish
+   "no usable payload arrived" from "a payload arrived and genuinely had
+   nothing to block" and treat the former as louder evidence of a broken
+   integration? — not something this lane changed unilaterally, since
+   sibling lanes may depend on today's behavior for a legitimate host that
+   sometimes has nothing to report.
 
 5. **Stdin-read timeout (path (f)) is host-governed, not keel-governed,**
    and this lane deliberately did not add one: a bounded `readStdin()` with
@@ -208,9 +233,19 @@ passing unmodified.
 
 ```
 npm run build                          # all four workspaces, clean
-packages/core: 541 passed | 2 skipped  # baseline, unchanged (core untouched)
-packages/cli:  724 passed | 14 skipped # baseline 708 + 16 new fail-closed tests, 0 regressions
+packages/core: 541 passed | 2 skipped            # baseline, unchanged (core untouched)
+packages/cli:  723-725 passed | 13-15 skipped    # 738-740 collected; baseline 708 + 18 new
+                                                  # fail-closed tests = 726 non-skipped max
 ```
+
+The CLI pass/skip split varies by ±1 across otherwise-identical runs (738
+total in this run, 740 after the two `(a3)` tests were added) — NOT test
+flakiness in this lane's suite. `perf-budget.test.ts`'s p99 case is
+self-skip-guarded on machine load ("this machine is too loaded right now to
+measure the <50ms claim reliably") and flips pass/skip independent of
+anything touched here; confirmed by re-running and seeing 724/14 then
+723/15 with no code change between runs. Every run showed **0 failures**
+and **0 regressions** in any pre-existing test.
 
 Full CLI run includes the pre-existing `hook.test.ts`, `hook-command.test.ts`,
 `hook-contract.test.ts`, and `claude-stop-hook.test.ts` — all pass unmodified

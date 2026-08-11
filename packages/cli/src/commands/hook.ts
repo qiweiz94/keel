@@ -469,11 +469,16 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
 
 export async function hookCommand(hostArg: string, options: { cwd?: string; level?: string } = {}) {
   const verdict = await hookVerdict(hostArg, options)
-  // Writing and exiting are kept separate: if stdout/stderr itself throws
-  // (e.g. EPIPE on a broken pipe), the write attempt must not prevent the
-  // process from still exiting on the fail-closed code computed above —
-  // retrying the write from a second catch would just risk the same EPIPE
-  // again and never reach process.exit at all.
+  // Writing and exiting are kept separate: whatever happens with the write
+  // below, the process must still exit on the fail-closed code already
+  // computed above. This try/catch only guards a synchronous throw out of
+  // `.write()` itself (rare, but not the interesting case) — a broken pipe
+  // (EPIPE) on stdout/stderr surfaces as an async `'error'` event on the
+  // stream, not a synchronous exception, so this catch does not see it.
+  // What actually keeps a broken pipe from hanging or crashing this
+  // process is the synchronous `process.exit()` two lines down: it runs
+  // before Node ever gets back to the event loop to emit that error event,
+  // so the exit code still fires either way.
   try {
     if (verdict.stdout) process.stdout.write(`${verdict.stdout}\n`)
     if (verdict.stderr) process.stderr.write(`${verdict.stderr}\n`)
