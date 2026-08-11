@@ -5,6 +5,7 @@ import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
 import { writeRulesLevel } from './level.js'
+import { isInteractive } from './interactive.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -183,7 +184,7 @@ export async function dashboardCommand(options: { once?: boolean; json?: boolean
     return
   }
 
-  if (options.once || !process.stdin.isTTY) {
+  if (options.once || !isInteractive()) {
     const state = collectState(dir, home)
     console.log(renderPanel(state, 'global'))
     console.log(chalk.dim('  Change with: keel level sprint|balanced|protect [--project]  |  dashboard: run `keel dashboard` in a terminal'))

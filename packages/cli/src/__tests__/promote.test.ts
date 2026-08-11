@@ -116,17 +116,29 @@ describe('writeRuleMode (surgical, comment-preserving rules.yaml writer)', () =>
 describe('promoteCommand — TTY gate (never auto-promotes, never agent-runnable)', () => {
   const originalIsTTY = process.stdin.isTTY
   const originalEnv = process.env.KEEL_ALLOW_NON_TTY
+  const originalCI = process.env.CI
   let originalExitCode: number | undefined
 
   beforeEach(() => {
     originalExitCode = process.exitCode
     process.exitCode = undefined
+    // promoteCommand's gate now runs through the shared isInteractive()
+    // (TTY && !CI, see interactive.ts) instead of a bare TTY check. Pin the
+    // ambient CI var so these tests read the same under a real CI runner
+    // (where a TTY-mocking test SHOULD still behave the same as it does on
+    // a developer's own machine) as they do locally — without this, a
+    // "runs when stdin genuinely is a TTY" test would flip to blocked the
+    // moment it runs under CI=1, which is exactly the silent, environment-
+    // dependent flake this whole audit exists to prevent.
+    delete process.env.CI
   })
 
   afterEach(() => {
     Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true })
     if (originalEnv === undefined) delete process.env.KEEL_ALLOW_NON_TTY
     else process.env.KEEL_ALLOW_NON_TTY = originalEnv
+    if (originalCI === undefined) delete process.env.CI
+    else process.env.CI = originalCI
     process.exitCode = originalExitCode
   })
 
@@ -164,8 +176,15 @@ describe('promoteCommand — TTY gate (never auto-promotes, never agent-runnable
 })
 
 describe('promoteCommand — ladder + idempotency + error handling', () => {
+  const originalCI = process.env.CI
   beforeEach(() => {
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    // See the TTY-gate describe block above: isInteractive() checks CI too.
+    delete process.env.CI
+  })
+  afterEach(() => {
+    if (originalCI === undefined) delete process.env.CI
+    else process.env.CI = originalCI
   })
 
   it('advances observe -> warn by default (next rung), not straight to block', async () => {

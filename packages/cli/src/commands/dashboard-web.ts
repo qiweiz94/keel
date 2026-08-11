@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import chalk from 'chalk'
 import { collectState, switchLevel } from './dashboard.js'
+import { isInteractive } from './interactive.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -244,7 +245,7 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
   // agent's shell has none). The auth token is printed on the terminal
   // screen and never written to disk, so nothing on the filesystem can be
   // curled by an agent — the control surface stays human-owned.
-  if (!process.stdin.isTTY && process.env.KEEL_DASHBOARD_ALLOW_NON_TTY !== '1') {
+  if (!isInteractive() && process.env.KEEL_DASHBOARD_ALLOW_NON_TTY !== '1') {
     console.error(chalk.red('  The web dashboard must be started from your own terminal (a TTY).'))
     console.error(chalk.dim('  Run `keel dashboard` in your terminal for the keyboard panel instead.'))
     process.exit(1)
@@ -316,16 +317,16 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
 
 /**
  * Whether `keel dashboard --web` may auto-open a browser. Off in every
- * non-interactive context — a real TTY is required, and CI / KEEL_NO_OPEN
- * force it off. This is the ONLY gate on the `spawn('open')` above; pinned by a
- * regression test (dashboard-web.test.ts) so it can never be silently removed.
- * A side effect that fires in automation is a trust bug, not a convenience.
+ * non-interactive context — isInteractive() requires a real TTY and no CI,
+ * and KEEL_NO_OPEN forces it off regardless. This is the ONLY gate on the
+ * `spawn('open')` above; pinned by a regression test (dashboard-web.test.ts
+ * and no-side-effects.test.ts) so it can never be silently removed. A side
+ * effect that fires in automation is a trust bug, not a convenience.
  */
 export function shouldAutoOpenBrowser(): boolean {
   return (
     process.platform === 'darwin'
-    && !!process.stdin.isTTY
-    && !process.env.CI
+    && isInteractive()
     && process.env.KEEL_NO_OPEN !== '1'
   )
 }

@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import chalk from 'chalk'
 import { loadRuleHierarchy, type RuleHierarchy, type ParsedRules } from '../core/enforce/rule-parser.js'
+import { isInteractive } from './interactive.js'
 import type { RuleMode } from '../core/types.js'
 
 const MODE_ORDER: RuleMode[] = ['observe', 'warn', 'block']
@@ -127,7 +128,7 @@ function findRuleSource(hierarchy: RuleHierarchy, ruleId: string): { source: Par
  * types it.
  */
 export async function promoteCommand(ruleId: string | undefined, options: { to?: string; cwd?: string } = {}) {
-  if (!process.stdin.isTTY && process.env.KEEL_ALLOW_NON_TTY !== '1') {
+  if (!isInteractive() && process.env.KEEL_ALLOW_NON_TTY !== '1') {
     console.error(chalk.red('\n  `keel promote` edits your rules.yaml, so it must be run from your own terminal.'))
     console.error(chalk.dim('  Run `keel retrospective` to see promotion recommendations instead.\n'))
     process.exitCode = 1
