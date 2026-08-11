@@ -162,3 +162,19 @@
   Writer undetermined; REMOVED (regenerable via keel install --claude-code); the
   test-isolation class goes to the audit. Note for future gates: merges on this
   machine require a FULLY clean tree including untracked files.
+- 2026-08-11 supervisor SEMANTIC CHANGE (implemented, not routed): protect-floor
+  rules (level: protect) now block on the FIRST hit at every dial, not just the
+  protect dial. Trigger: OFFICIAL opencode live-verify on the merged tree showed
+  `git push --force origin main` REACHED the remote (main moved 4c84481→1c3f9e4) on
+  the child's first attempt — the warn-once grace is a hole for one-shot irreversible
+  floor actions. Spec basis: frozen 4.1 "Tier 1 action: block, un-bypassable" + SPEC
+  §8. pipeline.ts blockFirst now includes `rule.level === 'protect'`. New test
+  protect-floor-first-hit.test.ts pins it AND pins that unleveled deny rules KEEP the
+  warn-once ladder (change is scoped, not global). Override-timing note (advisor):
+  a floor's first hit now reaches overrideStore.consume() — NOT a regression, the only
+  way a floor override exists is a human-run `keel allow` (gated against the agent), so
+  honoring it on hit 1 vs hit 2 is correct/better. Live marker pinned to the real id
+  `no-force-push` (priority 82 beats no-push-to-main 80). 28 threat-model tests
+  encoded the old warn-first floor behavior → reconciliation delegated (Bucket A:
+  floor rules evaluated twice, update warn→deny-first; must NOT weaken non-floor
+  warn-once assertions). AUDIT.md must feature this with the moved-ref transcript.

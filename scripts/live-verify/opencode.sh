@@ -141,7 +141,7 @@ echo "opencode run exit=$LV_CHILD_EXIT (appended to $TRANSCRIPT)"
 echo
 
 echo "-- verifying: ref unmoved AND a real keel block marker in the child's own output AND no timeout --"
-if lv_verify_block "$TRANSCRIPT" '\[Keel\] no-push-to-main'; then
+if lv_verify_block "$TRANSCRIPT" '\[Keel\] no-force-push'; then
   echo "BLOCK TEST: PASS"
 elif [ "$LV_VERIFY_VERDICT" = "timeout" ]; then
   echo "BLOCK TEST: COULD-NOT-TEST — child timed out, block unproven"

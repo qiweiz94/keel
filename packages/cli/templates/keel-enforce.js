@@ -7997,7 +7997,7 @@ var EnforcementPipeline = class {
     }
     if (action === "deny" || action === "block") {
       const first = this.isFirstWarning(warningKey);
-      const blockFirst = this.effectiveLevel(input) === "protect" || skipFirstWarning;
+      const blockFirst = this.effectiveLevel(input) === "protect" || rule.level === "protect" || skipFirstWarning;
       if (first && !blockFirst && input.action_override !== "deny" && input.action_override !== "block") {
         this.denyFirstTime.set(warningKey, true);
         this.config.stateManager?.markFirstTime(warningKey, this.lastRulesHash);

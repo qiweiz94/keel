@@ -923,8 +923,13 @@ export class EnforcementPipeline {
       const first = this.isFirstWarning(warningKey)
       // At protect the dial's promise is block-first: a deny violation is
       // blocked immediately, with no warning pass. balanced/sprint keep the
-      // warn-once-then-block escalation.
-      const blockFirst = this.effectiveLevel(input) === 'protect' || skipFirstWarning
+      // warn-once-then-block escalation — EXCEPT for `level: protect` FLOOR
+      // rules, which block first at every dial position. A floor that warns
+      // on its first hit is not a floor: the incidents these rules encode
+      // (forced push to main, rm -rf /, prod DROP TABLE) are one-shot
+      // irreversible, and the warn pass was found live — a forced push to
+      // main REACHED the remote through the warn-once grace (gate-2).
+      const blockFirst = this.effectiveLevel(input) === 'protect' || rule.level === 'protect' || skipFirstWarning
       if (first && !blockFirst && input.action_override !== 'deny' && input.action_override !== 'block') {
         // The first violation only warns — never consume an armed override
         // for it, or the approval is wasted on a call that would not have
