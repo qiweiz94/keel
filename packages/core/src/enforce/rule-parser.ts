@@ -80,7 +80,7 @@ export function validateRules(rules: unknown): string[] {
   const validTypes = new Set([
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
-    'verification', 'meta', 'research', 'stuck', 'diagnosis',
+    'verification', 'meta', 'research', 'stuck', 'diagnosis', 'package',
   ])
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
@@ -95,7 +95,7 @@ export function validateRules(rules: unknown): string[] {
   const validMaturity = new Set(['stable', 'incubating', 'sandbox', 'deprecated'])
   const validCategories = new Set([
     'destructive', 'exfil', 'escalation', 'injection',
-    'resource', 'bypass', 'discipline', 'workflow',
+    'resource', 'bypass', 'discipline', 'workflow', 'supply-chain',
   ])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
@@ -144,6 +144,9 @@ export function validateRules(rules: unknown): string[] {
     if (rule.type === 'filesystem' && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`)
     if (rule.type === 'content' && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`)
     if (rule.type === 'network' && typeof rule.match !== 'string') errors.push(`Rule "${label}" is a network rule but has no match`)
+    if (rule.type === 'package' && rule.age_days !== undefined && (typeof rule.age_days !== 'number' || !Number.isFinite(rule.age_days) || rule.age_days < 0)) {
+      errors.push(`Rule "${label}" is a package rule but has an invalid age_days (expected a non-negative number)`)
+    }
     if (rule.type === 'env' && (!Array.isArray(rule.vars) || rule.vars.length === 0)) errors.push(`Rule "${label}" is an env rule but has no vars`)
     if (rule.type === 'flow' && (!Array.isArray(rule.sources) || !Array.isArray(rule.sinks))) errors.push(`Rule "${label}" is a flow rule but is missing sources or sinks`)
     if (rule.type === 'sequence' && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {

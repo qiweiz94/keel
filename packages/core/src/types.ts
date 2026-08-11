@@ -14,7 +14,7 @@ export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
-  | 'research' | 'stuck' | 'diagnosis'
+  | 'research' | 'stuck' | 'diagnosis' | 'package'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -36,7 +36,7 @@ export type RuleMode = 'observe' | 'warn' | 'block'
 
 export type RuleCategory =
   | 'destructive' | 'exfil' | 'escalation' | 'injection'
-  | 'resource' | 'bypass' | 'discipline' | 'workflow'
+  | 'resource' | 'bypass' | 'discipline' | 'workflow' | 'supply-chain'
 
 export interface KeelRule {
   id: string
@@ -109,6 +109,14 @@ export interface KeelRule {
 
   // ── Environment rules ──
   vars?: string[]
+
+  // ── Package verification rules (slopsquatting install gate) ──
+  // No `match` needed: candidate installs are detected automatically from
+  // the command (npm install/i, pnpm add, yarn add, bun add). See
+  // enforce/package-verifier.ts for the full not_found/unverified/age-gate
+  // semantics; `age_days` is the one configurable knob (deny-vs-prompt
+  // mapping for existence/reachability is fixed, per that module's header).
+  age_days?: number                 // freshness threshold in days (default 30)
 
   // ── Rate limit rules ──
   window_seconds?: number

@@ -8,6 +8,24 @@ export { FlowTracker } from './flow-tracker.js'
 export { Suggester } from './suggester.js'
 export { StateManager } from './state-manager.js'
 export {
+  extractPackageInstalls,
+  checkPackages,
+  decidePackageAction,
+  evaluateInstallCommand,
+  defaultRegistryBaseUrl,
+  packageVerifierStateDir,
+  PackageVerifierCache,
+  CACHE_TTL_MS,
+  type PackageManager,
+  type PackageSpec,
+  type PackageVerdict,
+  type UnverifiedReason,
+  type PackageCheckResult,
+  type PackageDecisionReason,
+  type PackageRuleDecision,
+  type EvaluateInstallOptions,
+} from './package-verifier.js'
+export {
   parseRulesFile,
   parseRulesContent,
   loadRuleHierarchy,
