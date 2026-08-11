@@ -18,7 +18,7 @@ export interface VerificationState {
   [key: string]: { createdAt: number; generation: number }
 }
 
-const STATE_DIR = join(homedir(), '.keel', 'state')
+const STATE_DIR = process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
 const TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
 
 /**
