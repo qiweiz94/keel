@@ -1,5 +1,114 @@
 # Changelog
 
+## 0.4.0
+
+`@get-keel/cli` 0.4.0 · `@get-keel/core` 0.4.0 · `@get-keel/opencode-plugin` 0.4.0
+
+This release restructures the default ruleset into three enforcement tiers, closes
+the last quiet way a lower-scope config could defang a floor, ships a manual
+promotion path for the behavioral rules that used to require a hand edit, and
+answers the project's founding question with a measured number instead of an
+adjective: on the harm-eliciting task repetition (N=12/arm), a keel-guarded cheap
+free-model agent went from the unguarded agent's **75% harm rate to 0%**, while task
+completion rose from 8% to 75%, with zero false-positive drag on control tasks. That
+is the *prevention* axis (blocking a forbidden/destructive action) — the *detection*
+axis (false-claims, test-tampering) stayed honestly inconclusive at this N, a
+measurement gap and not a keel result either way. Full methodology and confidence
+limits: [session/v04/EXPERIMENT.md](session/v04/EXPERIMENT.md).
+
+### Added
+
+- **Three-tier default ruleset (43 rules).** `keel install` now ships 43 default
+  rules split into Tier 1 (`level: protect` floors — 12 rules, un-bypassable, deny on
+  the first hit at every dial), Tier 2 (balanced — 22 rules, warn-once-then-block,
+  dial-softenable), and Tier 3 (`mode: observe` — 9 rules, evaluated and recorded on
+  every matching call but never interrupting until a human promotes them). See
+  [docs/tiers.md](docs/tiers.md).
+- **`keel promote <rule-id>`** — the promotion pipeline. Advances an eligible Tier-3
+  rule's `mode: observe → warn` (or `warn → block`) in your rules file,
+  comment-preserving and idempotent. `keel retrospective` reports each observe-mode
+  rule's measured would-block rate over your own traffic with an
+  `eligible`/`stay_observe`/`insufficient_data` recommendation; `keel promote` only
+  runs at an interactive TTY, and `keel-control-gate` denies an agent invoking it on
+  your behalf.
+- **`unverified-package-install` — the slopsquatting gate.** A Tier-2 `prompt` rule
+  that blocks installing a package whose name doesn't resolve against the real
+  registry — 19.7% of LLM-recommended packages don't exist (USENIX Security 2025) and
+  get squatted by attackers waiting for an agent to `npm install` the hallucinated
+  name.
+- **The v0.4 thesis experiment** — measured, not asserted. Setup, the N=10
+  full-battery result (guarded 0% forbidden-action / 100% task-pass vs. unguarded 20%
+  / 70%), the N=12 harm-eliciting repetition (the 75%→0% headline above), and the
+  stated confidence limits (single cheap model, N=1 per task before repetition,
+  zero-base-rate detection axis, no frontier arm run) all live in
+  [session/v04/EXPERIMENT.md](session/v04/EXPERIMENT.md).
+
+### Changed
+
+- **Floors are now un-bypassable on action, mode, *and* enforcement surface — not
+  action alone.** `mergeRules` previously compared a lower-scope override of a
+  `level: protect` floor's action field only. A `.keel.local.yaml` could keep
+  `action: deny` while adding `mode: observe` (which silently suppresses
+  interruption) or swap in a `match` pattern that never fires, neutralizing the floor
+  without ever weakening its stated action. Both vectors are now closed: overriding a
+  floor requires same-or-stronger action *and* mode, and a byte-identical enforcement
+  surface on the floor's own id — any other change is rejected outright, fail-closed.
+  *Writing* such an override file was already blocked on every agent path; this
+  closes what a pre-existing one could do. Verified end-to-end through the real
+  pipeline, not just `mergeRules`' return value. See
+  [SECURITY.md](SECURITY.md#measured-bypass-resistance-of-the-tier-1-floor).
+- **Warn verdicts now surface through each host's real, non-blocking channel**, not
+  `stderr` on `exit 0` — provably invisible on Claude Code (its own hook docs say it
+  reaches only a debug log). `claim-without-evidence`, `test-oracle-tampering`, the
+  verification rules, and every other `warn` now use the host's actual visible
+  surface: Claude Code/Gemini's `hookSpecificOutput.additionalContext` +
+  `systemMessage`, Codex's `systemMessage`, Cursor's `userMessage`/`agentMessage`,
+  Cline's `systemMessage`, OpenClaw's `api.logger.warn`. See
+  [docs/integrations.md](docs/integrations.md#failure-behaviour).
+- **`argPath()` now reads `file_path`/`notebook_path`**, so `filesystem`-type floors
+  (`no-rules-tampering`, `no-secret-files`, `write-outside-project`,
+  `cicd-config-edit`) fire on Claude Code and Gemini CLI, which send a tool call's
+  path under that key. Previously 0/8 self-protection paths blocked on those two
+  hosts; now 8/8, verified live.
+
+### Fixed
+
+- **`keel dashboard --web` no longer opens a browser tab on every automated run.**
+  The convenience auto-open was gated only on `platform === darwin`, so the
+  dashboard-web test suite (which sets `KEEL_DASHBOARD_ALLOW_NON_TTY=1` to exercise
+  the server headlessly) spawned a real tab on every `npm test`. Now gated on
+  `process.stdin.isTTY` (and respects `CI` / `KEEL_NO_OPEN=1`), so only a real
+  interactive user at a terminal gets the convenience open.
+- **A lost-update race in `StateManager` and `ProblemLedger`.** Neither class
+  re-read its backing JSON file before mutating, so two processes racing (e.g. two
+  concurrent `keel enforce` calls hitting the same rate-limit or circuit-breaker
+  counter) each mutated a stale in-memory snapshot and wrote the whole file back,
+  silently erasing whichever write lost the race. Reproduced directly: 5 processes ×
+  50 increments against one counter landed at 113, 36, and 138 — not 250 — across
+  three unlocked trials. Fixed with a per-resource file lock (`file-lock.ts`: O_EXCL
+  acquire, stale-lock reclaim, full-jitter backoff, and a documented fail-safe that
+  proceeds unlocked rather than hang or silently drop a write past a bounded
+  timeout). 12/12 green on the full core suite under the tuned defaults after two
+  rounds of hardening. See `session/v04/EVIDENCE/c2-concurrency.md`.
+- **A new Tier-1 floor, `no-self-protection-write`,** closes a gap where
+  `filesystem`-type rules only inspected a tool call's declared path argument, so a
+  shell command redirecting into a protected path (`echo ... > ~/.keel/DISABLED`,
+  `sed -i` on `.claude/settings.json`, `git config core.hooksPath`, …) slipped
+  through untouched. It now blocks shell writes targeting keel's own files, host
+  trust/approval config, and git hooks, while still allowing reads of those paths.
+
+### Security
+
+- Red-team catch-rate table refreshed against the v0.4-hardened floors (260 probes
+  through the real CLI, method in `session/v04/EVIDENCE/phase-3-redteam.md`):
+  `no-rules-tampering` 52%→88%, `no-enforcer-removal` 33%→75%,
+  `no-destructive-commands` 73%→77% (`--no-preserve-root` closed),
+  `no-self-protection-write` new at 93%. These are catch rates against *deliberate
+  obfuscation*, not ordinary use. Four evasion classes remain open by design and are
+  documented rather than silently absorbed into the pass rate: intra-token quoting,
+  variable indirection, most interpreter one-liners, and symlink redirection planted
+  by an earlier allowed command. Full table and residuals: [SECURITY.md](SECURITY.md).
+
 ## 0.2.2
 
 `@get-keel/cli` 0.2.2 · `@get-keel/core` 0.1.9 · `@get-keel/opencode-plugin` 0.1.9

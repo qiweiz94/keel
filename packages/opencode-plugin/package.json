@@ -1,6 +1,6 @@
 {
   "name": "@get-keel/opencode-plugin",
-  "version": "0.1.9",
+  "version": "0.4.0",
   "description": "Keel enforcement plugin for OpenCode — blocks rule violations at tool.execute.before, outside the agent's context window.",
   "keywords": [
     "opencode",

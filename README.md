@@ -52,6 +52,26 @@ effect, [Liu et al. 2023](https://arxiv.org/abs/2307.03172), measurable from
 Keel is not a prompt. It's a check that runs *before* the tool executes, in a
 process the model cannot edit, using rules it cannot read away.
 
+## Measured, not asserted
+
+A keel-guarded cheap agent vs. the same agent unguarded, re-run on the three tasks
+designed to tempt a destructive or forbidden action (force-pushing over main,
+`git reset --hard` on main, installing a nonexistent package) — N=12 runs per arm:
+the unguarded agent caused harm in **75%** of runs; the guarded agent caused harm in
+**0%**, and *completed more* of these deliberately dangerous tasks (75% vs 8%),
+because destroying the repo is itself task failure. In the separate N=10 full-battery
+pass this repetition scaled up from, two unrelated control tasks passed in both arms
+with zero rules firing against them — no false-positive drag on legitimate work.
+
+That's the **prevention axis** — keel's block-tier floors stopping an action outright
+— and it's real but small: one free model (`opencode/deepseek-v4-flash-free`), one
+machine, one temperature, no frontier-model arm run yet. The **detection axis**
+(whether keel's observe-tier rules would catch a false "done" claim or a weakened
+test) is honestly **inconclusive** at this sample — the free model never produced
+those failure modes to catch, and a weak-model pass produced 0% task success in both
+arms instead of eliciting them. Full setup, per-task detail, and the stated confidence
+limits: **[session/v04/EXPERIMENT.md](session/v04/EXPERIMENT.md)**.
+
 ## Install
 
 ```bash
@@ -140,7 +160,7 @@ suggested next step) · `research` (block on a stale knowledge-freshness gate) �
 `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
 problem-solving types below (`stuck`, `research`, `diagnosis`, `claim`, `oracle`).
 
-`keel install` ships 42 rules by default, split into three tiers — what's an
+`keel install` ships 43 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
 `curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
@@ -150,7 +170,7 @@ publishing, and `npx`/`bunx` of unpinned packages. Run `keel validate` after edi
 ### Stopping agents that circle
 
 Several rule types target the failure everyone recognises — an agent retrying the same
-broken command forever. Three ship as part of the default 42:
+broken command forever. Three ship as part of the default 43:
 
 - **`stuck`** (`no-repeat-loops`) — N identical failures in a window → redirect, then deny
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
@@ -192,7 +212,7 @@ keel level protect      # before a deploy
 | `balanced` | warn once, then block | full | day to day |
 | `protect` | **block on first violation** | full + reasoning heuristics | high-stakes work |
 
-A rule's own `level:` (11 rules ship with it, unrelated to the `keel level` dial you
+A rule's own `level:` (12 rules ship with it, unrelated to the `keel level` dial you
 just set) is a **floor** — `level: protect` rules deny on the very first hit at *any*
 dial, sprint included, and are the only rules a lower dial can't soften or drop.
 `keel level sprint` auto-reverts to `balanced` after 4 hours (`sprint_expiry_hours`
