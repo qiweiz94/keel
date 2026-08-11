@@ -101,5 +101,15 @@ export function commandString(input: EnforceInput): string {
   // anchors like `( |$)` on `rm -rf .` must not be broken by a trailing
   // quote. Non-command args (e.g. WebFetch url) fall back to JSON.
   const direct = commandArrayString(args.command ?? args.cmd)
-  return direct || JSON.stringify(stripContentArgs(args))
+  if (direct) return direct
+  // Some non-MCP integrations wrap the real invocation one level down
+  // (`{ args: { command: '...' } }`) — the same shape the MCP path already
+  // unwraps, just without the `mcp__` tool-name convention that gates it.
+  // Only a single level is unwrapped; deeper nesting still falls to JSON.
+  if (args.args && typeof args.args === 'object' && !Array.isArray(args.args)) {
+    const nestedArgs = args.args as Record<string, unknown>
+    const nested = commandArrayString(nestedArgs.command ?? nestedArgs.cmd)
+    if (nested) return nested
+  }
+  return JSON.stringify(stripContentArgs(args))
 }

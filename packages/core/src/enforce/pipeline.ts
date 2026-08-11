@@ -257,7 +257,13 @@ export class EnforcementPipeline {
       // Check rate limit rules
       if (rule.type === 'rate') {
         const matchPattern = rule.match || input.tool
-        if (rule.match && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue
+        // Try the real command text first — a JSON-escaped haystack breaks
+        // quoted commands and end-of-string anchors (see commandString).
+        // The raw-args surface stays as a fallback so a rate rule targeting
+        // a non-command arg value keeps working.
+        if (rule.match
+          && !this.matchesRulePattern(rule.match, `${input.tool} ${commandString(input)}`)
+          && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue
         const windowSec = rule.window_seconds || 60
         const maxCalls = rule.max_calls || 10
         const rateKey = `rate:${rule.id}:${matchPattern}`
@@ -437,8 +443,17 @@ export class EnforcementPipeline {
         }
 
         if (!rule.match) continue
-        const haystack = `${input.tool} ${JSON.stringify(input.args)}`
-        if (!this.matchesRulePattern(rule.match, haystack)) continue
+        // Diagnosis rules gate on the CONTENT of a complex change (a write
+        // whose body says "refactor"), not a shell command, so the raw-args
+        // JSON surface stays primary here — stripping content keys (as
+        // commandString does) would blind the gate to exactly what it
+        // watches for. The command surface is tried too, additively, so an
+        // anchored pattern can still match a Bash invocation without
+        // JSON-escaping distortion; neither surface can remove a match the
+        // other finds.
+        const cmdHaystack = `${input.tool} ${cmdStr}`
+        const jsonHaystack = `${input.tool} ${JSON.stringify(input.args)}`
+        if (!this.matchesRulePattern(rule.match, jsonHaystack) && !this.matchesRulePattern(rule.match, cmdHaystack)) continue
         const windowSec = rule.hypothesis_window_seconds ?? 900
         const problemKey = this.config.ledger.activeProblemKey(input.session_id)
         // Nothing is failing — nothing to diagnose; never stall green work.
