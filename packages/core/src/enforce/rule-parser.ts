@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { parse as parseYaml } from 'yaml'
-import type { KeelConfig, KeelRule, ProtectionLevel, RuleContext } from '../types.js'
+import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext } from '../types.js'
 
 export interface ParsedRules {
   config: KeelConfig
@@ -61,6 +61,12 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
   if (typeof config.version !== 'number') errors.push('Keel version must be a number')
   if (config.level !== undefined && !['sprint', 'balanced', 'protect'].includes(String(config.level))) {
     errors.push(`Invalid protection level: ${String(config.level)}`)
+  }
+  if (config.sprint_expiry_hours !== undefined && (typeof config.sprint_expiry_hours !== 'number' || !Number.isFinite(config.sprint_expiry_hours) || config.sprint_expiry_hours < 0)) {
+    errors.push(`sprint_expiry_hours must be a non-negative number (0 disables auto-expiry), got: ${String(config.sprint_expiry_hours)}`)
+  }
+  if (config.sprint_started_at !== undefined && (typeof config.sprint_started_at !== 'string' || !Number.isFinite(Date.parse(config.sprint_started_at)))) {
+    errors.push(`sprint_started_at must be an ISO 8601 timestamp, got: ${String(config.sprint_started_at)}`)
   }
 
   return {
@@ -207,6 +213,103 @@ export interface RuleHierarchy {
   user: ParsedRules | null        // ~/.config/keel/rules.yaml (legacy)
   project: ParsedRules | null     // .keel/rules.yaml > AGENTS.md > CLAUDE.md
   local: ParsedRules | null       // .keel.local.yaml > AGENTS.local.md > CLAUDE.local.md
+}
+
+// ── Sprint auto-expiry + dial transparency ──────────────────────────
+//
+// `keel level sprint` is the least-friction dial (deny/block softens to
+// warn). Left on indefinitely it stops being a deliberate choice and
+// becomes the ambient state — the same failure shape as a shell left in
+// `set +e` or Gatekeeper's unsafe mode, both of which time out on their
+// own rather than trusting the human to remember to flip them back.
+// `sprint_started_at` + `sprint_expiry_hours` give sprint the same
+// timeout. This is read fresh from whatever config was just loaded off
+// disk (no daemon, no session tracking) — a process-per-call host picks
+// up the reversion on its very next invocation for free.
+
+export const DEFAULT_SPRINT_EXPIRY_HOURS = 4
+
+export interface SprintExpiryStatus {
+  expired: boolean
+  startedAt: number      // epoch ms
+  expiryHours: number
+  hoursElapsed: number
+}
+
+/**
+ * Whether a `level: sprint` config has aged past its expiry window, and by
+ * how much. Returns null when expiry does not apply: the level isn't
+ * sprint, `sprint_expiry_hours` is 0 (disabled), or there is no
+ * `sprint_started_at` to measure from (e.g. `level: sprint` set by hand —
+ * a rule with no recorded start never auto-expires).
+ */
+export function sprintExpiryStatus(config: KeelConfig | undefined | null): SprintExpiryStatus | null {
+  if (!config || config.level !== 'sprint') return null
+  const expiryHours = config.sprint_expiry_hours ?? DEFAULT_SPRINT_EXPIRY_HOURS
+  if (!(expiryHours > 0)) return null
+  const startedAt = config.sprint_started_at ? Date.parse(config.sprint_started_at) : NaN
+  if (!Number.isFinite(startedAt)) return null
+  const hoursElapsed = (Date.now() - startedAt) / 3_600_000
+  return { expired: hoursElapsed >= expiryHours, startedAt, expiryHours, hoursElapsed }
+}
+
+/**
+ * The level a config resolves to RIGHT NOW: identical to `config.level`
+ * except an expired `level: sprint` resolves to `balanced`. This is the
+ * single place "is sprint still in effect" gets decided — pipeline.ts's
+ * per-call effectiveLevel() and the CLI's `keel status`/`keel level`
+ * announcements all call this instead of re-deriving it, so the
+ * enforcement path and the human-facing report can never disagree.
+ */
+export function resolvedLevel(config: KeelConfig | undefined | null, fallback: ProtectionLevel): ProtectionLevel {
+  const level = config?.level as ProtectionLevel | undefined
+  if (!level) return fallback
+  if (level === 'sprint' && sprintExpiryStatus(config)?.expired) return 'balanced'
+  return level
+}
+
+/**
+ * Which config's `level` wins across the hierarchy: project over global,
+ * matching mergeRules' precedence. Exposed separately (rather than folded
+ * straight into effectiveHierarchyLevel) so callers that also need sprint
+ * expiry metadata — `keel status`'s "sprint expired → balanced" line —
+ * can inspect the same config sprintExpiryStatus() would use.
+ */
+export function winningLevelConfig(hierarchy: RuleHierarchy): KeelConfig | undefined {
+  if (hierarchy.project?.config?.level) return hierarchy.project.config
+  if (hierarchy.global?.config?.level) return hierarchy.global.config
+  return undefined
+}
+
+/**
+ * The effective level across the whole rule hierarchy right now: project
+ * overrides global, and an expired `level: sprint` on whichever config won
+ * resolves to balanced. Every command that needs "which dial is actually
+ * in effect" (pipeline enforcement, `keel status`, `keel dashboard`,
+ * `keel validate`, the daemon) is a thin wrapper around this, so they
+ * cannot drift from each other or from the enforcement decision itself.
+ */
+export function effectiveHierarchyLevel(hierarchy: RuleHierarchy, fallback: ProtectionLevel): ProtectionLevel {
+  return resolvedLevel(winningLevelConfig(hierarchy), fallback)
+}
+
+/**
+ * The action a rule takes when enforced at a given dial, ignoring
+ * runtime-only modifiers (observe mode, per-call action_override, and the
+ * warn-once-then-block escalation — all of those are per-evaluation state,
+ * not a property of the rule+dial pair). `level: protect` rules are
+ * floors and never soften; otherwise sprint downgrades deny/block to warn.
+ *
+ * This is the one real implementation of "does the dial soften this
+ * rule" — pipeline.ts's enforcedAction() delegates to it for the actual
+ * enforcement decision, and `keel level`'s dial-switch summary diffs its
+ * output across the previous and new level so the printed effects are
+ * derived from the real ruleset, not hardcoded prose.
+ */
+export function dialAction(rule: KeelRule, level: ProtectionLevel): EnforcementAction {
+  if (rule.level === 'protect') return rule.action
+  if (level === 'sprint' && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
+  return rule.action
 }
 
 export function loadRuleHierarchy(projectDir: string): RuleHierarchy {

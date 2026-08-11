@@ -7,7 +7,7 @@ import type {
 } from '../types.js'
 import { ActionCache, ContentTracker, type CacheContext } from './cache.js'
 import type { RuleHierarchy } from './rule-parser.js'
-import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules } from './rule-parser.js'
+import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules, effectiveHierarchyLevel, dialAction } from './rule-parser.js'
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
@@ -784,8 +784,12 @@ export class EnforcementPipeline {
   }
 
   private effectiveLevel(input: EnforceInput): ProtectionLevel {
-    const h = this.config.ruleHierarchy
-    return (h.project?.config?.level || h.global?.config?.level || input.level) as ProtectionLevel
+    // Project-over-global precedence, then sprint auto-expiry
+    // (sprint_started_at + sprint_expiry_hours) on top of whichever
+    // config's `level` won — see effectiveHierarchyLevel(). Read fresh
+    // from the just-loaded hierarchy every call, so a process-per-call
+    // host picks up the reversion with no daemon.
+    return effectiveHierarchyLevel(this.config.ruleHierarchy, input.level)
   }
 
   /**
@@ -805,13 +809,12 @@ export class EnforcementPipeline {
   /** The action a rule would take if it were enforcing (ignores observe). */
   private enforcedAction(rule: KeelRule, input: EnforceInput): EnforcementAction {
     if (input.action_override) return input.action_override
-    // `level: protect` rules are floors: always enforced at their declared
-    // action, never softened by the sprint dial's deny→warn downgrade.
-    if (rule.level === 'protect') return rule.action
-    // The sprint downgrade is derived from the LIVE level (reloaded with the
-    // rules), so `keel level` takes effect without a plugin restart.
-    if (this.effectiveLevel(input) === 'sprint' && (rule.action === 'deny' || rule.action === 'block')) return 'warn'
-    return rule.action
+    // dialAction() is the shared floor + sprint-downgrade logic (also used
+    // by `keel level`'s dial-switch summary). effectiveLevel() is the LIVE
+    // level — reloaded with the rules and expiry-checked — so both the
+    // sprint downgrade and its auto-expiry take effect without a plugin
+    // restart.
+    return dialAction(rule, this.effectiveLevel(input))
   }
 
   private cacheContext(input: EnforceInput, depth: string): CacheContext {

@@ -6,9 +6,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadRuleHierarchy, parseRulesContent } from '../rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, dialAction } from '../rule-parser.js'
 import { StateManager } from '../state-manager.js'
-import type { ProtectionLevel } from '../../types.js'
+import type { KeelRule, ProtectionLevel } from '../../types.js'
 
 function hashRulesFile(p: string): string {
   if (!existsSync(p)) return ''
@@ -185,5 +185,110 @@ rules:
         expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
       }
     }
+  })
+
+  // Explicit floor test: at sprint, a `level: protect` rule's violation
+  // still reaches `deny` — contrasted directly against a plain deny rule,
+  // which sprint permanently softens to `warn`. Both rules go through the
+  // same warn-once-then-block escalation; the difference this test proves
+  // is which final action that escalation lands on.
+  it('at sprint: a protect-floor violation still reaches deny on repeat; a plain deny rule stays stuck at warn', async () => {
+    const p = dialPipeline('sprint')
+    expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn')
+    expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn') // sprint softened this permanently
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('warn')   // first-violation warn (same escalation as any rule)
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')   // floor: sprint never softened it — still deny
+  })
+})
+
+describe('sprint auto-expiry reverts enforcement to balanced (timeout-only, no daemon, no session tracking)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'sprint-expiry-home-'))
+  const dir = mkdtempSync(join(tmpdir(), 'sprint-expiry-'))
+  const rulesPath = join(dir, '.keel', 'rules.yaml')
+  const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const previousHome = process.env.HOME
+  process.env.HOME = home
+  const results: Record<string, string> = {}
+
+  beforeAll(async () => {
+    mkdirSync(join(dir, '.keel'), { recursive: true })
+    const rules = (startedAtIso: string) => `version: 1
+level: sprint
+sprint_started_at: ${startedAtIso}
+rules:
+  - id: expiry-rule
+    type: command
+    match: "expiry-token-${uid}"
+    action: deny
+    message: "m0"
+`
+    const pipeline = new EnforcementPipeline({
+      level: 'sprint', context: 'local', cache: new ActionCache({ maxSize: 1000 }),
+      contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+      flowTracker: new FlowTracker(), ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
+      allowedFixTransforms: true, stateManager: new StateManager(),
+      disableFile: join(home, '.keel', 'DISABLED'),
+      reloadRules: () => loadRuleHierarchy(dir),
+      ruleFingerprint: () => [rulesPath].map(hashRulesFile).join(':'),
+    })
+    const call = async () => pipeline.evaluate({
+      tool: 'Bash', args: { command: `expiry-token-${uid}` }, cwd: dir,
+      session_id: 's1', turn_number: 1, context_tokens: 0,
+      level: 'sprint', context: 'local', agent: 't', subagent_of: null,
+    } as any)
+
+    // Sprint started 1h ago, default 4h expiry: still in effect — a plain
+    // deny rule stays softened to warn no matter how many times it fires.
+    writeFileSync(rulesPath, rules(new Date(Date.now() - 1 * 3_600_000).toISOString()))
+    results.fresh1 = (await call()).action
+    results.fresh2 = (await call()).action
+
+    // Rewrite with an ancient sprint_started_at (5h ago, past the 4h
+    // default): the EFFECTIVE level reverts to balanced on the very next
+    // call — no plugin restart, no daemon, just the reload this process
+    // already does when the rules file's hash changes.
+    writeFileSync(rulesPath, rules(new Date(Date.now() - 5 * 3_600_000).toISOString()))
+    results.expired1 = (await call()).action
+    results.expired2 = (await call()).action
+  })
+  afterAll(() => {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    rmSync(home, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('a fresh (non-expired) sprint keeps softening deny to warn on repeat', () => {
+    expect(results.fresh1).toBe('warn')
+    expect(results.fresh2).toBe('warn')
+  })
+
+  it('an expired sprint reverts to balanced enforcement — warn once, then deny on repeat', () => {
+    expect(results.expired1).toBe('warn')
+    expect(results.expired2).toBe('deny')
+  })
+})
+
+describe('dialAction() — the pure floor + sprint-downgrade logic pipeline.enforcedAction() and `keel level`\'s dial-diff both delegate to', () => {
+  const denyRule: KeelRule = { id: 'r-deny', type: 'command', action: 'deny', message: 'm' } as KeelRule
+  const blockRule: KeelRule = { id: 'r-block', type: 'command', action: 'block', message: 'm' } as KeelRule
+  const protectFloor: KeelRule = { id: 'r-floor', type: 'command', action: 'deny', level: 'protect', message: 'm' } as KeelRule
+  const warnRule: KeelRule = { id: 'r-warn', type: 'command', action: 'warn', message: 'm' } as KeelRule
+
+  it('sprint softens a plain deny/block rule to warn', () => {
+    expect(dialAction(denyRule, 'sprint')).toBe('warn')
+    expect(dialAction(blockRule, 'sprint')).toBe('warn')
+  })
+
+  it('sprint does NOT touch a `level: protect` rule — it keeps its declared action at every dial', () => {
+    expect(dialAction(protectFloor, 'sprint')).toBe('deny')
+    expect(dialAction(protectFloor, 'balanced')).toBe('deny')
+    expect(dialAction(protectFloor, 'protect')).toBe('deny')
+  })
+
+  it('a rule that is not deny/block is unaffected by the dial regardless of level', () => {
+    expect(dialAction(warnRule, 'sprint')).toBe('warn')
+    expect(dialAction(warnRule, 'balanced')).toBe('warn')
+    expect(dialAction(warnRule, 'protect')).toBe('warn')
   })
 })

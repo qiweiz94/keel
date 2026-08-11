@@ -6317,6 +6317,12 @@ function parseRulesContent(content, sourcePath) {
   if (config.level !== void 0 && !["sprint", "balanced", "protect"].includes(String(config.level))) {
     errors.push(`Invalid protection level: ${String(config.level)}`);
   }
+  if (config.sprint_expiry_hours !== void 0 && (typeof config.sprint_expiry_hours !== "number" || !Number.isFinite(config.sprint_expiry_hours) || config.sprint_expiry_hours < 0)) {
+    errors.push(`sprint_expiry_hours must be a non-negative number (0 disables auto-expiry), got: ${String(config.sprint_expiry_hours)}`);
+  }
+  if (config.sprint_started_at !== void 0 && (typeof config.sprint_started_at !== "string" || !Number.isFinite(Date.parse(config.sprint_started_at)))) {
+    errors.push(`sprint_started_at must be an ISO 8601 timestamp, got: ${String(config.sprint_started_at)}`);
+  }
   return {
     config,
     rules: Array.isArray(config.rules) ? config.rules : [],
@@ -6454,6 +6460,35 @@ function validateRules(rules) {
   }
   if (dups.size) errors.push(`Duplicate rule id(s) in the same file: ${[...dups].join(", ")}`);
   return errors;
+}
+var DEFAULT_SPRINT_EXPIRY_HOURS = 4;
+function sprintExpiryStatus(config) {
+  if (!config || config.level !== "sprint") return null;
+  const expiryHours = config.sprint_expiry_hours ?? DEFAULT_SPRINT_EXPIRY_HOURS;
+  if (!(expiryHours > 0)) return null;
+  const startedAt = config.sprint_started_at ? Date.parse(config.sprint_started_at) : NaN;
+  if (!Number.isFinite(startedAt)) return null;
+  const hoursElapsed = (Date.now() - startedAt) / 36e5;
+  return { expired: hoursElapsed >= expiryHours, startedAt, expiryHours, hoursElapsed };
+}
+function resolvedLevel(config, fallback) {
+  const level = config?.level;
+  if (!level) return fallback;
+  if (level === "sprint" && sprintExpiryStatus(config)?.expired) return "balanced";
+  return level;
+}
+function winningLevelConfig(hierarchy) {
+  if (hierarchy.project?.config?.level) return hierarchy.project.config;
+  if (hierarchy.global?.config?.level) return hierarchy.global.config;
+  return void 0;
+}
+function effectiveHierarchyLevel(hierarchy, fallback) {
+  return resolvedLevel(winningLevelConfig(hierarchy), fallback);
+}
+function dialAction(rule, level) {
+  if (rule.level === "protect") return rule.action;
+  if (level === "sprint" && (rule.action === "deny" || rule.action === "block")) return "warn";
+  return rule.action;
 }
 function loadRuleHierarchy(projectDir) {
   const home = process.env.HOME || "~";
@@ -7327,8 +7362,7 @@ var EnforcementPipeline = class {
     return this.warn(input, rule, `${message} (action "${action}" is not supported by this integration)`, start, tier);
   }
   effectiveLevel(input) {
-    const h = this.config.ruleHierarchy;
-    return h.project?.config?.level || h.global?.config?.level || input.level;
+    return effectiveHierarchyLevel(this.config.ruleHierarchy, input.level);
   }
   /**
    * What this rule actually does right now.
@@ -7346,9 +7380,7 @@ var EnforcementPipeline = class {
   /** The action a rule would take if it were enforcing (ignores observe). */
   enforcedAction(rule, input) {
     if (input.action_override) return input.action_override;
-    if (rule.level === "protect") return rule.action;
-    if (this.effectiveLevel(input) === "sprint" && (rule.action === "deny" || rule.action === "block")) return "warn";
-    return rule.action;
+    return dialAction(rule, this.effectiveLevel(input));
   }
   cacheContext(input, depth) {
     return {

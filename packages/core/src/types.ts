@@ -24,6 +24,20 @@ export interface KeelConfig {
   rules?: KeelRule[]
   cache?: CacheConfig
   re_injection?: ReInjectionConfig
+  /**
+   * When `level: sprint` was last set via `keel level sprint` (ISO 8601).
+   * Written by the CLI's comment-preserving level writer; a hand-edited
+   * `level: sprint` with no timestamp never auto-expires. Paired with
+   * `sprint_expiry_hours`.
+   */
+  sprint_started_at?: string
+  /**
+   * Hours a `level: sprint` dial stays in effect before the EFFECTIVE
+   * level (read fresh from this config on every load — no daemon) reverts
+   * to balanced. Default 4; 0 disables auto-expiry. Timeout-only — there
+   * is deliberately no session-end detection.
+   */
+  sprint_expiry_hours?: number
 }
 
 /**
