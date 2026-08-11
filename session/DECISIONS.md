@@ -122,3 +122,13 @@
   guards proposals against template-literal corruption — USE IT during the gate paste
   into DEFAULT_RULES_YAML (backticks/escapes in YAML would silently corrupt the JS
   template literal; lane caught this on its own proposal).
+- 2026-08-11 supervisor: W2 lane 4 landed (w2-oracle 8012f43): oracle type with dual
+  surfaces (content-diff + command), hard recency gate (no recent failure → NO finding,
+  not a lower-severity one — the honest call), session-scoped tracker persisted via
+  StateManager; tests-read-only shipped as opt-in proposal only. Two engine findings:
+  (1) pathMatches in pipeline.ts never escapes bare `*` — `**/.env*` misses .env.local,
+  `**/id_rsa*` misses id_rsa.pub — LIVE HOLE in shipped secret-files rule, verified;
+  MICRO-LANE w2-pathfix spawned for the fix + regression fixtures. (2) `operations:`
+  filters on filesystem rules are dead code (no host populates args.operation) —
+  Wave-3/audit note. Fixture-harness gaps (no observe awareness, no exit-code channel)
+  → Wave-3 promotion lane scope.
