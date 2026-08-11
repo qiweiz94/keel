@@ -38,7 +38,16 @@ export function pathFromPatch(patchText: unknown): string {
  * markers (apply_patch carries no filePath argument — paths live in the body).
  */
 export function argPath(args: Record<string, unknown>): string {
-  return String(args.path || args.filePath || args.file || args.dest || pathFromPatch(args.patchText) || '')
+  // Claude Code and Gemini send `file_path` (snake_case); Cursor sends
+  // `file`; apply_patch carries the path in its body. A filesystem floor
+  // rule (no-rules-tampering, no-secret-files) is INERT on a host whose
+  // key isn't listed here — verified live: `file_path` slipped a write to
+  // .claude/settings.json past the protect floor on claude-code.
+  return String(
+    args.path || args.file_path || args.filePath || args.file
+    || args.dest || args.destination || args.target_file || args.notebook_path
+    || pathFromPatch(args.patchText) || '',
+  )
 }
 
 export function stripContentArgs(args: Record<string, unknown>): Record<string, unknown> {
