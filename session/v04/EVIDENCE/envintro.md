@@ -204,6 +204,69 @@ paste-safety constraint still holds. Full workspace suite (`npm test`) re-run
 clean after this fix — see the numbers below, which reflect the anchored,
 shipped version.
 
+**3. A third-pass advisor check caught a catalog-metadata accuracy bug and
+one scoping precision gap, both fixed before this file's truly final
+version.**
+
+The shipped `message`/`rationale` claimed EVERY pattern requires all three
+signals (introspection primitive AND test-file identifier string AND
+if/switch branch). That was true for three of the four patterns but false
+for pattern 4 (`expect.getState()`), which only has two lookaheads — the
+primitive and the branch, no separate test-identifier requirement. On a
+rule whose entire justification is honest catalog metadata for a burn-in
+period, a message/rationale that overclaims what the shipped regex
+actually does is exactly the failure this lane was told to avoid ("be
+conservative and HONEST"). Fixed by correcting the wording rather than
+changing the pattern (the two-signal design for pattern 4 is deliberate:
+calling `expect.getState()` at all is already itself a read of "which test
+is running," so requiring a third signal would have been redundant, not
+more conservative — and real gaming code that goes on to read
+`.currentTestName` off the result still independently satisfies the other
+patterns' test-identifier signal, since `currentTestName` is in that same
+list). Also added one clause each to `rationale` and `false_positives`
+noting that on an `Edit` call with no inline content, the pipeline falls
+back to scanning the WHOLE existing file on disk — so "co-occurred" means
+anywhere in the file on that path, not just within the diff being
+applied, which is a real, slightly broader surface than the "one write"
+phrasing implied. Confirmed separately that `observed_matches` (the
+plural array this rule's detection actually survives on when an earlier
+observe rule wins the singular `observed_action` field) is not a dead
+field: `packages/opencode-plugin/src/plugin.ts`'s audit `record()` call
+persists it, and `packages/cli/src/commands/retrospective.ts` counts
+observed rule hits FROM `observed_matches`, not from the singular field —
+so this rule's detections reach the same burn-in tooling
+`confidence: low` is banking on, even on a call where an earlier observe
+rule claims `observed_matches[0]`.
+
+Also observed, and worth recording honestly rather than omitting: one
+`npm run test -w @get-keel/cli` run (out of five total full-suite/cli-only
+runs across this lane) failed a single unrelated test —
+`perf-budget.test.ts`'s A4 hot-path guard (p99 for a benign Bash call
+under the shipped ruleset must stay under 50ms; best-of-3 came back
+[219.8, 102.9, 68.0]ms, all over budget, at a load average the test's own
+skip-guard judged low enough not to skip). Investigated rather than
+dismissed: (a) content-type rule checks — including this rule's — never
+run their regex against a Bash call at all (`pipeline.ts` gates the
+content check on `inlineContent || diskChanged`, and a Bash call's
+`args = { command }` has neither an inline-content field nor a
+resolvable file path, so the gate is false and the loop over `rule.
+patterns` never executes), so this rule cannot be adding literal per-call
+regex cost to that specific benchmark; (b) the only structural cost of
+one more shipped rule is one extra element in a 45-vs-44-length array
+iteration, on the order of ~2%, not the 36%+ overage actually observed;
+(c) the three-attempt trend ([219.8, 102.9, 68.0]) is a clear monotonic
+decline consistent with transient contention easing during the
+measurement, not a stable added cost (a real fixed regression would be
+slow on every attempt, not improving run to run); (d) re-running
+`perf-budget.test.ts` in isolation immediately after passed 3/3, and the
+very next full `npm run test -w @get-keel/cli` and full `npm test` runs
+both passed clean including that file. Conclusion: pre-existing
+load-sensitivity in a shared-machine CI-adjacent perf test (its own
+header comment documents load averages of 15-35 observed on this exact
+16-core box while the test was being built), not a regression this rule
+introduced — but recorded here rather than silently re-run away, per this
+lane's own evidence-discipline standard.
+
 ## Verification
 
 ```
