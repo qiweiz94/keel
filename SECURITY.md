@@ -181,24 +181,81 @@ The metadata allowlist itself (which fields count as
 `pipeline.ts` today; if a future feature starts branching enforcement
 behavior on one of them, it would need to move out of the allowlist.
 
-Four classes of evasion that **no regex rule closes**, and that you should
-assume an adversarial agent can use:
+Four classes of evasion no regex rule closes on its own. As of M1/A2, `type:
+command` rules no longer match the raw command string alone — they match
+against BOTH the raw string and a bounded set of normalized surfaces built by
+`packages/core/src/enforce/command-normalizer.ts` (wired in via
+`commandSurfaces()` in `arg-utils.ts`, consumed only by the `type: command`
+matcher in `pipeline.ts`; every other matching path — fix mutation, the
+stuck-loop fingerprint, `type: env`/`stuck`/`diagnosis`/`research` — is
+untouched and still keys on the raw string). This closes two of the four
+classes for real, and partially closes a third; the change is purely
+additive (the raw string is always surface zero, so nothing that matched
+before this landed can stop matching):
 
-1. **Intra-token quoting** — `r"m" -rf /` and `keel di"s"able` execute
-   normally and match no literal-token pattern.
-2. **Variable indirection** — `T=/; rm -rf $T`. A static pattern cannot
-   resolve a runtime value.
-3. **Interpreter escape hatches** — *half-closed* in v0.4:
-   `no-self-protection-write` now catches `python3 -c "…"`, `node -e "…"`,
-   `perl -e/-p "…"` when the body names one of keel's own protected paths. But
-   an interpreter one-liner that reaches any *other* file or endpoint —
-   `python3 -c "import shutil; shutil.rmtree('/')"`, `sh -c "$(base64 -d <<< …)"`
-   — still carries no gated verb in the command at all, and is not matched.
-4. **Symlink redirection** — path globs match the path string as written;
-   they do not resolve symlinks, so a link planted by an earlier allowed
-   command redirects a write past every glob. (The `ln` command itself against a
-   protected path is now caught by `no-self-protection-write`; a link planted
-   earlier and written through later is not.)
+1. **Intra-token quoting — CLOSED for the shipped default `type: command`
+   rules.** `r"m" -rf /`, `keel di"s"able`, and `git push "--force"` now
+   normalize to `rm -rf /`, `keel disable`, and `git push --force` and are
+   denied by `no-destructive-commands`, `keel-control-gate`, and
+   `no-force-push` respectively (verified in
+   `packages/core/src/enforce/__tests__/shell-normalize-bypass.test.ts` —
+   these were measured `allow` before this lane, not merely assumed).
+   Mechanism: a hand-rolled POSIX-ish tokenizer strips quotes only from a
+   quoted run that contains **no whitespace** (pure obfuscation); a quoted
+   run that *does* contain whitespace is a real data argument in shell
+   semantics and is preserved verbatim, quotes included — this is also what
+   keeps a quoted argument to `echo` from being treated as a command (see
+   the note on `echo "rm -rf /"` below). Residual: `${IFS}`-based
+   word-splitting tricks, backslash-heavy multi-layer nesting beyond the
+   tokenizer's single-pass model, and non-shell obfuscation (base64, hex
+   escapes) are not decoded.
+2. **Variable indirection — PARTIALLY closed.** `T=/; rm -rf $T` now
+   normalizes (a single left-to-right pass resolves the inline `T=/`
+   assignment and substitutes `$T`/`${T}`) and is denied. This is
+   deliberately narrow: only a **literal value assigned earlier in the same
+   command string** resolves. A variable set by a prior tool call, the
+   agent's real process environment, or a value produced by command
+   substitution (`` $(...) ``/backticks — not parsed at all) is invisible to
+   this module and stays unresolved, same as before.
+3. **Interpreter escape hatches — surface exposed, default-rule coverage
+   unchanged.** `sh|bash|dash|zsh|ksh -c "<cmd>"` is now recursed one level
+   deep and its body re-normalized through the same pipeline, so an
+   *obfuscated* payload inside a shell one-liner is caught
+   (`sh -c 'r"m" -rf /'` denies; a plain `sh -c "rm -rf /"` already denied
+   pre-A2 via the shipped pattern's lack of a trailing anchor — not a new
+   catch by itself). For non-shell interpreters — `python(2/3)? -c`,
+   `node -e/--eval`, `perl -e/-E/-p` — the decoded code argument is now
+   exposed as an additional matching surface (e.g. `import shutil;
+   shutil.rmtree('/')` is a string a rule CAN match today), but **no shipped
+   default rule's pattern targets interpreter-body content** — `not-yet
+   containing "rm -rf" or "rmtree"` regexes were never in `DEFAULT_RULES_YAML`
+   and this lane does not add any (out of scope; owned by a different file).
+   So `python3 -c "import shutil; shutil.rmtree('/')"` is still `allow`
+   today — the surface a future rule would need now exists; the rule itself
+   does not.
+4. **Symlink redirection — untouched, out of scope.** Path globs match the
+   path string as written; they do not resolve symlinks. A string
+   normalizer cannot see the filesystem, so this is unaffected by A2 — it
+   remains a runtime-fs concern for a different mechanism, as before. (The
+   `ln` command itself against a protected path is still caught by
+   `no-self-protection-write`; a link planted earlier and written through
+   later is not.)
+
+One honest caveat that predates A2 and is NOT introduced by it: several of
+the shipped `type: command` patterns (`no-destructive-commands` in
+particular) are unanchored substring regexes with no trailing `( |$)` after
+some of their alternatives — `echo "rm -rf /"` (echoing the string, not
+running it) already denies on the raw string alone, before this module ever
+runs, because the pattern doesn't require what follows the matched text to
+be a real word boundary. A2's additive constraint means this cannot be
+narrowed away here (that would remove an existing catch, and the fix belongs
+to whoever owns `DEFAULT_RULES_YAML`, which this lane may not touch); what
+A2 *does* guarantee is that the normalizer does not make this class of
+pre-existing false positive any *worse* — the same whitespace-preservation
+rule from class 1 above means a quoted argument with internal spaces (e.g.
+`git commit -m "rm -rf ."` or `git commit -m "git push --force"`) is never
+quote-stripped into a bare token that would newly satisfy an anchor it
+didn't satisfy on the raw string.
 
 Keel is a gate against the mistakes and the drift, not a sandbox against a
 determined adversary. For adversarial containment, run the agent in an

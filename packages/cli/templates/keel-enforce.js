@@ -6929,6 +6929,260 @@ function decidePackageAction(results, ageThresholdDays) {
   return { reason: "ok", message: "All installed packages verified against the npm registry." };
 }
 
+// ../core/src/enforce/command-normalizer.ts
+var MAX_INPUT_LEN = 4e3;
+var MAX_SUBCOMMANDS = 64;
+var MAX_TOKENS_PER_SUBCOMMAND = 256;
+var MAX_INTERPRETER_DEPTH = 1;
+var SHELL_INTERPRETERS = /* @__PURE__ */ new Set(["sh", "bash", "dash", "zsh", "ksh"]);
+function classifyInterpreter(basename3) {
+  if (SHELL_INTERPRETERS.has(basename3)) return "shell";
+  if (/^python[0-9.]*$/.test(basename3)) return "python";
+  if (basename3 === "node" || basename3 === "nodejs") return "node";
+  if (/^perl[0-9.]*$/.test(basename3)) return "perl";
+  return null;
+}
+function interpreterFlags(kind) {
+  switch (kind) {
+    case "shell":
+      return ["-c"];
+    case "python":
+      return ["-c"];
+    case "node":
+      return ["-e", "--eval"];
+    case "perl":
+      return ["-e", "-E", "-p"];
+  }
+}
+function basename(path2) {
+  const parts = path2.split("/");
+  return parts[parts.length - 1] || path2;
+}
+function isQuoteChar(c) {
+  return c === '"' || c === "'";
+}
+function tokenize2(text) {
+  const tokens = [];
+  let i = 0;
+  const n = text.length;
+  let current = null;
+  const pushSegment = (seg) => {
+    if (!current) current = [];
+    current.push(seg);
+  };
+  const endToken = () => {
+    if (current) {
+      tokens.push({ segments: current });
+      current = null;
+    }
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === " " || c === "	") {
+      endToken();
+      i++;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      pushSegment({ text: text[i + 1], quoted: false, hasSpace: false, quoteChar: "" });
+      i += 2;
+      continue;
+    }
+    if (isQuoteChar(c)) {
+      const quoteChar = c;
+      let j2 = i + 1;
+      let inner = "";
+      while (j2 < n && text[j2] !== quoteChar) {
+        if (quoteChar === '"' && text[j2] === "\\" && j2 + 1 < n && (text[j2 + 1] === '"' || text[j2 + 1] === "\\")) {
+          inner += text[j2 + 1];
+          j2 += 2;
+          continue;
+        }
+        inner += text[j2];
+        j2++;
+      }
+      const hasSpace = /[ \t]/.test(inner);
+      pushSegment({ text: inner, quoted: true, hasSpace, quoteChar });
+      i = j2 + 1;
+      continue;
+    }
+    let j = i;
+    let buf = "";
+    while (j < n && text[j] !== " " && text[j] !== "	" && !isQuoteChar(text[j]) && text[j] !== "\\") {
+      buf += text[j];
+      j++;
+    }
+    pushSegment({ text: buf, quoted: false, hasSpace: false, quoteChar: "" });
+    i = j;
+  }
+  endToken();
+  if (tokens.length > MAX_TOKENS_PER_SUBCOMMAND) tokens.length = MAX_TOKENS_PER_SUBCOMMAND;
+  return tokens;
+}
+var VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+function expandVars(text, dict) {
+  return text.replace(VAR_RE, (whole, braced, bare) => {
+    const name = braced || bare;
+    return Object.prototype.hasOwnProperty.call(dict, name) ? dict[name] : whole;
+  });
+}
+var ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+function renderToken(token, dict) {
+  let rendered = "";
+  let value = "";
+  for (const seg of token.segments) {
+    if (seg.quoted && seg.hasSpace) {
+      rendered += seg.quoteChar + seg.text + seg.quoteChar;
+      value += seg.text;
+    } else if (seg.quoted) {
+      rendered += seg.text;
+      value += seg.text;
+    } else {
+      const expanded = expandVars(seg.text, dict);
+      rendered += expanded;
+      value += expanded;
+    }
+  }
+  return { rendered, value };
+}
+var SEPARATORS = [
+  { token: "&&", re: /^&&/ },
+  { token: "||", re: /^\|\|/ },
+  { token: ";", re: /^;/ },
+  { token: "|", re: /^\|/ },
+  { token: "&", re: /^&/ },
+  { token: "\n", re: /^\n/ }
+];
+function splitTopLevel(raw) {
+  const parts = [];
+  let buf = "";
+  let i = 0;
+  const n = raw.length;
+  let quote = null;
+  while (i < n) {
+    const c = raw[i];
+    if (quote) {
+      buf += c;
+      if (c === quote && raw[i - 1] !== "\\") quote = null;
+      i++;
+      continue;
+    }
+    if (isQuoteChar(c)) {
+      quote = c;
+      buf += c;
+      i++;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      buf += c + raw[i + 1];
+      i += 2;
+      continue;
+    }
+    let matched = null;
+    for (const s of SEPARATORS) {
+      if (s.re.test(raw.slice(i))) {
+        matched = s.token;
+        break;
+      }
+    }
+    if (matched) {
+      parts.push({ text: buf, sepAfter: matched });
+      buf = "";
+      i += matched.length;
+      if (parts.length >= MAX_SUBCOMMANDS) break;
+      continue;
+    }
+    buf += c;
+    i++;
+  }
+  parts.push({ text: buf, sepAfter: "" });
+  return parts;
+}
+function normalizeSubcommand(rawSub, dict, depth) {
+  const rawTrimmed = rawSub.trim();
+  const rawTokens = tokenize2(rawSub);
+  const rendered = rawTokens.map((t) => renderToken(t, dict));
+  let cut = 0;
+  const envAssignments = {};
+  while (cut < rendered.length) {
+    const m = ASSIGNMENT_RE.exec(rendered[cut].value);
+    if (!m) break;
+    const [, name, valRaw] = m;
+    const val = expandVars(valRaw, dict);
+    envAssignments[name] = val;
+    dict[name] = val;
+    cut++;
+  }
+  const commandTokens = rawTokens.slice(cut).map((t) => renderToken(t, dict));
+  const tokens = [...rendered.slice(0, cut), ...commandTokens];
+  const normalized = tokens.map((t) => t.rendered).join(" ");
+  const normalizedCommand = commandTokens.map((t) => t.rendered).join(" ");
+  const sub = {
+    raw: rawTrimmed,
+    tokens,
+    normalized,
+    normalizedCommand,
+    envAssignments
+  };
+  if (commandTokens.length > 0) {
+    const argv0 = commandTokens[0].value;
+    const kind = classifyInterpreter(basename(argv0));
+    if (kind) {
+      const flags = interpreterFlags(kind);
+      for (let k = 1; k < commandTokens.length - 1; k++) {
+        if (flags.includes(commandTokens[k].value)) {
+          const bodyToken = commandTokens[k + 1];
+          sub.interpreterBody = bodyToken.value;
+          if (kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
+            sub.nested = normalizeCommand(bodyToken.value, depth + 1);
+          }
+          break;
+        }
+      }
+    }
+  }
+  return sub;
+}
+function normalizeCommand(raw, depth = 0) {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return { raw: raw || "", normalized: raw || "", subcommands: [], surfaces: [raw || ""], truncated: false };
+  }
+  if (raw.length > MAX_INPUT_LEN) {
+    return { raw, normalized: raw, subcommands: [], surfaces: [raw], truncated: true };
+  }
+  try {
+    const parts = splitTopLevel(raw);
+    const truncated = parts.length >= MAX_SUBCOMMANDS;
+    const dict = {};
+    const subcommands = parts.filter((p) => p.text.trim().length > 0).map((p) => normalizeSubcommand(p.text, dict, depth));
+    let normalizedFull = "";
+    let si = 0;
+    for (const part of parts) {
+      if (part.text.trim().length === 0) {
+        normalizedFull += part.sepAfter;
+        continue;
+      }
+      normalizedFull += subcommands[si].normalized + part.sepAfter;
+      si++;
+    }
+    const surfaces = [raw];
+    if (normalizedFull !== raw) surfaces.push(normalizedFull);
+    for (const sub of subcommands) {
+      if (sub.normalized && !surfaces.includes(sub.normalized)) surfaces.push(sub.normalized);
+      if (sub.normalizedCommand && sub.normalizedCommand !== sub.normalized && !surfaces.includes(sub.normalizedCommand)) {
+        surfaces.push(sub.normalizedCommand);
+      }
+      if (sub.interpreterBody && !surfaces.includes(sub.interpreterBody)) surfaces.push(sub.interpreterBody);
+      if (sub.nested) {
+        for (const s of sub.nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
+      }
+    }
+    return { raw, normalized: normalizedFull, subcommands, surfaces, truncated };
+  } catch {
+    return { raw, normalized: raw, subcommands: [], surfaces: [raw], truncated: true };
+  }
+}
+
 // ../core/src/enforce/arg-utils.ts
 var CONTENT_KEYS = /* @__PURE__ */ new Set([
   "content",
@@ -7007,6 +7261,12 @@ function commandString(input) {
     if (nested) return nested;
   }
   return JSON.stringify(stripContentArgs(args));
+}
+function commandSurfaces(input) {
+  const raw = commandString(input);
+  if (!raw) return [""];
+  const normalized = normalizeCommand(raw);
+  return normalized.surfaces.length ? normalized.surfaces : [raw];
 }
 
 // ../core/src/enforce/verification.ts
@@ -7744,6 +8004,7 @@ var EnforcementPipeline = class {
         return this.result("allow", "", "Allowed (cached)", start, true, 1);
       }
     }
+    let cmdSurfaces;
     for (const rule of rules) {
       try {
         if (rule.type === "rate") {
@@ -7798,8 +8059,15 @@ var EnforcementPipeline = class {
         }
         if (rule.type === "command" && (rule.match || rule.match_regex || rule.match_prefix)) {
           const cmdStr = commandString(input);
+          const isFix = this.effectiveAction(rule, input) === "fix" && !!rule.fix;
           const pattern = rule.match_regex || rule.match;
-          const matches2 = rule.match_prefix ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase()) : !!pattern && this.matchesRulePattern(pattern, cmdStr);
+          let matches2;
+          if (isFix) {
+            matches2 = rule.match_prefix ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase()) : !!pattern && this.matchesRulePattern(pattern, cmdStr);
+          } else {
+            cmdSurfaces ??= commandSurfaces(input);
+            matches2 = rule.match_prefix ? cmdSurfaces.some((s) => s.toLowerCase().startsWith(rule.match_prefix.toLowerCase())) : !!pattern && cmdSurfaces.some((s) => this.matchesRulePattern(pattern, s));
+          }
           if (matches2) {
             if (rule.unless_reasoning && input.reasoning) {
               const unlessRegex = new RegExp(rule.unless_reasoning, "i");
@@ -7820,7 +8088,7 @@ var EnforcementPipeline = class {
               }
               if (shouldSkip) continue;
             }
-            if (this.effectiveAction(rule, input) === "fix" && rule.fix) {
+            if (isFix) {
               return this.fixAction(input, rule, cmdStr, start);
             }
             return this.violation(input, rule, rule.message, start, 2);
@@ -9076,7 +9344,7 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
 
 // ../core/src/file-verify.ts
 import { readFileSync as readFileSync11 } from "node:fs";
-import { extname, basename, dirname, join as join7 } from "node:path";
+import { extname, basename as basename2, dirname, join as join7 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
   for (const root of [join7(dirname(filePath), "noop.js"), import.meta.url]) {
@@ -9115,7 +9383,7 @@ async function verifyFileSyntax(filePath) {
         if (!ts) return null;
         const source = readFileSync11(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-        const parsed = ts.createSourceFile(basename(filePath), source, ts.ScriptTarget.Latest, false, kind);
+        const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
         if (diagnostics?.length) {
           return ts.flattenDiagnosticMessageText(diagnostics[0].messageText, " ");
