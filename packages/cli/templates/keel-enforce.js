@@ -9624,6 +9624,39 @@ rules:
       - regex: "git config|npm config|pnpm config|yarn config|bun config|npx( |$)|npm exec|pipx|dlx( |$)|init( |$)|-y( |$)|--yes"
     message: "You are choosing a format without verifying the user. Ask what they use before deciding."
 
+
+  # \u2500\u2500 slopsquatting install gate (Wave-2 lane 2; supervisor paste at gate-2) \u2500\u2500
+  - id: unverified-package-install
+    type: package
+    action: prompt
+    age_days: 30
+    category: supply-chain
+    severity: high
+    confidence: medium
+    rationale: >
+      19.7% of LLM-recommended packages don't exist (USENIX Security 2025,
+      'We Have a Package for You! A Comprehensive Analysis of Package
+      Hallucinations by Code Generating LLMs'). Attackers register the
+      hallucinated name ahead of time and wait for an agent to install it \u2014
+      this already happened for real: the package 'huggingface-cli' was
+      squatted on PyPI (the actual package is 'huggingface_hub') and
+      shipped a reverse shell to anyone who typed the plausible-sounding
+      name. A rule engine running outside the model's context window is
+      the only thing that can check the name against the registry before
+      the shell executes, since the hallucination itself is invisible to
+      the model that produced it.
+    remediation: >
+      Confirm the package name and publisher before installing \u2014 check the
+      registry page, the GitHub repo it links to, and recent download
+      counts. If the agent suggested this name from memory rather than a
+      lockfile or an explicit user instruction, treat the suggestion as
+      unverified until you've looked it up yourself.
+    false_positives:
+      - 'Private or org-scoped registry packages (Verdaccio, Artifactory, GitHub Packages) that 404 against the public npm registry by construction \u2014 these prompt as unverified, never deny (see package-verifier.ts scoped-404 handling)'
+      - 'A legitimate package published in the last 30 days (the age-gate default) \u2014 prompts for a second look, not a hard block'
+      - 'npm registry timeouts or outages \u2014 network failures always downgrade to unverified, never deny'
+    message: "This package install could not be verified against the npm registry \u2014 confirm the name and publisher before proceeding."
+
   # \u2500\u2500 TIER 3: observe (evaluated + recorded via observed_action, never interrupts) \u2500\u2500
   - id: source-change-requires-test
     type: verification
@@ -9720,6 +9753,226 @@ rules:
     rationale: "Complex or destructive fixes should follow an investigation, not precede one. Discharged by a recorded hypothesis OR by real investigation evidence (git log/blame/bisect/diff), so it never demands ceremony from someone who already did the work."
     remediation: "Run git log/blame/bisect, or record a hypothesis with keel_hypothesis."
     message: "Destructive or structural change without a recorded root cause. Investigate first."
+
+  # \u2500\u2500 Wave-2 verification proposals (observe burn-in; supervisor paste at gate-2) \u2500\u2500
+  - id: claim-without-evidence
+    type: claim
+    category: verification
+    severity: high
+    # LOW, not medium, and not rounded up: see EVIDENCE.md \xA76 for the honest
+    # accounting \u2014 the two channels this rule can see (an unwired
+    # 'reasoning' field in every surveyed host, and commit/PR message text)
+    # mean it fires on a small, host-dependent slice of real false-success
+    # claims, and the grammar itself is a regex heuristic, not a parser.
+    confidence: low
+    maturity: incubating
+    # observe: evaluated and recorded every call (observed_action in the
+    # trace), never interrupts. A new detector earns its way to warn/block by
+    # a measured false-positive rate on real trajectories, not by assumption.
+    mode: observe
+    trigger:
+      tools: [write, edit, apply_patch, WriteFile]
+      path: "src/"
+      paths: ["package.json"]
+      pattern: "(src/|package[.]json)"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest|pytest|go test|cargo test)"
+    verification_window_seconds: 300
+    action: warn
+    message: >-
+      Claimed done/fixed/tested/passing/verified/complete without a passing
+      verification run since the last source edit. Run the test/build
+      command that satisfies this obligation before making that claim, or
+      say explicitly that it is unverified.
+    rationale: >-
+      Trajectory research on self-assessing coding agents found 75.8% of
+      FAILING runs carried an explicit false-success claim in the agent's own
+      output, and that LLM judges scoring those same claims for truthfulness
+      land at ~0.54 AUROC \u2014 indistinguishable from chance. A judge that reads
+      the claim and reasons about whether it sounds true cannot catch this
+      class of failure; only cross-referencing the claim against what
+      actually ran can. This rule does exactly that: it does not evaluate
+      whether the claim is TRUE, only whether a verification command visibly
+      ran and passed since the edit the claim is about \u2014 the same
+      trigger/satisfy/pending shape the shipped 'source-change-requires-test'
+      verification rule already uses, applied to the agent's own words
+      instead of a commit/push boundary.
+    remediation: >-
+      Before stating a task is done/fixed/tested/passing/verified/complete,
+      run the project's test or build command and let it finish (not
+      '--help', '--dry-run', or a swallowed exit code \u2014 see verification.ts's
+      isFakeSatisfy for what does not count). If verification genuinely
+      cannot be run yet, say so plainly instead of claiming completion.
+    false_positives:
+      - >-
+        WIP/status narration during active work ("still fixing the parser,
+        tests not run yet") \u2014 suppressed by the grammar's hedge/negation
+        exclusion (wip, todo, partial, "not run", "in progress", ...), but a
+        hedge phrasing outside that word list will still fire.
+      - >-
+        A commit message that accurately describes a fix VERIFIED IN AN
+        EARLIER session or an earlier window that has since expired
+        (verification_window_seconds default 300s) \u2014 the obligation is gone
+        by the time the commit happens, so the rule reads it as unverified
+        even though it genuinely was. This is a real, not-yet-mitigated gap:
+        the window is a proxy for "still fresh enough to trust," not a
+        certificate that no verification ever happened.
+      - >-
+        Quoting the USER's or a teammate's claim back in reasoning text
+        ("you said tests were passing, but I see...") is intended to be
+        suppressed by the quoted-span exclusion; an unquoted paraphrase of
+        someone else's claim is not caught by that exclusion and may
+        false-fire.
+      - >-
+        Docs-only or config-only sessions that never touch 'src/' or
+        'package.json' never arm the obligation at all, so a "done" claim
+        about non-code work correctly never fires \u2014 not a false positive,
+        but worth listing so a reviewer does not expect this rule to cover
+        that case.
+    review_by: "2026-11-11"
+
+# \u2500\u2500 GATE INTEGRATION NOTE \u2014 read before adopting, not a false_positives
+#    entry (this is a suppression, not a wrong fire) \u2500\u2500
+#
+# This rule and the shipped 'source-change-requires-test' verification rule
+# have an IDENTICAL 'trigger' (same tools/path/paths/pattern) and neither
+# sets 'priority' (both default to 0). Proven empirically
+# (claim.test.ts's "gate-integration ordering" describe block, which
+# extracts the exact shipped rule text the way fixture-harness.test.ts
+# extracts DEFAULT_RULES_YAML \u2014 see EVIDENCE.md \xA79): on the ONE channel
+# this rule can actually reach in production today (see the confidence:low
+# rationale above \u2014 commit/PR message text, not the unwired 'reasoning'
+# field), 'git commit -m "<claim>"' while both rules are active, the
+# EARLIER rule in file order wins EnforcementPipeline.evaluate()'s
+# short-circuit \u2014 the shipped verification rule's commit-boundary 'warn'
+# fires and THIS rule is never evaluated on that call at all. This is not a
+# bug in either rule; it is a consequence of both watching the same trigger
+# with the same priority. Adopting this rule needs an explicit ordering
+# decision at the gate \u2014 a 'priority' above the shipped rule (which then
+# raises a DIFFERENT problem: 'mode: observe' short-circuits
+# 'evaluate()' too, so it would swallow the shipped rule's real 'warn' on
+# that call \u2014 see EVIDENCE.md \xA79 before changing that behavior), or
+# accepting the shipped rule's warn as the one users see on that
+# trajectory. Not something this rule's own YAML can resolve.
+  - id: test-oracle-tampering
+    type: oracle
+    level: balanced
+    mode: observe
+    action: warn
+    category: verification
+    severity: high
+    confidence: low
+    maturity: incubating
+    message: >-
+      A test-oracle weakening pattern (skip/only added, assertions or a
+      test block removed, a snapshot or expected value rewritten,
+      timeout/retry inflated) landed shortly after a failing test run.
+      This may be making the test pass by weakening it, not by fixing the
+      code \u2014 verify this is an intentional refactor, not a shortcut
+      around a red run.
+    rationale: >-
+      Reward-hacking research documents agents making tests pass by
+      editing the oracle instead of the implementation. ImpossibleBench
+      found read-only visible tests the best safety/performance balance
+      among test-oracle protections; short of that (see the opt-in
+      tests-read-only.yaml), the next best deterministic control is
+      flagging a weakening EDIT that follows a RED run \u2014 exactly the shape
+      a reward-hacked "fix" takes, and rare enough in legitimate work that
+      the recency gate keeps it a real signal.
+    false_positives:
+      - "Legitimate refactor: renaming a test or reorganizing describe blocks while preserving every assertion \u2014 no assertion-count, test-block-count, or skip-count delta, so this does not fire regardless of recency."
+      - "Intentional snapshot update after a real UI/output change (jest -u / vitest -u) run within 15 minutes of an UNRELATED failing test elsewhere in the same command invocation \u2014 the recency window is per (rule, cwd, session), not per file or per failing test name, so the SAME session's monorepo-wide test run failing in module A can arm the window for that session's intentional, correct snapshot refresh in module B moments later."
+      - "Removing a genuinely obsolete test (the feature it covered was deleted) shortly after a failing run of a DIFFERENT test in the same suite invocation \u2014 the trigger is the exit code of the whole test command, not evidence that THIS test was the one failing."
+      - "Fixing a wrong expected value in the test itself (the test asserted the wrong thing, not the code) \u2014 indistinguishable at this detector's confidence level from rewriting a correct expectation to dodge a real failure; this is exactly why the rule ships at 'confidence: low' and 'mode: observe' rather than blocking."
+    review_by: "2026-11-11"
+    paths:
+      - "**/*.test.*"
+      - "**/*.spec.*"
+      - "**/tests/**"
+      - "**/test_*.py"
+      - "**/conftest.py"
+      - "**/*.snap"
+      - "**/__snapshots__/**"
+    trigger:
+      tools: [Bash]
+      pattern: "(npm|pnpm|yarn|npx) +(run +)?test|vitest|jest|pytest|go +test|cargo +test|rspec|phpunit|mvn +test|gradle +test"
+      exit: nonzero
+    match: "(?<![A-Za-z0-9_])(jest|vitest)(?![A-Za-z0-9_])[^|;&]*(--update-snapshot(?![A-Za-z0-9-])|--updateSnapshot(?![A-Za-z0-9])|(?:^| )-u(?![A-Za-z0-9-]))"
+    window_seconds: 900
+  - id: test-before-commit
+    type: verification
+    mode: observe
+    category: verification
+    severity: medium
+    confidence: medium
+    rationale: >
+      False-success research and do-not-ship consensus: hard-blocking a
+      commit on "no test run since the last src/ edit" also catches WIP
+      commits, docs-only commits, and fixture/data-only changes that merely
+      happen to touch a path under src/. Observe mode measures this rule's
+      real false-positive rate against live commit traffic before anyone
+      lets it interrupt a commit.
+    false_positives:
+      - WIP commits
+      - docs-only commits
+      - fixture/data-only changes
+    trigger:
+      tools: [write, edit, apply_patch, WriteFile]
+      path: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    boundaries:
+      commit:
+        pattern: "git commit"
+        action: warn
+    verification_window_seconds: 300
+    action: warn
+    message: "Source changes under src/ were committed without a passing test run in this session."
+  - id: runaway-budget-tool-calls
+    type: rate
+    mode: observe
+    category: workflow
+    severity: low
+    confidence: high
+    rationale: >
+      Budget-model precedent (Cloudflare WAF log mode, OPA Gatekeeper
+      dryrun): total tool-call volume in a long window is a coarse proxy for
+      a runaway loop or scope-creep session. Observe mode measures the real
+      hit rate against legitimate long sessions before this ever interrupts
+      anyone. Token budgets are not visible to keel's enforcement hook and
+      are intentionally NOT modeled by this rule.
+    false_positives:
+      - long legitimate refactors
+      - batch operations
+    match: ".*"
+    window_seconds: 14400
+    max_calls: 500
+    action: warn
+    message: "More than 500 tool calls in this session's last 4 hours \u2014 possible runaway loop or scope creep."
+
+  - id: runaway-budget-bash-calls
+    type: rate
+    mode: observe
+    category: workflow
+    severity: low
+    confidence: high
+    rationale: >
+      Same budget-model precedent as runaway-budget-tool-calls, scoped to
+      Bash specifically: a runaway shell loop can stay under the total
+      tool-call ceiling while still hammering the shell. Observe mode
+      measures the real hit rate before this interrupts anyone. Token
+      budgets are not visible to keel and are intentionally NOT modeled.
+    false_positives:
+      - long legitimate refactors
+      - batch operations
+    match: "Bash"
+    window_seconds: 14400
+    max_calls: 500
+    action: warn
+    message: "More than 500 Bash calls in this session's last 4 hours \u2014 possible runaway loop or scope creep."
+
 `;
 function ensureRules() {
   try {

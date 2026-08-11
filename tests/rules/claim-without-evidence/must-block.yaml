@@ -1,6 +1,7 @@
 cases:
   - note: "claim in commit message with an armed, undischarged obligation — multi-step (edit arms, claim fires); single-step harness cannot express it. Real coverage: packages/core/src/enforce/__tests__/claim.test.ts synthetic trajectories."
     skip: true
+    reason: "stateful multi-step rule; single-step harness cannot arm it — real coverage in the owning lane vitest suite"
     tool: Bash
     args:
       command: git commit -m "all tests pass"

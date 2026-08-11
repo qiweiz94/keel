@@ -1,6 +1,7 @@
 cases:
   - note: "src edit then commit without a passing test run — multi-step (edit arms the obligation); single-step harness cannot express it. Real coverage: w2-seq lane verification-boundary tests."
     skip: true
+    reason: "stateful multi-step rule; single-step harness cannot arm it — real coverage in the owning lane vitest suite"
     tool: Bash
     args:
       command: 'git commit -m "feat: change"'

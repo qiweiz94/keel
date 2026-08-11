@@ -10,6 +10,7 @@ import { FlowTracker } from '../flow-tracker.js'
 import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
 import { parseRulesContent, loadRuleHierarchy, validateRules } from '../rule-parser.js'
+import { PackageVerifierCache } from '../package-verifier.js'
 import { FileRuleOverrideStore } from '../overrides.js'
 
 /**
@@ -522,7 +523,19 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'git push origin main-docs' }))).action).toBe('allow')
     })
     it('prompt-gates on-the-fly package execution; allows installs and runs', async () => {
-      const p = makePipeline('balanced')
+      // The shipped unverified-package-install rule consults the registry;
+      // offline it fails open to prompt. Inject a mock registry resolving
+      // every package as long-published so the original intent of this
+      // test — known-good installs are ALLOWED — stays what is asserted.
+      // Cache must be isolated too: without it, the pipeline's default
+      // disk cache (real ~/.keel/state when KEEL_STATE_DIR is unset) can
+      // serve a stale verdict cached by an earlier run and preempt the
+      // mock fetch entirely.
+      const oldPackage = { time: { created: '2015-01-01T00:00:00.000Z' } }
+      const p = makePipeline('balanced', undefined, {
+        packageVerifierFetch: (async () => new Response(JSON.stringify(oldPackage), { status: 200 })) as typeof fetch,
+        packageVerifierCache: new PackageVerifierCache(mkdtempSync(join(tmpdir(), 'keel-pkg-cache-'))),
+      })
       expect((await p.evaluate(input('Bash', { command: 'npx prisma generate' }))).action).toBe('prompt')
       expect((await p.evaluate(input('Bash', { command: 'pnpm dlx tsx script.ts' }))).action).toBe('prompt')
       expect((await p.evaluate(input('Bash', { command: 'pipx run black .' }))).action).toBe('prompt')

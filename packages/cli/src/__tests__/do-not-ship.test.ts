@@ -279,6 +279,9 @@ describe('do-not-ship: false-positive guardrail patterns', () => {
       'diagnosis',
       'stuck',
       'research', // research uses web fetch/search, not model inference
+      'claim',    // deterministic text-grammar + tool-history cross-reference, no model call
+      'oracle',   // deterministic diff/signature heuristics, no model call
+      'package',  // registry metadata lookup (existence/age), no model call
     ])
 
     // Heuristic: look for operation-level keywords that indicate model invocation
