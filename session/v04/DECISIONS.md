@@ -176,3 +176,19 @@
   contexts" so it can never regress or lag again. STANDING RULE: a resumed/long-lived worktree
   MUST merge current base before running the suite. Holding ALL pre-fix lanes until confirmed
   stable; only the post-fix lanes (shellparse A2, releasedocs) continue.
+- 2026-08-11 supervisor: D1 live-verify lane STOPPED itself (0 tool uses) — it flagged my resume
+  messages (CI=1 BROWSER=none) as suspected PROMPT-INJECTION (they contradicted its wave1 evidence
+  of clean headless opencode + pushed urgent unverified blanket edits outside its task). This is
+  CORRECT guardrail behavior — a well-behaved agent declining unverified instructions it can't
+  authenticate. LESSON: don't steer lanes mid-flight with urgent unverified changes; relaunch with
+  self-contained prompts. D1's earlier harness work is preserved (wip-checkpoint commit): common.sh
+  home_mode + lv_child_attempted_command, pinned-default-rules fixture, claude.sh gate-2 real-auth
+  rewrite. REAL FINDINGS from D1 to carry forward: (1) MODEL SELF-CENSORSHIP — sonnet/haiku refused
+  `git push --force` on their OWN safety before keel's hook saw it; a live-verify PASS can be the
+  model refusing, NOT keel blocking — must distinguish (lv_child_attempted_command does). This also
+  reframes the thesis experiment honestly: some "prevention" in guarded runs could be model refusal,
+  not keel — worth checking the experiment's forbidden-action attributions. (2) install.ts install()
+  touches ~/.keel via bare homedir() regardless of --host (no env override) — writes global rules on
+  a fresh machine; a real robustness bug (A3/G class). (3) marker attribution post-floor-first:
+  main --force → no-force-push (not no-push-to-main); gemini.sh/codex.sh still assert the old marker.
+  REMAINING live-verify = SUPERVISOR-run (per contract) later; do NOT re-message this lane.
