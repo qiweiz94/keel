@@ -121,3 +121,12 @@
   into EXPERIMENT.md. Red-team merged (5afca41): SECURITY.md catch rates + --no-preserve-root +
   honest mode/match residual. mergeRules mode/match guard lane launched (v04-mergeguard) to close
   that residual = M1/A1. thesis-eval raw scratch now gitignored.
+- 2026-08-11 supervisor: MAX-PARALLEL FAN-OUT (user: run many agents for speed+quality). Honest
+  ceiling: parallelism is capped by FILE DISJOINTNESS, not agent count — 20-30 agents on shared
+  hot files (pipeline.ts/rule-parser.ts/types.ts/DEFAULT_RULES_YAML) = merge chaos + drift
+  failures = LOWER quality. So fanning across DISJOINT subsystems ("a different thing altogether"):
+  5 concurrent lanes, each exclusive files — v04-mergeguard (rule-parser), v04-concurrency
+  (state-manager/ledger), v04-perf (scripts/perf), v04-benchmark (thesis-eval), v04-liveverify
+  (live-verify/integrations). Hot-file items (A2 shell-parse, A3 fail-closed, F1 mask) roll in
+  SERIALLY behind mergeRules as it clears. Rolling wave, not a single 30-wide blast. All Sonnet
+  workers per routing (Opus reserved for security review/red-team of the merged result).
