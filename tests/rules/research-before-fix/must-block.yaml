@@ -1,0 +1,9 @@
+cases:
+  - note: "a failing test run, then an edit attempted with no research in between (mode: observe — action stays allow, observed_action carries the redirect)"
+    observed_action: redirect
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: write
+        args: { path: "src/fix.ts", content: "export const x = 1" }

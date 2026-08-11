@@ -1,0 +1,15 @@
+cases:
+  - note: "a failing test run, research performed, then an edit is allowed"
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm view some-package" }
+      - tool: write
+        args: { path: "src/fix.ts", content: "export const x = 1" }
+  - note: "an edit with no prior failing command — never armed"
+    tool: write
+    args:
+      path: "src/fresh.ts"
+      content: "export const y = 1"

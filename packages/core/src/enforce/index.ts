@@ -8,6 +8,9 @@ export { detectClaim, extractCommandMessages, type ClaimMatch } from './claim.js
 export { FlowTracker } from './flow-tracker.js'
 export { Suggester } from './suggester.js'
 export { StateManager } from './state-manager.js'
+export { StuckTracker } from './stuck-tracker.js'
+export { ResearchTracker } from './research-tracker.js'
+export { ProblemLedger, problemKey } from './problem-ledger.js'
 export {
   extractPackageInstalls,
   checkPackages,

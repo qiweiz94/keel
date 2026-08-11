@@ -1,0 +1,9 @@
+cases:
+  - note: "checkout main then commit in the same command"
+    tool: Bash
+    args:
+      command: 'git checkout main && git commit -m "fix"'
+  - note: "switch to master then commit"
+    tool: Bash
+    args:
+      command: 'git switch master && git commit -m "fix"'

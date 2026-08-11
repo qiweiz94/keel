@@ -28,7 +28,7 @@ import { daemonCommand } from './commands/daemon.js'
 import { retrospectiveCommand } from './commands/retrospective.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
-import { installCommand } from './commands/install.js'
+import { installCommand, DEFAULT_RULES_YAML } from './commands/install.js'
 import { hookCommand } from './commands/hook.js'
 import { gatherCommand } from './commands/gather.js'
 import { scheduleCommand } from './commands/schedule.js'
@@ -324,66 +324,40 @@ program.parse(process.argv)
 
 /**
  * Create standalone .keel/rules.yaml with Keel enforce rules.
+ *
+ * This used to carry its own stale, second copy of a default ruleset (a
+ * 6-rule set that had drifted from DEFAULT_RULES_YAML — no-external-network
+ * was a blanket network-deny, exactly the do-not-ship guard install.ts's
+ * ruleset deliberately avoids; no-delete-outside-src had no equivalent in
+ * the tiered ruleset and was dropped rather than carried over uninspected).
+ * It now emits the SAME canonical DEFAULT_RULES_YAML `keel install` writes,
+ * so there is exactly one default ruleset in this codebase, not three —
+ * drift.test.ts asserts this structurally (no third inline `rules:` copy).
  */
 async function createEnforceInit() {
   const { existsSync, mkdirSync, writeFileSync: writeRulesFile } = await import('node:fs')
   const { join } = await import('node:path')
+  const { homedir } = await import('node:os')
   const rulesPath = join(process.cwd(), '.keel', 'rules.yaml')
-  const rules = `version: 1
-level: balanced
-rules:
-  - id: never-force-push
-    type: command
-    match: "git push --force(?!-with-lease)"
-    action: deny
-    level: sprint
-    message: "Never force push to git branches"
-  - id: no-delete-outside-src
-    type: filesystem
-    paths: ["!/src/*"]
-    operations: [delete, overwrite]
-    action: deny
-    level: balanced
-    message: "Do not delete or overwrite files outside /src"
-  - id: must-sign-commits
-    type: command
-    match: "git commit"
-    action: fix
-    level: sprint
-    fix:
-      - pattern: "git commit"
-        replace: "git commit --signoff"
-    message: "Auto-adding --signoff to commits"
-  - id: no-external-network
-    type: network
-    match: "."
-    except: [api.github.com, registry.npmjs.org]
-    action: deny
-    level: protect
-    message: "Block external network access except GitHub and npm"
-  - id: git-history-rewrite
-    type: command
-    match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
-    action: prompt
-    level: sprint
-    priority: 80
-    message: "Git history mutation — this rewrites shared history. Approval required."
-  - id: publish-gate
-    type: command
-    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
-    action: prompt
-    level: sprint
-    priority: 80
-    message: "Publishing or deleting registry artifacts — approval required."
-`
   if (existsSync(rulesPath)) {
     console.log('.keel/rules.yaml already exists.')
     return
   }
+  // Project rules override global rules by id (see mergeRules), and the
+  // project file's own `level:` line wins over the global dial too. A user
+  // who already ran `keel install` and picked a level there (e.g. protect)
+  // would have that dial silently overridden the moment this writes a full
+  // project ruleset that starts at level: balanced. Warn rather than guess.
+  if (existsSync(join(homedir(), '.keel', 'rules.yaml'))) {
+    console.log(
+      'Note: a global ruleset exists at ~/.keel/rules.yaml. This project file will ' +
+        'take priority for any rule id it shares with the global set, including the ' +
+        '`level:` dial — check both files if enforcement behaves differently than expected.'
+    )
+  }
   mkdirSync(join(process.cwd(), '.keel'), { recursive: true })
-  writeRulesFile(rulesPath, rules, 'utf-8')
+  writeRulesFile(rulesPath, DEFAULT_RULES_YAML, 'utf-8')
   console.log('Created .keel/rules.yaml with Keel enforce rules.')
   console.log('Review it, then run `keel enforce` to activate.')
   return
-
 }

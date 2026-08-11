@@ -10,6 +10,9 @@ import {
   EnforcementPipeline,
   FlowTracker,
   SequenceDetector,
+  StuckTracker,
+  ResearchTracker,
+  ProblemLedger,
   parseRulesContent,
 } from '@get-keel/core'
 import type {
@@ -107,12 +110,26 @@ const DEFAULT_RULES = loadDefaultRules()
 //   - note: "..."
 //     skip: true
 //     reason: "..."            # REQUIRED when skip is set — never silently drop a case
+//   - note: "..."               # for stuck/research/diagnosis rules (Tier 3)
+//     steps:
+//       - tool: Bash
+//         args: { command: "npm test" }
+//         exit_code: 1          # triggers pipeline.recordAttemptOutcome after this step
+//
+// mode: observe rules (Tier 3): the pipeline's outer verdict is always `allow` for
+// these — the action the rule WOULD have taken is on EnforceResult.observed_action.
+// evaluateCase/expectedActionFor below special-case `rule.mode === 'observe'`
+// accordingly, and `action: redirect` (research-before-fix, root-cause-before-refactor)
+// is a distinct expected action from deny/warn/prompt/fix.
 
 interface StepDef {
   tool: string
   args: Record<string, unknown>
   precreate?: boolean
   content?: string
+  /** Exit code to report via pipeline.recordAttemptOutcome after this step
+   *  (stuck/research rules only arm/escalate from the after-hook, not evaluate()). */
+  exit_code?: number
 }
 interface CaseDef {
   note?: string
@@ -123,6 +140,10 @@ interface CaseDef {
   fake_time?: { hour: number; minute: number }
   skip?: boolean
   reason?: string
+  /** mode: observe must-block cases only: overrides the default (rule.action)
+   *  expectation for `result.observed_action` — needed for escalation ladders
+   *  (no-repeat-loops) where the observed action depends on attempt count. */
+  observed_action?: string
 }
 interface FixtureFile {
   cases: CaseDef[]
@@ -182,6 +203,13 @@ function buildPipeline(rules: KeelRule[]): EnforcementPipeline {
     // Never the real ~/.keel/DISABLED — a nonexistent path in our own scratch dir.
     disableFile: join(scratchRoot, 'DISABLED-unused'),
     overrideStore: stubOverrideStore(),
+    // Tier 3 (mode: observe) stuck/research/diagnosis rules are otherwise
+    // unsatisfiable in the harness — the pipeline no-ops their checks
+    // without these. A fresh instance per pipeline, matching the isolation
+    // model documented above (one rule/case at a time).
+    stuckTracker: new StuckTracker(),
+    researchTracker: new ResearchTracker(),
+    ledger: new ProblemLedger(join(scratchRoot, `ledger-${Math.random().toString(36).slice(2)}.json`)),
   }
   return new EnforcementPipeline(config)
 }
@@ -247,6 +275,10 @@ async function evaluateCase(rules: KeelRule[], c: CaseDef, primaryRuleId?: strin
       // tool call regardless of rule type; a no-op unless a verification
       // rule's `satisfy` matcher matches this exact step.
       pipeline.markVerificationSatisfied(stepInput)
+      // Stuck/research rules only arm/escalate from the after-hook exit
+      // code, never from evaluate() itself — a no-op unless step.exit_code
+      // is set.
+      if (step.exit_code !== undefined) pipeline.recordAttemptOutcome(stepInput, step.exit_code)
 
       const isLast = i === steps.length - 1
       if (isLast && primaryRule && result.action === 'warn' && result.rule_id === primaryRule.id
@@ -261,11 +293,31 @@ async function evaluateCase(rules: KeelRule[], c: CaseDef, primaryRuleId?: strin
   }
 }
 
+/**
+ * The action a must-block case should assert on `result.action` — the
+ * OUTER verdict. For `mode: observe` rules (Tier 3) this is always
+ * 'allow': the rule evaluates and records, never interrupts. What it
+ * WOULD have done is asserted separately via `observedActionFor` against
+ * `result.observed_action`.
+ */
 function expectedActionFor(rule: KeelRule): EnforceResult['action'] {
+  if (rule.mode === 'observe') return 'allow'
+  if (rule.action === 'redirect') return 'redirect'
   if (rule.action === 'fix') return 'fix'
   if (rule.action === 'prompt') return 'prompt'
   if (rule.action === 'warn') return 'warn'
   return 'deny'  // deny | block
+}
+
+/**
+ * The action an observe-mode rule would have enforced, for must-block cases.
+ * Defaults to the rule's declared `action`; a case may override via
+ * `observed_action` (needed for escalation ladders like no-repeat-loops,
+ * where the observed action depends on attempt count, not the rule's base
+ * `action` field).
+ */
+function observedActionFor(rule: KeelRule, c: CaseDef): EnforceResult['action'] {
+  return (c.observed_action ?? rule.action) as EnforceResult['action']
 }
 
 beforeAll(() => {
@@ -310,6 +362,9 @@ for (const rule of DEFAULT_RULES) {
         expect(result.action, `message: ${result.message}`).toBe(expected)
         expect(result.rule_id).toBe(rule.id)
         if (expected === 'fix') expect(result.fix_result).toBeTruthy()
+        if (rule.mode === 'observe') {
+          expect(result.observed_action, `message: ${result.message}`).toBe(observedActionFor(rule, c))
+        }
       })
     }
 
@@ -389,5 +444,41 @@ describe('known false-positive probe class: "nc" substring inside rsync / async 
   it('an env var name containing "sync" and "token" as substrings, but not a real credential name, is not flagged', async () => {
     const result = await evaluateCase(DEFAULT_RULES, { tool: 'Bash', args: { command: 'echo $SYNC_STATUS_TOKEN_NAME' } })
     expect(result.action, `message: ${result.message}, rule_id=${result.rule_id}`).toBe('allow')
+  })
+})
+
+// ── PRIORITY/ORDERING PROBE ──
+//
+// The fixture harness runs one rule at a time on purpose (see the file
+// header), which is exactly why an ORDERING bug between two DIFFERENT
+// rules is invisible to it: no-push-to-main (Tier 2 prompt, priority 80)
+// used to short-circuit BEFORE no-force-push ever got evaluated for any
+// force-push targeting main/master, because it had the higher priority —
+// proven live by the supervisor's verify lane. A force-push to a
+// protected branch is strictly more dangerous than either violation
+// alone and must hit the Tier-1 protect floor's deny, not the softer
+// Tier-2 prompt. Fixed by raising no-force-push's priority (82) above
+// no-push-to-main's (80); this probe runs the FULL default ruleset
+// together so the ordering is actually exercised, not just each rule's
+// own isolated match.
+describe('priority/ordering probe: protect-floor rules must not be shadowed by a softer rule matching the same command', () => {
+  it('a force-push to main hits no-force-push (protect, deny), not no-push-to-main (prompt)', async () => {
+    const result = await evaluateCase(DEFAULT_RULES, { tool: 'Bash', args: { command: 'git push --force origin main' } })
+    expect(result.rule_id, `message: ${result.message}`).toBe('no-force-push')
+    expect(['warn', 'deny']).toContain(result.action)
+  })
+
+  it('a force-push to main still denies on repeat (the ladder, not the prompt gate)', async () => {
+    const rules = DEFAULT_RULES
+    const c = { tool: 'Bash', args: { command: 'git push --force origin master' } }
+    const first = await evaluateCase(rules, c)
+    expect(first.rule_id).toBe('no-force-push')
+    // A fresh pipeline per evaluateCase call means each call is its own
+    // "first violation" — repeat the exact ladder proof pipeline.test.ts
+    // already covers for no-force-push in isolation; here the point is
+    // just which rule answers, confirmed above and via `repeat` below.
+    const escalated = await evaluateCase(rules, { ...c, repeat: 2 })
+    expect(escalated.rule_id).toBe('no-force-push')
+    expect(escalated.action).toBe('deny')
   })
 })

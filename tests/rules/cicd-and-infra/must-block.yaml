@@ -1,0 +1,17 @@
+cases:
+  - note: "terraform apply"
+    tool: Bash
+    args:
+      command: "terraform apply"
+  - note: "terraform destroy"
+    tool: Bash
+    args:
+      command: "terraform destroy -auto-approve"
+  - note: "kubectl delete against a non-local, non-exempted context"
+    tool: Bash
+    args:
+      command: "kubectl delete deployment payments --context prod-cluster"
+  - note: "kubectl apply with no --context (defaults to whatever the current context is)"
+    tool: Bash
+    args:
+      command: "kubectl apply -f prod.yaml"

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { parseRulesContent } from '@get-keel/core'
 
 /**
  * `keel install --all` must install ALL of them.
@@ -76,5 +77,29 @@ describe('keel install --all', () => {
   it('installs the Claude Code and Cursor hooks in the project', () => {
     expect(existsSync(projFile('.claude', 'hooks', 'PreToolUse', 'keel-enforce'))).toBe(true)
     expect(existsSync(projFile('.cursor', 'hooks', 'keel-enforce.sh'))).toBe(true)
+  })
+
+  // Regression: the project rules.yaml stub used to write `rules:` with no
+  // list items, which YAML-parses to `rules: null` — parseRulesContent
+  // rejects that as "Rules must be an array", and initEnforce throws on any
+  // rule-source error. That broke `keel evaluate` and `keel hook <host>` on
+  // EVERY tool call after a fresh `install --project` (only OpenCode's own
+  // fallback masked it). Fixed to `rules: []`, a valid empty list.
+  it('writes a project rules.yaml that actually parses (not `rules: null`)', () => {
+    const content = readFileSync(projFile('.keel', 'rules.yaml'), 'utf-8')
+    const parsed = parseRulesContent(content, projFile('.keel', 'rules.yaml'))
+    expect(parsed.errors, `project rules.yaml failed to parse: ${parsed.errors}`).toBeUndefined()
+    expect(Array.isArray(parsed.rules)).toBe(true)
+  })
+
+  it('keel evaluate runs cleanly against a fresh --project install (no init-time throw)', () => {
+    const result = spawnSync(process.execPath, [
+      CLI, 'evaluate', '--tool', 'Bash',
+      '--args', JSON.stringify({ command: 'ls -la' }),
+      '--cwd', project,
+    ], { cwd: project, encoding: 'utf-8', env: { ...process.env, HOME: home }, timeout: 30000 })
+    const out = JSON.parse(result.stdout)
+    expect(out.action, `evaluate returned an error: ${JSON.stringify(out)}`).not.toBe('error')
+    expect(result.status).toBe(0)
   })
 })

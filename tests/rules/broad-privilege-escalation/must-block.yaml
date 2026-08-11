@@ -1,0 +1,13 @@
+cases:
+  - note: "unscoped sudo running an arbitrary command"
+    tool: Bash
+    args:
+      command: "sudo systemctl restart nginx"
+  - note: "chmod -R 755 on a broad path"
+    tool: Bash
+    args:
+      command: "chmod -R 755 ./dist"
+  - note: "chown -R changing ownership recursively"
+    tool: Bash
+    args:
+      command: "chown -R user:user /srv/app"

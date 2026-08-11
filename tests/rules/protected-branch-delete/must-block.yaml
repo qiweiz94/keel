@@ -1,0 +1,13 @@
+cases:
+  - note: "deleting main on the remote via --delete"
+    tool: Bash
+    args:
+      command: "git push origin --delete main"
+  - note: "deleting master on the remote via the : shorthand"
+    tool: Bash
+    args:
+      command: "git push origin :master"
+  - note: "deleting the local main branch"
+    tool: Bash
+    args:
+      command: "git branch -D main"

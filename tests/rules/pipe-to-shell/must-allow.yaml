@@ -1,0 +1,21 @@
+cases:
+  - note: "plain curl download, no pipe to a shell"
+    tool: Bash
+    args:
+      command: "curl -O https://example.com/file.tar.gz"
+  - note: "curl piped into jq, not a shell"
+    tool: Bash
+    args:
+      command: "curl -s https://api.example.com | jq .name"
+  - note: "rsync is not a shell-piping verb (word-boundary near-miss on sh/nc-style substrings)"
+    tool: Bash
+    args:
+      command: "rsync -av src/ dest/"
+  - note: "a script literally named wash.sh run directly is not curl/wget piped or substituted"
+    tool: Bash
+    args:
+      command: "./wash.sh --clean"
+  - note: "bash -c with a plain string, no command substitution or curl/wget"
+    tool: Bash
+    args:
+      command: 'bash -c "echo hello"'
