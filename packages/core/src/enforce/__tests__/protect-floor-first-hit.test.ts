@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -18,11 +18,26 @@ import type { EnforceInput } from '../../types.js'
 // remote on its first attempt. Floors must block on the FIRST hit at
 // every dial position — the incidents they encode are one-shot.
 
+// The CLI vendors core sources (packages/cli/src/core) at build time, so
+// this file's own directory is not a fixed number of levels above
+// cli/src/commands/install.ts — it depends on whether this is the original
+// packages/core/src/enforce/__tests__ copy or the generated
+// packages/cli/src/core/enforce/__tests__ mirror. Walk upward instead of
+// hardcoding the depth (same approach as findPluginSource in
+// threat-model.test.ts / agentic-eval.test.ts).
+function findInstallSource(start: string): string {
+  let dir = start
+  for (;;) {
+    const candidate = join(dir, 'cli', 'src', 'commands', 'install.ts')
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) throw new Error('cli/src/commands/install.ts not found above ' + start)
+    dir = parent
+  }
+}
+
 const __dir = dirname(fileURLToPath(import.meta.url))
-const installTs = readFileSync(
-  join(__dir, '..', '..', '..', '..', 'cli', 'src', 'commands', 'install.ts'),
-  'utf-8',
-)
+const installTs = readFileSync(findInstallSource(__dir), 'utf-8')
 const m = installTs.match(/DEFAULT_RULES_YAML = `([\s\S]*?)\n`/)
 if (!m) throw new Error('DEFAULT_RULES_YAML not found in install.ts')
 const defaultsYaml = m[1]

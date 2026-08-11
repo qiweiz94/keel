@@ -154,7 +154,9 @@ rules:
     expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn')
     expect((await dialCall(p, 'sprint', 'tok-sprint')).action).toBe('warn')
     expect((await dialCall(p, 'sprint', 'tok-balanced')).action).toBe('allow')
-    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('warn')
+    // tok-protect is `level: protect` — it denies on the first hit at
+    // every dial, not just warn (floors have no warn-once grace).
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')
   })
 
   it('at balanced, every level fires', async () => {
@@ -162,7 +164,7 @@ rules:
     expect((await dialCall(p, 'balanced', 'tok-unleveled')).action).toBe('warn')
     expect((await dialCall(p, 'balanced', 'tok-sprint')).action).toBe('warn')
     expect((await dialCall(p, 'balanced', 'tok-balanced')).action).toBe('warn')
-    expect((await dialCall(p, 'balanced', 'tok-protect')).action).toBe('warn')
+    expect((await dialCall(p, 'balanced', 'tok-protect')).action).toBe('deny')
   })
 
   it('at protect, every level fires — and deny rules block FIRST (block-first dial)', async () => {
@@ -173,31 +175,28 @@ rules:
     expect((await dialCall(p, 'protect', 'tok-protect')).action).toBe('deny')
   })
 
-  it('protect-level rules deny at every dial on repeat (floors never soften)', async () => {
+  it('protect-level rules deny at every dial, including on the very first hit (floors never soften)', async () => {
     for (const dial of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
       const p = dialPipeline(dial)
-      if (dial === 'protect') {
-        // Block-first: the floor blocks on the FIRST violation at protect.
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
-      } else {
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('warn')
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
-      }
+      // Block-first at every dial: a floor rule with no warn-once grace —
+      // this is the entire point of the change (a warn-once floor let a
+      // real force-push reach the remote on its first attempt).
+      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
     }
   })
 
   // Explicit floor test: at sprint, a `level: protect` rule's violation
-  // still reaches `deny` — contrasted directly against a plain deny rule,
-  // which sprint permanently softens to `warn`. Both rules go through the
-  // same warn-once-then-block escalation; the difference this test proves
-  // is which final action that escalation lands on.
-  it('at sprint: a protect-floor violation still reaches deny on repeat; a plain deny rule stays stuck at warn', async () => {
+  // denies on the FIRST hit — contrasted directly against a plain deny
+  // rule, which sprint softens to `warn` and keeps it there permanently.
+  // The floor rule skips the warn-once escalation the plain rule still
+  // goes through; that skip is what this test proves.
+  it('at sprint: a protect-floor violation denies on the first hit; a plain deny rule stays stuck at warn', async () => {
     const p = dialPipeline('sprint')
     expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn')
     expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn') // sprint softened this permanently
-    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('warn')   // first-violation warn (same escalation as any rule)
-    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')   // floor: sprint never softened it — still deny
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')   // floor: denies immediately, no warn grace
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')
   })
 })
 

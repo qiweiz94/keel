@@ -303,12 +303,22 @@ check('keel disable is blocked for agents', await controlGated('control-1', 'kee
 check('keel allow self-approval is blocked', await controlGated('control-2', 'keel allow no-force-push --once'))
 check('keel level dial-down is blocked', await controlGated('control-3', 'keel level sprint --project'))
 check('rm of the plugin file is blocked', await controlGated('control-4', `rm ${join(tmpHome, '.opencode', 'plugins', 'keel-enforce.js')}`))
+// no-rules-tampering is `level: protect` — it now denies on the FIRST hit
+// (a floor with a warn-once grace is not un-bypassable), so accept either
+// an immediate deny on the first call or the classic warn-then-deny on the
+// second, the same tolerant shape as controlGated above.
 let rulesWriteBlocked = false
-await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
 try {
   await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
 } catch (e) {
   rulesWriteBlocked = e.message.startsWith('[Keel]')
+}
+if (!rulesWriteBlocked) {
+  try {
+    await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
+  } catch (e) {
+    rulesWriteBlocked = e.message.startsWith('[Keel]')
+  }
 }
 check('rules.yaml writes are blocked', rulesWriteBlocked)
 
@@ -346,11 +356,29 @@ const cleanHooks = await plugin.server({ directory: join(tmpHome, 'clean') })
 let priorityAllowed = true
 try { await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-6' }, { args: { command: 'priority-check' } }) } catch { priorityAllowed = false }
 check('priority metadata selects higher priority rule', priorityAllowed)
+// context and unless metadata exempt these three from enforcement.
+// `level-protected` used to be grouped in this same loop, but that was
+// never a genuine level exemption: mergeRules() has always treated
+// `level: protect` as a floor — "active at EVERY dial" (rule-parser.ts) —
+// so at the balanced dial here it was firing all along; it only *looked*
+// exempt because the old warn-first pass didn't throw. gate-2's
+// block-first change removed that disguise, so it is asserted on its own
+// below with the outcome it actually has.
 let metadataAllowed = true
-for (const command of ['level-protected', 'ci-only', 'dangerous-action safe', 'reasoned-action']) {
+for (const command of ['ci-only', 'dangerous-action safe', 'reasoned-action']) {
   try { await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-7', reasoning: command === 'reasoned-action' ? 'approved' : '' }, { args: { command } }) } catch { metadataAllowed = false }
 }
-check('level context and unless metadata allow exemptions', metadataAllowed)
+check('context and unless metadata allow exemptions', metadataAllowed)
+
+// `level: protect` is a floor: never filtered by dial, and (since gate-2)
+// denies on the first hit. There is no dial at which this rule is inactive.
+let levelProtectedDenied = false
+try {
+  await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-7b' }, { args: { command: 'level-protected' } })
+} catch (e) {
+  levelProtectedDenied = e.message.startsWith('[Keel]')
+}
+check('level: protect rule is a floor, not a dial-scoped exemption', levelProtectedDenied)
 
 // Fix rules mutate the command args in place instead of throwing.
 // Runs on a fresh server instance: the main fixture's verification obligation
@@ -427,7 +455,9 @@ check('session.compacting embedding', comp.context.some(c => c.includes('must ru
 // Floor semantics: every rule is active at every dial; the dial softens
 // enforcement globally (sprint downgrades deny to warn), and rules marked
 // `level: protect` are exempt from the downgrade — never hidden, never
-// softened.
+// softened, AND block on the very first hit at every dial (not just at the
+// protect dial) — a floor that warns once before blocking is not
+// un-bypassable.
 const dialHome = join(tmpHome, 'dial')
 fs.mkdirSync(join(dialHome, '.keel'), { recursive: true })
 const dialRules = (level, ids) => `version: 1
@@ -472,13 +502,13 @@ const b1 = await dialCall('dial-b1', 'dial-balanced-token')
 const b2 = await dialCall('dial-b2', 'dial-balanced-token')
 check('balanced: deny warns then blocks', b1 === 'allowed' && b2 === 'denied')
 check('balanced: sprint-level rule stays active', (await dialCall('dial-b3', 'dial-sprint-token')) === 'allowed')
-check('balanced: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-b4', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-b5', 'dial-protect-token')) === 'denied')
+check('balanced: protect-level rule is a floor (denies on first hit)', (await dialCall('dial-b4', 'dial-protect-token')) === 'denied' && (await dialCall('dial-b5', 'dial-protect-token')) === 'denied')
 check('balanced: balanced-level rule fires (warns)', (await dialCall('dial-b6', 'dial-filtered-token')) === 'allowed')
 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('sprint', ['s-warn', 's-sprint', 's-protect', 's-filter']))
 check('sprint: unleveled deny rule downgraded to warn', (await dialCall('dial-s1', 'dial-balanced-token')) === 'allowed' && (await dialCall('dial-s2', 'dial-balanced-token')) === 'allowed')
 check('sprint: deny downgraded to warn', (await dialCall('dial-s3', 'dial-sprint-token')) === 'allowed' && (await dialCall('dial-s4', 'dial-sprint-token')) === 'allowed')
-check('sprint: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-s5', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-s6', 'dial-protect-token')) === 'denied')
+check('sprint: protect-level rule is a floor (denies on first hit)', (await dialCall('dial-s5', 'dial-protect-token')) === 'denied' && (await dialCall('dial-s6', 'dial-protect-token')) === 'denied')
 check('sprint: balanced-level rule is filtered out', (await dialCall('dial-s7', 'dial-filtered-token')) === 'allowed' && (await dialCall('dial-s8', 'dial-filtered-token')) === 'allowed')
 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect', 'p-filter']))

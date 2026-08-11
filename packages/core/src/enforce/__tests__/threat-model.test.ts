@@ -99,8 +99,8 @@ describe('agentic threat model (shipped defaults)', () => {
 
   describe('destructive commands (BUG 1 regression)', () => {
     const pipeline = makeDefaultsPipeline()
-    it('blocks rm -rf on a real system path', async () => {
-      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('warn')
+    it('blocks rm -rf on a real system path (floor denies on first hit, no warn grace)', async () => {
+      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('deny')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }))).action).toBe('deny')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf ~/.ssh' }))).action).toBe('deny')
     })
@@ -126,13 +126,15 @@ describe('agentic threat model (shipped defaults)', () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git reset --merge' }))).action).toBe('prompt')
     })
     it('denies force push without lease', async () => {
-      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('warn')
+      // no-force-push is `level: protect` (Tier 1 floor), so it denies on
+      // the FIRST hit at every dial — no warn-once grace.
+      expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('deny')
       expect((await pipeline.evaluate(input('Bash', { command: 'git push --force origin feature' }))).action).toBe('deny')
       // no-force-push (Tier 1 protect) outranks no-push-to-main (Tier 2
       // prompt) so a force-push to a protected branch hits the floor
       // rule's deny, not the softer prompt (fixed this wave — previously
       // no-push-to-main shadowed no-force-push entirely for any
-      // main-targeted push). Ladder already consumed above.
+      // main-targeted push). Denies immediately, same as above.
       const main = await pipeline.evaluate(input('Bash', { command: 'git push --force origin main' }))
       expect(main.action).toBe('deny')
       expect(main.rule_id).toBe('no-force-push')
@@ -228,13 +230,14 @@ describe('agentic threat model (shipped defaults)', () => {
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts', content: 'const k = "AKIA1234567890ABCDEF"' }, 'threat', 'sprint'))).action).toBe('warn')
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/a.ts', content: 'const k = "AKIA1234567890ABCDEF"' }, 'threat', 'sprint'))).action).toBe('warn')
     })
-    it('sprint no longer downgrades no-destructive-commands (now a protect floor)', async () => {
-      // level: protect only exempts the ACTION from the sprint deny->warn
-      // downgrade; the warn-then-deny ladder itself is governed by the
-      // DIAL (block-first only at the protect dial), so at the sprint dial
-      // this still warns once, then denies.
+    it('sprint no longer downgrades no-destructive-commands (now a protect floor, denies on first hit)', async () => {
+      // level: protect exempts the ACTION from the sprint deny->warn
+      // downgrade, AND makes the rule block-first at every dial (a floor
+      // that warns once before blocking is not un-bypassable — proven live
+      // by a force-push that reached the remote through that grace). So at
+      // the sprint dial this now denies immediately, same as balanced/protect.
       const pipeline = makeDefaultsPipeline('sprint')
-      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'sprint'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'sprint'))).action).toBe('deny')
       expect((await pipeline.evaluate(input('Bash', { command: 'rm -rf /etc' }, 'threat', 'sprint'))).action).toBe('deny')
     })
     it('sprint never downgrades prompt gates', async () => {
@@ -306,10 +309,11 @@ rules:
           'keel level sprint --project',
           'keel install --opencode',
         ]) {
-          // At balanced/sprint the first violation warns, the repeat denies;
-          // at protect the deny blocks FIRST (block-first dial).
+          // keel-control-gate is `level: protect` — it blocks on the FIRST
+          // violation at every dial (sprint/balanced/protect alike), not
+          // just at the protect dial.
           const p = makeDefaultsPipeline(level)
-          expect((await p.evaluate(input('Bash', { command }, `self-${level}`, level))).action).toBe(level === 'protect' ? 'deny' : 'warn')
+          expect((await p.evaluate(input('Bash', { command }, `self-${level}`, level))).action).toBe('deny')
           const second = await p.evaluate(input('Bash', { command }, `self-${level}`, level))
           expect(second.action).toBe('deny')
           expect(second.rule_id).toBe('keel-control-gate')
@@ -327,8 +331,10 @@ rules:
           '/Users/tester/.keel/DISABLED',
           '/Users/tester/.opencode/plugins/keel-enforce.js',
         ]) {
+          // no-rules-tampering is `level: protect` — it blocks on the FIRST
+          // hit at every dial, the same as keel-control-gate above.
           const p = makeDefaultsPipeline(level)
-          expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe(level === 'protect' ? 'deny' : 'warn')
+          expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe('deny')
           const second = await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))
           expect(second.action).toBe('deny')
           expect(second.rule_id).toBe('no-rules-tampering')
@@ -339,7 +345,8 @@ rules:
     it('plugin file deletes are blocked even without -rf', async () => {
       const p = makeDefaultsPipeline('balanced')
       const target = '/Users/tester/.opencode/plugins/keel-enforce.js'
-      expect((await p.evaluate(input('bash', { command: `rm ${target}` }, 'rm-plugin'))).action).toBe('warn')
+      // no-enforcer-removal is `level: protect` — denies on the first hit.
+      expect((await p.evaluate(input('bash', { command: `rm ${target}` }, 'rm-plugin'))).action).toBe('deny')
       const second = await p.evaluate(input('bash', { command: `rm ${target}` }, 'rm-plugin'))
       expect(second.action).toBe('deny')
       expect(second.rule_id).toBe('no-enforcer-removal')
@@ -349,8 +356,10 @@ rules:
     it('keel allow no longer grants a one-time override', async () => {
       const p = makeDefaultsPipeline('balanced')
       // A prior override grant exists, but the agent cannot self-approve via
-      // the CLI — the command itself is denied before the store is consulted.
-      expect((await p.evaluate(input('Bash', { command: 'keel allow no-verify-bypass --once' }, 'self-allow'))).action).toBe('warn')
+      // the CLI — the command itself is denied before the store is
+      // consulted. keel-control-gate is `level: protect`, so it denies on
+      // the first hit rather than warning once.
+      expect((await p.evaluate(input('Bash', { command: 'keel allow no-verify-bypass --once' }, 'self-allow'))).action).toBe('deny')
       const second = await p.evaluate(input('Bash', { command: 'keel allow no-verify-bypass --once' }, 'self-allow'))
       expect(second.action).toBe('deny')
       expect(second.rule_id).toBe('keel-control-gate')
