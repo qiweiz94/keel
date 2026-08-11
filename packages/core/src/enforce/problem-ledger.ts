@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { commandFingerprint } from './command-fingerprint.js'
-import { withFileLock } from './file-lock.js'
+import { withFileLock, type LockOptions } from './file-lock.js'
 
 /**
  * ProblemLedger — the session/task memory of the harness.
@@ -68,7 +68,14 @@ export class ProblemLedger {
   private data: LedgerData = { problems: {}, active: {} }
   private lastMtimeMs = 0
 
-  constructor(private readonly path: string = ledgerPath()) {
+  /**
+   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
+   * bounds — see the matching note on StateManager's constructor. Tests
+   * that create heavy artificial contention pass a wider wait here
+   * rather than the production default having to grow for a synthetic
+   * worst case.
+   */
+  constructor(private readonly path: string = ledgerPath(), private readonly lockOptions: LockOptions = {}) {
     this.load()
   }
 
@@ -81,10 +88,22 @@ export class ProblemLedger {
       this.data = JSON.parse(readFileSync(this.path, 'utf-8')) as LedgerData
       if (!this.data.problems) this.data.problems = {}
       if (!this.data.active) this.data.active = {}
-      this.lastMtimeMs = statSync(this.path).mtimeMs
     } catch {
+      // Missing file or corrupt/unparseable JSON — only case where
+      // starting over from an empty ledger is correct.
       this.data = { problems: {}, active: {} }
+      return
     }
+    // Freshness bookkeeping only, deliberately its own try/catch: a
+    // statSync failure here (e.g. the file was removed between the
+    // readFileSync above and this stat) must NOT fall through to the
+    // catch above and wipe the ledger `this.data` we just successfully
+    // parsed — every mutating method reloads via `load()` right before
+    // mutating (see withLock), so discarding good data here would mean
+    // the very next save() overwrites disk with an empty ledger.
+    try {
+      this.lastMtimeMs = statSync(this.path).mtimeMs
+    } catch { /* best effort; reloadIfChanged just reloads more eagerly next time */ }
   }
 
   /**
@@ -126,7 +145,7 @@ export class ProblemLedger {
     return withFileLock(`${this.path}.lock`, () => {
       this.load()
       return fn()
-    })
+    }, this.lockOptions)
   }
 
   private touch(problem: LedgerProblem): void {

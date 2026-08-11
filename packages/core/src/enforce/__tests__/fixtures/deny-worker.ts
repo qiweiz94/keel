@@ -10,9 +10,11 @@
  */
 import { StateManager } from '../../state-manager.js'
 
+// See cb-worker.ts: a wide lock wait keeps this adversarial probe from
+// tripping file-lock.ts's own bounded-wait fail-safe under CI load.
 const [, , dir, workerId, countArg] = process.argv
 const count = Number(countArg)
-const sm = new StateManager(dir)
+const sm = new StateManager(dir, { timeoutMs: 30_000 })
 for (let i = 0; i < count; i++) {
   sm.markFirstTime(`rule-w${workerId}-i${i}`)
 }

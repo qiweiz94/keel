@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { withFileLock } from './file-lock.js'
+import { withFileLock, type LockOptions } from './file-lock.js'
 
 export interface DenyState {
   [ruleId: string]: number | { timestamp: number; version?: string }  // legacy timestamp or versioned first warning
@@ -69,9 +69,19 @@ export class StateManager {
   oracleFailures: OracleFailureState = {}
 
   private readonly dir: string
+  private readonly lockOptions: LockOptions
 
-  constructor(dir: string = stateDir()) {
+  /**
+   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
+   * bounds — production code should never need this (the defaults are
+   * tuned for a hook invocation), but tests that deliberately create
+   * heavy artificial contention need a wider wait than the production
+   * default without that production default having to grow to
+   * accommodate a synthetic worst case it will never see in the field.
+   */
+  constructor(dir: string = stateDir(), lockOptions: LockOptions = {}) {
     this.dir = dir
+    this.lockOptions = lockOptions
     this.load()
   }
 
@@ -90,7 +100,7 @@ export class StateManager {
   /** Run `fn` holding the lock for state slice `name`, serializing with other processes. */
   private withSliceLock<T>(name: string, fn: () => T): T {
     this.ensureDir()
-    return withFileLock(this.lockPath(name), fn)
+    return withFileLock(this.lockPath(name), fn, this.lockOptions)
   }
 
   private loadFile<T>(name: string, fallback: T): T {

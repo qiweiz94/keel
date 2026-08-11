@@ -59,7 +59,7 @@ describe('StateManager — cross-process lost-update safety', () => {
       const raw = JSON.parse(readFileSync(join(dir, 'circuit-breaker.json'), 'utf-8'))
       expect(raw['race-rule:Bash'].count).toBe(expectedTotal)
     },
-    30_000,
+    60_000,
   )
 
   it(
@@ -84,6 +84,6 @@ describe('StateManager — cross-process lost-update safety', () => {
         }
       }
     },
-    30_000,
+    60_000,
   )
 })

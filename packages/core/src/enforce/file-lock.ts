@@ -1,4 +1,4 @@
-import { openSync, writeSync, closeSync, unlinkSync, statSync } from 'node:fs'
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync } from 'node:fs'
 
 /**
  * file-lock — a dependency-light cross-process advisory lock built on
@@ -12,9 +12,16 @@ import { openSync, writeSync, closeSync, unlinkSync, statSync } from 'node:fs'
  * this process, arbitrates the race when two processes attempt it at the
  * same instant. The loser retries with a short bounded backoff.
  *
- * Stale locks (holder crashed/was killed before releasing) are reclaimed
- * once the lockfile is older than `staleMs` — otherwise a single dead
- * process would wedge every future writer forever.
+ * Stale locks (holder crashed/was killed, or was paused by the OS for
+ * longer than `staleMs`) are reclaimed so a single dead holder can't
+ * wedge every future writer forever. Each acquire writes a unique TOKEN
+ * into the lockfile; release only unlinks the file if its contents still
+ * match the token this process wrote. Without that check, a reclaim can
+ * cascade: holder A stalls past `staleMs`, waiter B reclaims (unlinks A's
+ * lock, creates its own), A finally wakes up and calls release — if
+ * release unconditionally unlinks, it deletes B's live lock, not its own,
+ * and a third process can now enter while B still thinks it's inside.
+ * Token verification makes A's late release a no-op instead.
  *
  * FAIL-SAFE CHOICE (binding for all callers): if the lock cannot be
  * acquired within `timeoutMs`, `withFileLock` still runs the callback
@@ -27,6 +34,10 @@ import { openSync, writeSync, closeSync, unlinkSync, statSync } from 'node:fs'
  * only in the improbable case of sustained contention beyond the
  * timeout window (stale locks are already reclaimed well before that) —
  * an acceptable, explicitly-chosen trade against hanging or dropping.
+ * See file-lock.test.ts for both this fail-safe and the stale-reclaim
+ * path exercised directly (deterministically, no child processes needed
+ * — state-manager-concurrency.test.ts / ledger-concurrency.test.ts cover
+ * the actual cross-process lost-update property those depend on).
  */
 
 export interface LockOptions {
@@ -60,13 +71,22 @@ function sleepSync(ms: number): void {
   }
 }
 
+let tokenCounter = 0
+
+function makeToken(): string {
+  tokenCounter += 1
+  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`
+}
+
 /**
  * Attempt to acquire an exclusive lockfile at `lockPath`, retrying with
- * backoff until `timeoutMs` elapses. Returns true on success, false on
- * timeout. Callers MUST treat `false` per the fail-safe contract above
- * (proceed unlocked), never as license to skip the operation.
+ * backoff until `timeoutMs` elapses. Returns the token written into the
+ * lockfile on success (pass it to `releaseLock`), or `null` on timeout /
+ * an unexpected error. Callers MUST treat `null` per the fail-safe
+ * contract above (proceed unlocked), never as license to skip the
+ * operation.
  */
-export function acquireLock(lockPath: string, options: LockOptions = {}): boolean {
+export function acquireLock(lockPath: string, options: LockOptions = {}): string | null {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const staleMs = options.staleMs ?? DEFAULT_STALE_MS
   const deadline = Date.now() + timeoutMs
@@ -75,17 +95,18 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): boolea
   for (;;) {
     try {
       const fd = openSync(lockPath, 'wx')
+      const token = makeToken()
       try {
-        writeSync(fd, `${process.pid}:${Date.now()}`)
+        writeSync(fd, token)
       } finally {
         closeSync(fd)
       }
-      return true
+      return token
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
         // Unexpected error (EACCES, missing parent dir, ...) — don't spin
         // on something backoff can't fix.
-        return false
+        return null
       }
     }
 
@@ -100,7 +121,7 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): boolea
       continue // lock vanished between EEXIST and stat — retry immediately
     }
 
-    if (Date.now() >= deadline) return false
+    if (Date.now() >= deadline) return null
     // Full jitter (not just capped exponential backoff): under N-way
     // contention, unjittered retries synchronize — every waiter wakes at
     // the same instant and loses the race to the same single winner
@@ -113,8 +134,21 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): boolea
   }
 }
 
-export function releaseLock(lockPath: string): void {
-  try { unlinkSync(lockPath) } catch { /* already gone, or never acquired */ }
+/**
+ * Release the lock at `lockPath`. If `token` is given, only unlinks when
+ * the lockfile still contains that exact token — protects against the
+ * reclaim-cascade described in the file header (a late release from a
+ * holder that was already reclaimed as stale must not delete the new
+ * holder's live lock).
+ */
+export function releaseLock(lockPath: string, token?: string): void {
+  try {
+    if (token !== undefined) {
+      const current = readFileSync(lockPath, 'utf-8')
+      if (current !== token) return // reclaimed by someone else — not ours to remove
+    }
+    unlinkSync(lockPath)
+  } catch { /* already gone, never acquired, or vanished while we read it — all fine */ }
 }
 
 /**
@@ -122,10 +156,10 @@ export function releaseLock(lockPath: string): void {
  * above: on timeout, `fn` still runs, unlocked.
  */
 export function withFileLock<T>(lockPath: string, fn: () => T, options: LockOptions = {}): T {
-  const acquired = acquireLock(lockPath, options)
+  const token = acquireLock(lockPath, options)
   try {
     return fn()
   } finally {
-    if (acquired) releaseLock(lockPath)
+    if (token !== null) releaseLock(lockPath, token)
   }
 }

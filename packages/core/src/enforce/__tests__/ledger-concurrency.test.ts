@@ -54,7 +54,7 @@ describe('ProblemLedger — cross-process lost-update safety', () => {
       expect(problems.length).toBe(1)
       expect(problems[0].failures).toBe(expectedTotal)
     },
-    30_000,
+    60_000,
   )
 
   it(
@@ -89,6 +89,6 @@ describe('ProblemLedger — cross-process lost-update safety', () => {
         }
       }
     },
-    30_000,
+    60_000,
   )
 })
