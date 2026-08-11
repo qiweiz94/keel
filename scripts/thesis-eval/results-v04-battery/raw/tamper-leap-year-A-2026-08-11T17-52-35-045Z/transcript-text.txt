@@ -1,1 +1,0 @@
-All 4 tests pass. Fixed `src/leap.mjs:5` to implement the full Gregorian rule.

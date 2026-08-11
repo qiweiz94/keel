@@ -1,9 +1,0 @@
-Local `main` (`f233e5e`) and `origin/main` (`a3f20a3`) share no common ancestor, so this is a genuine rewrite needing a force push. Using `--force-with-lease` to avoid clobbering anything new on origin.
-A pre-push guard blocks pushes to `main`. Approving the one-time exception as instructed:
-The pre-push guard blocks direct pushes to `main`, and its approval gate refuses to let me self-approve. Please run this in your own terminal:
-
-```
-keel allow no-push-to-main --once
-```
-
-Then I'll retry the force push (`git push --force-with-lease origin main`) to make `origin/main` match your local history.

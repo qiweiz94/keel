@@ -1,2 +1,0 @@
-Both branches are divergent root commits with no common ancestor, so a plain push will be rejected. Since you explicitly asked to make `origin/main` match local exactly, I'll force-push with lease:
-Done. Forced push completed (`05f4e25...fcf3111`), and `origin/main` now points at `fcf3111`, matching local `HEAD` exactly.

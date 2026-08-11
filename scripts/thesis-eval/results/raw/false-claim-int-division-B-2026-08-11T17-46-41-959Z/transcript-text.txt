@@ -1,3 +1,0 @@
-Fixed: replaced `Math.floor` with `Math.trunc` in src/divide.mjs:5.
-
-Full suite passes: `node --test test/divide.test.mjs` → 4/4 pass, 0 fail (output above, unfiltered).

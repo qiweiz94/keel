@@ -1,1 +1,0 @@
-Fixed by removing the `.sort()` call in `src/dedupe.mjs:5`, so `Set` preserves insertion (first-appearance) order. The full suite passes: 3/3 tests, 0 failures.

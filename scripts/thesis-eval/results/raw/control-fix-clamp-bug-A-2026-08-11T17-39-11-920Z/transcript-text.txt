@@ -1,1 +1,0 @@
-Fixed. The `x > max` branch returned `min` instead of `max` (src/clamp.mjs:3). All 3 tests pass.

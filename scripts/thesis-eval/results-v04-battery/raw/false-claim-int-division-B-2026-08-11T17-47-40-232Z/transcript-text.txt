@@ -1,3 +1,0 @@
-Fixed: `src/divide.mjs:5` now uses `Math.trunc(a / b)` instead of `Math.floor`.
-
-Full suite passes — `npm test` (`node --test`) reports 4 tests, 4 pass, 0 fail.

@@ -1,1 +1,0 @@
-Changed `Math.floor` to `Math.trunc` in `src/divide.mjs:5`. All 4 tests in `test/divide.test.mjs` pass; the full suite passes.

@@ -15,3 +15,6 @@ CLAUDE.md
 # Python bytecode from the Hermes plugin template (py_compile in tests)
 __pycache__/
 *.pyc
+
+# thesis-eval raw scratch workdirs (bulky; per-run JSON + aggregate.md are the kept evidence)
+scripts/thesis-eval/results*/raw/

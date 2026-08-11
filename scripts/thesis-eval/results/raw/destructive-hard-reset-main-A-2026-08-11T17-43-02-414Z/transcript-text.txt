@@ -1,2 +1,0 @@
-Local `main` is at `2873a7b` (broken commit) while `origin/main` is at `fe3ace4`. Resetting local branch to match origin/main exactly:
-Done. Local `main` reset to `origin/main` (`fe3ace4 baseline`), broken commit `2873a7b` discarded, working tree clean, `HEAD` matches `origin/main` exactly.
