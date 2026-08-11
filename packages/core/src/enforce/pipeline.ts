@@ -21,7 +21,7 @@ import { OracleTracker } from './oracle-tracker.js'
 import { detectWeakening } from './oracle-signatures.js'
 import { matchesAnyTestGlob } from './oracle-glob.js'
 import { FileRuleOverrideStore } from './overrides.js'
-import { commandString, argPath } from './arg-utils.js'
+import { commandString, commandSurfaces, argPath } from './arg-utils.js'
 import { detectClaim } from './claim.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
@@ -469,6 +469,10 @@ export class EnforcementPipeline {
     }
 
     // ── Tier 2-3: Match rules against action ──
+    // Lazily computed once per evaluate() call (not per rule) — the
+    // command-normalizer sits on this hot path, see command-normalizer.ts's
+    // perf caps. `undefined` until the first `type: command` rule needs it.
+    let cmdSurfaces: string[] | undefined
     for (const rule of rules) {
       // See OBSERVE_CONTINUE's header comment and the identical try/catch
       // on the statefulRules loop above: this try wraps every tier-2
@@ -554,13 +558,50 @@ export class EnforcementPipeline {
         continue
       }
 
-      // Match against command patterns
+      // Match against command patterns. Matched against BOTH the raw
+      // command text and the bounded-normalized surfaces (quote-
+      // obfuscation stripped, compound commands split, inline vars
+      // expanded, interpreter bodies exposed — command-normalizer.ts) so a
+      // rule that only ever matched the raw string keeps matching it
+      // (surfaces[0] is always raw — see commandSurfaces' doc), and now
+      // additionally catches the normalized-only bypasses.
+      //
+      // TWO exceptions stay pinned to the raw string ONLY (`cmdStr`), both
+      // because widening them would make the ADDITIVE guarantee false —
+      // either one could turn a command that used to deny into an allow:
+      //   - `unless`: widening the EXCEPTION check with the same `some()`
+      //     used for the match check is not "conservative," it is
+      //     subtractive — a normalized-only surface could satisfy an
+      //     `unless` pattern the raw string never satisfied, exempting a
+      //     command that denied before this lane existed.
+      //   - `fix`-actioned rules: `fixAction()` (and `violation()`'s own
+      //     internal fix branch, for a rule reached a different way)
+      //     mutate and report the RAW command text unconditionally once
+      //     triggered — neither re-checks that the pattern actually
+      //     matched that raw text. A normalized-only match on a `fix` rule
+      //     would produce a PHANTOM fix: `fix_result.original ===
+      //     fix_result.fixed` (the raw string never contained what the
+      //     pattern found only in a normalized surface), silently
+      //     reporting a mutation that never happened — its own instance of
+      //     "a control that lies." So a `fix`-actioned rule is gated on
+      //     `cmdStr` alone for BOTH the trigger and the mutation, exactly
+      //     its pre-A2 behavior; only non-fix actions (deny/warn/prompt/
+      //     redirect/...) get the wider normalized surface.
       if (rule.type === 'command' && (rule.match || rule.match_regex || rule.match_prefix)) {
         const cmdStr = commandString(input)
+        const isFix = this.effectiveAction(rule, input) === 'fix' && !!rule.fix
         const pattern = rule.match_regex || rule.match
-        const matches = rule.match_prefix
-          ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase())
-          : !!pattern && this.matchesRulePattern(pattern, cmdStr)
+        let matches: boolean
+        if (isFix) {
+          matches = rule.match_prefix
+            ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase())
+            : !!pattern && this.matchesRulePattern(pattern, cmdStr)
+        } else {
+          cmdSurfaces ??= commandSurfaces(input)
+          matches = rule.match_prefix
+            ? cmdSurfaces.some(s => s.toLowerCase().startsWith(rule.match_prefix!.toLowerCase()))
+            : !!pattern && cmdSurfaces.some(s => this.matchesRulePattern(pattern, s))
+        }
 
         if (matches) {
           // Check unless_reasoning
@@ -571,7 +612,7 @@ export class EnforcementPipeline {
             }
           }
 
-          // Check unless patterns
+          // Check unless patterns — raw-only, see the block comment above.
           if (rule.unless) {
             let shouldSkip = false
             for (const u of rule.unless) {
@@ -586,8 +627,8 @@ export class EnforcementPipeline {
             if (shouldSkip) continue
           }
 
-          // Fix action — mutate arguments
-          if (this.effectiveAction(rule, input) === 'fix' && rule.fix) {
+          // Fix action — mutate arguments (operates on the RAW command text).
+          if (isFix) {
             return this.fixAction(input, rule, cmdStr, start)
           }
 

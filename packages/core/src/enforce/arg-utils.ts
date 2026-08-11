@@ -1,4 +1,5 @@
 import type { EnforceInput } from '../types.js'
+import { normalizeCommand } from './command-normalizer.js'
 
 /**
  * Command rules must match COMMAND-ish arguments only, never arbitrary file
@@ -121,4 +122,27 @@ export function commandString(input: EnforceInput): string {
     if (nested) return nested
   }
   return JSON.stringify(stripContentArgs(args))
+}
+
+/**
+ * Every string a `type: command` rule's pattern should be tested against:
+ * the raw command text (`commandString()`, unchanged — callers that need
+ * the literal command for fingerprinting, fix-mutation, or reporting must
+ * keep using `commandString()` directly, never this) PLUS the bounded
+ * shell-normalization surfaces from command-normalizer.ts (quote-
+ * obfuscation stripped, compound commands split, inline variable
+ * assignments expanded, interpreter one-liner bodies exposed — see that
+ * module's doc for the exact mechanism and honest limits).
+ *
+ * Strictly additive: `surfaces[0]` is always the raw string a caller that
+ * only checked `commandString()` before would have matched against, so
+ * nothing that matched before this function existed can stop matching.
+ * Never throws — `normalizeCommand` degrades to `[raw]` on any cap trip or
+ * unexpected shape rather than raising.
+ */
+export function commandSurfaces(input: EnforceInput): string[] {
+  const raw = commandString(input)
+  if (!raw) return ['']
+  const normalized = normalizeCommand(raw)
+  return normalized.surfaces.length ? normalized.surfaces : [raw]
 }
