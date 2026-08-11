@@ -8848,13 +8848,91 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4, renameSync as renameSync3 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync4, renameSync as renameSync3, statSync as statSync4 } from "node:fs";
 import { join as join4 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
+// ../core/src/enforce/file-lock.ts
+import { openSync as openSync2, writeSync, closeSync as closeSync2, unlinkSync as unlinkSync2, statSync as statSync3, readFileSync as readFileSync7 } from "node:fs";
+var DEFAULT_TIMEOUT_MS = 5e3;
+var DEFAULT_STALE_MS = 8e3;
+var INITIAL_BACKOFF_MS = 4;
+var MAX_BACKOFF_MS = 60;
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+    }
+  }
+}
+var tokenCounter = 0;
+function makeToken() {
+  tokenCounter += 1;
+  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`;
+}
+function acquireLock(lockPath, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
+  const deadline = Date.now() + timeoutMs;
+  let backoff = INITIAL_BACKOFF_MS;
+  for (; ; ) {
+    try {
+      const fd = openSync2(lockPath, "wx");
+      const token = makeToken();
+      try {
+        writeSync(fd, token);
+      } finally {
+        closeSync2(fd);
+      }
+      return token;
+    } catch (err) {
+      if (err.code !== "EEXIST") {
+        return null;
+      }
+    }
+    try {
+      const heldFor = Date.now() - statSync3(lockPath).mtimeMs;
+      if (heldFor > staleMs) {
+        try {
+          unlinkSync2(lockPath);
+        } catch {
+        }
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (Date.now() >= deadline) return null;
+    const jittered = Math.random() * backoff;
+    sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())));
+    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+  }
+}
+function releaseLock(lockPath, token) {
+  try {
+    if (token !== void 0) {
+      const current = readFileSync7(lockPath, "utf-8");
+      if (current !== token) return;
+    }
+    unlinkSync2(lockPath);
+  } catch {
+  }
+}
+function withFileLock(lockPath, fn, options = {}) {
+  const token = acquireLock(lockPath, options);
+  try {
+    return fn();
+  } finally {
+    if (token !== null) releaseLock(lockPath, token);
+  }
+}
+
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync8, readdirSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync9, readdirSync } from "node:fs";
 import { join as join5 } from "node:path";
 import { homedir as homedir5 } from "node:os";
 
@@ -8896,7 +8974,7 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync9, readFileSync as readFileSync9, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
+import { existsSync as existsSync9, readFileSync as readFileSync10, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
 import { join as join6 } from "node:path";
 import { homedir as homedir6 } from "node:os";
 var signingKey = null;
@@ -8908,7 +8986,7 @@ function legacyKeyPath() {
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync9(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync10(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -8955,7 +9033,7 @@ function receiptsLogPath() {
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync9(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync10(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -8997,7 +9075,7 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync11 } from "node:fs";
 import { extname, basename, dirname, join as join7 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
@@ -9035,7 +9113,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync10(filePath, "utf-8");
+        const source = readFileSync11(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -9045,11 +9123,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync10(filePath, "utf-8"));
+        JSON.parse(readFileSync11(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync10(filePath, "utf-8"));
+        parse(readFileSync11(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -9081,7 +9159,7 @@ function isVerifiableFile(filePath) {
 }
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync11, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
+import { readFileSync as readFileSync12, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
 import { join as join8 } from "node:path";
 import { homedir as homedir7 } from "node:os";
 function stateDir() {
@@ -9095,18 +9173,42 @@ var StateManager = class {
   verification = {};
   oracleFailures = {};
   dir;
-  constructor(dir = stateDir()) {
+  lockOptions;
+  /**
+   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
+   * bounds — production code should never need this (the defaults are
+   * tuned for a hook invocation), but tests that deliberately create
+   * heavy artificial contention need a wider wait than the production
+   * default without that production default having to grow to
+   * accommodate a synthetic worst case it will never see in the field.
+   */
+  constructor(dir = stateDir(), lockOptions = {}) {
     this.dir = dir;
+    this.lockOptions = lockOptions;
     this.load();
   }
   statePath(name) {
     return join8(this.dir, `${name}.json`);
   }
+  lockPath(name) {
+    return this.statePath(name) + ".lock";
+  }
+  ensureDir() {
+    try {
+      mkdirSync7(this.dir, { recursive: true });
+    } catch {
+    }
+  }
+  /** Run `fn` holding the lock for state slice `name`, serializing with other processes. */
+  withSliceLock(name, fn) {
+    this.ensureDir();
+    return withFileLock(this.lockPath(name), fn, this.lockOptions);
+  }
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
       if (existsSync10(p)) {
-        return JSON.parse(readFileSync11(p, "utf-8"));
+        return JSON.parse(readFileSync12(p, "utf-8"));
       }
     } catch {
     }
@@ -9122,39 +9224,66 @@ var StateManager = class {
     } catch {
     }
   }
-  load() {
+  loadDenyFirstTime() {
     const now = Date.now();
-    const rawDenies = this.loadFile("deny-first-time", {});
-    this.denyFirstTime = {};
-    for (const [ruleId, value] of Object.entries(rawDenies)) {
+    const raw = this.loadFile("deny-first-time", {});
+    const cleaned = {};
+    for (const [ruleId, value] of Object.entries(raw)) {
       const timestamp2 = typeof value === "number" ? value : value.timestamp;
-      if (now - timestamp2 < TTL_MS) this.denyFirstTime[ruleId] = value;
+      if (now - timestamp2 < TTL_MS) cleaned[ruleId] = value;
     }
-    const rawCB = this.loadFile("circuit-breaker", {});
-    this.circuitBreaker = {};
-    for (const [key, val] of Object.entries(rawCB)) {
-      if (now - val.startTime < TTL_MS) this.circuitBreaker[key] = val;
+    return cleaned;
+  }
+  loadCircuitBreaker() {
+    const now = Date.now();
+    const raw = this.loadFile("circuit-breaker", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.startTime < TTL_MS) cleaned[key] = val;
     }
-    const rawRate = this.loadFile("rate-counts", {});
-    this.rateCounts = {};
-    for (const [key, val] of Object.entries(rawRate)) {
-      if (now - val.windowStart < TTL_MS) this.rateCounts[key] = val;
+    return cleaned;
+  }
+  loadRateCounts() {
+    const now = Date.now();
+    const raw = this.loadFile("rate-counts", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.windowStart < TTL_MS) cleaned[key] = val;
     }
-    const rawVerification = this.loadFile("verification", {});
-    this.verification = {};
-    for (const [key, val] of Object.entries(rawVerification)) {
-      if (now - val.createdAt < TTL_MS) this.verification[key] = val;
+    return cleaned;
+  }
+  loadVerificationState() {
+    const now = Date.now();
+    const raw = this.loadFile("verification", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.createdAt < TTL_MS) cleaned[key] = val;
     }
-    const rawOracle = this.loadFile("oracle-failures", {});
-    this.oracleFailures = {};
-    for (const [key, val] of Object.entries(rawOracle)) {
-      if (now - val.timestamp < TTL_MS) this.oracleFailures[key] = val;
+    return cleaned;
+  }
+  loadOracleFailuresState() {
+    const now = Date.now();
+    const raw = this.loadFile("oracle-failures", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.timestamp < TTL_MS) cleaned[key] = val;
     }
+    return cleaned;
+  }
+  load() {
+    this.denyFirstTime = this.loadDenyFirstTime();
+    this.circuitBreaker = this.loadCircuitBreaker();
+    this.rateCounts = this.loadRateCounts();
+    this.verification = this.loadVerificationState();
+    this.oracleFailures = this.loadOracleFailuresState();
   }
   /** Mark a rule as having been violated (first time). */
   markFirstTime(ruleId, version) {
-    this.denyFirstTime[ruleId] = version ? { timestamp: Date.now(), version } : Date.now();
-    this.saveFile("deny-first-time", this.denyFirstTime);
+    this.withSliceLock("deny-first-time", () => {
+      this.denyFirstTime = this.loadDenyFirstTime();
+      this.denyFirstTime[ruleId] = version ? { timestamp: Date.now(), version } : Date.now();
+      this.saveFile("deny-first-time", this.denyFirstTime);
+    });
   }
   /** Check if a rule has been violated before. */
   isFirstTime(ruleId, version) {
@@ -9166,45 +9295,61 @@ var StateManager = class {
   /** Record a circuit breaker event. Returns true if threshold (3+) reached. */
   recordCircuitBreaker(ruleId, tool) {
     const key = `${ruleId}:${tool}`;
-    const now = Date.now();
-    const existing = this.circuitBreaker[key];
-    if (existing && now - existing.startTime < 6e4) {
-      existing.count++;
-      this.circuitBreaker[key] = existing;
-    } else {
-      this.circuitBreaker[key] = { count: 1, startTime: now };
-    }
-    this.saveFile("circuit-breaker", this.circuitBreaker);
-    return this.circuitBreaker[key].count >= 3;
+    return this.withSliceLock("circuit-breaker", () => {
+      this.circuitBreaker = this.loadCircuitBreaker();
+      const now = Date.now();
+      const existing = this.circuitBreaker[key];
+      if (existing && now - existing.startTime < 6e4) {
+        existing.count++;
+        this.circuitBreaker[key] = existing;
+      } else {
+        this.circuitBreaker[key] = { count: 1, startTime: now };
+      }
+      this.saveFile("circuit-breaker", this.circuitBreaker);
+      return this.circuitBreaker[key].count >= 3;
+    });
   }
   /** Check and increment rate limit. Returns true if over limit. */
   checkRateLimit(ruleId, matchPattern, windowSec, maxCalls) {
     const key = `rate:${ruleId}:${matchPattern}`;
-    const now = Date.now();
-    const existing = this.rateCounts[key];
-    if (existing && now - existing.windowStart < windowSec * 1e3) {
-      existing.count++;
-      this.rateCounts[key] = existing;
+    return this.withSliceLock("rate-counts", () => {
+      this.rateCounts = this.loadRateCounts();
+      const now = Date.now();
+      const existing = this.rateCounts[key];
+      let overLimit;
+      if (existing && now - existing.windowStart < windowSec * 1e3) {
+        existing.count++;
+        this.rateCounts[key] = existing;
+        overLimit = existing.count > maxCalls;
+      } else {
+        this.rateCounts[key] = { count: 1, windowStart: now };
+        overLimit = false;
+      }
       this.saveFile("rate-counts", this.rateCounts);
-      return existing.count > maxCalls;
-    } else {
-      this.rateCounts[key] = { count: 1, windowStart: now };
-      this.saveFile("rate-counts", this.rateCounts);
-      return false;
-    }
+      return overLimit;
+    });
   }
   setVerification(key, value) {
-    this.verification[key] = value;
-    this.saveFile("verification", this.verification);
+    this.withSliceLock("verification", () => {
+      this.verification = this.loadVerificationState();
+      this.verification[key] = value;
+      this.saveFile("verification", this.verification);
+    });
   }
   clearVerification(key) {
-    delete this.verification[key];
-    this.saveFile("verification", this.verification);
+    this.withSliceLock("verification", () => {
+      this.verification = this.loadVerificationState();
+      delete this.verification[key];
+      this.saveFile("verification", this.verification);
+    });
   }
   /** Record a failing test run for the oracle-tampering detector's recency window. */
   setOracleFailure(key, value) {
-    this.oracleFailures[key] = value;
-    this.saveFile("oracle-failures", this.oracleFailures);
+    this.withSliceLock("oracle-failures", () => {
+      this.oracleFailures = this.loadOracleFailuresState();
+      this.oracleFailures[key] = value;
+      this.saveFile("oracle-failures", this.oracleFailures);
+    });
   }
 };
 
