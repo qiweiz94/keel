@@ -73,4 +73,5 @@
       - "Scaffolding a brand-new project's .mcp.json with a heredoc or redirect is blocked; ask the user to run it."
       - "A file literally named .mcp.json anywhere outside the project root is still matched -- the path fragments are matched anywhere in the command, not anchored to the project."
       - "A commit message that merely quotes one of these paths is NOT matched (verified: git commit -m with .mcp.json in the message passes), because a write verb must also be present."
+      - "The .keel/DISABLED clause is the one alternative with NO write-verb requirement, so a diagnostic READ of the sentinel (cat or ls of it) is also blocked. Intended -- the sentinel should be untouchable through the agent -- but it is a read being denied, which no other clause here does."
     message: "Writing to keel's own files, the agent's trust/approval config, or git hooks through a shell command is blocked -- these are user-owned."

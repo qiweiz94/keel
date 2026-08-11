@@ -10,7 +10,9 @@ keel evaluate --tool Bash --args '{"command":"..."}' --cwd <sandbox> --level spr
 echo '<host payload>' | keel hook claude-code        # real hook channel
 ```
 
-228 probes were run (`/tmp/w3sb/probes.jsonl`, `probes2.jsonl`, `fp.jsonl`,
+260 probes were run — 164 bypass probes, 19 self-protection shell-write and
+exfiltration probes, 45 benign regression-guard commands, 32 filesystem/host
+payloads (`/tmp/w3sb/probes.jsonl`, `probes2.jsonl`, `fp.jsonl`,
 `fsprobes.json`; runners `run.sh`, `runfs.sh`). No rule regex was changed
 without a fixture proving the catch AND a benign-command fixture proving it
 does not over-fire.
@@ -181,7 +183,7 @@ This section records the ruleset as it stood at commit `e55ee5c`. PART 3
 lists what was fixed; PART 5's table carries both columns. Legend:
 **caught** = a deny from the rule under test.
 
-### no-destructive-commands — 24/50 caught
+### no-destructive-commands — 22/50 caught
 
 Caught: `rm -rf /`, `rm -rf ~`, `/bin/rm -rf /`, `FOO=bar rm -rf /`,
 `echo hi && rm -rf /`, `echo hi; rm -rf /`, `sh -c "rm -rf /"`,
@@ -424,10 +426,22 @@ token is a group. It now asserts the two surviving halves
 (`/(?!tmp|var/tmp)` and `-(rf|fr|r`), which keeps the canary tied to behavior
 rather than to one frozen spelling.
 
-**Suite state**: `npm test` green — 81 test files, 1471 tests passing
-(24 files/436 tests in core, 57 files/1035 tests in cli, plus the mcp-server
-and opencode-plugin script suites), exit 0. Baseline before the edits was the
-same count minus the 38 new fixture cases.
+**One branch was NARROWED, not widened — deliberately, and called out
+because it is the exception to the rule above.** `dd if=[^ ]+ of=/dev/[^ ]+`
+became `dd[ \t][^|;&]*of=/dev/(?!null|zero|stdout|stderr|tty)[^ ]+`. The
+negative lookahead means `dd if=/dev/zero of=/dev/null bs=1m count=10` — a
+throughput measurement — matched at `e55ee5c` and does NOT match now
+(verified against both compiled patterns directly). That was a false positive
+worth removing, and it is covered by a must-allow fixture, but it is a
+narrowing and should not be reported as if nothing was taken away. Writing to
+a real device (`of=/dev/disk2`) still denies at both revisions.
+
+**Suite state**: `npm test` green, exit 0 — 436 tests in core, 1057 in cli,
+plus the mcp-server and opencode-plugin script suites. The cli count rose
+from 1013 at baseline to 1057: +38 fixture cases for the shipped rules
+above, +22 for the proposal rule in PART 6, minus the 16 skipped. Every new
+fixture case therefore actually ran; a mismatch here would have meant a
+fixture file the harness never picked up.
 
 **NOT fixed, deliberately**: `dropdb -h prod-db appdb` — `prod-db-destruction`
 is a chain of three lookaheads that all must pass, and `dropdb` carries no

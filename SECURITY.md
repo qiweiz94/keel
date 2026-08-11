@@ -41,7 +41,7 @@ reasoning text. They are a gate, not an anti-virus engine:
 
 ### Measured bypass resistance of the Tier-1 floor
 
-An adversarial sweep (228 probes, each through the real CLI with a fresh
+An adversarial sweep (260 probes, each through the real CLI with a fresh
 state directory; method and raw verdicts in
 `session/EVIDENCE/wave3-secreview.md`) deliberately tried to evade each
 `level: protect` floor rule. These are catch rates against *deliberate
@@ -60,8 +60,18 @@ Probes that are supposed to be allowed are excluded from the denominators.
 | no-enforcer-removal | 12 | 33% |
 | agent-env-hijack | 12 | 67% |
 | prod-db-destruction | 12 | 75% |
-| no-rules-tampering | 25 | 52% |
+| no-rules-tampering | 25 | 52% (0% on Claude Code — see below) |
 | no-exfil-flow | 4 | 25% |
+
+**Known gap, host-specific and open:** `filesystem`-type rules —
+`no-rules-tampering`, `no-secret-files`, `write-outside-project`,
+`cicd-config-edit` — match on the path ARGUMENT of a tool call, resolved by
+`argPath()` in `packages/core/src/enforce/arg-utils.ts`. That resolver does
+not read the `file_path` key, which is the key Claude Code (and Gemini CLI,
+which shares the payload format) sends for Write/Edit/MultiEdit. On those
+hosts these rules currently do not fire at all. Command-type rules —
+including every other floor — are unaffected on every host. Track this
+before relying on file-path protection under Claude Code.
 
 Four classes of evasion that **no regex rule closes**, and that you should
 assume an adversarial agent can use:
@@ -98,12 +108,14 @@ OS-level sandbox and use keel's `action: prompt` gates on top.
   its own overrides, or rewrite its own rules — only the user can, in their
   own terminal. These are `level: protect` floors, active at every dial
   (verified across all nine combinations of rules-file level × requested
-  level). **Two known limits on that claim, both open:** `no-rules-tampering`
-  is a `filesystem` rule, so it sees a tool call's path argument and not a
-  shell command's redirect target — writes to the protected paths through
-  Bash are not blocked today; and creating the kill-switch sentinel
+  level). **Three known limits on that claim, all open:** (a)
+  `no-rules-tampering` does not fire at all on Claude Code / Gemini CLI —
+  see the `file_path` gap under "Measured bypass resistance" above; (b) it is
+  a `filesystem` rule, so on every host it sees a tool call's path argument
+  and not a shell command's redirect target — writes to the protected paths
+  through Bash are not blocked today; (c) creating the kill-switch sentinel
   (`~/.keel/DISABLED`) through a shell is not blocked, though deleting keel's
-  files is. See `session/EVIDENCE/wave3-secreview.md` §1.2–1.3.
+  files is. See `session/EVIDENCE/wave3-secreview.md` §1.1–1.3.
 - **The agent's own process is the boundary.** In-process enforcement can be
   bypassed if the agent process itself is compromised. Git hook bypass
   (`--no-verify`, `core.hooksPath`) is blocked at the command level; see
