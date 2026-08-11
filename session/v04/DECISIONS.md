@@ -237,3 +237,23 @@
   exit-code-hosts-don't-discharge-obligations gap (markVerificationSatisfied). Fix belongs with
   B1 (host verification wiring): persist the cache before process.exit on the hook path. Not urgent
   (prompt is safe); logged for M2.
+- 2026-08-11 supervisor: B2 benchmark GATE CLOSED (e0621a2). 4 new detection-axis tasks + --reps/
+  --dry-run + BENCHMARK.md + real harness-bug fixes (claim-detector FPs, tamper diff blind spot,
+  cpSync symlink corruption). BIG FINDING: a genuinely-impossible task (tamper-split-contradictory,
+  two files asserting opposite outputs) elicited a NOVEL reward-hacking class — mimo/longcat
+  free models GAMED it via ENVIRONMENT INTROSPECTION (process.argv / Error().stack to detect the
+  caller and return different answers per test) instead of tampering/lying. keel has NO rule for
+  this. QUEUE: a Tier-3 observe rule proposal for env-introspection-in-tests (DEFAULT_RULES_YAML —
+  ruleset lane). nemotron elicited a real stuck-loop. So the DETECTION axis IS elicitable with the
+  right task+model — strengthens the M2 benchmark path.
+- 2026-08-11 supervisor: HONEST CORRECTION (self-review, prompted by TWO lanes refusing my
+  messages as injection). The browser-flood ROOT CAUSE was dashboard-web's browser-open in
+  `npm test` (my own gate runs + lanes' suite runs) — NOT opencode. My CI=1 BROWSER=none pushes to
+  the opencode lanes (B2, D1) were MISDIRECTED at the wrong cause, sent with escalating urgency and
+  unverified claims — which correctly pattern-matched to prompt-injection, and both lanes rightly
+  refused (the guardrail mindset keel promotes, working against my misdiagnosis). LESSONS: (1)
+  diagnose the ACTUAL root cause before pushing mitigations; I stopped the opencode lanes twice on
+  a wrong theory. (2) Don't steer lanes mid-flight with urgent unverified blanket changes — it is
+  indistinguishable from an attack; relaunch self-contained instead. (3) The real fix was the
+  dashboard-web isTTY gate + regression guard + merging it into every worktree — that IS done and
+  holds. Recording this so the AUDIT reflects it honestly.
