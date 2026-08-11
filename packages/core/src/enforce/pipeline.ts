@@ -26,6 +26,31 @@ import { detectClaim } from './claim.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
+/**
+ * Thrown by violation() for a `mode: observe` match instead of returning —
+ * this is what lets an observed match record itself and fall through to a
+ * LOWER-priority rule on the same call instead of blinding it (the OPA
+ * Gatekeeper dryrun / Cloudflare WAF log-mode shape: shadow policies
+ * record and evaluation continues).
+ *
+ * Every `return this.violation(...)` call site in evaluate() stays
+ * unchanged; the throw is what makes that statement never complete for an
+ * observed match. Both rule-matching loops in evaluate() (`statefulRules`
+ * and the tiered `rules` loop) wrap their per-rule body in try/catch and
+ * treat this exact symbol as "recorded, continue to the next rule" rather
+ * than a real error.
+ *
+ * INVARIANT (compiler-invisible — keep it true by construction): every
+ * call to violation() must be lexically inside one of those two loops, so
+ * the throw is always caught there. evaluate()'s own outer try/catch is a
+ * fail-safe for this invariant breaking, not a substitute for it: an
+ * escaped throw would otherwise reach the host (e.g. opencode-plugin's
+ * `before()`), which rewrites any non-"[Keel]"-prefixed throw into a hard
+ * block — turning an observe rule into the exact short-circuit bug this
+ * exists to remove, just relocated one layer up.
+ */
+const OBSERVE_CONTINUE = Symbol('keel:observe-continue')
+
 export interface PipelineConfig {
   level: ProtectionLevel
   context: RuleContext
@@ -80,6 +105,17 @@ export class EnforcementPipeline {
   private rateCounts: Map<string, { count: number; windowStart: number }> = new Map()
   private lastRulesHash: string = ''
   private previousRulesHash: string = ''
+  /**
+   * `mode: observe` matches recorded during the CURRENT evaluate() call.
+   * Reset at the top of evaluate() and read back at the bottom to decorate
+   * the result — see OBSERVE_CONTINUE's header comment for why this is an
+   * instance field rather than a threaded parameter. Not concurrency-safe
+   * across overlapping evaluate() calls on the same instance, same as
+   * every other per-call instance field here (denyFirstTime,
+   * circuitBreaker, rateCounts) — this pipeline is built for one call at a
+   * time per host process, not concurrent evaluate() calls.
+   */
+  private observedMatches: Array<{ rule_id: string; observed_action: EnforcementAction; message: string }> = []
   private readonly overrideStore
   private readonly packageVerifierCache: PackageVerifierCache
 
@@ -160,8 +196,62 @@ export class EnforcementPipeline {
 
   /**
    * Evaluate an action against all active rules.
+   *
+   * Thin wrapper around evaluateTiers(): resets the per-call observed-match
+   * accumulator, runs the real tiered evaluation, then decorates the
+   * result with everything that was observed along the way. Splitting it
+   * this way means the many `return this.violation(...)` / `return
+   * this.result(...)` sites inside evaluateTiers() need no per-site
+   * awareness of observe recording — they just stop short of completing
+   * when violation() throws OBSERVE_CONTINUE (see its header comment), and
+   * this one place is where the accumulated observations get attached to
+   * whatever verdict actually won.
    */
   async evaluate(input: EnforceInput): Promise<EnforceResult> {
+    const start = Date.now()
+    this.observedMatches = []
+    let result: EnforceResult
+    try {
+      result = await this.evaluateTiers(input)
+    } catch (err) {
+      // Fail-safe for the OBSERVE_CONTINUE invariant (see its header
+      // comment): should never trigger in practice, but degrading to an
+      // allow-with-observations is infinitely safer than letting a stray
+      // throw reach the host and get rewritten into a hard block.
+      if (err === OBSERVE_CONTINUE) {
+        result = this.result('allow', '', 'Allowed (observe-only match)', start, false, 0)
+      } else {
+        throw err
+      }
+    }
+    if (this.observedMatches.length) {
+      result.observed_matches = this.observedMatches.map(m => ({ ...m }))
+      // observed_action always mirrors observedMatches[0] when at least one
+      // observe rule matched — independent of what the definitive verdict
+      // turned out to be. Post-fix that verdict can now be a REAL rule's
+      // deny/fix/prompt/warn (an observe match no longer blinds it), so
+      // "an observe rule fired" and "what finally decided this call" are
+      // genuinely separate facts and both need to survive on the result.
+      result.observed_action = this.observedMatches[0].observed_action
+      // rule_id/rule_name/message are different: those identify WHY the
+      // call was interrupted, so they may only be borrowed from the
+      // observe match on a bare-allow verdict (no non-observe rule
+      // matched at all) — every pre-existing single-match consumer
+      // (tests, dashboards, traces) expects exactly that shape. A
+      // DEFINITIVE verdict from a real rule must keep its OWN rule_id and
+      // message; overwriting them with an unrelated observe rule's would
+      // hide the actual reason this call was blocked/fixed/warned.
+      if (result.action === 'allow' && !result.rule_id) {
+        const first = this.observedMatches[0]
+        result.rule_id = first.rule_id
+        result.rule_name = first.rule_id
+        result.message = first.message
+      }
+    }
+    return result
+  }
+
+  private async evaluateTiers(input: EnforceInput): Promise<EnforceResult> {
     const start = Date.now()
     // The hierarchy is reloaded below (checkRuleVersion); the active level is
     // re-derived from the reloaded rules so the first call after a level change
@@ -220,56 +310,67 @@ export class EnforcementPipeline {
     }
 
     for (const rule of statefulRules) {
-      if (rule.type === 'verification') {
-        const boundaryMessage = this.verificationTracker.boundary(rule, input)
+      // See OBSERVE_CONTINUE's header comment: a `mode: observe` match
+      // inside this iteration throws instead of returning from
+      // violation(). Catching it here records the observation (already
+      // pushed to this.observedMatches by violation()) and moves on to the
+      // NEXT rule instead of exiting evaluateTiers() — an observe rule can
+      // no longer blind a later rule on the same call.
+      try {
+        if (rule.type === 'verification') {
+          const boundaryMessage = this.verificationTracker.boundary(rule, input)
+            if (boundaryMessage) {
+              const stateKey = `${rule.id}:${input.cwd}`
+              const boundaryRule: KeelRule = boundaryMessage.action
+                ? { ...rule, action: boundaryMessage.action as KeelRule['action'] }
+                : rule
+              return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey)
+            }
+        }
+
+        // Claim-to-evidence obligations: reuses the SAME trigger/satisfy/
+        // pending state machine as `type: verification` (see
+        // verification.ts's isObligationRule and types.ts's field comment).
+        // While an edit's obligation is still pending — no test/build command
+        // has been seen since, or the last one seen never discharged it
+        // (including a FAILED run: markSatisfied is only ever called by the
+        // host after a zero exit code, so a failing run leaves the obligation
+        // pending exactly like no run at all) — any claim-shaped text on this
+        // or a later call fires. The rule cannot and does not try to
+        // distinguish "never ran" from "ran and failed"; both are "no
+        // evidence of success since the edit", which is what the message says.
+        if (rule.type === 'claim' && this.verificationTracker.isPending(rule, input)) {
+          const claim = detectClaim(input)
+          if (claim) {
+            const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`
+            return this.violation(input, rule, message, start, 6, rule.id)
+          }
+        }
+        // Research-before-solve obligations: a pending obligation (a failing
+        // command was seen, no fresh research since) gates the next fix via
+        // its boundaries. Discharge happens below and on recordAttemptOutcome.
+        if (rule.type === 'research' && rule.trigger && this.config.researchTracker) {
+          const researchTracker = this.config.researchTracker
+          if (researchTracker.discharge(rule, input)) continue
+          const boundaryMessage = researchTracker.boundary(rule, input)
           if (boundaryMessage) {
-            const stateKey = `${rule.id}:${input.cwd}`
             const boundaryRule: KeelRule = boundaryMessage.action
               ? { ...rule, action: boundaryMessage.action as KeelRule['action'] }
-              : rule
-            return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey)
+              : { ...rule, action: 'redirect' as const }
+            const directive: RedirectDirective = {
+              kind: 'research',
+              required_tools: rule.satisfy?.tools?.length ? rule.satisfy.tools : ['keel_research'],
+              target: `fix action while a failing command still lacks fresh research`,
+              rationale: rule.message,
+              rule_id: rule.id,
+              suggested_call: `keel_research({ query: "<the failing module or error>" })`,
+            }
+            return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, rule.id, directive, true)
           }
-      }
-
-      // Claim-to-evidence obligations: reuses the SAME trigger/satisfy/
-      // pending state machine as `type: verification` (see
-      // verification.ts's isObligationRule and types.ts's field comment).
-      // While an edit's obligation is still pending — no test/build command
-      // has been seen since, or the last one seen never discharged it
-      // (including a FAILED run: markSatisfied is only ever called by the
-      // host after a zero exit code, so a failing run leaves the obligation
-      // pending exactly like no run at all) — any claim-shaped text on this
-      // or a later call fires. The rule cannot and does not try to
-      // distinguish "never ran" from "ran and failed"; both are "no
-      // evidence of success since the edit", which is what the message says.
-      if (rule.type === 'claim' && this.verificationTracker.isPending(rule, input)) {
-        const claim = detectClaim(input)
-        if (claim) {
-          const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`
-          return this.violation(input, rule, message, start, 6, rule.id)
         }
-      }
-      // Research-before-solve obligations: a pending obligation (a failing
-      // command was seen, no fresh research since) gates the next fix via
-      // its boundaries. Discharge happens below and on recordAttemptOutcome.
-      if (rule.type === 'research' && rule.trigger && this.config.researchTracker) {
-        const researchTracker = this.config.researchTracker
-        if (researchTracker.discharge(rule, input)) continue
-        const boundaryMessage = researchTracker.boundary(rule, input)
-        if (boundaryMessage) {
-          const boundaryRule: KeelRule = boundaryMessage.action
-            ? { ...rule, action: boundaryMessage.action as KeelRule['action'] }
-            : { ...rule, action: 'redirect' as const }
-          const directive: RedirectDirective = {
-            kind: 'research',
-            required_tools: rule.satisfy?.tools?.length ? rule.satisfy.tools : ['keel_research'],
-            target: `fix action while a failing command still lacks fresh research`,
-            rationale: rule.message,
-            rule_id: rule.id,
-            suggested_call: `keel_research({ query: "<the failing module or error>" })`,
-          }
-          return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, rule.id, directive, true)
-        }
+      } catch (err) {
+        if (err === OBSERVE_CONTINUE) continue
+        throw err
       }
     }
 
@@ -291,6 +392,16 @@ export class EnforcementPipeline {
 
     // ── Tier 2-3: Match rules against action ──
     for (const rule of rules) {
+      // See OBSERVE_CONTINUE's header comment and the identical try/catch
+      // on the statefulRules loop above: this try wraps every tier-2
+      // through tier-6 check below (rate/time/command/filesystem/network/
+      // package/stuck/diagnosis/research/env/content/oracle/sequence/flow)
+      // so a `mode: observe` match on ANY of them records and falls
+      // through to the next rule instead of exiting evaluateTiers().
+      // Deliberately NOT re-indented (the block below is unchanged from
+      // before this fix) — the try/catch is the minimal diff that gets
+      // continue semantics without re-flowing ~400 lines of tier logic.
+      try {
       // Check rate limit rules
       if (rule.type === 'rate') {
         const matchPattern = rule.match || input.tool
@@ -715,6 +826,10 @@ export class EnforcementPipeline {
         // This would be checked per-session, not per-action. Handled by context manager.
         continue
       }
+      } catch (err) {
+        if (err === OBSERVE_CONTINUE) continue
+        throw err
+      }
     }
 
     // ── Tier 7: Reasoning coherence check ──
@@ -736,7 +851,13 @@ export class EnforcementPipeline {
     }
 
     // ── Allowed — cache and return ──
-    if (!statefulRules.length && !gatedRules.length) {
+    // Never cache a call that recorded an observe match: a `(tool, args)`
+    // pair that trips an observe rule needs to be re-evaluated (and
+    // re-recorded) on every repeat, since a cached tier-1 `allow` on the
+    // NEXT identical call would return before the rules loop ever runs —
+    // exactly the traffic an observe rule burning in most needs to count,
+    // silently starving its shadow counters.
+    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
       this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
         verdict: 'allow',
         rule_id: null,
@@ -880,14 +1001,20 @@ export class EnforcementPipeline {
   }
 
   private violation(input: EnforceInput, rule: KeelRule, message: string, start: number, tier: PipelineTier, warningKey = rule.id, directive?: RedirectDirective, skipFirstWarning = false): EnforceResult {
-    // Observe mode: record what would have happened, interrupt nothing.
-    // The rule id and message are kept so the trace and the dashboard can
-    // measure this rule's hit rate before anyone promotes it to blocking.
+    // Observe mode: record what would have happened, interrupt nothing —
+    // and, critically, do not stop evaluation either. Returning an
+    // EnforceResult here (the pre-fix shape) would make the caller's
+    // `return this.violation(...)` exit evaluateTiers() immediately,
+    // blinding every lower-priority rule on this call to a match that was
+    // never supposed to interrupt anything in the first place. Throwing
+    // OBSERVE_CONTINUE instead means that `return` statement never
+    // completes; the nearest of the two loop-body try/catches in
+    // evaluateTiers() catches it, and the loop moves on to the next rule.
+    // See OBSERVE_CONTINUE's header comment for the full invariant.
     if (rule.mode === 'observe') {
       const would = this.enforcedAction(rule, input)
-      const observed = this.result('allow', rule.id, `[observe] would ${would}: ${message}`, start, false, tier)
-      observed.observed_action = would
-      return observed
+      this.observedMatches.push({ rule_id: rule.id, observed_action: would, message: `[observe] would ${would}: ${message}` })
+      throw OBSERVE_CONTINUE
     }
     const action = this.effectiveAction(rule, input)
     if (action === 'fix') {

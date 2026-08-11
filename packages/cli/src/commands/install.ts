@@ -59,7 +59,7 @@ rules:
   # ── TIER 1: protect floor ──────────────────────────────────────────
   - id: keel-control-gate
     type: command
-    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)|keel rules [^|;&]*--append"
+    match: "keel (disable|allow|level|enforce|install|uninstall|promote)( |$)|keel rules [^|;&]*--append"
     action: deny
     level: protect
     priority: 100

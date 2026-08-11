@@ -51,6 +51,8 @@ describe('keel-control-gate', () => {
     'keel uninstall',
     // Mutates ~/.keel/rules.yaml — the file the whole control surface rests on.
     'keel rules harness --append',
+    // Mutates a rule's mode field in rules.yaml — same class as `keel level`.
+    'keel promote no-repeat-loops',
   ]
 
   it.each(gated)('blocks: %s', (command) => {

@@ -21,6 +21,7 @@ import { disableCommand, enableCommand } from './commands/disable.js'
 import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
+import { promoteCommand } from './commands/promote.js'
 import { statusCommand } from './commands/status.js'
 import { dashboardCommand } from './commands/dashboard.js'
 import { dashboardWebCommand } from './commands/dashboard-web.js'
@@ -319,6 +320,13 @@ program
   .argument('[level]', 'sprint, balanced, or protect')
   .option('--project', 'Set the project level (.keel/rules.yaml) instead of global')
   .action((levelArg, options) => levelCommand(options, levelArg))
+
+program
+  .command('promote')
+  .description('Advance a mode: observe rule to warn/block (user-owned — run this yourself, not through the agent)')
+  .argument('<rule-id>', 'Rule ID to promote')
+  .option('--to <mode>', 'Target mode: warn or block (default: the next rung — observe→warn, warn→block)')
+  .action((ruleId: string, options: { to?: string }) => promoteCommand(ruleId, options))
 
 program.parse(process.argv)
 

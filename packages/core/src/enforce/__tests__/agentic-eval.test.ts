@@ -222,21 +222,35 @@ describe('agentic adversarial harness', () => {
     const pipeline = makePipeline('balanced')
     // source-change-requires-test ships as `mode: observe` (wave2-rules
     // Tier 3 re-tier). The tracker/discharge/boundary mechanism this
-    // describe block exercises is unchanged; only the outer verdict
-    // changed: `action` stays 'allow', the action the rule would have
-    // taken is on `observed_action`. Observe mode does not replay the
+    // describe block exercises is unchanged; the outer verdict now comes
+    // from whichever REAL (non-observe) rule also matches, with the
+    // observe rule's own would-be action carried on `observed_action`
+    // regardless (see pipeline.ts's evaluate()/violation() — a `mode:
+    // observe` match records and evaluation CONTINUES instead of
+    // short-circuiting, matching OPA Gatekeeper dryrun / Cloudflare WAF
+    // log-mode semantics). Both `git commit` (must-sign-commits, mode:
+    // block, action: fix) and `git push origin main` (no-push-to-main,
+    // mode: block, action: prompt) are REAL rules that used to be
+    // silently blinded by this observe rule matching first — that
+    // silencing was the shadow-mode bug, not a feature: a push straight to
+    // main with an untested source change on the books was sailing
+    // through as a bare `allow` with nothing but a cosmetic
+    // observed_action to show for it. Observe mode does not replay the
     // warn-then-deny ladder, so repeat calls report the same
     // observed_action rather than escalating.
     it('records (but does not enforce) commit/push boundaries until a real test run satisfies the obligation', async () => {
       expect((await pipeline.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))).action).toBe('allow')
       const commit1 = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
-      expect(commit1.action).toBe('allow')
+      // must-sign-commits (real, mode: block) no longer blinded — it fires.
+      expect(commit1.action).toBe('fix')
+      expect(commit1.fix_result?.fixed).toContain('--signoff')
       expect(commit1.observed_action).toBe('warn')
       const push1 = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
-      expect(push1.action).toBe('allow')
+      // no-push-to-main (real, mode: block) no longer blinded — it fires.
+      expect(push1.action).toBe('prompt')
       expect(push1.observed_action).toBe('deny')
       const push2 = await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))
-      expect(push2.action).toBe('allow')
+      expect(push2.action).toBe('prompt')
       expect(push2.observed_action).toBe('deny')
       pipeline.markVerificationSatisfied(input('Bash', { command: 'npm test' }))
       const commit = await pipeline.evaluate(input('Bash', { command: 'git commit -m "done"' }))
@@ -245,24 +259,29 @@ describe('agentic adversarial harness', () => {
       expect((await pipeline.evaluate(input('Bash', { command: 'git push origin main' }))).action).toBe('prompt')
     })
     it('does not let --help / --list / --dry-run satisfy the obligation', async () => {
+      // Every `git commit` here also trips must-sign-commits (real, mode:
+      // block) independent of the verification obligation's state, so the
+      // outer verdict is always 'fix' — observed_action is what actually
+      // distinguishes "obligation still pending" (warn) from satisfied
+      // (undefined, asserted at the bottom via the `real` pipeline).
       const p = makePipeline('balanced')
       await p.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
       p.markVerificationSatisfied(input('Bash', { command: 'npm test --help' }))
       const r1 = await p.evaluate(input('Bash', { command: 'git commit -m "done"' }))
-      expect(r1.action).toBe('allow')
+      expect(r1.action).toBe('fix')
       expect(r1.observed_action).toBe('warn')
       const p2 = makePipeline('balanced')
       await p2.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
       p2.markVerificationSatisfied(input('Bash', { command: 'npm run test -- --list' }))
       const r2 = await p2.evaluate(input('Bash', { command: 'git commit -m "done"' }))
-      expect(r2.action).toBe('allow')
+      expect(r2.action).toBe('fix')
       expect(r2.observed_action).toBe('warn')
       for (const fake of ['vitest --list-files', 'npm test -h', 'npm run test -- --help=json', 'vitest --dry_run']) {
         const pf = makePipeline('balanced')
         await pf.evaluate(input('WriteFile', { filePath: 'src/app.ts', content: 'x' }))
         pf.markVerificationSatisfied(input('Bash', { command: fake }))
         const rf = await pf.evaluate(input('Bash', { command: 'git commit -m "done"' }))
-        expect(rf.action, fake).toBe('allow')
+        expect(rf.action, fake).toBe('fix')
         expect(rf.observed_action, fake).toBe('warn')
       }
       const real = makePipeline('balanced')
