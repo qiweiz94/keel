@@ -22,7 +22,20 @@ export interface OracleFailureState {
   [key: string]: { timestamp: number; command: string }  // "oracle:<ruleId>:<cwd>" → last failing test run
 }
 
-const STATE_DIR = process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
+/**
+ * Resolves KEEL_STATE_DIR from the environment at CALL time, not module
+ * load. Mirrors audit.ts's AuditLog (KEEL_TRACES_DIR) and overrides.ts's
+ * FileRuleOverrideStore (KEEL_OVERRIDES_DIR) — a module-level const is
+ * fixed at first import of this file (whichever test happens to import it
+ * first, process-wide), which defeats a test that sets the env var in its
+ * own beforeEach/it after some other file already triggered the import.
+ * Called from the constructor's default parameter below, so every `new
+ * StateManager()` with no explicit dir re-reads the current env var.
+ */
+export function stateDir(): string {
+  return process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
+}
+
 const TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
 
 /**
@@ -39,12 +52,15 @@ export class StateManager {
   verification: VerificationState = {}
   oracleFailures: OracleFailureState = {}
 
-  constructor() {
+  private readonly dir: string
+
+  constructor(dir: string = stateDir()) {
+    this.dir = dir
     this.load()
   }
 
   private statePath(name: string): string {
-    return join(STATE_DIR, `${name}.json`)
+    return join(this.dir, `${name}.json`)
   }
 
   private loadFile<T>(name: string, fallback: T): T {
@@ -59,7 +75,7 @@ export class StateManager {
 
   private saveFile(name: string, data: unknown): void {
     try {
-      mkdirSync(STATE_DIR, { recursive: true })
+      mkdirSync(this.dir, { recursive: true })
       const p = this.statePath(name)
       const tmp = p + '.tmp'
       writeFileSync(tmp, JSON.stringify(data))

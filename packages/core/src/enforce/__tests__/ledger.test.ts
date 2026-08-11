@@ -6,7 +6,7 @@ import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import { parseRulesContent } from '../rule-parser.js'
-import { ProblemLedger, problemKey } from '../problem-ledger.js'
+import { ProblemLedger, problemKey, ledgerPath } from '../problem-ledger.js'
 import type { EnforceInput } from '../../types.js'
 
 /**
@@ -58,6 +58,27 @@ function input(tool: string, args: Record<string, unknown>, session = 'diag-test
     subagent_of: null,
   }
 }
+
+describe('ledgerPath — KEEL_STATE_DIR resolves to a FILE, not the bare dir', () => {
+  const previousEnv = process.env.KEEL_STATE_DIR
+
+  afterEach(() => {
+    if (previousEnv === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousEnv
+  })
+
+  it('joins ledger.json onto KEEL_STATE_DIR, matching the homedir fallback shape', () => {
+    process.env.KEEL_STATE_DIR = '/tmp/keel-state-example'
+    // The fallback branch (no env var) is `join(homedir(), '.keel', 'state',
+    // 'ledger.json')` — a FILE path ending in ledger.json. The env branch
+    // must have the same shape: a file, not the bare directory. Getting
+    // this wrong means ProblemLedger's `renameSync(tmp, this.path)` tries
+    // to rename a file onto an existing directory (EISDIR/ENOTDIR),
+    // silently swallowed by save()'s `catch { /* best effort */ }` — every
+    // write under KEEL_STATE_DIR is a silent no-op.
+    expect(ledgerPath()).toBe(join('/tmp/keel-state-example', 'ledger.json'))
+  })
+})
 
 describe('problem ledger', () => {
   let home: string
