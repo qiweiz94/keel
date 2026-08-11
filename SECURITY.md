@@ -101,7 +101,10 @@ that already guarded the action field:
 - **Enforcement-surface axis** — everything about a floor that affects
   *when or how it fires*, beyond action and mode, must be **byte-identical**
   between the floor and the override (`sameEnforcementSurface`, compared via
-  `JSON.stringify` after stripping action/mode/level/scope and a small,
+  `JSON.stringify` — which is field-order sensitive, so the same fields
+  written in a different order in the override's YAML also compare unequal
+  and are rejected; this fails closed, the floor stands, not a security
+  gap — after stripping action/mode/level/scope and a small,
   explicit allowlist of pure catalog metadata — `message`, `rationale`,
   `remediation`, `false_positives`, `review_by`, `category`, `severity`,
   `confidence`, `maturity`). This is deliberately an **exclusion list, not
@@ -109,10 +112,13 @@ that already guarded the action field:
   `match_regex`/`paths`/`patterns` are covered, but so are `exclude` and
   `operations` narrowing a filesystem floor, `except` widening a network
   floor's allowlist, `schedule` retiming a time floor, `type` swapping a
-  floor's check class outright, and `priority` — `pipeline.ts`'s tier-2/3
-  loop is first-match-wins over the full priority-sorted rule list, so
-  demoting a floor below an unrelated weaker rule that matches the same
-  command means the floor is never reached on that call at all. There is no
+  floor's check class outright, and `priority` on the floor's OWN id —
+  `pipeline.ts`'s tier-2/3 loop is first-match-wins over the full
+  priority-sorted rule list, so an override of the floor's id that demotes
+  its priority below an unrelated weaker rule matching the same command
+  means the floor is never reached on that call at all (see the "Not
+  covered" paragraph below for what this does NOT close on the priority
+  axis). There is no
   principled way for `mergeRules` to tell a legitimate narrowing from an
   adversarial no-op from inside the merge function alone — it has no model
   of "the dangerous command" to test candidates against — so any change
@@ -153,7 +159,23 @@ surface rule is deliberately blunt (identical-or-rejected, not "narrower is
 fine") — a project with a genuine need for a different floor pattern, path
 scope, or priority cannot express it from a lower scope at all; it has to go
 through keel's shipped defaults. That is treated as the correct tradeoff for
-a floor, not a gap. The metadata allowlist itself (which fields count as
+a floor, not a gap.
+
+Also not covered, and a distinct residual from the one this pass closes:
+`mergeRules` only ever arbitrates collisions on a **matching rule id** — it
+never compares a floor to a rule with a **different** id. A lower-scope
+config can still add a brand-new rule, under its own id, with a higher
+`priority` and `action: allow` whose `match` happens to overlap a floor's —
+`pipeline.ts`'s tier-2/3 loop is first-match-wins over the full
+priority-sorted list of ALL rules regardless of id, so that new rule can
+still return before the floor is ever reached on a matching call. This
+pass closes an override *of a floor's own id* demoting that floor's own
+priority; it does not, and by construction cannot, close a same-priority-class
+race between two independently-authored rule ids — that is an engine-level
+property of the tier loop, not a gap in this id-collision guard, and is out
+of scope for this pass.
+
+The metadata allowlist itself (which fields count as
 "cosmetic") is a judgment call, not a proof — `category`/`severity`/
 `confidence`/`maturity` are informational tags with no read path in
 `pipeline.ts` today; if a future feature starts branching enforcement

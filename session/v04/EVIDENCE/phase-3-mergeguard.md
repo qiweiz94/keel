@@ -45,7 +45,14 @@ explicit allowlist of pure catalog metadata (`message`, `rationale`,
 `remediation`, `false_positives`, `review_by`, `category`, `severity`,
 `confidence`, `maturity` — informational tags with no read path in
 `pipeline.ts` today) from both the floor and the candidate, then require
-the remainder to be **byte-identical** via `JSON.stringify`.
+the remainder to be **byte-identical** via `JSON.stringify` — which is
+also key-order sensitive: two objects with the same fields written in a
+different order in the override's YAML compare unequal and the override
+is rejected. This fails CLOSED (the floor stands, nothing is neutralized)
+rather than open, so it is not a security gap, but it does mean a
+legitimate reordered-but-otherwise-identical tightening override could be
+rejected as a false positive. Not exercised by any test in this lane and
+not fixed here — noted for anyone tightening a floor by hand later.
 
 This closes the originally-named vector (`match`/`paths`/`patterns`) but
 also, by construction and without needing their own named entry, closes:
@@ -54,11 +61,26 @@ network floor's allowlist, `schedule` retiming a time floor, `type`
 swapping a floor's check class outright, and `priority` — confirmed live
 in `pipeline.ts`'s tier-2/3 loop, which is **first-match-wins over the
 full priority-sorted rule list** (`for (const rule of rules) { ... if
-(matches) return this.violation(...) }`), so an override that demotes a
-floor's `priority` below an unrelated weaker rule matching the same
-command means the floor is never reached on that call at all — a real
-vector, not a hypothetical, and NOT covered by the original enumerated
-`MATCHING_SURFACE_FIELDS` list.
+(matches) return this.violation(...) }`), so an override THAT KEEPS THE
+FLOOR'S OWN ID and demotes its `priority` below an unrelated weaker rule
+matching the same command means the floor is never reached on that call
+at all — a real vector, not a hypothetical, and NOT covered by the
+original enumerated `MATCHING_SURFACE_FIELDS` list.
+
+**Scope of what "closes priority" means here, precisely**: `mergeRules`
+only ever arbitrates same-id collisions — the floor's id and the
+override's id must match for this guard to run at all. What is closed is
+demoting a floor's *own* priority via an override of its own id. What is
+**not** closed, and out of scope for this guard by construction, is a
+lower-scope config adding a **different**-id rule at higher priority whose
+`match` happens to overlap the floor's — `mergeRules` never compares two
+different ids against each other, so nothing in this pass touches that
+path, and the same first-match-wins tier loop means it would still shadow
+the floor today. That is an engine-level residual (the tier loop's
+first-match-wins semantics across ALL rules, not specific to floors or to
+overrides), not a gap in this same-id guard. See SECURITY.md's "Not
+covered by this pass" paragraph for the user-facing statement of this
+boundary.
 
 Any field not on the metadata allowlist is frozen by default, including
 fields added to `KeelRule` after this guard was written — the allowlist
@@ -147,7 +169,7 @@ Red (pre-fix), the two tests that exercise the originally-named vectors:
        AssertionError: expected 'this-never-matches-anything' to be 'push.*--force'
 ```
 
-Green (final): all pass; full file 30/30 (26 original + 4 mode/match +
+Green (final): all pass; full file 26/26 (19 original + 4 mode/match +
 3 exclude/except/priority — see suite run below for the file total).
 
 ### Pipeline level (real `EnforcementPipeline.evaluate()`, not just `mergeRules`) —
