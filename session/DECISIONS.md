@@ -132,3 +132,17 @@
   filters on filesystem rules are dead code (no host populates args.operation) —
   Wave-3/audit note. Fixture-harness gaps (no observe awareness, no exit-code channel)
   → Wave-3 promotion lane scope.
+- 2026-08-11 supervisor: Live-verify tail landed (w1-liveverify 4bd8f2a). OpenCode:
+  hook fires headless + block PROVEN with real child transcripts (both no-push-to-main
+  and, on a non-main branch with pre-warmed ladder, no-force-push). Claude/Gemini/
+  Codex: auth-blocked under config isolation (CLAUDE_CONFIG_DIR loses keychain auth;
+  no GEMINI/OPENAI keys) → honest HUMAN-CHECKLIST entries, Verified levels unchanged.
+  Findings relayed to w2-rules: install --project stub emits `rules:` null that breaks
+  evaluate/hook (real bug, fix in-lane); no-force-push is shadowed by no-push-to-main
+  for main-target pushes (floor-priority fixture mandated). GATE PLAN: supervisor
+  re-runs scripts/live-verify/opencode.sh on the merged tree for the OFFICIAL
+  transcript; ONE supervisor attempt at Claude Code via project-scoped
+  .claude/settings.json hook in a scratch repo (real auth untouched, isolation
+  preserved; if the repo-hook trust gate blocks headless, record honestly).
+  Toolbox: with-timeout.mjs wrapper (no coreutils timeout on this machine);
+  lv_verify_block gate requires ref-unmoved + non-tautological marker + no timeout.
