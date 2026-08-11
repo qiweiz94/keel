@@ -67,3 +67,11 @@
   failure is the DOCUMENTED expected-red (no-verify-bypass still deny, softens to warn
   when w2-rules merges). GATE CHECK: after w2-rules merge this must be 8/8; if
   assertion 6 still fails at the gate, the softening was missed — block the gate.
+- 2026-08-11 supervisor: W2 lane 5 landed (w2-seq 566ca50): test-before-commit +
+  runaway-budget (2 rules) as pure-YAML proposals; sequencer.ts additive fix + 3
+  regression tests; 'verification' added to RuleCategory enum. Elapsed-time budget
+  DELIBERATELY skipped (no session-scoped anchor on EnforceInput; naive version
+  inherits stale anchors — a control that lies); follow-up documented, not built.
+  verification.ts boundary() lines ~126/130 confirmed same bug — w2-claim messaged
+  to cover both sites + use the identical RuleCategory token. GATE NOTE: expect a
+  small types.ts/rule-parser.ts overlap between w2-seq and w2-claim.
