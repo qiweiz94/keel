@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   parseRulesContent, validateRules, sprintExpiryStatus, resolvedLevel,
-  DEFAULT_SPRINT_EXPIRY_HOURS,
+  DEFAULT_SPRINT_EXPIRY_HOURS, mergeRules,
 } from '../rule-parser.js'
-import type { KeelConfig } from '../../types.js'
+import type { KeelConfig, KeelRule } from '../../types.js'
+import type { RuleHierarchy, ParsedRules } from '../rule-parser.js'
 
 describe('rule validation', () => {
   it('reports one-step sequence rules', () => {
@@ -122,5 +123,90 @@ describe('sprintExpiryStatus / resolvedLevel — sprint auto-expiry', () => {
     expect(resolvedLevel({ version: 1, level: 'balanced' }, 'sprint')).toBe('balanced')
     expect(resolvedLevel(undefined, 'balanced')).toBe('balanced')
     expect(resolvedLevel({ version: 1 }, 'sprint')).toBe('sprint')
+  })
+})
+
+// ── mergeRules — floor rules cannot be weakened by a more specific scope ──
+//
+// A `level: protect` rule is a floor: keel's core promise is that no more
+// specific scope (a project's own .keel.local.yaml, scope `folder`) can
+// quietly downgrade it. Before this fix, mergeRules' dedup loop replaced a
+// rule by id purely on scope specificity, with no check at all — a local
+// override of a floor's id with a weaker action (or no `level`) silently
+// won.
+
+function parsedFrom(rules: KeelRule[]): ParsedRules {
+  return { config: { version: 1 }, rules, sourcePath: '/tmp/test.yaml', version: 1, markdown: '' }
+}
+
+function hierarchyOf(global: KeelRule[], local: KeelRule[]): RuleHierarchy {
+  return {
+    global: parsedFrom(global),
+    user: null,
+    project: null,
+    local: parsedFrom(local),
+  }
+}
+
+describe('mergeRules — floor rules cannot be weakened by scope', () => {
+  it('a local override that WEAKENS a level:protect floor is rejected — the floor stands', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'no force push' }],
+      [{ id: 'no-force-push', type: 'command', action: 'warn', message: 'local says warn' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.action).toBe('deny')
+    expect(rule?.level).toBe('protect')
+  })
+
+  it('a local override that KEEPS level:protect but WEAKENS the action (deny -> warn) is still rejected', () => {
+    // Distinct from the previous case: here the override does not drop
+    // `level: protect` at all — it keeps the floor marker but picks a
+    // weaker action. This is the case that specifically exercises
+    // ACTION_STRENGTH (the previous test is rejected by the `level`
+    // check alone; this one would pass a level-only check and must be
+    // caught by the strength comparison).
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'global floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'warn', level: 'protect', message: 'local weakens but keeps protect' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.action).toBe('deny')
+    expect(rule?.message).toBe('global floor')
+  })
+
+  it('a local override that TIGHTENS a level:protect floor (warn -> deny) is honored', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'warn', level: 'protect', message: 'global warn floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'local tightens' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.action).toBe('deny')
+    expect(rule?.message).toBe('local tightens')
+  })
+
+  it('a local override that KEEPS the same action and level:protect is honored (tie, not a weakening)', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'global floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'local restates' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.action).toBe('deny')
+    expect(rule?.message).toBe('local restates')
+  })
+
+  it('a NON-floor rule (no level) is still freely overridable by a more specific scope (regression)', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'some-style-rule', type: 'command', action: 'warn', message: 'global default' }],
+      [{ id: 'some-style-rule', type: 'command', action: 'allow', message: 'local relaxes it' }],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    const rule = merged.find(r => r.id === 'some-style-rule')
+    expect(rule?.action).toBe('allow')
+    expect(rule?.message).toBe('local relaxes it')
   })
 })

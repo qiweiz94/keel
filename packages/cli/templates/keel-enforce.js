@@ -6520,6 +6520,18 @@ function loadRuleHierarchy(projectDir) {
     local: localRules
   };
 }
+var ACTION_STRENGTH = {
+  deny: 4,
+  block: 4,
+  prompt: 3,
+  mask: 2,
+  fix: 2,
+  redirect: 2,
+  warn: 1,
+  allow: 0,
+  report: 0,
+  research: 0
+};
 function mergeRules(hierarchy, level, context) {
   const all = [];
   const dialRank = { sprint: 0, balanced: 1, protect: 2 };
@@ -6543,9 +6555,17 @@ function mergeRules(hierarchy, level, context) {
   const deduped = /* @__PURE__ */ new Map();
   for (const rule of all) {
     const existing = deduped.get(rule.id);
-    if (!existing || rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || "global"]) {
+    if (!existing) {
       deduped.set(rule.id, rule);
+      continue;
     }
+    const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || "global"];
+    if (!moreSpecific) continue;
+    if (existing.level === "protect") {
+      const tightensOrEqual = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
+      if (!tightensOrEqual) continue;
+    }
+    deduped.set(rule.id, rule);
   }
   return Array.from(deduped.values()).sort((a, b) => (b.priority || 0) - (a.priority || 0));
 }
@@ -6741,8 +6761,8 @@ function packageVerifierStateDir() {
   return process.env.KEEL_STATE_DIR || join(homedir(), ".keel", "state");
 }
 var PackageVerifierCache = class {
-  constructor(stateDir = packageVerifierStateDir()) {
-    this.stateDir = stateDir;
+  constructor(stateDir2 = packageVerifierStateDir()) {
+    this.stateDir = stateDir2;
   }
   stateDir;
   filePath() {
@@ -8962,7 +8982,9 @@ function isVerifiableFile(filePath) {
 import { readFileSync as readFileSync11, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
 import { join as join8 } from "node:path";
 import { homedir as homedir7 } from "node:os";
-var STATE_DIR = process.env.KEEL_STATE_DIR || join8(homedir7(), ".keel", "state");
+function stateDir() {
+  return process.env.KEEL_STATE_DIR || join8(homedir7(), ".keel", "state");
+}
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -8970,11 +8992,13 @@ var StateManager = class {
   rateCounts = {};
   verification = {};
   oracleFailures = {};
-  constructor() {
+  dir;
+  constructor(dir = stateDir()) {
+    this.dir = dir;
     this.load();
   }
   statePath(name) {
-    return join8(STATE_DIR, `${name}.json`);
+    return join8(this.dir, `${name}.json`);
   }
   loadFile(name, fallback) {
     const p = this.statePath(name);
@@ -8988,7 +9012,7 @@ var StateManager = class {
   }
   saveFile(name, data) {
     try {
-      mkdirSync7(STATE_DIR, { recursive: true });
+      mkdirSync7(this.dir, { recursive: true });
       const p = this.statePath(name);
       const tmp = p + ".tmp";
       writeFileSync7(tmp, JSON.stringify(data));
@@ -9170,7 +9194,7 @@ rules:
   # \u2500\u2500 self-protection write gate (Tier 1; supervisor paste at gate-3, secreview) \u2500\u2500
   - id: no-self-protection-write
     type: command
-    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/)|git +config[^|;&]*core[.]hooksPath|[.]keel/DISABLED"
+    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/|[.]keel/DISABLED)|git +config[^|;&]*core[.]hooksPath"
     action: deny
     level: protect
     priority: 95

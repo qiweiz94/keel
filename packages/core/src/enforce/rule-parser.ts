@@ -374,8 +374,37 @@ export function loadRuleHierarchy(projectDir: string): RuleHierarchy {
 }
 
 /**
+ * Relative strength of an EnforcementAction, used only to decide whether a
+ * more-specific-scope override of a `level: protect` floor rule TIGHTENS or
+ * WEAKENS it (mergeRules' dedup loop, below). Higher = stronger
+ * intervention. An explicit total order — every EnforcementAction has a
+ * defined rank so the comparison never silently falls through to
+ * `undefined`:
+ *   deny/block (4, tied)   — stop the action outright
+ *   > prompt (3)           — requires a human decision before proceeding
+ *   > mask/fix/redirect (2) — actively intervenes, but the turn continues
+ *   > warn (1)             — surfaces the issue, does not stop it
+ *   > allow/report/research (0) — no intervention
+ */
+const ACTION_STRENGTH: Record<EnforcementAction, number> = {
+  deny: 4, block: 4,
+  prompt: 3,
+  mask: 2, fix: 2, redirect: 2,
+  warn: 1,
+  allow: 0, report: 0, research: 0,
+}
+
+/**
  * Merge rules from hierarchy into a single flat list.
- * More specific scopes override less specific ones for same rule id.
+ * More specific scopes override less specific ones for same rule id —
+ * UNLESS the existing rule is a `level: protect` floor and the override
+ * would WEAKEN it (drop `level: protect`, or pick a strictly weaker
+ * action per ACTION_STRENGTH). A floor may only be tightened or left
+ * alone by a more specific scope; that is the entire point of
+ * `level: protect` — no project or local file can quietly downgrade it.
+ * A weakening override is simply skipped and the floor already in the
+ * map stands untouched (no partial field-merging — the simplest correct
+ * rule). Non-floor rules keep the original free-override behavior.
  */
 export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext): KeelRule[] {
   const all: KeelRule[] = []
@@ -412,14 +441,24 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
   pushRules(hierarchy.project, 'project')
   pushRules(hierarchy.local, 'folder')
 
-  // Deduplicate: more specific scope wins for same rule id
+  // Deduplicate: more specific scope wins for same rule id, but a
+  // level:protect floor can only be tightened or tied, never weakened —
+  // see ACTION_STRENGTH and this function's doc comment above.
   const scopeOrder: Record<string, number> = { global: 0, user: 1, project: 2, folder: 3, session: 4 }
   const deduped = new Map<string, KeelRule>()
   for (const rule of all) {
     const existing = deduped.get(rule.id)
-    if (!existing || (rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || 'global'])) {
+    if (!existing) {
       deduped.set(rule.id, rule)
+      continue
     }
+    const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || 'global']
+    if (!moreSpecific) continue
+    if (existing.level === 'protect') {
+      const tightensOrEqual = rule.level === 'protect' && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action]
+      if (!tightensOrEqual) continue  // weakening override — keep the floor
+    }
+    deduped.set(rule.id, rule)
   }
 
   // Sort by priority (higher first), then by type

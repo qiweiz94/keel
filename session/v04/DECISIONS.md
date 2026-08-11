@@ -12,3 +12,22 @@
   and free; OpenCode is keel-live so the guarded arm is a true end-to-end test. Frontier
   reference candidates (paid, within cap): opencode-go/grok-4.5, gpt-5.6-luna, kimi-k3.
   Harness (scripts/thesis-eval/) can target the free model as Arm A/B with no budget risk.
+- 2026-08-11 phase-0 lane: fix 3's own acceptance test (blanket KEEL_STATE_DIR=$(mktemp -d)
+  npm test must be green) was blocked by a FOURTH pre-existing bug outside the three named
+  fixes: problem-ledger.ts's ledgerPath() returned process.env.KEEL_STATE_DIR directly as
+  the ledger FILE path instead of joining 'ledger.json' onto it (the fallback branch does
+  join; the env branch didn't) — every ProblemLedger.save() under a blanket dir silently
+  no-op'd (renameSync onto an existing directory, swallowed by a bare catch). Same env var,
+  same defect class as fix 3, and it was the literal blocker for fix 3's own named
+  acceptance test, so fixed it in place (tests-first, red confirmed, then green) rather than
+  treating it as a fourth out-of-scope fix. After that fix, blanket mode dropped from 16
+  failures to 6-7, but did NOT reach zero: the remaining failures are ProblemLedger tests
+  racing across CONCURRENT test files that now all share one literal ledger.json path under
+  a blanket dir (no cross-process file locking) — confirmed non-deterministic (different
+  failing subset across 3 consecutive blanket runs: 16 -> 7 -> 6, different test names each
+  time). This is the same structural hazard class as the pre-existing hook.test.ts
+  block-first flake (both disappeared/reappeared between runs). Per the "fail the same
+  subtask twice, stop and report honestly" rule: did not attempt real locking (unbounded
+  scope beyond this lane's three fixes) — reported as-is. Fix 3 (state-manager.ts) itself is
+  correct and fully verified by its own isolated tests; the residual blanket-mode failures
+  are a pre-existing concurrency gap in ProblemLedger, not in Fix 3's own StateManager path.

@@ -44,7 +44,7 @@ export interface LedgerData {
 }
 
 export function ledgerPath(): string {
-  return process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state', 'ledger.json')
+  return join(process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state'), 'ledger.json')
 }
 
 export function problemKey(cwd: string, fingerprint: string): string {

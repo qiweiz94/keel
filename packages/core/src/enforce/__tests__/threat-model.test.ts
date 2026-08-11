@@ -349,15 +349,47 @@ rules:
           expect((await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))).action).toBe('deny')
           const second = await p.evaluate(input('write', { filePath: target, content: 'x' }, `tamper-${level}`, level))
           expect(second.action).toBe('deny')
-          // Two protect-floor self-protection rules now cover these paths:
-          // no-rules-tampering (filesystem) and, since gate-3, the
-          // higher-priority no-self-protection-write (command) whose bare
-          // `.keel/DISABLED` alternative also matches a write-tool's
-          // serialized path. Either denying is correct — the invariant is
-          // "a protected path is blocked at every dial", not which floor rule
-          // wins the race.
+          // no-rules-tampering (filesystem, matches the write tool's
+          // `filePath` argument directly) is what actually fires for a
+          // `write` tool call. no-self-protection-write (command) requires
+          // a write verb or redirect in the COMMAND TEXT — a filesystem
+          // tool's serialized args (`{"filePath":"..."}`, content stripped)
+          // never contain one, so it never matches this shape of call
+          // (confirmed after folding `.keel/DISABLED` into the verb-gated
+          // group — see the write-context fixture below). Kept as a set
+          // rather than a single expected id: the invariant under test is
+          // "a protected path is blocked at every dial", not which floor
+          // rule wins.
           expect(['no-rules-tampering', 'no-self-protection-write']).toContain(second.rule_id)
         }
+      }
+    })
+
+    it('no-self-protection-write requires a write context — reads of .keel/DISABLED are allowed, writes still denied', async () => {
+      const p = makeDefaultsPipeline('balanced')
+      // Must-allow: harmless reads of the kill-switch sentinel through the
+      // shell must not be denied. Before the fix, `.keel/DISABLED` was a
+      // bare top-level alternative in no-self-protection-write's regex —
+      // it matched the literal substring anywhere in the command, so a
+      // plain read tripped the same deny as a write.
+      for (const command of [
+        'cat ~/.keel/DISABLED',
+        'grep foo ~/.keel/DISABLED',
+      ]) {
+        const result = await p.evaluate(input('Bash', { command }, 'read-disabled'))
+        expect(result.action, command).toBe('allow')
+      }
+      // Must-block (regression): genuine writes to the sentinel, and the
+      // core.hooksPath bypass, must still deny.
+      for (const command of [
+        'echo x > ~/.keel/DISABLED',
+        'tee ~/.keel/DISABLED <<< x',
+        'cp x ~/.keel/DISABLED',
+        'mv x ~/.keel/DISABLED',
+        'git config core.hooksPath /dev/null',
+      ]) {
+        const result = await p.evaluate(input('Bash', { command }, `write-disabled-${command}`))
+        expect(result.action, command).toBe('deny')
       }
     })
 
@@ -382,6 +414,42 @@ rules:
       const second = await p.evaluate(input('Bash', { command: 'keel allow no-verify-bypass --once' }, 'self-allow'))
       expect(second.action).toBe('deny')
       expect(second.rule_id).toBe('keel-control-gate')
+    })
+  })
+
+  describe('floor rules cannot be weakened by scope (end-to-end)', () => {
+    it('a .keel.local.yaml-shaped override of no-force-push (action: warn, no level) does not let a force push through', async () => {
+      const globalRules = loadDefaultRules()
+      globalRules.config.level = 'balanced'
+      const localRules = parseRulesContent(`version: 1
+rules:
+  - id: no-force-push
+    type: command
+    match: "git push --force"
+    action: warn
+    message: "local override attempts to weaken the floor"
+`, '/tmp/.keel.local.yaml')
+
+      const config: PipelineConfig = {
+        level: 'balanced',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: globalRules, user: null, project: null, local: localRules },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        disableFile: SENTINEL,
+        overrideStore: { consume: () => false },
+      }
+      const p = new EnforcementPipeline(config)
+      // The floor (level: protect, action: deny) must win over the
+      // .keel.local.yaml-shaped override (action: warn, no level) — a
+      // local file must never be able to downgrade a floor rule.
+      const result = await p.evaluate(input('Bash', { command: 'git push --force origin main' }, 'floor-e2e'))
+      expect(result.action).toBe('deny')
+      expect(result.rule_id).toBe('no-force-push')
     })
   })
 
