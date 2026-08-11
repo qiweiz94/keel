@@ -36,8 +36,8 @@ export interface LockOptions {
   staleMs?: number
 }
 
-const DEFAULT_TIMEOUT_MS = 3000
-const DEFAULT_STALE_MS = 5000
+const DEFAULT_TIMEOUT_MS = 5000
+const DEFAULT_STALE_MS = 8000
 const INITIAL_BACKOFF_MS = 4
 const MAX_BACKOFF_MS = 60
 
