@@ -14,10 +14,12 @@ The "Untested / unverified" list is deliberately populated.
   actions vs 67%**, while *improving* task completion (75% vs 8%) with **zero false-positive drag**
   on controls. Prevention axis decisive. Detection axis reported honestly as inconclusive in the
   first battery; the benchmark lane later showed it IS elicitable (see below).
-- **Floors are un-bypassable** — verified live by the supervisor across every neutralization vector
-  that was closed: a lower-scope config cannot weaken a `level: protect` floor by lowering its
-  action, flipping it to `mode: observe`, or swapping in a no-op match (same-id, `mergeRules`
-  MODE_STRENGTH + exclusion-based surface check). (Different-id priority-shadowing: fix IN FLIGHT.)
+- **Floors are un-bypassable — on EVERY vector** (A1 complete), verified live by the supervisor: a
+  lower-scope config cannot weaken a `level: protect` floor by lowering its action, flipping it to
+  `mode: observe`, swapping in a no-op match (same-id: MODE_STRENGTH + exclusion-based surface
+  check), OR shadowing it with a different-id higher-priority `allow`/`warn` rule (tiered ordering:
+  observe → floors → rest, priority only breaking ties within a tier). Verified live: a
+  `.keel.local.yaml` with a priority-999 different-id `allow` for `git push --force` still DENIES.
 - **Regex bypass classes closed (A2 shell-parse layer)** — the highest-leverage correctness upgrade.
   A normalized command surface (quote-stripping of obfuscation-only quotes, compound-split, bounded
   inline variable expansion, interpreter-body extraction) is matched in addition to the raw string.
@@ -45,9 +47,6 @@ The "Untested / unverified" list is deliberately populated.
 
 ## Confirmed bugs / residuals (known, documented, tracked)
 
-- **Different-id floor priority shadowing** — a pre-existing lower-scope config with a *different*
-  rule id + higher priority + `allow` can shadow a floor. Not a one-command agent bypass (writing
-  the config is gated). **Fix IN FLIGHT** (v04-floorpriority lane).
 - **Fail-closed audit not yet complete** — whether every hook.ts error path (malformed input, parse
   error, mid-eval exception) fails CLOSED vs OPEN is being audited now (v04-failclosed lane). Until
   it lands, some error paths are unverified.

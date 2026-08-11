@@ -268,3 +268,10 @@
 - 2026-08-11 supervisor: launching M1-remainder wave (3 disjoint browser-safe lanes): A3
   fail-closed audit (hook.ts + adapters), A1 different-id floor residual (rule-parser mergeRules),
   env-introspection observe rule (DEFAULT_RULES_YAML, from B2's novel finding). Then v0.4 AUDIT.md.
+- 2026-08-11 supervisor: M1/A1 FULLY COMPLETE — floor-priority guard GATE CLOSED (908cfd4).
+  Tiered mergeRules ordering (observe → protect-floor → rest; priority only ties within a tier);
+  advisor caught+fixed an intransitive-comparator sort-cycle before commit. VERIFIED LIVE: a
+  priority-999 different-id `allow` for git push --force still DENIES (floor-held). Closes the LAST
+  floor-neutralization vector — floors now un-bypassable on action/mode/surface/same-id/different-id.
+  Suite green core 554 / cli 708. AUDIT.md updated (residual → CLOSED). Remaining M1: A3 fail-closed
+  (running), env-intro observe rule (running).
