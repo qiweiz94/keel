@@ -337,7 +337,7 @@ var Directives = class _Directives {
     return tag[0] === "!" ? tag : `!<${tag}>`;
   }
   toString(doc) {
-    const lines = this.yaml.explicit ? [`%YAML ${this.yaml.version || "1.2"}`] : [];
+    const lines2 = this.yaml.explicit ? [`%YAML ${this.yaml.version || "1.2"}`] : [];
     const tagEntries = Object.entries(this.tags);
     let tagNames;
     if (doc && tagEntries.length > 0 && isNode(doc.contents)) {
@@ -353,9 +353,9 @@ var Directives = class _Directives {
       if (handle === "!!" && prefix === "tag:yaml.org,2002:")
         continue;
       if (!doc || tagNames.some((tn) => tn.startsWith(prefix)))
-        lines.push(`%TAG ${handle} ${prefix}`);
+        lines2.push(`%TAG ${handle} ${prefix}`);
     }
-    return lines.join("\n");
+    return lines2.join("\n");
   }
 };
 Directives.defaultYaml = { explicit: false, version: "1.2" };
@@ -1638,22 +1638,22 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
   const { indent, options: { commentString } } = ctx;
   const itemCtx = Object.assign({}, ctx, { indent: itemIndent, type: null });
   let chompKeep = false;
-  const lines = [];
+  const lines2 = [];
   for (let i = 0; i < items.length; ++i) {
     const item = items[i];
     let comment2 = null;
     if (isNode(item)) {
       if (!chompKeep && item.spaceBefore)
-        lines.push("");
-      addCommentBefore(ctx, lines, item.commentBefore, chompKeep);
+        lines2.push("");
+      addCommentBefore(ctx, lines2, item.commentBefore, chompKeep);
       if (item.comment)
         comment2 = item.comment;
     } else if (isPair(item)) {
       const ik = isNode(item.key) ? item.key : null;
       if (ik) {
         if (!chompKeep && ik.spaceBefore)
-          lines.push("");
-        addCommentBefore(ctx, lines, ik.commentBefore, chompKeep);
+          lines2.push("");
+        addCommentBefore(ctx, lines2, ik.commentBefore, chompKeep);
       }
     }
     chompKeep = false;
@@ -1662,15 +1662,15 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
       str2 += lineComment(str2, itemIndent, commentString(comment2));
     if (chompKeep && comment2)
       chompKeep = false;
-    lines.push(blockItemPrefix + str2);
+    lines2.push(blockItemPrefix + str2);
   }
   let str;
-  if (lines.length === 0) {
+  if (lines2.length === 0) {
     str = flowChars.start + flowChars.end;
   } else {
-    str = lines[0];
-    for (let i = 1; i < lines.length; ++i) {
-      const line = lines[i];
+    str = lines2[0];
+    for (let i = 1; i < lines2.length; ++i) {
+      const line = lines2[i];
       str += line ? `
 ${indent}${line}` : "\n";
     }
@@ -1693,22 +1693,22 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
   });
   let reqNewline = false;
   let linesAtValue = 0;
-  const lines = [];
+  const lines2 = [];
   for (let i = 0; i < items.length; ++i) {
     const item = items[i];
     let comment = null;
     if (isNode(item)) {
       if (item.spaceBefore)
-        lines.push("");
-      addCommentBefore(ctx, lines, item.commentBefore, false);
+        lines2.push("");
+      addCommentBefore(ctx, lines2, item.commentBefore, false);
       if (item.comment)
         comment = item.comment;
     } else if (isPair(item)) {
       const ik = isNode(item.key) ? item.key : null;
       if (ik) {
         if (ik.spaceBefore)
-          lines.push("");
-        addCommentBefore(ctx, lines, ik.commentBefore, false);
+          lines2.push("");
+        addCommentBefore(ctx, lines2, ik.commentBefore, false);
         if (ik.comment)
           reqNewline = true;
       }
@@ -1725,12 +1725,12 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     if (comment)
       reqNewline = true;
     let str = stringify(item, itemCtx, () => comment = null);
-    reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
+    reqNewline || (reqNewline = lines2.length > linesAtValue || str.includes("\n"));
     if (i < items.length - 1) {
       str += ",";
     } else if (ctx.options.trailingComma) {
       if (ctx.options.lineWidth > 0) {
-        reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+        reqNewline || (reqNewline = lines2.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
       }
       if (reqNewline) {
         str += ",";
@@ -1738,35 +1738,35 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     }
     if (comment)
       str += lineComment(str, itemIndent, commentString(comment));
-    lines.push(str);
-    linesAtValue = lines.length;
+    lines2.push(str);
+    linesAtValue = lines2.length;
   }
   const { start, end } = flowChars;
-  if (lines.length === 0) {
+  if (lines2.length === 0) {
     return start + end;
   } else {
     if (!reqNewline) {
-      const len = lines.reduce((sum, line) => sum + line.length + 2, 2);
+      const len = lines2.reduce((sum, line) => sum + line.length + 2, 2);
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
       let str = start;
-      for (const line of lines)
+      for (const line of lines2)
         str += line ? `
 ${indentStep}${indent}${line}` : "\n";
       return `${str}
 ${indent}${end}`;
     } else {
-      return `${start}${fcPadding}${lines.join(" ")}${fcPadding}${end}`;
+      return `${start}${fcPadding}${lines2.join(" ")}${fcPadding}${end}`;
     }
   }
 }
-function addCommentBefore({ indent, options: { commentString } }, lines, comment, chompKeep) {
+function addCommentBefore({ indent, options: { commentString } }, lines2, comment, chompKeep) {
   if (comment && chompKeep)
     comment = comment.replace(/^\n+/, "");
   if (comment) {
     const ic = indentComment(commentString(comment), indent);
-    lines.push(ic.trimStart());
+    lines2.push(ic.trimStart());
   }
 }
 
@@ -2282,11 +2282,11 @@ var binary = {
     if (type !== Scalar.QUOTE_DOUBLE) {
       const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
       const n = Math.ceil(str.length / lineWidth);
-      const lines = new Array(n);
+      const lines2 = new Array(n);
       for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-        lines[i] = str.substr(o, lineWidth);
+        lines2[i] = str.substr(o, lineWidth);
       }
-      str = lines.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
+      str = lines2.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
     }
     return stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
   }
@@ -2833,35 +2833,35 @@ var Schema = class _Schema {
 
 // ../../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
 function stringifyDocument(doc, options) {
-  const lines = [];
+  const lines2 = [];
   let hasDirectives = options.directives === true;
   if (options.directives !== false && doc.directives) {
     const dir = doc.directives.toString(doc);
     if (dir) {
-      lines.push(dir);
+      lines2.push(dir);
       hasDirectives = true;
     } else if (doc.directives.docStart)
       hasDirectives = true;
   }
   if (hasDirectives)
-    lines.push("---");
+    lines2.push("---");
   const ctx = createStringifyContext(doc, options);
   const { commentString } = ctx.options;
   if (doc.commentBefore) {
-    if (lines.length !== 1)
-      lines.unshift("");
+    if (lines2.length !== 1)
+      lines2.unshift("");
     const cs = commentString(doc.commentBefore);
-    lines.unshift(indentComment(cs, ""));
+    lines2.unshift(indentComment(cs, ""));
   }
   let chompKeep = false;
   let contentComment = null;
   if (doc.contents) {
     if (isNode(doc.contents)) {
       if (doc.contents.spaceBefore && hasDirectives)
-        lines.push("");
+        lines2.push("");
       if (doc.contents.commentBefore) {
         const cs = commentString(doc.contents.commentBefore);
-        lines.push(indentComment(cs, ""));
+        lines2.push(indentComment(cs, ""));
       }
       ctx.forceBlockIndent = !!doc.comment;
       contentComment = doc.contents.comment;
@@ -2870,36 +2870,36 @@ function stringifyDocument(doc, options) {
     let body = stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
     if (contentComment)
       body += lineComment(body, "", commentString(contentComment));
-    if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
-      lines[lines.length - 1] = `--- ${body}`;
+    if ((body[0] === "|" || body[0] === ">") && lines2[lines2.length - 1] === "---") {
+      lines2[lines2.length - 1] = `--- ${body}`;
     } else
-      lines.push(body);
+      lines2.push(body);
   } else {
-    lines.push(stringify(doc.contents, ctx));
+    lines2.push(stringify(doc.contents, ctx));
   }
   if (doc.directives?.docEnd) {
     if (doc.comment) {
       const cs = commentString(doc.comment);
       if (cs.includes("\n")) {
-        lines.push("...");
-        lines.push(indentComment(cs, ""));
+        lines2.push("...");
+        lines2.push(indentComment(cs, ""));
       } else {
-        lines.push(`... ${cs}`);
+        lines2.push(`... ${cs}`);
       }
     } else {
-      lines.push("...");
+      lines2.push("...");
     }
   } else {
     let dc = doc.comment;
     if (dc && chompKeep)
       dc = dc.replace(/^\n+/, "");
     if (dc) {
-      if ((!chompKeep || contentComment) && lines[lines.length - 1] !== "")
-        lines.push("");
-      lines.push(indentComment(commentString(dc), ""));
+      if ((!chompKeep || contentComment) && lines2[lines2.length - 1] !== "")
+        lines2.push("");
+      lines2.push(indentComment(commentString(dc), ""));
     }
   }
-  return lines.join("\n") + "\n";
+  return lines2.join("\n") + "\n";
 }
 
 // ../../node_modules/yaml/browser/dist/doc/Document.js
@@ -3848,17 +3848,17 @@ function resolveBlockScalar(ctx, scalar, onError) {
   if (!header)
     return { value: "", type: null, comment: "", range: [start, start, start] };
   const type = header.mode === ">" ? Scalar.BLOCK_FOLDED : Scalar.BLOCK_LITERAL;
-  const lines = scalar.source ? splitLines(scalar.source) : [];
-  let chompStart = lines.length;
-  for (let i = lines.length - 1; i >= 0; --i) {
-    const content = lines[i][1];
+  const lines2 = scalar.source ? splitLines(scalar.source) : [];
+  let chompStart = lines2.length;
+  for (let i = lines2.length - 1; i >= 0; --i) {
+    const content = lines2[i][1];
     if (content === "" || content === "\r")
       chompStart = i;
     else
       break;
   }
   if (chompStart === 0) {
-    const value2 = header.chomp === "+" && lines.length > 0 ? "\n".repeat(Math.max(1, lines.length - 1)) : "";
+    const value2 = header.chomp === "+" && lines2.length > 0 ? "\n".repeat(Math.max(1, lines2.length - 1)) : "";
     let end2 = start + header.length;
     if (scalar.source)
       end2 += scalar.source.length;
@@ -3868,7 +3868,7 @@ function resolveBlockScalar(ctx, scalar, onError) {
   let offset = scalar.offset + header.length;
   let contentStart = 0;
   for (let i = 0; i < chompStart; ++i) {
-    const [indent, content] = lines[i];
+    const [indent, content] = lines2[i];
     if (content === "" || content === "\r") {
       if (header.indent === 0 && indent.length > trimIndent)
         trimIndent = indent.length;
@@ -3888,17 +3888,17 @@ function resolveBlockScalar(ctx, scalar, onError) {
     }
     offset += indent.length + content.length + 1;
   }
-  for (let i = lines.length - 1; i >= chompStart; --i) {
-    if (lines[i][0].length > trimIndent)
+  for (let i = lines2.length - 1; i >= chompStart; --i) {
+    if (lines2[i][0].length > trimIndent)
       chompStart = i + 1;
   }
   let value = "";
   let sep = "";
   let prevMoreIndented = false;
   for (let i = 0; i < contentStart; ++i)
-    value += lines[i][0].slice(trimIndent) + "\n";
+    value += lines2[i][0].slice(trimIndent) + "\n";
   for (let i = contentStart; i < chompStart; ++i) {
-    let [indent, content] = lines[i];
+    let [indent, content] = lines2[i];
     offset += indent.length + content.length + 1;
     const crlf = content[content.length - 1] === "\r";
     if (crlf)
@@ -3935,8 +3935,8 @@ function resolveBlockScalar(ctx, scalar, onError) {
     case "-":
       break;
     case "+":
-      for (let i = chompStart; i < lines.length; ++i)
-        value += "\n" + lines[i][0].slice(trimIndent);
+      for (let i = chompStart; i < lines2.length; ++i)
+        value += "\n" + lines2[i][0].slice(trimIndent);
       if (value[value.length - 1] !== "\n")
         value += "\n";
       break;
@@ -4011,10 +4011,10 @@ function splitLines(source) {
   const first = split[0];
   const m = first.match(/^( *)/);
   const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
-  const lines = [line0];
+  const lines2 = [line0];
   for (let i = 1; i < split.length; i += 2)
-    lines.push([split[i], split[i + 1]]);
-  return lines;
+    lines2.push([split[i], split[i + 1]]);
+  return lines2;
 }
 
 // ../../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
@@ -6347,7 +6347,8 @@ function validateRules(rules) {
     "meta",
     "research",
     "stuck",
-    "diagnosis"
+    "diagnosis",
+    "oracle"
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6363,7 +6364,8 @@ function validateRules(rules) {
     "resource",
     "bypass",
     "discipline",
-    "workflow"
+    "workflow",
+    "verification"
   ]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -6376,6 +6378,14 @@ function validateRules(rules) {
     if (typeof rule.id !== "string" || !rule.id.trim()) errors.push("Rule is missing a non-empty id");
     if (rule.type === "research" && !rule.topics?.length && !rule.trigger) {
       errors.push(`Research rule "${label}" needs topics (freshness form) or a trigger (research-before-solve form)`);
+    }
+    if (rule.type === "oracle") {
+      if (!rule.paths?.length && !rule.match) {
+        errors.push(`Oracle rule "${label}" needs paths (content-diff surface) or match (command-surface) \u2014 remove it or add a detection surface`);
+      }
+      if (!rule.trigger) {
+        errors.push(`Oracle rule "${label}" needs a trigger (the failing test-run matcher that arms the recency window) \u2014 without it the rule can never fire`);
+      }
     }
     if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine \u2014 remove it or use a supported type`);
@@ -6705,6 +6715,180 @@ var VerificationTracker = class {
   }
 };
 
+// ../core/src/enforce/oracle-tracker.ts
+var OracleTracker = class {
+  constructor(stateManager) {
+    this.stateManager = stateManager;
+  }
+  stateManager;
+  failures = /* @__PURE__ */ new Map();
+  // Session-scoped (matches ResearchTracker, the closest sibling pattern:
+  // arm on a failing trigger, gate a later action) rather than cwd-only
+  // (like StuckTracker/VerificationTracker): two different agent sessions
+  // working the same repo must not have one session's red run arm the
+  // window for the OTHER session's unrelated edit. The cost is the inverse
+  // case documented in the shipped rule's false_positives — the SAME
+  // session running a monorepo-wide suite that fails in module A can still
+  // arm the window for an unrelated edit it makes in module B.
+  key(rule, input) {
+    return `oracle:${rule.id}:${input.cwd}:${input.session_id}`;
+  }
+  /**
+   * Arm the recency window: called from the after-hook (recordAttemptOutcome)
+   * with the exit code of every command. Only a run that matches the rule's
+   * `trigger` AND exited nonzero (the trigger's `exit: 'nonzero'`, or — if
+   * the rule omits `trigger.exit` — the tracker's own default of "only
+   * failures count") records a new failure timestamp. A passing run does
+   * NOT clear a prior failure early: the window has its own TTL
+   * (`window_seconds`), and a later unrelated passing command (e.g. `npm
+   * run lint`) must not reset the clock on a still-fresh red test run.
+   */
+  observeOutcome(rule, input, exitCode) {
+    if (rule.type !== "oracle" || !rule.trigger) return;
+    if (!matches(rule.trigger, input)) return;
+    if (rule.trigger.exit !== void 0) {
+      const want = rule.trigger.exit;
+      if (want === "nonzero" && (exitCode === 0 || exitCode === null)) return;
+      if (typeof want === "number" && exitCode !== want) return;
+    } else if (exitCode === 0 || exitCode === null) {
+      return;
+    }
+    const key = this.key(rule, input);
+    const entry = { timestamp: Date.now(), command: commandString(input) || input.tool };
+    this.failures.set(key, entry);
+    this.stateManager?.setOracleFailure(key, entry);
+  }
+  /**
+   * The most recent qualifying failure for this rule+cwd, if any, within
+   * `rule.window_seconds` (default 900s / 15min). Returns null both when
+   * there was never a recorded failure AND when there was one but it has
+   * aged out — callers cannot and should not distinguish the two; both mean
+   * "no recency evidence right now".
+   */
+  recentFailure(rule, input) {
+    const key = this.key(rule, input);
+    const windowMs = (rule.window_seconds ?? 900) * 1e3;
+    const local = this.failures.get(key);
+    const persisted = this.stateManager?.oracleFailures[key];
+    const entry = !persisted || local && local.timestamp >= persisted.timestamp ? local : persisted;
+    if (!entry) return null;
+    const ageMs = Date.now() - entry.timestamp;
+    if (ageMs > windowMs) return null;
+    return { ...entry, ageMs };
+  }
+  clear() {
+    this.failures.clear();
+  }
+};
+
+// ../core/src/enforce/oracle-signatures.ts
+var SKIP_RE = /\b(?:it|test|describe)\.skip\s*\(|\bxit\s*\(|\bxdescribe\s*\(|\bxtest\s*\(|@pytest\.mark\.skip\b|@pytest\.mark\.xfail\b|\bpytest\.skip\s*\(|\bpytest\.mark\.skipif\b|\bt\.Skip\s*\(|\bt\.SkipNow\s*\(/g;
+var ONLY_RE = /\b(?:it|test|describe)\.only\s*\(|\bfit\s*\(|\bfdescribe\s*\(/g;
+var ASSERTION_RE = /\bexpect\s*\(|\bassert[_A-Za-z]*\s*\(|\bself\.assert[A-Za-z]*\s*\(|(^|[^.\w])assert\s+\S/gm;
+var TEST_DECL_RE = /\b(?:it|test)\s*\(\s*['"`]|\bdef\s+test_\w+\s*\(/g;
+var TIMEOUT_RETRY_RE = /\b(timeout|retries|retry|maxRetries|max_retries)\s*[:=(]\s*(\d+)/gi;
+function countMatches(re, text) {
+  re.lastIndex = 0;
+  return (text.match(re) || []).length;
+}
+function lines(text) {
+  return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+var ASSERT_CALL_PREFIX_RE = /^(.*?\b(?:toBe|toEqual|toStrictEqual|toMatchObject|toMatchSnapshot|assertEqual|assertEquals|assert_equal)\s*\()/;
+function expectedValueRewrites(oldText, newText) {
+  const oldLines = lines(oldText);
+  const newLines = lines(newText);
+  const newSet = new Set(newLines);
+  const oldSet = new Set(oldLines);
+  const removed = oldLines.filter((l) => !newSet.has(l));
+  const added = newLines.filter((l) => !oldSet.has(l));
+  let rewrites = 0;
+  for (const r of removed) {
+    const m = ASSERT_CALL_PREFIX_RE.exec(r);
+    if (!m) continue;
+    const prefix = m[1];
+    if (added.some((a) => a.startsWith(prefix) && a !== r)) rewrites++;
+  }
+  return rewrites;
+}
+function timeoutInflations(oldText, newText) {
+  const collect = (text) => {
+    const out = /* @__PURE__ */ new Map();
+    let m;
+    TIMEOUT_RETRY_RE.lastIndex = 0;
+    while (m = TIMEOUT_RETRY_RE.exec(text)) {
+      const name = m[1].toLowerCase();
+      const value = Number(m[2]);
+      out.set(name, value);
+    }
+    return out;
+  };
+  const oldVals = collect(oldText);
+  const newVals = collect(newText);
+  const flags = [];
+  for (const [name, newVal] of newVals) {
+    const oldVal = oldVals.get(name);
+    if (oldVal === void 0 || oldVal <= 0) continue;
+    if (newVal > oldVal && newVal - oldVal >= 5 && newVal / oldVal >= 3) {
+      flags.push(`${name} ${oldVal}\u2192${newVal}`);
+    }
+  }
+  return flags;
+}
+function detectWeakening(oldText, newText, filePath) {
+  const signals = [];
+  if (filePath && /\.snap$|\/__snapshots__\//.test(filePath)) {
+    signals.push({ id: "snapshot-file-rewrite", detail: `snapshot file "${filePath}" rewritten` });
+  }
+  const skipDelta = countMatches(SKIP_RE, newText) - countMatches(SKIP_RE, oldText);
+  if (skipDelta > 0) {
+    signals.push({ id: "skip-added", detail: `${skipDelta} skip/xfail directive(s) added` });
+  }
+  const onlyDelta = countMatches(ONLY_RE, newText) - countMatches(ONLY_RE, oldText);
+  if (onlyDelta > 0) {
+    signals.push({ id: "only-added", detail: `${onlyDelta} .only/fit/fdescribe directive(s) added (silences the rest of the file)` });
+  }
+  const assertionDelta = countMatches(ASSERTION_RE, oldText) - countMatches(ASSERTION_RE, newText);
+  if (assertionDelta > 0) {
+    signals.push({ id: "assertions-removed", detail: `${assertionDelta} assertion(s) removed with no comparable addition` });
+  }
+  const testBlockDelta = countMatches(TEST_DECL_RE, oldText) - countMatches(TEST_DECL_RE, newText);
+  if (testBlockDelta > 0) {
+    signals.push({ id: "test-block-deleted", detail: `${testBlockDelta} test block(s) deleted` });
+  }
+  if (oldText && newText) {
+    const rewrites = expectedValueRewrites(oldText, newText);
+    if (rewrites > 0) {
+      signals.push({ id: "expected-value-rewrite", detail: `${rewrites} expected-value comparison(s) rewritten` });
+    }
+    const inflations = timeoutInflations(oldText, newText);
+    if (inflations.length) {
+      signals.push({ id: "timeout-retry-inflation", detail: `timeout/retry inflated: ${inflations.join(", ")}` });
+    }
+  }
+  return signals;
+}
+
+// ../core/src/enforce/oracle-glob.ts
+var METACHAR_RE = /[.+^${}()|[\]\\]/g;
+var TOKEN_LEADING = "\0DSL\0";
+var TOKEN_TRAILING = "\0DST\0";
+var TOKEN_BARE = "\0DSB\0";
+function matchesTestGlob(value, pattern) {
+  const escaped = pattern.replace(METACHAR_RE, "\\$&");
+  const withDoubleStarTokens = escaped.replace(/\*\*\//g, TOKEN_LEADING).replace(/\/\*\*/g, TOKEN_TRAILING).replace(/\*\*/g, TOKEN_BARE);
+  const withStars = withDoubleStarTokens.replace(/\*/g, "[^/]*");
+  const body = withStars.split(TOKEN_LEADING).join("(?:.*/)?").split(TOKEN_TRAILING).join("(?:/.*)?").split(TOKEN_BARE).join(".*");
+  try {
+    return new RegExp(`^${body}$`).test(value);
+  } catch {
+    return false;
+  }
+}
+function matchesAnyTestGlob(value, patterns) {
+  return patterns.some((p) => matchesTestGlob(value, p));
+}
+
 // ../core/src/enforce/overrides.ts
 import { closeSync, existsSync as existsSync2, mkdirSync, openSync, readFileSync as readFileSync2, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6793,6 +6977,7 @@ var FileRuleOverrideStore = class {
 var EnforcementPipeline = class {
   config;
   verificationTracker;
+  oracleTracker;
   denyFirstTime = /* @__PURE__ */ new Map();
   circuitBreaker = /* @__PURE__ */ new Map();
   rateCounts = /* @__PURE__ */ new Map();
@@ -6802,6 +6987,7 @@ var EnforcementPipeline = class {
   constructor(config) {
     this.config = config;
     this.verificationTracker = config.verificationTracker || new VerificationTracker(config.stateManager);
+    this.oracleTracker = config.oracleTracker || new OracleTracker(config.stateManager);
     this.overrideStore = config.overrideStore || new FileRuleOverrideStore();
     this.lastRulesHash = this.computeRulesHash();
     this.loadState();
@@ -6888,7 +7074,7 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
-      (rule) => ["verification", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
+      (rule) => ["verification", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow", "oracle"].includes(rule.type)
     );
     const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
@@ -7133,6 +7319,42 @@ var EnforcementPipeline = class {
           if (isFile) this.config.contentTracker.markUnchanged(resolvedPath);
         }
       }
+      if (deepChecks && rule.type === "oracle") {
+        if (rule.match) {
+          const cmdStr = commandString(input);
+          if (cmdStr && this.matchesRulePattern(rule.match, cmdStr)) {
+            const recent = this.oracleTracker.recentFailure(rule, input);
+            if (recent) {
+              const age = Math.round(recent.ageMs / 1e3);
+              return this.violation(input, rule, `${rule.message} [command-surface: "${cmdStr}" ran ${age}s after failing run "${recent.command}"]`, start, 5);
+            }
+          }
+        }
+        if (rule.paths && !/^read/i.test(input.tool)) {
+          const args = input.args;
+          const pathStr = argPath(args);
+          const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
+          const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths);
+          if (pathMatched) {
+            const patchText = String(args.patchText || "");
+            const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? "");
+            const explicitOld = typeof args.oldString === "string" ? args.oldString : void 0;
+            const isFile = explicitOld === void 0 && existsSync3(resolvedPath) && statSync2(resolvedPath).isFile();
+            const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync3(resolvedPath, "utf-8") : "";
+            if (newText || oldText) {
+              const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
+              if (signals.length) {
+                const recent = this.oracleTracker.recentFailure(rule, input);
+                if (recent) {
+                  const age = Math.round(recent.ageMs / 1e3);
+                  const detail = signals.map((s) => s.detail).join("; ");
+                  return this.violation(input, rule, `${rule.message} [${detail}; ${age}s after failing run "${recent.command}"]`, start, 5);
+                }
+              }
+            }
+          }
+        }
+      }
       if (deepChecks && rule.type === "sequence" && rule.steps) {
         const seqResult = this.config.sequenceDetector.check(input, rule);
         if (seqResult) {
@@ -7198,6 +7420,12 @@ var EnforcementPipeline = class {
       const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
       for (const rule of rules2) {
         if (rule.type === "research" && rule.trigger) this.config.researchTracker.observeTrigger(rule, input, exitCode);
+      }
+    }
+    {
+      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      for (const rule of rules2) {
+        if (rule.type === "oracle") this.oracleTracker.observeOutcome(rule, input, exitCode);
       }
     }
     if (!this.config.stuckTracker) return;
@@ -8066,9 +8294,9 @@ function receiptsLogPath() {
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines = readFileSync8(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const r = JSON.parse(lines[i]);
+    const lines2 = readFileSync8(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    for (let i = lines2.length - 1; i >= 0; i--) {
+      const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
       return r.receipt_hash ?? null;
     }
@@ -8202,6 +8430,7 @@ var StateManager = class {
   circuitBreaker = {};
   rateCounts = {};
   verification = {};
+  oracleFailures = {};
   constructor() {
     this.load();
   }
@@ -8250,6 +8479,11 @@ var StateManager = class {
     this.verification = {};
     for (const [key, val] of Object.entries(rawVerification)) {
       if (now - val.createdAt < TTL_MS) this.verification[key] = val;
+    }
+    const rawOracle = this.loadFile("oracle-failures", {});
+    this.oracleFailures = {};
+    for (const [key, val] of Object.entries(rawOracle)) {
+      if (now - val.timestamp < TTL_MS) this.oracleFailures[key] = val;
     }
   }
   /** Mark a rule as having been violated (first time). */
@@ -8301,6 +8535,11 @@ var StateManager = class {
   clearVerification(key) {
     delete this.verification[key];
     this.saveFile("verification", this.verification);
+  }
+  /** Record a failing test run for the oracle-tampering detector's recency window. */
+  setOracleFailure(key, value) {
+    this.oracleFailures[key] = value;
+    this.saveFile("oracle-failures", this.oracleFailures);
   }
 };
 
@@ -8817,22 +9056,22 @@ var plugin_default = {
       "experimental.chat.system.transform": async (input, output) => {
         try {
           advanceTurn(input?.sessionID || lastActiveSession);
-          const blocks = requirementSources.map(requirementLines).filter((lines) => lines.length);
+          const blocks = requirementSources.map(requirementLines).filter((lines2) => lines2.length);
           if (blocks.length) {
             output.system ||= [];
-            output.system.push(...blocks.map((lines) => `Standing Requirements (mandatory):
-${lines.map((line) => `- ${line}`).join("\n")}`));
+            output.system.push(...blocks.map((lines2) => `Standing Requirements (mandatory):
+${lines2.map((line) => `- ${line}`).join("\n")}`));
           }
         } catch {
         }
       },
       "experimental.session.compacting": async (_input, output) => {
         try {
-          const lines = requirementSources.flatMap(requirementLines);
-          if (lines.length) {
+          const lines2 = requirementSources.flatMap(requirementLines);
+          if (lines2.length) {
             output.context ||= [];
             output.context.push(`## Standing Requirements (survive compaction)
-${lines.map((line) => `- ${line}`).join("\n")}`);
+${lines2.map((line) => `- ${line}`).join("\n")}`);
           }
         } catch {
         }

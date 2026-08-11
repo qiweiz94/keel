@@ -18,6 +18,10 @@ export interface VerificationState {
   [key: string]: { createdAt: number; generation: number }
 }
 
+export interface OracleFailureState {
+  [key: string]: { timestamp: number; command: string }  // "oracle:<ruleId>:<cwd>" → last failing test run
+}
+
 const STATE_DIR = process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
 const TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
 
@@ -33,6 +37,7 @@ export class StateManager {
   circuitBreaker: CircuitBreakerState = {}
   rateCounts: RateLimitState = {}
   verification: VerificationState = {}
+  oracleFailures: OracleFailureState = {}
 
   constructor() {
     this.load()
@@ -91,6 +96,16 @@ export class StateManager {
     this.verification = {}
     for (const [key, val] of Object.entries(rawVerification)) {
       if (now - val.createdAt < TTL_MS) this.verification[key] = val
+    }
+
+    // Load and clean oracleFailures. The 24h TTL here is a hygiene bound
+    // (drop ancient entries so the file doesn't grow forever) — it is NOT
+    // the recency window a rule fires on; that is `rule.window_seconds`
+    // (default 900s), checked separately by OracleTracker.recentFailure.
+    const rawOracle = this.loadFile<OracleFailureState>('oracle-failures', {})
+    this.oracleFailures = {}
+    for (const [key, val] of Object.entries(rawOracle)) {
+      if (now - val.timestamp < TTL_MS) this.oracleFailures[key] = val
     }
   }
 
@@ -153,5 +168,11 @@ export class StateManager {
   clearVerification(key: string): void {
     delete this.verification[key]
     this.saveFile('verification', this.verification)
+  }
+
+  /** Record a failing test run for the oracle-tampering detector's recency window. */
+  setOracleFailure(key: string, value: { timestamp: number; command: string }): void {
+    this.oracleFailures[key] = value
+    this.saveFile('oracle-failures', this.oracleFailures)
   }
 }

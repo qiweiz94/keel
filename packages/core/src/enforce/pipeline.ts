@@ -16,6 +16,9 @@ import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
+import { OracleTracker } from './oracle-tracker.js'
+import { detectWeakening } from './oracle-signatures.js'
+import { matchesAnyTestGlob } from './oracle-glob.js'
 import { FileRuleOverrideStore } from './overrides.js'
 import { commandString, argPath } from './arg-utils.js'
 
@@ -37,6 +40,7 @@ export interface PipelineConfig {
   researchCache?: ResearchCache
   researchTracker?: ResearchTracker
   stuckTracker?: StuckTracker
+  oracleTracker?: OracleTracker
   ledger?: ProblemLedger
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
@@ -64,6 +68,7 @@ export interface PipelineConfig {
 export class EnforcementPipeline {
   private config: PipelineConfig
   private verificationTracker: VerificationTracker
+  private oracleTracker: OracleTracker
   private denyFirstTime: Map<string, boolean> = new Map()
   private circuitBreaker: Map<string, { count: number; startTime: number }> = new Map()
   private rateCounts: Map<string, { count: number; windowStart: number }> = new Map()
@@ -74,6 +79,11 @@ export class EnforcementPipeline {
   constructor(config: PipelineConfig) {
     this.config = config
     this.verificationTracker = config.verificationTracker || new VerificationTracker(config.stateManager)
+    // Self-constructed by default (like verificationTracker above) rather
+    // than requiring every host (cli/enforce.ts, daemon.ts, opencode-
+    // plugin/plugin.ts) to be updated to wire it explicitly — those already
+    // pass `stateManager`, which is all OracleTracker needs.
+    this.oracleTracker = config.oracleTracker || new OracleTracker(config.stateManager)
     this.overrideStore = config.overrideStore || new FileRuleOverrideStore()
     this.lastRulesHash = this.computeRulesHash()
     this.loadState()
@@ -188,7 +198,7 @@ export class EnforcementPipeline {
     const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
       ['verification', 'research', 'stuck', 'rate', 'time'].includes(rule.type)
-      || (deepChecks && ['sequence', 'flow'].includes(rule.type))
+      || (deepChecks && ['sequence', 'flow', 'oracle'].includes(rule.type))
     )
     // Approval-gated rules are re-evaluated on every call: the user may grant
     // a one-time override (`keel allow <id> --once`) between attempts, so a
@@ -540,6 +550,67 @@ export class EnforcementPipeline {
         }
       }
 
+      // Match against oracle rules (test-oracle-tampering detector, Tier 5):
+      // two independent detection surfaces on the SAME rule — a content-diff
+      // surface (`paths`, for a weakening EDIT to a test file) and a
+      // command-surface (`match`, for tampering via a CLI flag the pipeline
+      // never sees a diff for, e.g. `jest -u`). Both are gated on
+      // OracleTracker.recentFailure: a weakening pattern with no failing
+      // test run inside the recency window produces NO finding at all in
+      // the shipped default — see oracle-tracker.ts and
+      // session/proposals/test-oracle-tampering.yaml for why that is a
+      // hard gate, not a severity dial. `mode: observe` on the shipped rule
+      // means `violation()` below still only ever returns `allow` with
+      // `observed_action` set — nothing here can block by itself.
+      if (deepChecks && rule.type === 'oracle') {
+        // Command-surface: the invocation itself IS the tamper — no diff to
+        // read. Runs first because it is the cheaper check.
+        if (rule.match) {
+          const cmdStr = commandString(input)
+          if (cmdStr && this.matchesRulePattern(rule.match, cmdStr)) {
+            const recent = this.oracleTracker.recentFailure(rule, input)
+            if (recent) {
+              const age = Math.round(recent.ageMs / 1000)
+              return this.violation(input, rule, `${rule.message} [command-surface: "${cmdStr}" ran ${age}s after failing run "${recent.command}"]`, start, 5)
+            }
+          }
+        }
+
+        // Content-diff surface: an edit to a file matching the test-file
+        // globs, scanned against the file's PRE-edit content. An Edit-shape
+        // call (oldString/newString) diffs just the changed region — more
+        // precise than the full file and avoids a disk read entirely; a
+        // Write-shape call (content/text, no oldString) diffs against the
+        // on-disk content, mirroring the content-rule block just above.
+        if (rule.paths && !/^read/i.test(input.tool)) {
+          const args = input.args as Record<string, unknown>
+          const pathStr = argPath(args)
+          const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
+          // NOT this.pathMatches — see oracle-glob.ts's header for the
+          // pre-existing bug in that shared matcher that made it unusable
+          // for a pattern like "**/*.test.*".
+          const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths)
+          if (pathMatched) {
+            const patchText = String(args.patchText || '')
+            const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? '')
+            const explicitOld = typeof args.oldString === 'string' ? args.oldString : undefined
+            const isFile = explicitOld === undefined && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
+            const oldText = explicitOld !== undefined ? explicitOld : (isFile ? readFileSync(resolvedPath, 'utf-8') : '')
+            if (newText || oldText) {
+              const signals = detectWeakening(oldText, newText, resolvedPath || pathStr)
+              if (signals.length) {
+                const recent = this.oracleTracker.recentFailure(rule, input)
+                if (recent) {
+                  const age = Math.round(recent.ageMs / 1000)
+                  const detail = signals.map(s => s.detail).join('; ')
+                  return this.violation(input, rule, `${rule.message} [${detail}; ${age}s after failing run "${recent.command}"]`, start, 5)
+                }
+              }
+            }
+          }
+        }
+      }
+
       // Check sequence rules (Tier 6)
       if (deepChecks && rule.type === 'sequence' && rule.steps) {
         const seqResult = this.config.sequenceDetector.check(input, rule)
@@ -623,6 +694,17 @@ export class EnforcementPipeline {
         if (rule.type === 'research' && rule.trigger) this.config.researchTracker.observeTrigger(rule, input, exitCode)
       }
     }
+    // Oracle recency window: armed by the SAME after-hook, regardless of
+    // whether a stuckTracker was supplied (oracleTracker is always present —
+    // see the constructor). Must run before the stuckTracker early-return
+    // below, which only concerns the stuck-loop branch.
+    {
+      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      for (const rule of rules) {
+        if (rule.type === 'oracle') this.oracleTracker.observeOutcome(rule, input, exitCode)
+      }
+    }
+
     if (!this.config.stuckTracker) return
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
     for (const rule of rules) {
