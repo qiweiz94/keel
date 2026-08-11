@@ -194,3 +194,12 @@
 - 2026-08-11 supervisor: WAVE-2 GATE CLOSED. Full suite green by supervisor's own run:
   core 436/2skip, cli 997/16skip, exit 0. 42 default rules (36 restructured + 6 pasted).
   do-not-ship 8/8. drift 9/9 over 3 sources. All 6 proposal rules paste-safe + fixtured.
+- 2026-08-11 supervisor: W3 lane 3 (docs) landed (w3-docs 2e315f4): docs/tiers.md +
+  README/ROADMAP fixes, every claim verified live (42 rules confirmed via fresh install;
+  floor-first + dial-diff + retrospective output all captured). CORRECTLY documented the
+  CURRENT mechanism (manual mode: edit) because keel promote / promotion_fp_threshold did
+  NOT exist on its base — they're being BUILT by w3-promotion in parallel. GATE ACTION:
+  after w3-promotion merges, reconcile docs/tiers.md to document `keel promote` +
+  promotion_fp_threshold as real. Flags: (1) ROADMAP "12 rule types; 7 actions" stale —
+  actual 21 types / 10 actions (9 usable, mask rejected); fix at gate. (2) marketing
+  draft anecdote numbers unverifiable — leave, not shipped.
