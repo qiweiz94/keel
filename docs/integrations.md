@@ -27,7 +27,7 @@ Every one of these evaluates a tool call **before it runs** and can stop it.
 |---|---|---|---|---|
 | OpenCode | `keel install --opencode` | `tool.execute.before` plugin | throws | **live** |
 | OpenClaw | `keel install --openclaw` | `before_tool_call` plugin | `block: true` / `requireApproval` | **live** — `openclaw plugins list` reports it loaded |
-| Claude Code | `keel install --claude-code` | `PreToolUse` hook | exit 2 | types |
+| Claude Code | `keel install --claude-code` | `PreToolUse` hook | exit 2 | **live** — `claude -p` child blocked `git push --force origin main`; see `session/transcripts/claude-code-force-push.txt` |
 | Cline | `keel install --cline` | `PreToolUse` hook | `HOOK_CONTROL` + `cancel: true` | types — read from installed `@cline/core` |
 | Gemini CLI | `keel install --gemini` | `PreToolUse` hook | exit 2 | types — Claude-Code-compatible per `gemini hooks migrate --from-claude` |
 | Cursor | `keel install --cursor` | `beforeShellExecution` / `beforeMCPExecution` | `{permission: deny\|ask}` | docs |

@@ -178,3 +178,19 @@
   encoded the old warn-first floor behavior → reconciliation delegated (Bucket A:
   floor rules evaluated twice, update warn→deny-first; must NOT weaken non-floor
   warn-once assertions). AUDIT.md must feature this with the moved-ref transcript.
+- 2026-08-11 supervisor: LIVE-VERIFY OFFICIAL RESULTS (gate-2, on the fixed+merged tree):
+  * OpenCode → live (was live). scripts/live-verify/opencode.sh PASS: hook fires headless,
+    both force-push blocks proven with the child's own "[Keel] no-force-push" marker, ref
+    unmoved, negative control valid. Transcripts pinned *-OFFICIAL-gate2.txt.
+  * Claude Code → UPGRADED types→live. One supervisor attempt: project-scoped
+    .claude/settings.json PreToolUse hook in a /tmp scratch repo, REAL auth (no
+    CLAUDE_CONFIG_DIR isolation — the lane proved isolation loses auth), user's real
+    ~/.claude untouched. Child (claude -p, haiku, --dangerously-skip-permissions) tried
+    `git push --force origin main`; permission_denials shows the exact Bash command denied,
+    child result "blocked by a Keel enforcement hook", remote ref UNCHANGED. Transcript
+    session/transcripts/claude-code-force-push.txt. docs/integrations.md updated.
+  * Gemini/Codex → unchanged (auth-blocked under isolation; HUMAN-CHECKLIST). Codex not
+    installed. Honest, not upgraded.
+- 2026-08-11 supervisor: WAVE-2 GATE CLOSED. Full suite green by supervisor's own run:
+  core 436/2skip, cli 997/16skip, exit 0. 42 default rules (36 restructured + 6 pasted).
+  do-not-ship 8/8. drift 9/9 over 3 sources. All 6 proposal rules paste-safe + fixtured.
