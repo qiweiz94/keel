@@ -87,9 +87,30 @@ function secureEqual(a: string, b: string): boolean {
 // StateManager keeps escalation and rate state across every project and
 // every platform client.
 const pipelineCache = new Map<string, EnforcementPipeline>()
-const sharedState = new StateManager()
-const sharedResearchCache = new ResearchCache()
-const sharedLedger = new ProblemLedger()
+
+// StateManager/ProblemLedger/ResearchCache each default-construct from an
+// env var read at CALL time (KEEL_STATE_DIR / KEEL_RESEARCH_CACHE_DIR —
+// see the "read per construction, not module load" comment on
+// state-manager.ts's stateDir()). A plain `const shared = new X()` here
+// would defeat that: it runs once, at this module's first import, which
+// for a daemon under test happens before the test's beforeEach has a
+// chance to override HOME/KEEL_STATE_DIR — permanently binding these
+// singletons to whatever env was live at import time (in practice, the
+// developer's real ~/.keel/state). Constructing lazily, on first real
+// use (the first request a running daemon handles), keeps that env read
+// where callers actually control it.
+let _sharedState: StateManager | undefined
+function sharedState(): StateManager {
+  return _sharedState ??= new StateManager()
+}
+let _sharedResearchCache: ResearchCache | undefined
+function sharedResearchCache(): ResearchCache {
+  return _sharedResearchCache ??= new ResearchCache()
+}
+let _sharedLedger: ProblemLedger | undefined
+function sharedLedger(): ProblemLedger {
+  return _sharedLedger ??= new ProblemLedger()
+}
 
 function ruleFingerprint(cwd: string): string {
   const sources = [
@@ -128,14 +149,14 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
-    researchCache: sharedResearchCache,
+    researchCache: sharedResearchCache(),
     stuckTracker: new StuckTracker(),
-    researchTracker: new ResearchTracker(sharedResearchCache),
-    ledger: sharedLedger,
+    researchTracker: new ResearchTracker(sharedResearchCache()),
+    ledger: sharedLedger(),
     ruleHierarchy: hierarchy,
     ruleVersion: 1,
     allowedFixTransforms: true,
-    stateManager: sharedState,
+    stateManager: sharedState(),
     reloadRules: () => loadRuleHierarchy(cwd),
     ruleFingerprint: () => ruleFingerprint(cwd),
     onRulesError: (errors) => {
@@ -260,7 +281,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
           if (parsed.url) {
             fetchPage(parsed.url)
               .then((page) => {
-                const entry = sharedResearchCache.put({
+                const entry = sharedResearchCache().put({
                   topic: parsed.url as string,
                   kind: 'fetch',
                   session_id: sessionId,
@@ -281,7 +302,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
           if (parsed.query) {
             webSearch(parsed.query, searchConfig(), maxResults)
               .then(async (results) => {
-                const entry = sharedResearchCache.put({
+                const entry = sharedResearchCache().put({
                   topic: parsed.query as string,
                   kind: 'search',
                   session_id: sessionId,
@@ -308,7 +329,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
     if (url.pathname === '/v1/research/cache') {
       const sessionId = url.searchParams.get('session_id') || 'daemon'
       const topic = url.searchParams.get('topic') || undefined
-      return send(200, { entries: sharedResearchCache.list(sessionId, topic) })
+      return send(200, { entries: sharedResearchCache().list(sessionId, topic) })
     }
 
     if (url.pathname === '/v1/hypothesis' && req.method === 'POST') {
@@ -321,9 +342,9 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
             return send(400, { error: 'statement is required' })
           }
           let problemKey = parsed.problem_key
-          if (!problemKey) problemKey = sharedLedger.activeProblemKey(parsed.session_id || 'daemon') || ''
+          if (!problemKey) problemKey = sharedLedger().activeProblemKey(parsed.session_id || 'daemon') || ''
           if (!problemKey) return send(400, { error: 'no active problem — provide problem_key' })
-          const hypothesis = sharedLedger.addHypothesis(problemKey, parsed.statement, parsed.evidence || [])
+          const hypothesis = sharedLedger().addHypothesis(problemKey, parsed.statement, parsed.evidence || [])
           return send(200, { hypothesis, problem_key: problemKey })
         } catch (err) {
           return send(400, { error: String(err) })
@@ -341,7 +362,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
           const cwd = parsed.cwd || process.cwd()
           const command = commandString({ tool: parsed.tool || 'unknown', args: parsed.args || {}, cwd, session_id: parsed.session_id || 'daemon', turn_number: 1, context_tokens: 0, level: 'balanced', context: 'local', agent: 'unknown', subagent_of: null } as EnforceInput)
           const exit = parsed.exit_code === undefined ? null : Number(parsed.exit_code)
-          sharedLedger.recordOutcome(cwd, command, exit, parsed.session_id || 'daemon')
+          sharedLedger().recordOutcome(cwd, command, exit, parsed.session_id || 'daemon')
           const pipeline = pipelineFor(cwd)
           pipeline.recordAttemptOutcome({ tool: parsed.tool || 'unknown', args: parsed.args || {}, cwd, session_id: parsed.session_id || 'daemon', turn_number: 1, context_tokens: 0, level: 'balanced', context: 'local', agent: 'unknown', subagent_of: null } as EnforceInput, exit)
           return send(200, { recorded: true })

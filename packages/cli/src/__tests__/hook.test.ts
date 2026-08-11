@@ -20,6 +20,14 @@ import { fileURLToPath } from 'node:url'
  * Isolation: HOME is overridden to a temp dir so the test uses its own
  * ~/.keel (rules, state, audit) and never touches the real one. The
  * project's .keel/rules.yaml is the sole rule source.
+ *
+ * KEEL_STATE_DIR is overridden too, to the same HOME-derived shape
+ * (<tempHome>/.keel/state) — state-manager.ts's stateDir() prefers
+ * KEEL_STATE_DIR over the HOME-derived default, so under a blanket
+ * KEEL_STATE_DIR in the outer environment (e.g. `KEEL_STATE_DIR=$(mktemp
+ * -d) npm test`), HOME alone stops isolating this test: every concurrent
+ * file/process would resolve the same literal deny-first-time.json and
+ * race on the warn-then-deny escalation this suite exercises.
  */
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
@@ -64,6 +72,7 @@ function runHook(toolName: string, toolInput: object): { stdout: string; stderr:
       env: {
         ...process.env,
         HOME: tempHome,
+        KEEL_STATE_DIR: join(tempHome, '.keel', 'state'),
         PATH: `${shimPath}:${process.env.PATH}`,
         TOOL_NAME: toolName,
         TOOL_INPUT: JSON.stringify(toolInput),
