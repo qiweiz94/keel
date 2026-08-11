@@ -202,3 +202,17 @@
   listed as unbuilt; SECURITY.md internal inconsistency (a residual described open in one section,
   closed in another) + Supported Versions still 0.2.x. M0 nearly complete: experiment ✅, A1 ✅,
   C2 ✅, dashboard-web fix ✅, release docs ✅. LEFT: perf (A4, running), then Phase 5 AUDIT.md.
+- 2026-08-11 supervisor: M1/A2 GATE CLOSED (2edae5c) — THE shell-parse normalization layer,
+  highest-leverage correctness item. command-normalizer.ts (zero deps): strips quotes only from
+  whitespace-free runs (r"m"→rm — the insight that avoids worsening echo "rm -rf /"); compound
+  split; bounded inline var expansion; interpreter-body extraction (1-level shell recursion). Wired
+  via commandSurfaces() (additive: surfaces[0]=raw, nothing that matched before stops). Two raw-only
+  exceptions kept (unless-clauses, fix-triggers) with regression tests. VERIFIED LIVE by supervisor:
+  r"m" -rf / → deny, T=/;rm -rf $T → deny (both bypasses pre-A2). Perf: normalizer 0.139ms, evaluate
+  p95 0.536ms (2 orders under 50ms). Suite green core 531 (+35) / cli 677. SECURITY.md "Four classes"
+  rewritten w/ measured table.
+  FOLLOW-UPS QUEUED (need DEFAULT_RULES_YAML — a ruleset lane): (1) A2 now EXPOSES interpreter bodies
+  as a matchable surface but no default rule targets `python3 -c "shutil.rmtree('/')"` — add a rule
+  matching destructive ops inside -c/-e bodies (honest open gap). (2) G2 FP-TUNING: `echo "rm -rf /"`
+  is a PRE-EXISTING FP (substring match) — use A2's structural surfaces to require command-position,
+  not a data arg. Both are the ruleset-authoring lane's scope; queue for M1 continuation.
