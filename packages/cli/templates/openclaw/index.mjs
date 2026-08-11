@@ -151,7 +151,33 @@ export function exitCodeFrom(event) {
   return typeof event?.result === 'undefined' ? null : 0
 }
 
+/**
+ * Best available channel for a non-blocking advisory message.
+ *
+ * The installed SDK's `before_tool_call` return type (see the module
+ * header) has no field for "let this proceed but show the human a
+ * message" — only `block`/`blockReason` and `requireApproval`, both of
+ * which stop the call. `api.logger.warn` is real (OpenClaw's plugin SDK
+ * docs list `api.logger.{debug,info,warn,error}` as the scoped per-plugin
+ * logger), so it is a strict upgrade over the bare `console.warn` this
+ * used to fall back to — a plugin's own `console.warn` output is not
+ * guaranteed to reach the same place OpenClaw's own logging does.
+ *
+ * What is NOT confirmed here, and is recorded honestly rather than
+ * claimed: whether `api.logger.warn` output reaches the end user's chat
+ * surface, or only an operator-facing server/gateway log. The installed
+ * hook-types.d.ts this adapter is otherwise built against does not settle
+ * that, and this environment has no live OpenClaw to check against.
+ * session/EVIDENCE/wave3-warnsurface.md and HUMAN-CHECKLIST.md carry this
+ * as an open item for a human with a running OpenClaw instance.
+ */
+export function emitFor(api) {
+  const warn = api?.logger?.warn
+  return typeof warn === 'function' ? (text) => warn.call(api.logger, text) : console.warn
+}
+
 export function register(api) {
+  const emit = emitFor(api)
   api.on('before_tool_call', async (event, ctx) => {
     const result = await daemon('/v1/check', {
       tool: event?.toolName || 'unknown',
@@ -165,7 +191,7 @@ export function register(api) {
       console.warn(DEGRADED)
       return offlineVerdict(event?.params)
     }
-    return translate(result)
+    return translate(result, emit)
   }, { priority: 100 })
 
   api.on('after_tool_call', async (event, ctx) => {

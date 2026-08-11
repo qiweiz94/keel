@@ -10,6 +10,7 @@ import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
 import { loadRuleHierarchy, parseRulesContent, parseRulesFile, validateRules } from '../rule-parser.js'
 import type { StateManager } from '../state-manager.js'
+import { FileRuleOverrideStore } from '../overrides.js'
 
 function sharedStateManager(): StateManager {
   const state = {
@@ -288,6 +289,53 @@ rules:
       expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('warn')
       expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('allow')
       expect((await pipeline.evaluate(input('Bash', { command: 'danger' }))).action).toBe('deny')
+    })
+
+    it('threads the caller session_id through to a real overrideStore — `keel allow --session` end to end', async () => {
+      // Unlike the hand-rolled mocks above, this exercises the ACTUAL
+      // FileRuleOverrideStore `keel allow --session` writes into, wired
+      // through the pipeline exactly like `keel hook <host>` does, so a
+      // regression in the session_id plumbing between EnforceInput and
+      // the store shows up here even if overrides.test.ts's
+      // store-in-isolation tests still pass.
+      const home = mkdtempSync(join(tmpdir(), 'keel-pipeline-session-override-'))
+      const directory = join(home, '.keel')
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, 'overrides.json'), JSON.stringify({
+        'session-overridable': { expires_at: Date.now() + 60000, mode: 'session', session_id: 'ses_owner' },
+      }))
+      const rules = parseRulesContent(`version: 1
+rules:
+  - id: session-overridable
+    type: command
+    match: "danger"
+    action: deny
+    message: "Dangerous command"
+`, '/tmp/session-override-rules.yaml')
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(), ruleHierarchy: { global: null, user: null, project: rules, local: null },
+        ruleVersion: 1,
+        overrideStore: new FileRuleOverrideStore(home),
+      })
+
+      // A different session_id gets the normal warn-once-then-deny ladder —
+      // the session override never applies to it.
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_stranger'))).action).toBe('warn')
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_stranger'))).action).toBe('deny')
+
+      // The owning session_id is allowed — repeatedly, not spent like
+      // --once — because the override's mode is `session`, not `once`.
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_owner'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_owner'))).action).toBe('allow')
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_owner'))).action).toBe('allow')
+
+      // And the stranger session is still denied afterwards — the owning
+      // session's use never leaked a grant to it.
+      expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_stranger'))).action).toBe('deny')
+
+      rmSync(home, { recursive: true, force: true })
     })
 
     it('consumes an override before returning a cached deny', async () => {

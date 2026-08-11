@@ -272,6 +272,7 @@ program
   .description('Override a rule temporarily (user-owned — run this yourself, not through the agent)')
   .argument('<rule-id>', 'Rule ID to override')
   .option('--once', 'Allow the NEXT violation only (5 minutes if unused)')
+  .option('--session [session-id]', 'Allow every violation, but only for one agent session (auto-resolved from the audit trail, or an explicit id — useful with multiple sessions running in parallel; 24h ceiling)')
   .action(allowCommand)
 
 program
