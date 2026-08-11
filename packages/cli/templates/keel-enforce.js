@@ -7551,6 +7551,76 @@ var EnforcementPipeline = class {
     }
     return result;
   }
+  /**
+   * Narrow claim-to-evidence check for a channel that carries the agent's
+   * own completed output OUTSIDE a real tool call — an OpenCode
+   * `experimental.text.complete` segment, a Claude Code `Stop` hook's
+   * `last_assistant_message`, or any future per-host equivalent (v0.4
+   * Phase 1: "give claim-to-evidence real reach").
+   *
+   * Deliberately NOT `evaluate(input)`: routing a synthetic per-utterance
+   * "tool call" through the full tier stack would feed
+   * `flowTracker.record`/`sequenceDetector.record` and the `rate`-type
+   * stateful rules (e.g. `runaway-budget-tool-calls`) a phantom call once
+   * per assistant utterance — corrupting exactly the trace-derived counters
+   * (stuck-loop, runaway-budget, flow) the v0.4 thesis experiment measures
+   * off keel's own traces in the guarded arm. It would also newly activate
+   * two other `input.reasoning` consumers that have been permanently
+   * unpopulated in production until this phase: `unless_reasoning` allow-
+   * exceptions (types.ts) and the tier-7 `level: protect` reasoning-anomaly
+   * heuristic (evaluateTiers() below) — both are behavior changes with
+   * their own review, not a side effect of widening the claim channel's
+   * reach. This method only ever touches `type: claim` rules and the
+   * `VerificationTracker` state they already share with `type:
+   * verification` — nothing else in the pipeline sees this call.
+   */
+  async evaluateClaim(input) {
+    const start = Date.now();
+    this.observedMatches = [];
+    let result;
+    try {
+      result = this.evaluateClaimTier(input, start);
+    } catch (err) {
+      if (err === OBSERVE_CONTINUE) {
+        result = this.result("allow", "", "Allowed (observe-only match)", start, false, 0);
+      } else {
+        throw err;
+      }
+    }
+    if (this.observedMatches.length) {
+      result.observed_matches = this.observedMatches.map((m) => ({ ...m }));
+      result.observed_action = this.observedMatches[0].observed_action;
+      if (result.action === "allow" && !result.rule_id) {
+        const first = this.observedMatches[0];
+        result.rule_id = first.rule_id;
+        result.rule_name = first.rule_id;
+        result.message = first.message;
+      }
+    }
+    return result;
+  }
+  /** The single-rule-type loop evaluateClaim() wraps. See its own header comment. */
+  evaluateClaimTier(input, start) {
+    this.checkRuleVersion();
+    const level = this.effectiveLevel(input);
+    const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
+    for (const rule of rules) {
+      if (rule.type !== "claim") continue;
+      try {
+        if (this.verificationTracker.isPending(rule, input)) {
+          const claim = detectClaim(input);
+          if (claim) {
+            const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`;
+            return this.violation(input, rule, message, start, 6, rule.id);
+          }
+        }
+      } catch (err) {
+        if (err === OBSERVE_CONTINUE) continue;
+        throw err;
+      }
+    }
+    return this.result("allow", "", "Allowed (no matching claim rule)", start, false, 0);
+  }
   async evaluateTiers(input) {
     const start = Date.now();
     this.checkRuleVersion();
@@ -10383,6 +10453,60 @@ var plugin_default = {
           pipeline.recordAttemptOutcome(action, exit);
           record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
           await verifyEdit(input?.tool, args, input?.sessionID, action.turn_number);
+        } catch {
+        }
+      },
+      /**
+       * Claim-to-evidence real reach (v0.4 Phase 1). `tool.execute.before`
+       * only ever sees a synthetic `reasoning` field IF a host populates
+       * `hookInput.reasoning` (toEnforceInput above) — surveyed and found
+       * unpopulated by OpenCode's own PreToolUse-shaped `tool.execute.
+       * before` input (see claim.ts's module doc). The channel that DOES
+       * carry the agent's own completed output is this hook: confirmed by
+       * a live probe (`opencode run` against a scratch repo with a logging
+       * plugin, free model `opencode/deepseek-v4-flash-free`, see
+       * session/v04/EVIDENCE/phase-1.md) that `output.text` on
+       * `experimental.text.complete` is the FULL text of one completed
+       * assistant text segment — not a delta, not the model's internal
+       * `reasoning`-type part (which never triggers this hook), and it
+       * fires strictly after any `tool.execute.after` calls already made
+       * in the same turn (so a satisfy command that already ran is
+       * reflected in the VerificationTracker's pending state by the time
+       * this checks it).
+       *
+       * Routed through `pipeline.evaluateClaim()`, NOT `pipeline.
+       * evaluate()`: the latter would treat one call per assistant
+       * utterance as a phantom tool call for flow/sequence/rate state —
+       * see evaluateClaim()'s own header comment in pipeline.ts for why
+       * that would corrupt the exact trace-derived counters (runaway-
+       * budget, stuck-loop) the v0.4 thesis experiment measures in the
+       * guarded arm. `evaluateClaim()` only ever touches `type: claim`
+       * rules and the same VerificationTracker pending state `type:
+       * verification` rules already share.
+       */
+      "experimental.text.complete": async (input, output) => {
+        try {
+          if (isDisabled()) return;
+          const text = typeof output?.text === "string" ? output.text : "";
+          if (!text) return;
+          const enforceInput = toEnforceInput("assistant-message", {}, input, level, directory);
+          enforceInput.reasoning = text;
+          const result = await pipeline.evaluateClaim(enforceInput);
+          if (result.observed_matches?.length) {
+            record({
+              session_id: input?.sessionID,
+              turn_number: enforceInput.turn_number,
+              tool: "assistant-message",
+              args: {},
+              rule_id: result.rule_id,
+              action: result.action,
+              observed_action: result.observed_action,
+              observed_matches: result.observed_matches,
+              message: result.message,
+              hook: "experimental.text.complete",
+              cwd: directory
+            });
+          }
         } catch {
         }
       },

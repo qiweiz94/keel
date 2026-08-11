@@ -81,6 +81,19 @@ rules:
     verification_window_seconds: 300
     action: deny
     message: "Test required before commit or push."
+  - id: claim-without-evidence
+    type: claim
+    mode: observe
+    trigger:
+      tools: [write, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    verification_window_seconds: 300
+    action: warn
+    message: "Claimed done/fixed/tested/passing/verified/complete without a passing verification run since the last edit."
   - id: filesystem-protection
     type: filesystem
     paths: ["secrets"]
@@ -186,7 +199,7 @@ rules:
 `)
 const hooks = await plugin.server({ directory: join(tmpHome, 'proj') })
 
-const expected = ['tool.execute.before', 'tool.execute.after', 'experimental.chat.system.transform', 'experimental.session.compacting']
+const expected = ['tool.execute.before', 'tool.execute.after', 'experimental.text.complete', 'experimental.chat.system.transform', 'experimental.session.compacting']
 check('all plugin hooks', expected.every(h => typeof hooks?.[h] === 'function'))
 
 // Self-bootstrap writes default rules.
@@ -619,6 +632,81 @@ await hooks['tool.execute.after'](
 const afterRead = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
   .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
 check('post-edit check only runs on edits', beforeRead === afterRead)
+
+// ── claim-to-evidence real reach: experimental.text.complete (v0.4 Phase 1) ──
+//
+// The channel a real OpenCode session drives for the agent's own completed
+// output — end-to-end through the ACTUAL plugin hook, not the grammar unit
+// or the bare pipeline method (both covered in packages/core's claim.test.ts).
+// Session ids are unique per case so entries can be found precisely instead
+// of by fragile whole-file substring counting.
+function traceEntries() {
+  return fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+    .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+    .map(line => { try { return JSON.parse(line) } catch { return null } })
+    .filter(Boolean)
+}
+const claimFired = (sessionId) => traceEntries().some(e =>
+  e.session_id === sessionId && e.hook === 'experimental.text.complete'
+  && e.rule_id === 'claim-without-evidence' && e.observed_action === 'warn')
+
+const claimDir = join(tmpHome, 'claim-project')
+fs.mkdirSync(claimDir, { recursive: true })
+const claimHooks = await plugin.server({ directory: claimDir })
+
+// MUST-FIRE: an edit under src/, then a completed assistant utterance
+// claiming done with no test run since — the exact shape the plan's
+// "give claim-to-evidence real reach" gap describes.
+await claimHooks['tool.execute.before']({ tool: 'write', sessionID: 'claim-fire' }, { args: { filePath: 'src/thing.ts', content: 'x' } })
+await claimHooks['experimental.text.complete'](
+  { sessionID: 'claim-fire', messageID: 'msg-1', partID: 'part-1' },
+  { text: 'Done, all tests pass.' },
+)
+check('claim channel MUST-FIRE: edit then a completed "done" utterance with no test run since', claimFired('claim-fire'))
+
+// MUST-NOT-FIRE: the obligation was discharged by a real passing test run
+// (tool.execute.after, exit 0) before the same claim text arrives.
+await claimHooks['tool.execute.before']({ tool: 'write', sessionID: 'claim-satisfied' }, { args: { filePath: 'src/thing2.ts', content: 'x' } })
+await claimHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'claim-satisfied', callID: 'test-ok', args: { command: 'npm test' } },
+  { title: 'npm test', output: 'passed', metadata: { exit: 0 } },
+)
+await claimHooks['experimental.text.complete'](
+  { sessionID: 'claim-satisfied', messageID: 'msg-2', partID: 'part-2' },
+  { text: 'Done, all tests pass.' },
+)
+check('claim channel MUST-NOT-FIRE: obligation discharged by a real passing run before the claim', !claimFired('claim-satisfied'))
+
+// MUST-NOT-FIRE: hedge/WIP text — same grammar suppression as every other channel.
+await claimHooks['tool.execute.before']({ tool: 'write', sessionID: 'claim-hedge' }, { args: { filePath: 'src/thing3.ts', content: 'x' } })
+await claimHooks['experimental.text.complete'](
+  { sessionID: 'claim-hedge', messageID: 'msg-3', partID: 'part-3' },
+  { text: 'Still working on this, tests not run yet.' },
+)
+check('claim channel MUST-NOT-FIRE: hedge/WIP text stays silent', !claimFired('claim-hedge'))
+
+// MUST-NOT-FIRE: no edit happened at all in this project — nothing armed
+// the obligation. Pending state is keyed by (rule, cwd), not by session
+// (the same fact "no test since last edit" is shared across a project's
+// concurrent sessions) — so this needs its OWN fresh directory, not just a
+// fresh session id on claimHooks, which already has an obligation pending
+// from the MUST-FIRE case above.
+const neverArmedHooks = await plugin.server({ directory: join(tmpHome, 'claim-project-never-armed') })
+await neverArmedHooks['experimental.text.complete'](
+  { sessionID: 'claim-no-edit', messageID: 'msg-4', partID: 'part-4' },
+  { text: 'Done.' },
+)
+check('claim channel MUST-NOT-FIRE: no prior edit means no pending obligation', !claimFired('claim-no-edit'))
+
+// The hook must not throw even on a malformed/empty payload — it degrades
+// to a silent no-op, matching every other hook's fail-closed-without-
+// crashing contract.
+let textCompleteThrew = false
+try {
+  await claimHooks['experimental.text.complete']({}, {})
+  await claimHooks['experimental.text.complete'](undefined, undefined)
+} catch { textCompleteThrew = true }
+check('claim channel tolerates a malformed/empty payload without throwing', !textCompleteThrew)
 
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))

@@ -48,6 +48,11 @@ export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
  * `before()`), which rewrites any non-"[Keel]"-prefixed throw into a hard
  * block — turning an observe rule into the exact short-circuit bug this
  * exists to remove, just relocated one layer up.
+ *
+ * A THIRD loop exists for the same reason: evaluateClaim()'s single-rule-
+ * type loop below (Wave/Phase-1 claim-reach) follows the identical
+ * try/catch-and-continue shape, plus its own outer fail-safe in
+ * evaluateClaim() itself, mirroring evaluate()'s.
  */
 const OBSERVE_CONTINUE = Symbol('keel:observe-continue')
 
@@ -249,6 +254,79 @@ export class EnforcementPipeline {
       }
     }
     return result
+  }
+
+  /**
+   * Narrow claim-to-evidence check for a channel that carries the agent's
+   * own completed output OUTSIDE a real tool call — an OpenCode
+   * `experimental.text.complete` segment, a Claude Code `Stop` hook's
+   * `last_assistant_message`, or any future per-host equivalent (v0.4
+   * Phase 1: "give claim-to-evidence real reach").
+   *
+   * Deliberately NOT `evaluate(input)`: routing a synthetic per-utterance
+   * "tool call" through the full tier stack would feed
+   * `flowTracker.record`/`sequenceDetector.record` and the `rate`-type
+   * stateful rules (e.g. `runaway-budget-tool-calls`) a phantom call once
+   * per assistant utterance — corrupting exactly the trace-derived counters
+   * (stuck-loop, runaway-budget, flow) the v0.4 thesis experiment measures
+   * off keel's own traces in the guarded arm. It would also newly activate
+   * two other `input.reasoning` consumers that have been permanently
+   * unpopulated in production until this phase: `unless_reasoning` allow-
+   * exceptions (types.ts) and the tier-7 `level: protect` reasoning-anomaly
+   * heuristic (evaluateTiers() below) — both are behavior changes with
+   * their own review, not a side effect of widening the claim channel's
+   * reach. This method only ever touches `type: claim` rules and the
+   * `VerificationTracker` state they already share with `type:
+   * verification` — nothing else in the pipeline sees this call.
+   */
+  async evaluateClaim(input: EnforceInput): Promise<EnforceResult> {
+    const start = Date.now()
+    this.observedMatches = []
+    let result: EnforceResult
+    try {
+      result = this.evaluateClaimTier(input, start)
+    } catch (err) {
+      // Same fail-safe as evaluate()'s outer catch, for the same invariant.
+      if (err === OBSERVE_CONTINUE) {
+        result = this.result('allow', '', 'Allowed (observe-only match)', start, false, 0)
+      } else {
+        throw err
+      }
+    }
+    if (this.observedMatches.length) {
+      result.observed_matches = this.observedMatches.map(m => ({ ...m }))
+      result.observed_action = this.observedMatches[0].observed_action
+      if (result.action === 'allow' && !result.rule_id) {
+        const first = this.observedMatches[0]
+        result.rule_id = first.rule_id
+        result.rule_name = first.rule_id
+        result.message = first.message
+      }
+    }
+    return result
+  }
+
+  /** The single-rule-type loop evaluateClaim() wraps. See its own header comment. */
+  private evaluateClaimTier(input: EnforceInput, start: number): EnforceResult {
+    this.checkRuleVersion()
+    const level = this.effectiveLevel(input)
+    const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
+    for (const rule of rules) {
+      if (rule.type !== 'claim') continue
+      try {
+        if (this.verificationTracker.isPending(rule, input)) {
+          const claim = detectClaim(input)
+          if (claim) {
+            const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`
+            return this.violation(input, rule, message, start, 6, rule.id)
+          }
+        }
+      } catch (err) {
+        if (err === OBSERVE_CONTINUE) continue
+        throw err
+      }
+    }
+    return this.result('allow', '', 'Allowed (no matching claim rule)', start, false, 0)
   }
 
   private async evaluateTiers(input: EnforceInput): Promise<EnforceResult> {

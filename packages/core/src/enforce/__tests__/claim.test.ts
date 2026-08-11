@@ -500,3 +500,147 @@ describe('claim rule state persists across separate pipeline instances (process-
     expect(r.observed_action).toBeUndefined()
   })
 })
+
+// ── evaluateClaim() — v0.4 Phase 1's narrow claim-only channel ──────
+//
+// The channel a real per-host wiring (OpenCode's `experimental.text.
+// complete`, Claude Code's `Stop` hook `last_assistant_message`) drives:
+// the agent's own completed output OUTSIDE a tool call. Deliberately a
+// SEPARATE pipeline method from evaluate() (see pipeline.ts's header
+// comment on evaluateClaim) — these tests prove both halves of that
+// design: it reaches the same claim grammar/verification-tracker state
+// evaluate() does, AND it does not touch anything evaluate() does that
+// evaluateClaim() should not (flow/sequence/rate state the thesis
+// experiment measures off keel's own traces).
+
+function assistantUtterance(reasoning: string, extra: Partial<EnforceInput> = {}): EnforceInput {
+  // No real tool ran — this models an assistant's completed text segment,
+  // not a tool call. 'assistant-message' is not in any shipped trigger's
+  // tool list, so it cannot accidentally arm/satisfy an obligation itself.
+  return input('assistant-message', {}, { reasoning, ...extra })
+}
+
+describe('evaluateClaim() — the real per-host claim-reach channel (not evaluate())', () => {
+  it('MUST-FIRE: edit, then a completed assistant utterance claims done with no test run since', async () => {
+    const p = makePipeline()
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    const r = await p.evaluateClaim(assistantUtterance('Done, all tests pass.'))
+    expect(r.action).toBe('allow')
+    expect(r.observed_action).toBe('warn')
+    expect(r.rule_id).toBe('claim-without-evidence')
+  })
+
+  it('MUST-NOT-FIRE: edit, test exits 0 (obligation discharged via the tool-call channel), then the same utterance via evaluateClaim', async () => {
+    const p = makePipeline()
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    const testCall = input('bash', { command: 'npm test' })
+    await p.evaluate(testCall)
+    p.markVerificationSatisfied(testCall)   // mirrors the host's tool.execute.after on exit 0
+    const r = await p.evaluateClaim(assistantUtterance('Done, all tests pass.'))
+    expect(r.observed_action).toBeUndefined()
+  })
+
+  it('MUST-NOT-FIRE: hedge/WIP utterance while pending — same grammar suppression as the tool-call channel', async () => {
+    const p = makePipeline()
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    const r = await p.evaluateClaim(assistantUtterance('Still working on this, tests not run yet.'))
+    expect(r.observed_action).toBeUndefined()
+  })
+
+  it('MUST-NOT-FIRE: quoted reported speech in the utterance — same quote-stripping as the tool-call channel', async () => {
+    const p = makePipeline()
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    const r = await p.evaluateClaim(assistantUtterance(
+      'The error output said: "All tests passing" — but the run actually failed with 3 errors.',
+    ))
+    expect(r.observed_action).toBeUndefined()
+  })
+
+  it('MUST-NOT-FIRE: docs-only edit never armed the obligation — evaluateClaim has nothing pending to check', async () => {
+    const p = makePipeline()
+    await p.evaluate(input('write', { filePath: 'docs/readme.md', content: '# notes' }))
+    const r = await p.evaluateClaim(assistantUtterance('Done.'))
+    expect(r.observed_action).toBeUndefined()
+  })
+
+  it('is a live method the real pipeline exposes (guards against a future signature/rename drift)', () => {
+    const p = makePipeline()
+    expect(typeof p.evaluateClaim).toBe('function')
+  })
+
+  it('does NOT contaminate rate-rule state — a phantom "call" per assistant utterance must not count toward runaway-budget counters the thesis experiment measures off keel traces', async () => {
+    const RATE_AND_CLAIM = `${CLAIM_RULE}  - id: contamination-rate-check
+    type: rate
+    mode: observe
+    match: ".*"
+    window_seconds: 60
+    max_calls: 1
+    action: warn
+    message: "rate probe"
+`
+    const p = makePipeline(RATE_AND_CLAIM)
+    // Five evaluateClaim() calls — if this routed through the same counters
+    // evaluate() does, the rate rule would already be well past max_calls.
+    for (let i = 0; i < 5; i++) {
+      await p.evaluateClaim(assistantUtterance('still investigating, not done yet'))
+    }
+    // The FIRST real evaluate() call is the rate rule's actual 1st count.
+    // If evaluateClaim() had contaminated it, this would already exceed
+    // max_calls: 1 and observe a 'warn'.
+    const first = await p.evaluate(input('read', { filePath: 'src/other.ts' }))
+    expect(first.observed_matches?.some(m => m.rule_id === 'contamination-rate-check')).toBeFalsy()
+    // The SECOND real call is genuinely the rate rule's 2nd count and DOES
+    // exceed max_calls — proving the rate mechanism itself still works and
+    // the assertion above was not vacuous.
+    const second = await p.evaluate(input('read', { filePath: 'src/other2.ts' }))
+    expect(second.observed_matches?.some(m => m.rule_id === 'contamination-rate-check' && m.observed_action === 'warn')).toBe(true)
+  })
+
+  it('does NOT contaminate sequence/flow tracker state — spies on both trackers directly', async () => {
+    const sequenceDetector = new SequenceDetector()
+    const flowTracker = new FlowTracker()
+    const seqSpy = vi.spyOn(sequenceDetector, 'record')
+    const flowSpy = vi.spyOn(flowTracker, 'record')
+    const parsed = parseRulesContent(CLAIM_RULE, '/tmp/claim-rules.md')
+    const p = new EnforcementPipeline({
+      level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(), sequenceDetector, flowTracker,
+      overrideStore: noopOverrideStore,
+      ruleHierarchy: { global: null, user: null, project: parsed, local: null },
+      ruleVersion: 1, allowedFixTransforms: true,
+    })
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    seqSpy.mockClear()
+    flowSpy.mockClear()
+    await p.evaluateClaim(assistantUtterance('Done, all tests pass.'))
+    expect(seqSpy).not.toHaveBeenCalled()
+    expect(flowSpy).not.toHaveBeenCalled()
+  })
+
+  it('does NOT activate unless_reasoning or the tier-7 reasoning-anomaly heuristic — evaluateClaim only ever touches type: claim rules', async () => {
+    // A rule with unless_reasoning would newly be satisfiable by real
+    // assistant text once evaluate() saw a populated `reasoning` field —
+    // exactly the "populating an input activates dormant consumers"
+    // failure mode this method exists to avoid. Proven here by an
+    // unless_reasoning deny rule that WOULD be exempted by this utterance
+    // if evaluateClaim() routed through evaluate()'s full tier stack.
+    const yaml = `${CLAIM_RULE}  - id: unless-reasoning-probe
+    type: command
+    level: protect
+    match: "probe-marker-command"
+    unless_reasoning: "all tests pass"
+    action: deny
+    message: "should never be exempted by evaluateClaim"
+`
+    const p = makePipeline(yaml)
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    // evaluateClaim() must not even glance at the command-type rule.
+    const r = await p.evaluateClaim(assistantUtterance('All tests pass.'))
+    expect(r.rule_id).toBe('claim-without-evidence')
+    expect(r.observed_matches?.some(m => m.rule_id === 'unless-reasoning-probe')).toBeFalsy()
+    // Confirm the probe rule is actually live and would otherwise reachable
+    // via the real evaluate() path, so the assertion above is not vacuous.
+    const denied = await p.evaluate(input('bash', { command: 'probe-marker-command' }))
+    expect(denied.action).toBe('deny')
+  })
+})

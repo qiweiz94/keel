@@ -1460,6 +1460,19 @@ async function installClaudeCode() {
     console.log(chalk.green(`  ✓ Installed PostToolUse hook → ${postToolUsePath}`))
   }
 
+  // Stop — claim-to-evidence real reach (v0.4 Phase 1): the agent's own
+  // completed-turn text (`last_assistant_message`) is only visible here,
+  // not on PostToolUse (which carries the tool's OWN output, not the
+  // model's). Observe-mode only, never blocks — see claude-stop.sh.
+  const stopPath = join(hooksDir, 'Stop', 'keel-claim')
+  const stopSource = await findTemplateSource('claude-stop.sh')
+  if (stopSource) {
+    mkdirSync(join(hooksDir, 'Stop'), { recursive: true })
+    copyFileSync(stopSource, stopPath)
+    chmodSync(stopPath, 0o755)
+    console.log(chalk.green(`  ✓ Installed Stop hook → ${stopPath}`))
+  }
+
   // Register hooks in .claude/settings.json (project-level).
   const settingsPath = join(cwd, '.claude', 'settings.json')
   let settings: Record<string, unknown> = {}
@@ -1492,6 +1505,16 @@ async function installClaudeCode() {
         {
           type: 'command',
           command: `.claude/hooks/PostToolUse/keel-reinject`,
+        },
+      ],
+    },
+  ]
+  hooks.Stop = [
+    {
+      hooks: [
+        {
+          type: 'command',
+          command: `.claude/hooks/Stop/keel-claim`,
         },
       ],
     },

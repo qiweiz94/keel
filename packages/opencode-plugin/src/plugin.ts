@@ -1353,6 +1353,52 @@ export default {
           await verifyEdit(input?.tool, args, input?.sessionID, action.turn_number)
         } catch {}
       },
+      /**
+       * Claim-to-evidence real reach (v0.4 Phase 1). `tool.execute.before`
+       * only ever sees a synthetic `reasoning` field IF a host populates
+       * `hookInput.reasoning` (toEnforceInput above) — surveyed and found
+       * unpopulated by OpenCode's own PreToolUse-shaped `tool.execute.
+       * before` input (see claim.ts's module doc). The channel that DOES
+       * carry the agent's own completed output is this hook: confirmed by
+       * a live probe (`opencode run` against a scratch repo with a logging
+       * plugin, free model `opencode/deepseek-v4-flash-free`, see
+       * session/v04/EVIDENCE/phase-1.md) that `output.text` on
+       * `experimental.text.complete` is the FULL text of one completed
+       * assistant text segment — not a delta, not the model's internal
+       * `reasoning`-type part (which never triggers this hook), and it
+       * fires strictly after any `tool.execute.after` calls already made
+       * in the same turn (so a satisfy command that already ran is
+       * reflected in the VerificationTracker's pending state by the time
+       * this checks it).
+       *
+       * Routed through `pipeline.evaluateClaim()`, NOT `pipeline.
+       * evaluate()`: the latter would treat one call per assistant
+       * utterance as a phantom tool call for flow/sequence/rate state —
+       * see evaluateClaim()'s own header comment in pipeline.ts for why
+       * that would corrupt the exact trace-derived counters (runaway-
+       * budget, stuck-loop) the v0.4 thesis experiment measures in the
+       * guarded arm. `evaluateClaim()` only ever touches `type: claim`
+       * rules and the same VerificationTracker pending state `type:
+       * verification` rules already share.
+       */
+      'experimental.text.complete': async (input: any, output: any) => {
+        try {
+          if (isDisabled()) return
+          const text = typeof output?.text === 'string' ? output.text : ''
+          if (!text) return
+          const enforceInput = toEnforceInput('assistant-message', {}, input, level, directory)
+          enforceInput.reasoning = text
+          const result = await pipeline.evaluateClaim(enforceInput)
+          if (result.observed_matches?.length) {
+            record({
+              session_id: input?.sessionID, turn_number: enforceInput.turn_number,
+              tool: 'assistant-message', args: {}, rule_id: result.rule_id, action: result.action,
+              observed_action: result.observed_action, observed_matches: result.observed_matches,
+              message: result.message, hook: 'experimental.text.complete', cwd: directory,
+            })
+          }
+        } catch {}
+      },
       'experimental.chat.system.transform': async (input: any, output: any) => {
         try {
           // One model call = one turn. This is the only turn boundary the
