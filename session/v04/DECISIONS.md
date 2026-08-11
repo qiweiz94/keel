@@ -192,3 +192,13 @@
   a fresh machine; a real robustness bug (A3/G class). (3) marker attribution post-floor-first:
   main --force → no-force-push (not no-push-to-main); gemini.sh/codex.sh still assert the old marker.
   REMAINING live-verify = SUPERVISOR-run (per contract) later; do NOT re-message this lane.
+- 2026-08-11 supervisor: RELEASE-DOCS GATE CLOSED (9592312). Version 0.4.0 confirmed live
+  (keel --version), suite green core 496 / cli 677. CHANGELOG 0.4.0, README "Measured not
+  asserted" section, docs/tiers.md all reconciled to verified reality (43 rules / 12 floors —
+  no-self-protection-write is the 12th floor). HONEST FINDING: there was NEVER a v0.3.0 release —
+  actual published versions were cli 0.2.2 / core 0.1.9; all "v0.3/v0.4" session work consolidates
+  into this single 0.2.2→0.4.0 bump. Release mechanics DOCUMENTED not executed (evidence/
+  release-docs.md). Flagged for later (owning lanes): ROADMAP.md stale "Shipped v0.2.x" + promotion
+  listed as unbuilt; SECURITY.md internal inconsistency (a residual described open in one section,
+  closed in another) + Supported Versions still 0.2.x. M0 nearly complete: experiment ✅, A1 ✅,
+  C2 ✅, dashboard-web fix ✅, release docs ✅. LEFT: perf (A4, running), then Phase 5 AUDIT.md.
