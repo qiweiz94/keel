@@ -7377,7 +7377,7 @@ var EnforcementPipeline = class {
   pathMatches(value, pattern) {
     const normalized = pattern;
     if (normalized.includes("**")) {
-      const regex = "^" + normalized.split("**").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[^/]*")).join(".*") + "$";
+      const regex = "^" + normalized.split("**").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, (ch) => ch === "*" ? "[^/]*" : `\\${ch}`)).join(".*") + "$";
       try {
         return new RegExp(regex).test(value);
       } catch {
