@@ -180,20 +180,23 @@ threshold. Concretely:
    have returned lands in `observed_action` on that call's trace entry
    (`~/.keel/traces/YYYY-MM-DD.jsonl`, documented in `SPEC.md` §9) — the actual action
    returned to the host stays `allow`.
-2. `keel retrospective` surfaces the closest built-in signal: session-level workflow
-   metrics computed from the same trace stream — attempts-to-success, stuck-loops per
-   session, research-before-solve rate, time-to-first-search, churn cycles, deny-repeat
-   rate, verification completion, and pivot recovery. It's not a per-rule
-   would-have-blocked tally, but `stuck-loops/session` and `research-before-solve` are
-   directly downstream of `no-repeat-loops` and `research-before-fix` firing (or not).
-3. When you're satisfied a rule's hits are real signal and not noise, you edit that
-   rule's `mode: observe` to `warn` or `block` yourself, in `~/.keel/rules.yaml`.
-   That's it — there is no `keel promote` command and no numeric auto-promotion
-   threshold shipped today. `keel-control-gate` denies an agent running
-   `keel rules ... --append` on your behalf, so this step is always a human's.
+2. `keel retrospective` surfaces two things from the same trace stream: session-level
+   workflow metrics (attempts-to-success, stuck-loops per session, research-before-solve
+   rate, churn cycles, deny-repeat rate, verification completion, pivot recovery) **and a
+   per-rule promotion section** — for each observe-mode rule, its measured would-block
+   rate over your own traffic, with a recommendation of `eligible`, `stay_observe`, or
+   `insufficient_data` (the last when there aren't enough evaluations yet to trust a low
+   rate). "Would-block" counts a deny, block, prompt, *or* redirect the rule would have
+   produced. A rule is `eligible` when its rate is below `promotion_fp_threshold`
+   (default `0.001`, i.e. 1 per 1,000 evaluations; set it in `~/.keel/rules.yaml`).
+3. When a rule is eligible and you agree its hits are real signal, run
+   **`keel promote <rule-id>`** — it advances that rule's `mode: observe → warn` (or
+   `warn → block`) in your rules file, comment-preserving and idempotent. It only runs
+   in an interactive terminal (a human at a TTY); `keel-control-gate` denies an agent
+   running it, or `keel rules … --append`, on your behalf, so promotion is always your
+   decision. You can also just edit `mode:` by hand.
 
-The project's own design targets a false-positive rate under 0.1% for a *hard* deny
-with no override (`SPEC.md` §8) — that's the bar a rule should clear before you'd want
-it blocking outright, but it's a stated target for you to judge against, not a number
-keel measures or enforces automatically. An automated promotion workflow with rule
-catalog metadata is on the roadmap (`ROADMAP.md`, "Later") — not built yet.
+The default `promotion_fp_threshold` of `0.001` echoes the project's design target of a
+false-positive rate under 0.1% for a *hard* deny with no override (`SPEC.md` §8). The
+retrospective reports the rate and the recommendation; `keel promote` applies the change
+only when you run it. Nothing promotes automatically.

@@ -232,3 +232,17 @@
   85→92%, etc.) → SECURITY.md. (4) --level flag inert (rules-file level wins) — documented.
   (5) FLAKE root cause: STATE_DIR module-level races on real ~/.keel/state — fix at gate.
   Floor-first confirmed at all 9 level combinations.
+- 2026-08-11 supervisor: WAVE-3 GATE CLOSED. Merged secreview/warnsurface/promotion/docs;
+  resolved keel-control-gate conflict (union: tab-hardening + promote verb). Applied at gate:
+  argPath file_path HOTFIX (filesystem floors resurrected on claude-code — verified live);
+  self-protection write-gate PASTED (rule 43, closes echo>DISABLED + tee/cp/git-config
+  disarms, verified exit 2); docs/tiers.md reconciled to real keel promote +
+  promotion_fp_threshold (all 3 claims verified in code); ROADMAP counts fixed to 21 types/
+  10 actions. Full suite green by supervisor's own run: core 454, cli 1116, exit 0.
+  RESIDUAL (documented, not fixed — honest): (1) a PRE-EXISTING .keel.local.yaml redefining
+  a floor id still overrides it in mergeRules — but WRITING that file is now blocked at both
+  tool (argPath fix) and shell (write-gate) paths, so it's a user's own-config choice, not an
+  agent bypass; deeper mergeRules "floors non-overridable" is a follow-up. (2) STATE_DIR
+  module-level races on real ~/.keel/state → intermittent flake; suite green in normal mode;
+  root cause documented for AUDIT. (3) write-gate's bare .keel/DISABLED alt can over-block a
+  READ of the sentinel (rare, low-severity) — noted for SECURITY.md.
