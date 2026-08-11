@@ -216,3 +216,12 @@
   matching destructive ops inside -c/-e bodies (honest open gap). (2) G2 FP-TUNING: `echo "rm -rf /"`
   is a PRE-EXISTING FP (substring match) — use A2's structural surfaces to require command-position,
   not a data arg. Both are the ruleset-authoring lane's scope; queue for M1 continuation.
+- 2026-08-11 supervisor: M1/A4 GATE CLOSED (af75958). Perf: p50/p90/p99 = 0.89/1.13/1.72ms,
+  ~29x under 50ms — claim HOLDS. Regression test (50ms absolute, loadavg skip-guard, best-of-3,
+  CPU-time cross-check). Suite green core 531 / cli 679. CRITICAL FINDING confirmed at
+  pipeline.ts:709: unverified-package-install hardcodes totalTimeoutMs:2000 — a cache-miss on a
+  slow/unreachable npm registry = ~2000ms = ~40x hot-path violation, the ONE deterministic budget
+  blow. QUEUED FIX (launching): on cache MISS do NOT block — return prompt("unverified — not yet
+  checked") immediately + background-fill the cache; respects <50ms AND the slopsquatting gate's
+  "unverified→prompt" intent. Also flagged (perf-opt, not urgent): Tier-1 stateless cache dead for
+  shipped ruleset; regex patterns recompiled every call (no cache).
