@@ -6,11 +6,14 @@ import {
   extractPackageInstalls,
   decidePackageAction,
   checkPackages,
+  checkPackagesCacheOnly,
+  scheduleBackgroundVerification,
   PackageVerifierCache,
   defaultRegistryBaseUrl,
   type PackageCheckResult,
 } from '../package-verifier.js'
 import { EnforcementPipeline } from '../pipeline.js'
+import type { PipelineConfig } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
@@ -349,7 +352,7 @@ function stubOverrideStore() {
   return { consume: () => false, peek: () => null, list: () => ({}) }
 }
 
-function buildPipeline(rule: KeelRule, fetchImpl: typeof fetch): EnforcementPipeline {
+function buildPipeline(rule: KeelRule, fetchImpl: typeof fetch, extra: Partial<PipelineConfig> = {}): EnforcementPipeline {
   const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-pipeline-'))
   return new EnforcementPipeline({
     level: 'balanced',
@@ -365,7 +368,17 @@ function buildPipeline(rule: KeelRule, fetchImpl: typeof fetch): EnforcementPipe
     overrideStore: stubOverrideStore(),
     packageVerifierCache: new PackageVerifierCache(stateDir),
     packageVerifierFetch: fetchImpl,
+    ...extra,
   })
+}
+
+/** Captures the fire-and-forget background-verification promise a `type: package` cache miss kicks off, via `packageVerifierOnBackgroundStart` — a test-only pipeline hook (see PipelineConfig's doc). Lets a test `await` the background fill deterministically instead of racing a real timer. */
+function backgroundCapture(): { hook: (settled: Promise<void>) => void; settled: () => Promise<void> } {
+  let captured: Promise<void> = Promise.resolve()
+  return {
+    hook: (settled: Promise<void>) => { captured = settled },
+    settled: () => captured,
+  }
 }
 
 function makeInput(command: string): EnforceInput {
@@ -390,38 +403,103 @@ const PACKAGE_RULE: KeelRule = {
   message: 'Verify a package exists before installing it.',
 }
 
+/**
+ * v0.4 package-lookup budget fix: `pipeline.ts`'s `type: package` branch no
+ * longer awaits the network on a cache miss (see pipeline.ts's own header
+ * comment on that branch, and session/v04/EVIDENCE/pkgbudget.md for the
+ * before/after measurement — the old synchronous path blocked ~2000ms on a
+ * cache miss against a slow/unreachable registry, a4-perf.md §5.3). Every
+ * test below that used to assert a same-call deny/allow/age-gate verdict on
+ * an UNCACHED package now runs in two phases:
+ *   1. First `evaluate()` on a fresh (never-looked-up) package name — must
+ *      return FAST (no real verdict is possible yet) with `action: prompt`
+ *      and a `not yet checked` message, and must fire a background lookup
+ *      it never awaits.
+ *   2. `await` that background lookup via the `packageVerifierOnBackgroundStart`
+ *      test hook (never used by any production host), THEN a second
+ *      `evaluate()` on the SAME package name — this is what now carries the
+ *      real deny/allow/age-gate/unverified-reason verdict, from the cache
+ *      the background lookup just filled.
+ * This is an intentional behavior change, not a regression: a same-day
+ * hallucinated install is still stopped by the human-approval prompt on the
+ * very first attempt; it is the deterministic, no-human-needed DENY that
+ * now lands one attempt later. See pipeline.ts's branch comment for the
+ * accepted host-dependent caveat (this two-attempt guarantee holds for a
+ * long-lived pipeline host — the opencode plugin, the MCP daemon — but not
+ * for the claude-code/codex/gemini/cursor `keel hook` path, which calls
+ * `process.exit()` immediately after rendering the first verdict and kills
+ * the background promise before it can land the second one).
+ */
 describe('pipeline: type "package" rule', () => {
-  it('denies a hallucinated package on the first attempt (no warn-first grace period)', async () => {
-    const { fetchImpl } = makeMockRegistry({})
+  it('phase 1 — an uncached package prompts immediately with a not-yet-checked message, regardless of what the mock would eventually say', async () => {
+    const { fetchImpl } = makeMockRegistry({}) // would 404 -> not_found, but must never be awaited here
     const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
     const res = await pipeline.evaluate(makeInput('npm install totally-hallucinated-pkg-does-not-exist'))
-    expect(res.action).toBe('deny')
-    expect(res.rule_id).toBe('unverified-package-install-test')
+    expect(res.action).toBe('prompt')
+    expect(res.message).toContain('not yet checked')
   })
 
-  it('prompts, never denies, on a registry timeout', async () => {
+  it('phase 2 — denies a hallucinated package once the background fill has cached not_found (retry, not first attempt)', async () => {
+    const { fetchImpl } = makeMockRegistry({})
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install totally-hallucinated-pkg-does-not-exist'
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt') // not a same-call deny — see describe()'s header comment
+
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('deny')
+    expect(second.rule_id).toBe('unverified-package-install-test')
+  })
+
+  it('never denies on a registry timeout, on the first attempt or the retry', async () => {
     const { fetchImpl } = makeMockRegistry({ 'slow-registry-pkg': 'timeout' })
-    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
-    const res = await pipeline.evaluate(makeInput('npm install slow-registry-pkg'))
-    expect(res.action).toBe('prompt')
-    expect(res.message).toContain('unverified — registry unreachable')
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install slow-registry-pkg'
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt')
+    expect(first.message).toContain('not yet checked')
+
+    await cap.settled() // background lookup itself times out (~internal abort) and caches 'unverified'/'timeout'
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('prompt') // still never denies
+    expect(second.message).toContain('unverified — registry unreachable')
   })
 
-  it('prompts on a young package (age-gate)', async () => {
+  it('prompts on a young package on the retry, with an age-gate message (not a generic not-yet-checked one)', async () => {
     const { fetchImpl } = makeMockRegistry({ 'brand-new-pkg': { existsDaysAgo: 3 } })
-    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
-    const res = await pipeline.evaluate(makeInput('npm install brand-new-pkg'))
-    expect(res.action).toBe('prompt')
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install brand-new-pkg'
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt')
+
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('prompt')
+    expect(second.message).toContain('day(s) ago') // proves the age_gate branch, not the not_yet_checked one, decided this
   })
 
-  it('allows an old, verified package', async () => {
+  it('allows an old, verified package on the retry, once the background fill has cached "exists"', async () => {
     const { fetchImpl } = makeMockRegistry({ react: { existsDaysAgo: 4000 } })
-    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
-    const res = await pipeline.evaluate(makeInput('npm install react'))
-    expect(res.action).toBe('allow')
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install react'
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt') // not a same-call allow — see describe()'s header comment
+
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('allow')
   })
 
-  it('never touches the mock for a command with no install pattern (laziness)', async () => {
+  it('never touches the mock for a command with no install pattern (laziness) — unaffected by the cache-first change', async () => {
     let called = false
     const fetchImpl = (async () => { called = true; return jsonResponse({}) }) as unknown as typeof fetch
     const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
@@ -430,20 +508,162 @@ describe('pipeline: type "package" rule', () => {
     expect(called).toBe(false)
   })
 
-  it('a private-scoped package never hard-denies even though it 404s publicly', async () => {
+  it('a private-scoped package never hard-denies even though it 404s publicly, on the first attempt or the retry', async () => {
     const { fetchImpl } = makeMockRegistry({}) // 404 for everything
-    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
-    const res = await pipeline.evaluate(makeInput('npm install @myorg/internal-build-tool'))
-    expect(res.action).toBe('prompt')
-    expect(res.action).not.toBe('deny')
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install @myorg/internal-build-tool'
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt')
+
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('prompt')
+    expect(second.action).not.toBe('deny')
+    expect(second.message).toContain('Scoped names 404 publicly') // proves the scoped_not_public branch decided this, not not_yet_checked
   })
 
-  it('honors a rule-level age_days override', async () => {
+  it('honors a rule-level age_days override on the retry', async () => {
     const { fetchImpl } = makeMockRegistry({ 'seven-day-old-pkg': { existsDaysAgo: 7 } })
     const strictRule: KeelRule = { ...PACKAGE_RULE, id: 'strict-age', age_days: 90 }
-    const pipeline = buildPipeline(strictRule, fetchImpl)
-    const res = await pipeline.evaluate(makeInput('npm install seven-day-old-pkg'))
-    expect(res.action).toBe('prompt') // 7 days < 90-day threshold
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(strictRule, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install seven-day-old-pkg'
+
+    await pipeline.evaluate(makeInput(cmd))
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('prompt') // 7 days < 90-day threshold
+    expect(second.message).toContain('day(s) ago')
+  })
+
+  it('REGRESSION: a cache-miss evaluate() call returns fast even when the registry lookup hangs for the full internal budget (the exact ~2000ms block this fix removes, a4-perf.md §5.3)', async () => {
+    const { fetchImpl } = makeMockRegistry({ 'hangs-until-abort-pkg': 'timeout' }) // resolves only when the internal AbortController fires, ~2000ms later
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+
+    const t0 = performance.now()
+    const res = await pipeline.evaluate(makeInput('npm install hangs-until-abort-pkg'))
+    const elapsedMs = performance.now() - t0
+    console.log(`[pkg-budget] evaluate() on a cache miss with a hanging registry fetch: ${elapsedMs.toFixed(3)}ms (old synchronous path: ~2000ms — a4-perf.md §5.3)`)
+
+    expect(res.action).toBe('prompt')
+    expect(res.message).toContain('not yet checked')
+    expect(
+      elapsedMs,
+      `evaluate() took ${elapsedMs.toFixed(2)}ms on a cache miss whose registry lookup hangs until the internal `
+      + `2000ms abort fires — this is the regression proof: the OLD synchronous path measured 2003.8ms / 2003.5ms `
+      + `for this exact scenario (session/v04/EVIDENCE/a4-perf.md §5.3); the fix's whole point is that evaluate() `
+      + 'never awaits the network on a miss.',
+    ).toBeLessThan(50)
+
+    // Let the background lookup actually finish (~2s, via its own internal
+    // abort) so the test exits cleanly instead of leaving a dangling timer —
+    // also incidentally proves the background task settles rather than
+    // hanging the process forever.
+    await cap.settled()
+  }, 10_000)
+})
+
+// ── cache-first hot path: checkPackagesCacheOnly + scheduleBackgroundVerification ──
+
+describe('checkPackagesCacheOnly + scheduleBackgroundVerification (v0.4 package-lookup budget fix)', () => {
+  let stateDir: string
+  beforeEach(() => { stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-cacheonly-')) })
+  afterEach(() => { rmSync(stateDir, { recursive: true, force: true }) })
+
+  it('a fresh cache entry is used as-is for deny/prompt/allow — zero I/O, no fetchImpl parameter to even call', () => {
+    const cache = new PackageVerifierCache(stateDir)
+    const now = Date.now()
+    cache.set({ name: 'hallucinated-pkg', verdict: 'not_found', checkedAt: now }, now)
+    cache.set({ name: 'flaky-pkg', verdict: 'unverified', reason: 'timeout', checkedAt: now }, now)
+    cache.set({ name: 'good-pkg', verdict: 'exists', ageDays: 2000, checkedAt: now }, now)
+
+    const specs = [
+      { name: 'hallucinated-pkg', manager: 'npm' as const, raw: 'hallucinated-pkg' },
+      { name: 'flaky-pkg', manager: 'npm' as const, raw: 'flaky-pkg' },
+      { name: 'good-pkg', manager: 'npm' as const, raw: 'good-pkg' },
+    ]
+    const t0 = performance.now()
+    const { results, misses } = checkPackagesCacheOnly(specs, cache)
+    const elapsedMs = performance.now() - t0
+    console.log(`[pkg-budget] checkPackagesCacheOnly for 3 cached specs: ${elapsedMs.toFixed(3)}ms`)
+
+    expect(misses).toEqual([])
+    expect(results.map(r => r.fromCache)).toEqual([true, true, true])
+    expect(decidePackageAction([results[0]], 30).reason).toBe('not_found')
+    expect(decidePackageAction([results[1]], 30).reason).toBe('unverified')
+    expect(decidePackageAction([results[2]], 30).reason).toBe('ok')
+    expect(elapsedMs).toBeLessThan(20) // generous, non-flaky bound — this is a pure sync cache read, no I/O at all
+  })
+
+  it('a cache miss returns an unverified/not_yet_checked placeholder immediately and lists the spec as a miss', () => {
+    const cache = new PackageVerifierCache(stateDir)
+    const specs = [{ name: 'never-looked-up-pkg', manager: 'npm' as const, raw: 'never-looked-up-pkg' }]
+    const t0 = performance.now()
+    const { results, misses } = checkPackagesCacheOnly(specs, cache)
+    const elapsedMs = performance.now() - t0
+    console.log(`[pkg-budget] checkPackagesCacheOnly for 1 uncached spec: ${elapsedMs.toFixed(3)}ms`)
+
+    expect(results).toEqual([
+      { name: 'never-looked-up-pkg', requestedVersion: undefined, verdict: 'unverified', reason: 'not_yet_checked', fromCache: false },
+    ])
+    expect(misses).toEqual(specs)
+    expect(decidePackageAction(results, 30).reason).toBe('unverified')
+    expect(decidePackageAction(results, 30).message).toContain('not yet checked')
+    expect(elapsedMs).toBeLessThan(20)
+  })
+
+  it('dedupes repeated misses by name — one entry in `misses` even if the same uncached package is installed twice in one command', () => {
+    const cache = new PackageVerifierCache(stateDir)
+    const specs = [
+      { name: 'dup-pkg', manager: 'npm' as const, raw: 'dup-pkg' },
+      { name: 'dup-pkg', requestedVersion: '2.0.0', manager: 'npm' as const, raw: 'dup-pkg@2.0.0' },
+    ]
+    const { results, misses } = checkPackagesCacheOnly(specs, cache)
+    expect(results.length).toBe(2) // one placeholder per input spec
+    expect(misses.length).toBe(1) // but only one real lookup queued
+  })
+
+  it('scheduleBackgroundVerification fills the cache without the caller awaiting it in production — a second cache-only check then denies a nonexistent package', async () => {
+    const { fetchImpl, calls } = makeMockRegistry({}) // 404 for everything -> not_found for an unscoped name
+    const cache = new PackageVerifierCache(stateDir)
+    const specs = [{ name: 'second-look-hallucinated-pkg', manager: 'npm' as const, raw: 'second-look-hallucinated-pkg' }]
+
+    const first = checkPackagesCacheOnly(specs, cache)
+    expect(first.misses.length).toBe(1)
+    expect(decidePackageAction(first.results, 30).reason).toBe('unverified') // not_yet_checked -> prompt, not deny
+
+    // Exactly how pipeline.ts fires this: NOT awaited before the caller's
+    // own fast-path assertion above. Awaited here only so this test can
+    // then assert on what it left behind.
+    await scheduleBackgroundVerification(first.misses, { fetchImpl, cache, registryBaseUrl: 'https://mock.invalid' })
+    // 2 calls: the existence lookup (404) plus the did-you-mean search a
+    // not_found verdict triggers (see checkPackages/searchDidYouMean).
+    expect(calls.length).toBe(2)
+
+    const second = checkPackagesCacheOnly(specs, cache)
+    expect(second.misses).toEqual([])
+    expect(second.results[0].fromCache).toBe(true)
+    expect(second.results[0].verdict).toBe('not_found')
+    expect(decidePackageAction(second.results, 30).reason).toBe('not_found')
+  })
+
+  it('never rejects even if the underlying lookup throws — a failed background fill degrades to "try again next time", never an unhandled rejection', async () => {
+    const throwingFetch = (async () => { throw new Error('simulated hard failure') }) as unknown as typeof fetch
+    const cache = new PackageVerifierCache(stateDir)
+    const specs = [{ name: 'will-network-error', manager: 'npm' as const, raw: 'will-network-error' }]
+    await expect(
+      scheduleBackgroundVerification(specs, { fetchImpl: throwingFetch, cache, registryBaseUrl: 'https://mock.invalid' }),
+    ).resolves.toBeUndefined()
+    // network_error still gets cached as 'unverified' (checkPackages' own behavior, unchanged) — a repeat prompts, never crashes.
+    expect(cache.get('will-network-error')?.verdict).toBe('unverified')
+  })
+
+  it('resolves immediately without constructing any work when there are zero misses', async () => {
+    const angryFetch = (async () => { throw new Error('should never be called for zero misses') }) as unknown as typeof fetch
+    await expect(scheduleBackgroundVerification([], { fetchImpl: angryFetch })).resolves.toBeUndefined()
   })
 })
 

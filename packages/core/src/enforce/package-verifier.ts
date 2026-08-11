@@ -184,7 +184,7 @@ export function extractPackageInstalls(command: string): PackageSpec[] {
 // ── Registry lookups ─────────────────────────────────────────────────
 
 export type PackageVerdict = 'exists' | 'not_found' | 'unverified'
-export type UnverifiedReason = 'timeout' | 'network_error' | 'scoped_not_public' | 'budget_exhausted' | 'too_large'
+export type UnverifiedReason = 'timeout' | 'network_error' | 'scoped_not_public' | 'budget_exhausted' | 'too_large' | 'not_yet_checked'
 
 export interface PackageCheckResult {
   name: string
@@ -514,6 +514,85 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
   return results
 }
 
+// ── Cache-first hot path (never blocks on the network) ─────────────────
+
+/**
+ * Cache-only pass over a spec list — zero I/O, no `await`, no `fetchImpl`
+ * call. This is the hot-path half of the two-stage design that keeps a
+ * `type: package` rule under the `<50ms` budget (see pipeline.ts's
+ * `rule.type === 'package'` branch): a fresh disk-cache verdict (deny/
+ * prompt/allow, per `decidePackageAction`) is used exactly as `checkPackages`
+ * would have used it. Anything with no fresh cache entry comes back as an
+ * `unverified` / `not_yet_checked` placeholder — that reason is what makes
+ * `decidePackageAction` prompt instead of allowing an unverified install
+ * through, without ever touching the network on this call.
+ *
+ * `misses` carries the deduplicated specs (by name) that need a real
+ * registry lookup, in first-seen order — pass them to
+ * `scheduleBackgroundVerification` to fill the cache for the NEXT call on
+ * the same package.
+ */
+export function checkPackagesCacheOnly(
+  specs: PackageSpec[],
+  cache: PackageVerifierCache,
+  now: () => number = Date.now,
+): { results: PackageCheckResult[]; misses: PackageSpec[] } {
+  const results: PackageCheckResult[] = []
+  const misses: PackageSpec[] = []
+  const missSeen = new Set<string>()
+  const t = now()
+  for (const spec of specs) {
+    const cached = cache.get(spec.name, t)
+    if (cached) {
+      results.push({
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: cached.verdict,
+        reason: cached.reason,
+        ageDays: cached.ageDays,
+        createdAt: cached.createdAt,
+        didYouMean: cached.didYouMean,
+        fromCache: true,
+      })
+    } else {
+      results.push({
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: 'unverified',
+        reason: 'not_yet_checked',
+        fromCache: false,
+      })
+      if (!missSeen.has(spec.name)) {
+        missSeen.add(spec.name)
+        misses.push(spec)
+      }
+    }
+  }
+  return { results, misses }
+}
+
+/**
+ * Fire a real registry lookup for cache-miss specs WITHOUT blocking the
+ * caller — `checkPackages` populates `cache` as each spec resolves, exactly
+ * as it does on the existing synchronous path, so the NEXT
+ * `checkPackagesCacheOnly` call for the same package sees a real verdict.
+ * The caller (pipeline.ts) never `await`s this; it fires with `void` and
+ * moves on. Errors are swallowed here — a failed background fill just
+ * means the cache stays empty and the next call prompts again, the same
+ * outcome as today's network-failure path — specifically so a rejected
+ * promise here can never surface as an unhandled rejection in a host
+ * process. The settlement promise is returned purely so tests (and an
+ * optional `packageVerifierOnBackgroundStart` observer hook in pipeline.ts)
+ * can await it deterministically instead of racing a real timer.
+ */
+export function scheduleBackgroundVerification(
+  misses: PackageSpec[],
+  opts: EvaluateInstallOptions = {},
+): Promise<void> {
+  if (misses.length === 0) return Promise.resolve()
+  return checkPackages(misses, opts).then(() => undefined, () => undefined)
+}
+
 export type PackageDecisionReason = 'not_found' | 'unverified' | 'age_gate' | 'ok'
 
 export interface PackageRuleDecision {
@@ -536,6 +615,9 @@ function buildUnverifiedMessage(r: PackageCheckResult): string {
   }
   if (r.reason === 'too_large') {
     return `unverified — registry response for "${r.name}" exceeded the size cap before it could be checked`
+  }
+  if (r.reason === 'not_yet_checked') {
+    return `unverified — registry not yet checked for "${r.name}"; approve to proceed. A background lookup is filling the cache now, so a repeat of this install will get a real verdict.`
   }
   return `unverified — registry unreachable (could not verify "${r.name}": ${r.reason ?? 'unknown error'})`
 }

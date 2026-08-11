@@ -14,6 +14,8 @@ export { ProblemLedger, problemKey } from './problem-ledger.js'
 export {
   extractPackageInstalls,
   checkPackages,
+  checkPackagesCacheOnly,
+  scheduleBackgroundVerification,
   decidePackageAction,
   evaluateInstallCommand,
   defaultRegistryBaseUrl,

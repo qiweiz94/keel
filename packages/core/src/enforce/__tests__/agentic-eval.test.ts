@@ -569,16 +569,32 @@ rules:
       // disk cache (real ~/.keel/state when KEEL_STATE_DIR is unset) can
       // serve a stale verdict cached by an earlier run and preempt the
       // mock fetch entirely.
+      //
+      // v0.4 package-lookup budget fix: the package-rule branch no longer
+      // awaits the registry on a cache MISS (see pipeline.ts's own header
+      // comment on that branch) — a fresh, never-looked-up package name now
+      // prompts immediately instead of blocking on the mock fetch. `lodash`
+      // below is pre-seeded into the cache as an already-verified, old
+      // package to keep testing this test's actual intent — a KNOWN-GOOD
+      // install is allowed — against the realistic steady state (a package
+      // a prior background lookup already verified), not the first-ever
+      // lookup of it.
       const oldPackage = { time: { created: '2015-01-01T00:00:00.000Z' } }
+      const packageVerifierCache = new PackageVerifierCache(mkdtempSync(join(tmpdir(), 'keel-pkg-cache-')))
+      packageVerifierCache.set({ name: 'lodash', verdict: 'exists', ageDays: 4000, checkedAt: Date.now() })
       const p = makePipeline('balanced', undefined, {
         packageVerifierFetch: (async () => new Response(JSON.stringify(oldPackage), { status: 200 })) as typeof fetch,
-        packageVerifierCache: new PackageVerifierCache(mkdtempSync(join(tmpdir(), 'keel-pkg-cache-'))),
+        packageVerifierCache,
       })
       expect((await p.evaluate(input('Bash', { command: 'npx prisma generate' }))).action).toBe('prompt')
       expect((await p.evaluate(input('Bash', { command: 'pnpm dlx tsx script.ts' }))).action).toBe('prompt')
       expect((await p.evaluate(input('Bash', { command: 'pipx run black .' }))).action).toBe('prompt')
       expect((await p.evaluate(input('Bash', { command: 'npm run dev' }))).action).toBe('allow')
       expect((await p.evaluate(input('Bash', { command: 'npm install lodash' }))).action).toBe('allow')
+      // An UNcached package, by contrast, now prompts on the first
+      // attempt — no same-call verdict is possible without blocking the
+      // hot path on the network (the whole point of this fix).
+      expect((await p.evaluate(input('Bash', { command: 'npm install some-never-before-seen-package' }))).action).toBe('prompt')
     })
     it('warns (does not deny) test-faking flags; allows real test runs', async () => {
       // no-skip-tests is SOFTENED deny->warn per the do-not-ship guard (no

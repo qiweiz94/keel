@@ -6899,6 +6899,44 @@ async function checkPackages(specs, opts = {}) {
   }
   return results;
 }
+function checkPackagesCacheOnly(specs, cache, now = Date.now) {
+  const results = [];
+  const misses = [];
+  const missSeen = /* @__PURE__ */ new Set();
+  const t = now();
+  for (const spec of specs) {
+    const cached = cache.get(spec.name, t);
+    if (cached) {
+      results.push({
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: cached.verdict,
+        reason: cached.reason,
+        ageDays: cached.ageDays,
+        createdAt: cached.createdAt,
+        didYouMean: cached.didYouMean,
+        fromCache: true
+      });
+    } else {
+      results.push({
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: "unverified",
+        reason: "not_yet_checked",
+        fromCache: false
+      });
+      if (!missSeen.has(spec.name)) {
+        missSeen.add(spec.name);
+        misses.push(spec);
+      }
+    }
+  }
+  return { results, misses };
+}
+function scheduleBackgroundVerification(misses, opts = {}) {
+  if (misses.length === 0) return Promise.resolve();
+  return checkPackages(misses, opts).then(() => void 0, () => void 0);
+}
 function buildNotFoundMessage(r) {
   const suggestion = r.didYouMean?.length ? ` Did you mean: ${r.didYouMean.join(", ")}?` : "";
   return `Package "${r.name}" does not exist on the npm registry \u2014 this install is unfulfillable regardless of intent.${suggestion}`;
@@ -6912,6 +6950,9 @@ function buildUnverifiedMessage(r) {
   }
   if (r.reason === "too_large") {
     return `unverified \u2014 registry response for "${r.name}" exceeded the size cap before it could be checked`;
+  }
+  if (r.reason === "not_yet_checked") {
+    return `unverified \u2014 registry not yet checked for "${r.name}"; approve to proceed. A background lookup is filling the cache now, so a repeat of this install will get a real verdict.`;
   }
   return `unverified \u2014 registry unreachable (could not verify "${r.name}": ${r.reason ?? "unknown error"})`;
 }
@@ -8124,12 +8165,16 @@ var EnforcementPipeline = class {
           const specs = extractPackageInstalls(cmdStr);
           if (specs.length === 0) continue;
           const ageThresholdDays = rule.age_days ?? 30;
-          const results = await checkPackages(specs, {
-            ageThresholdDays,
-            totalTimeoutMs: 2e3,
-            cache: this.packageVerifierCache,
-            fetchImpl: this.config.packageVerifierFetch
-          });
+          const { results, misses } = checkPackagesCacheOnly(specs, this.packageVerifierCache);
+          if (misses.length > 0) {
+            const settled = scheduleBackgroundVerification(misses, {
+              ageThresholdDays,
+              totalTimeoutMs: 2e3,
+              cache: this.packageVerifierCache,
+              fetchImpl: this.config.packageVerifierFetch
+            });
+            this.config.packageVerifierOnBackgroundStart?.(settled);
+          }
           const decision = decidePackageAction(results, ageThresholdDays);
           if (decision.reason === "ok") continue;
           if (decision.reason === "not_found") {

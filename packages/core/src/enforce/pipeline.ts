@@ -14,7 +14,7 @@ import { StuckTracker } from './stuck-tracker.js'
 import { ProblemLedger } from './problem-ledger.js'
 import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
-import { extractPackageInstalls, checkPackages, decidePackageAction, PackageVerifierCache } from './package-verifier.js'
+import { extractPackageInstalls, checkPackagesCacheOnly, scheduleBackgroundVerification, decidePackageAction, PackageVerifierCache } from './package-verifier.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
 import { OracleTracker } from './oracle-tracker.js'
@@ -77,6 +77,17 @@ export interface PipelineConfig {
   packageVerifierCache?: PackageVerifierCache
   /** Injection point for tests — never hits the real registry unless explicitly provided (or KEEL_NPM_REGISTRY is set outside vitest). */
   packageVerifierFetch?: typeof fetch
+  /**
+   * Test-only observation hook for the `type: package` cache-miss path
+   * (v0.4 package-lookup budget fix). On a cache miss, `evaluate()` fires
+   * `scheduleBackgroundVerification` with `void` — never awaited, so the
+   * hot path returns immediately — and, if this hook is set, also hands it
+   * the settlement promise so a test can `await` the background fill
+   * deterministically instead of racing a real timer. Never called by any
+   * production host (cli/enforce.ts, daemon.ts, opencode-plugin/plugin.ts
+   * do not set it).
+   */
+  packageVerifierOnBackgroundStart?: (settled: Promise<void>) => void
   ledger?: ProblemLedger
   reloadRules?: () => RuleHierarchy
   ruleFingerprint?: () => string
@@ -674,16 +685,58 @@ export class EnforcementPipeline {
 
       // Match against package-install commands (slopsquatting gate). Lazy
       // by construction: extractPackageInstalls is a cheap regex/tokenizer
-      // pass, and the network-touching checkPackages() call only happens
-      // when it actually found a candidate install. See
+      // pass, and this branch never makes a network call of its own. See
       // enforce/package-verifier.ts for the full verdict semantics.
+      //
+      // CACHE-FIRST, NEVER-BLOCKS-ON-NETWORK DESIGN (v0.4 package-lookup
+      // budget fix — replaces an earlier version of this branch that
+      // called `checkPackages(..., { totalTimeoutMs: 2000 })` synchronously
+      // here, which meant a cache MISS against a slow/unreachable registry
+      // blocked THIS call for up to 2000ms — a ~40x violation of the
+      // <50ms hot-path budget, measured directly in
+      // session/v04/EVIDENCE/a4-perf.md §5.3 (2003.8ms / 2003.5ms). Fixed
+      // as two stages:
+      //   1. `checkPackagesCacheOnly` — disk-cache read only, zero I/O, no
+      //      `await`. A fresh cached verdict (deny/prompt/allow) is used
+      //      exactly as before. This is what keeps a REPEAT install of the
+      //      same package fast and deterministic.
+      //   2. A cache MISS never blocks: it comes back as an `unverified` /
+      //      `not_yet_checked` placeholder, which `decidePackageAction`
+      //      downgrades to `prompt` — honoring this gate's existing
+      //      "unverified -> prompt" design instead of inventing a new
+      //      action. `scheduleBackgroundVerification` is then fired for the
+      //      miss with `void` (never awaited) to fill the cache for the
+      //      NEXT call on that package; the background lookup keeps its
+      //      own 2s budget but cannot block this evaluate() call because
+      //      nothing here awaits it.
+      //
+      // Known, accepted tradeoff: the FIRST attempt at an uncached
+      // nonexistent package now prompts (not_yet_checked) rather than
+      // denying — only a REPEAT of the same install (after the background
+      // fill lands a `not_found` verdict in the cache) gets the
+      // deterministic deny. The human-approval prompt still stops a blind
+      // install on the first attempt; it just isn't the instant
+      // deterministic deny the old synchronous path gave (at the cost of
+      // blocking every miss for up to 2s). This also means the background
+      // fill's completion is host-dependent: it survives in a long-lived
+      // host process (the opencode plugin constructs one EnforcementPipeline
+      // per plugin load and reuses it for the whole session; same for the
+      // MCP daemon), but a short-lived host that calls `process.exit()`
+      // right after rendering the verdict (packages/cli/src/commands/
+      // hook.ts's claude-code/codex/gemini/cursor path) kills the
+      // background promise before it can complete — process.exit()
+      // terminates immediately regardless of any timer's ref state, so
+      // the deny-on-retry guarantee does not hold there today. Out of this
+      // branch's scope to fix (hook.ts is a different lane's file); noted
+      // here so it isn't mistaken for a universal guarantee.
       //
       // Action mapping is PARTIALLY fixed, not fully rule-configurable:
       //   - not_found  -> forced 'deny', skipFirstWarning (unfulfillable
-      //     regardless of intent — the first hallucinated install is
-      //     already blocked, not just warned).
+      //     regardless of intent — a cache-confirmed hallucinated install
+      //     is already blocked, not just warned).
       //   - unverified -> forced 'prompt' (network failure / timeout /
-      //     scoped-404 / budget-exhausted must NEVER deny).
+      //     scoped-404 / budget-exhausted / not-yet-checked must NEVER
+      //     deny).
       //   - age_gate   -> the rule's own declared `action` (this is the
       //     "configurable" axis the rule author controls, e.g. downgrade
       //     to `warn` or escalate to `deny` for the age check specifically).
@@ -693,23 +746,32 @@ export class EnforcementPipeline {
       // stateless allow-cache as long as it ships `action: prompt` (the
       // default) — a network verdict must never be cached forever by
       // (tool, args) alone, since the age-gate outcome for the same
-      // command changes as the package ages past the threshold. If a rule
-      // author overrides the top-level `action` to something other than
-      // `prompt` (e.g. `warn`), that automatic exclusion no longer applies
-      // and an identical install command CAN cache a stale tier-1 `allow`
-      // until the rules file changes — acceptable for the shipped default
-      // (`action: prompt`), called out here for anyone reconfiguring it.
+      // command changes as the package ages past the threshold, and a
+      // not_yet_checked miss becomes a real verdict once the background
+      // fill lands. If a rule author overrides the top-level `action` to
+      // something other than `prompt` (e.g. `warn`), that automatic
+      // exclusion no longer applies and an identical install command CAN
+      // cache a stale tier-1 `allow` until the rules file changes —
+      // acceptable for the shipped default (`action: prompt`), called out
+      // here for anyone reconfiguring it.
       if (rule.type === 'package') {
         const cmdStr = commandString(input)
         const specs = extractPackageInstalls(cmdStr)
         if (specs.length === 0) continue
         const ageThresholdDays = rule.age_days ?? 30
-        const results = await checkPackages(specs, {
-          ageThresholdDays,
-          totalTimeoutMs: 2000,
-          cache: this.packageVerifierCache,
-          fetchImpl: this.config.packageVerifierFetch,
-        })
+        const { results, misses } = checkPackagesCacheOnly(specs, this.packageVerifierCache)
+        if (misses.length > 0) {
+          // Fire-and-forget: NEVER awaited on the hot path. `void` makes
+          // that explicit at the call site; the settlement promise only
+          // ever leaves this function via the test-only observer hook.
+          const settled = scheduleBackgroundVerification(misses, {
+            ageThresholdDays,
+            totalTimeoutMs: 2000,
+            cache: this.packageVerifierCache,
+            fetchImpl: this.config.packageVerifierFetch,
+          })
+          this.config.packageVerifierOnBackgroundStart?.(settled)
+        }
         const decision = decidePackageAction(results, ageThresholdDays)
         if (decision.reason === 'ok') continue
         if (decision.reason === 'not_found') {
