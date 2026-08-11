@@ -43,3 +43,14 @@
   scripts/thesis-eval/README.md. GATE PLAN: merge hygiene→claim→harness after both land,
   rebuild, full suite, then supervisor runs `node run-battery.mjs --arms A,B` (free) for the
   real N, optionally --arms A,B,C with a paid frontier model within cap.
+- 2026-08-11 supervisor: Hygiene lane landed (v04-hygiene 275f4f2). Real ~/.keel/state md5
+  UNCHANGED across a full run (all 6 state files byte-identical before/after) — the suite no
+  longer pollutes user state. Blanket-mode green ×3. BIG STRUCTURAL FIND: cli build copies
+  core/src (incl. tests) into cli/src/core, and vitest was RE-RUNNING the whole core suite a
+  2nd time inside cli (409 dup cases) interleaved with HOME-mutating cli files — the real leak
+  root cause. Fixed via test.exclude 'src/core/**' in cli/vitest.config.ts. ONE product change:
+  daemon.ts eager module-const StateManager/Ledger/ResearchCache → lazy singletons (mirrors
+  read-env-per-construction). GATE CHECKS (supervisor must do): (1) confirm the src/core exclude
+  didn't drop UNIQUE coverage — core tests still run in core pkg; only the redundant generated
+  re-run removed; cross-check total unique test count. (2) verify daemon.ts lazy-singleton change
+  behaves (daemon.test.ts + a real daemon smoke). Cli own-scope now ~662 (was ~1127 incl dups).
