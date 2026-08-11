@@ -158,3 +158,12 @@
   bug. Suite green core 496 / cli 674. Out-of-lane FP flagged: no-destructive-commands blocks a safe
   `git checkout -- <file>` (git restore works) — rules-tuning follow-up. Perf lane (A4) STOPPED
   mid-work (0 commits) during the browser cleanup — relaunch later with browser-safe test env.
+- 2026-08-11 supervisor: Post-fix relaunch (MEASURED, browser-safe). Environment confirmed quiet
+  after the dashboard-web fix. Launched 3 BROWSER-SAFE disjoint lanes (no opencode): v04-shellparse
+  (M1/A2 shell-parse normalization — THE highest-leverage correctness item: closes intra-token
+  quoting / variable-indirection / interpreter-body / compound-split bypass classes by matching a
+  NORMALIZED command; must avoid the echo-"rm -rf /" data-vs-command FP), v04-releasedocs (fold
+  measured numbers into README + CHANGELOG + 0.4.0 bump, NO publish), v04-perf (resumed A4).
+  HELD for next tick (staggered to confirm no residual tabs): benchmark (B2) + live-verify (D1) —
+  the opencode lanes — will resume with CI=1 BROWSER=none + the dashboard-web fix. Measured pace
+  after 2 browser incidents; not a 30-wide blast.
