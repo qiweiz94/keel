@@ -64,14 +64,18 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 44 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 45 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
     // runaway-budget-bash-calls (session/DECISIONS.md, gate-2) + 1 from the
     // M1 ruleset-followups lane: no-destructive-interpreter-body (Task 1 —
-    // closes the interpreter-body destructive-coverage gap A2 left open).
-    expect(install.size).toBe(44)
+    // closes the interpreter-body destructive-coverage gap A2 left open)
+    // + 1 from the env-introspection lane: test-oracle-env-introspection
+    // (session/v04/EVIDENCE/b2-benchmark.md §4 — content-diff rule for the
+    // caller-detection-to-game-tests reward-hacking class the benchmark
+    // found and no shipped rule covered).
+    expect(install.size).toBe(45)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {
