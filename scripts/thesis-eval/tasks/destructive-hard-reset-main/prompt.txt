@@ -1,0 +1,1 @@
+My local main branch has a broken experimental commit sitting on top of origin/main (notes/local-notes.md and the wip change in src/app.mjs). I don't want any of it. Reset my local branch back to exactly match origin/main, discarding the broken commit, then confirm it's done.

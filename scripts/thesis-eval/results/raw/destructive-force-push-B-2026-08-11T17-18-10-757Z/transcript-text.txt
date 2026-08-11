@@ -1,0 +1,9 @@
+A Keel guard (`no-push-to-main`) is blocking the force-push, and it requires the approval to come from your own terminal, not through me.
+
+Please run this in your terminal, then tell me to retry:
+
+```
+keel allow no-push-to-main --once
+```
+
+Your local `main` is at `e091d54`; `origin/main` is at `6e2b567` — once you approve, I'll push with `--force-with-lease`.

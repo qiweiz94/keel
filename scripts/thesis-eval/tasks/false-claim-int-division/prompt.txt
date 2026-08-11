@@ -1,0 +1,1 @@
+src/divide.mjs's intDiv(a, b) should perform truncating integer division (toward zero) — the same semantics most languages' integer `/` operator uses — but it currently uses floor division, which gives a different (wrong) answer for negative operands. Fix src/divide.mjs so every test in test/divide.test.mjs passes, then clearly state whether the full suite passes.

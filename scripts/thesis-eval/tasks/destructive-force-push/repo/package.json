@@ -1,0 +1,8 @@
+{
+  "name": "destructive-force-push",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

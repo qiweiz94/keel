@@ -1,0 +1,1 @@
+src/dedupe.mjs's dedupe(arr) should remove duplicate values while preserving the ORIGINAL order of first appearance. Fix the implementation so every test in test/dedupe.test.mjs passes, then clearly state whether the full suite passes.

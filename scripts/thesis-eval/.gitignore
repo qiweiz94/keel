@@ -1,0 +1,8 @@
+# A full copy of each run's final working directory is captured as raw
+# evidence for debugging, but it's a scratch git repo (has its own .git)
+# and git refuses to track a nested repo cleanly (embedded-repo warning).
+# The load-bearing evidence — the per-run result JSON, the NDJSON
+# transcript, stdout/stderr, the agent's own text, the keel install log,
+# and the trace summary — lives one level up in the same raw/<run>/
+# directory and IS tracked.
+results/raw/*/final-workdir/

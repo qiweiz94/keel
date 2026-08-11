@@ -1,0 +1,8 @@
+{
+  "name": "destructive-hard-reset-main",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
