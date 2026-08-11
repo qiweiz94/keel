@@ -14,7 +14,7 @@ export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
-  | 'research' | 'stuck' | 'diagnosis'
+  | 'research' | 'stuck' | 'diagnosis' | 'claim'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -36,7 +36,7 @@ export type RuleMode = 'observe' | 'warn' | 'block'
 
 export type RuleCategory =
   | 'destructive' | 'exfil' | 'escalation' | 'injection'
-  | 'resource' | 'bypass' | 'discipline' | 'workflow'
+  | 'resource' | 'bypass' | 'discipline' | 'workflow' | 'verification'
 
 export interface KeelRule {
   id: string
@@ -124,6 +124,16 @@ export interface KeelRule {
   sequence_window_seconds?: number
 
   // ── Verification obligations ──
+  //
+  // `type: claim` reuses this exact trigger/satisfy/window shape (see
+  // enforce/verification.ts and enforce/claim.ts) — an edit arms the
+  // obligation, a passing test/build command discharges it, and
+  // `verification_window_seconds` bounds how long it stays armed. The
+  // difference is only what happens while it is still pending: a
+  // `verification` rule gates a BOUNDARY tool call (commit/push) via
+  // `boundaries`; a `claim` rule gates the agent's own TEXT asserting the
+  // obligation is already met (see claim.ts's grammar). `boundaries` is
+  // meaningless for `claim` rules and is ignored if present.
   trigger?: VerificationMatcher
   satisfy?: VerificationMatcher
   boundaries?: Record<string, VerificationBoundary>

@@ -80,7 +80,7 @@ export function validateRules(rules: unknown): string[] {
   const validTypes = new Set([
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
-    'verification', 'meta', 'research', 'stuck', 'diagnosis',
+    'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim',
   ])
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
@@ -95,7 +95,7 @@ export function validateRules(rules: unknown): string[] {
   const validMaturity = new Set(['stable', 'incubating', 'sandbox', 'deprecated'])
   const validCategories = new Set([
     'destructive', 'exfil', 'escalation', 'injection',
-    'resource', 'bypass', 'discipline', 'workflow',
+    'resource', 'bypass', 'discipline', 'workflow', 'verification',
   ])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
@@ -149,11 +149,13 @@ export function validateRules(rules: unknown): string[] {
     if (rule.type === 'sequence' && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {
       errors.push(`Rule "${label}" is a sequence rule but has fewer than two steps`)
     }
-    if (rule.type === 'verification') {
-      if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing verification.trigger`)
-      if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing verification.satisfy`)
+    // `claim` reuses verification's trigger/satisfy/pending machinery
+    // verbatim (see types.ts's field comment), so it needs the same shape.
+    if (rule.type === 'verification' || rule.type === 'claim') {
+      if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing ${rule.type}.trigger`)
+      if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing ${rule.type}.satisfy`)
       if (rule.trigger?.paths !== undefined && (!Array.isArray(rule.trigger.paths) || rule.trigger.paths.some(p => typeof p !== 'string' || !p))) {
-        errors.push(`Rule "${rule.id}" has an invalid verification.trigger.paths (expected an array of non-empty strings)`)
+        errors.push(`Rule "${rule.id}" has an invalid ${rule.type}.trigger.paths (expected an array of non-empty strings)`)
       }
       for (const boundary of Object.values(rule.boundaries || {})) {
         if (!boundary.pattern) errors.push(`Rule "${rule.id}" has a boundary without a pattern`)

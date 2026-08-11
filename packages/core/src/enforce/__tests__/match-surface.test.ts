@@ -300,3 +300,72 @@ rules:
     }
   })
 })
+
+describe('verification boundary match surface (type: verification, Wave-2 Lane-3)', () => {
+  // Same class as the rate-rule fix above: `boundary()` (verification.ts)
+  // built its haystack as `JSON.stringify(stripContentArgs(input.args))`,
+  // so a boundary pattern anchored with `$` could never match — the JSON
+  // string always continues past the command with a closing quote/brace.
+  const rule = `version: 1
+rules:
+  - id: verify-boundary
+    type: verification
+    trigger:
+      tools: [write, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [bash]
+      pattern: "(npm test|npm run test)"
+    boundaries:
+      push:
+        pattern: "git push.*origin main$"
+        action: deny
+    verification_window_seconds: 300
+    action: deny
+    message: "Test required before pushing to main."
+`
+
+  it('matches a quoted command against an end-anchored boundary pattern (was red before the fix)', async () => {
+    const pipeline = makePipeline(rule)
+    await pipeline.evaluate(input('write', { filePath: 'src/a.ts', content: 'export const a = 1' }, 'boundary-quoted'))
+    const first = await pipeline.evaluate(input('Bash', { command: 'echo "x" && git push origin main' }, 'boundary-quoted'))
+    // Before the fix this stayed 'allow' — the JSON-escaped haystack could
+    // never satisfy the `$` anchor, so the boundary never engaged at all.
+    expect(first.action).not.toBe('allow')
+    expect(first.rule_id).toBe('verify-boundary')
+  })
+
+  it('still matches the boundary via the JSON args surface (regression guard — unquoted, unanchored case)', async () => {
+    const pipeline = makePipeline(`version: 1
+rules:
+  - id: verify-boundary-plain
+    type: verification
+    trigger:
+      tools: [write, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [bash]
+      pattern: "(npm test|npm run test)"
+    boundaries:
+      commit:
+        pattern: "git commit"
+        action: warn
+    verification_window_seconds: 300
+    action: deny
+    message: "Test required."
+`)
+    await pipeline.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }, 'boundary-plain'))
+    const result = await pipeline.evaluate(input('Bash', { command: 'git commit -m "wip"' }, 'boundary-plain'))
+    expect(result.action).toBe('warn')
+    expect(result.rule_id).toBe('verify-boundary-plain')
+  })
+
+  it('does not match a benign command while pending (must-allow)', async () => {
+    const pipeline = makePipeline(rule)
+    await pipeline.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }, 'boundary-benign'))
+    const result = await pipeline.evaluate(input('Bash', { command: 'echo "x" && git push origin feature-branch' }, 'boundary-benign'))
+    expect(result.action).toBe('allow')
+  })
+})

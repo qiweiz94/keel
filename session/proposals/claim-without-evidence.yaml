@@ -1,0 +1,90 @@
+# Wave-2 Lane-3 — claim-to-evidence detector.
+#
+# This is a PROPOSAL, not a shipped rule: it is not wired into either
+# DEFAULT_RULES_YAML (packages/opencode-plugin/src/plugin.ts,
+# packages/cli/src/commands/install.ts — single-owner files this wave does
+# not touch). Per session/DECISIONS.md's Tier-3 convention, the supervisor
+# pastes the snippet below into both at the Wave-2 gate.
+#
+# Engine support (rule type `claim`, threaded through types.ts,
+# rule-parser.ts, pipeline.ts, verification.ts, and the grammar in
+# enforce/claim.ts) already ships in this wave regardless of when/whether
+# this snippet is adopted — see session/EVIDENCE/wave2-claim.md for the
+# full design writeup, channel survey, and known misses.
+
+- id: claim-without-evidence
+  type: claim
+  category: verification
+  severity: high
+  # LOW, not medium, and not rounded up: see EVIDENCE.md §6 for the honest
+  # accounting — the two channels this rule can see (an unwired
+  # `reasoning` field in every surveyed host, and commit/PR message text)
+  # mean it fires on a small, host-dependent slice of real false-success
+  # claims, and the grammar itself is a regex heuristic, not a parser.
+  confidence: low
+  maturity: incubating
+  # observe: evaluated and recorded every call (observed_action in the
+  # trace), never interrupts. A new detector earns its way to warn/block by
+  # a measured false-positive rate on real trajectories, not by assumption.
+  mode: observe
+  trigger:
+    tools: [write, edit, apply_patch, WriteFile]
+    path: "src/"
+    paths: ["package.json"]
+    pattern: "(src/|package[.]json)"
+  satisfy:
+    tools: [Bash]
+    pattern: "(npm test|npm run test|vitest|jest|pytest|go test|cargo test)"
+  verification_window_seconds: 300
+  action: warn
+  message: >-
+    Claimed done/fixed/tested/passing/verified/complete without a passing
+    verification run since the last source edit. Run the test/build
+    command that satisfies this obligation before making that claim, or
+    say explicitly that it is unverified.
+  rationale: >-
+    Trajectory research on self-assessing coding agents found 75.8% of
+    FAILING runs carried an explicit false-success claim in the agent's own
+    output, and that LLM judges scoring those same claims for truthfulness
+    land at ~0.54 AUROC — indistinguishable from chance. A judge that reads
+    the claim and reasons about whether it sounds true cannot catch this
+    class of failure; only cross-referencing the claim against what
+    actually ran can. This rule does exactly that: it does not evaluate
+    whether the claim is TRUE, only whether a verification command visibly
+    ran and passed since the edit the claim is about — the same
+    trigger/satisfy/pending shape the shipped `source-change-requires-test`
+    verification rule already uses, applied to the agent's own words
+    instead of a commit/push boundary.
+  remediation: >-
+    Before stating a task is done/fixed/tested/passing/verified/complete,
+    run the project's test or build command and let it finish (not
+    `--help`, `--dry-run`, or a swallowed exit code — see verification.ts's
+    isFakeSatisfy for what does not count). If verification genuinely
+    cannot be run yet, say so plainly instead of claiming completion.
+  false_positives:
+    - >-
+      WIP/status narration during active work ("still fixing the parser,
+      tests not run yet") — suppressed by the grammar's hedge/negation
+      exclusion (wip, todo, partial, "not run", "in progress", ...), but a
+      hedge phrasing outside that word list will still fire.
+    - >-
+      A commit message that accurately describes a fix VERIFIED IN AN
+      EARLIER session or an earlier window that has since expired
+      (verification_window_seconds default 300s) — the obligation is gone
+      by the time the commit happens, so the rule reads it as unverified
+      even though it genuinely was. This is a real, not-yet-mitigated gap:
+      the window is a proxy for "still fresh enough to trust," not a
+      certificate that no verification ever happened.
+    - >-
+      Quoting the USER's or a teammate's claim back in reasoning text
+      ("you said tests were passing, but I see...") is intended to be
+      suppressed by the quoted-span exclusion; an unquoted paraphrase of
+      someone else's claim is not caught by that exclusion and may
+      false-fire.
+    - >-
+      Docs-only or config-only sessions that never touch `src/` or
+      `package.json` never arm the obligation at all, so a "done" claim
+      about non-code work correctly never fires — not a false positive,
+      but worth listing so a reviewer does not expect this rule to cover
+      that case.
+  review_by: "2026-11-11"

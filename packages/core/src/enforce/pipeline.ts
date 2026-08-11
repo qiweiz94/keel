@@ -18,6 +18,7 @@ import { StateManager } from './state-manager.js'
 import { VerificationTracker } from './verification.js'
 import { FileRuleOverrideStore } from './overrides.js'
 import { commandString, argPath } from './arg-utils.js'
+import { detectClaim } from './claim.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -187,7 +188,7 @@ export class EnforcementPipeline {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
-      ['verification', 'research', 'stuck', 'rate', 'time'].includes(rule.type)
+      ['verification', 'claim', 'research', 'stuck', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow'].includes(rule.type))
     )
     // Approval-gated rules are re-evaluated on every call: the user may grant
@@ -211,6 +212,25 @@ export class EnforcementPipeline {
               : rule
             return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey)
           }
+      }
+
+      // Claim-to-evidence obligations: reuses the SAME trigger/satisfy/
+      // pending state machine as `type: verification` (see
+      // verification.ts's isObligationRule and types.ts's field comment).
+      // While an edit's obligation is still pending — no test/build command
+      // has been seen since, or the last one seen never discharged it
+      // (including a FAILED run: markSatisfied is only ever called by the
+      // host after a zero exit code, so a failing run leaves the obligation
+      // pending exactly like no run at all) — any claim-shaped text on this
+      // or a later call fires. The rule cannot and does not try to
+      // distinguish "never ran" from "ran and failed"; both are "no
+      // evidence of success since the edit", which is what the message says.
+      if (rule.type === 'claim' && this.verificationTracker.isPending(rule, input)) {
+        const claim = detectClaim(input)
+        if (claim) {
+          const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`
+          return this.violation(input, rule, message, start, 6, rule.id)
+        }
       }
       // Research-before-solve obligations: a pending obligation (a failing
       // command was seen, no fresh research since) gates the next fix via
@@ -548,7 +568,7 @@ export class EnforcementPipeline {
         }
       }
 
-      if (rule.type === 'verification') {
+      if (rule.type === 'verification' || rule.type === 'claim') {
         this.verificationTracker.observeTrigger(rule, input)
       }
 
@@ -603,7 +623,7 @@ export class EnforcementPipeline {
   markVerificationSatisfied(input: EnforceInput): void {
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
     for (const rule of rules) {
-      if (rule.type === 'verification') this.verificationTracker.markSatisfied(rule, input)
+      if (rule.type === 'verification' || rule.type === 'claim') this.verificationTracker.markSatisfied(rule, input)
     }
   }
 

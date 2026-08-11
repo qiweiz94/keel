@@ -29,7 +29,11 @@ const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
 const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
 let sentinelCorrupted = false
-const TRACES_DIR = path.join(KEEL_DIR, 'traces')
+// KEEL_TRACES_DIR mirrors state-manager.ts:21's KEEL_STATE_DIR — same
+// env-override-else-real-home shape — so this plugin's own traces never
+// have to land in ~/.keel/traces during a load-test or a future in-process
+// harness run.
+const TRACES_DIR = process.env.KEEL_TRACES_DIR || path.join(KEEL_DIR, 'traces')
 export const DEFAULT_RULES_YAML = `version: 1
 level: balanced
 rules:

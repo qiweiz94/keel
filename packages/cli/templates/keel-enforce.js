@@ -6347,7 +6347,8 @@ function validateRules(rules) {
     "meta",
     "research",
     "stuck",
-    "diagnosis"
+    "diagnosis",
+    "claim"
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6363,7 +6364,8 @@ function validateRules(rules) {
     "resource",
     "bypass",
     "discipline",
-    "workflow"
+    "workflow",
+    "verification"
   ]);
   const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
@@ -6414,11 +6416,11 @@ function validateRules(rules) {
     if (rule.type === "sequence" && (!Array.isArray(rule.steps) || rule.steps.length < 2)) {
       errors.push(`Rule "${label}" is a sequence rule but has fewer than two steps`);
     }
-    if (rule.type === "verification") {
-      if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing verification.trigger`);
-      if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing verification.satisfy`);
+    if (rule.type === "verification" || rule.type === "claim") {
+      if (!rule.trigger) errors.push(`Rule "${rule.id}" is missing ${rule.type}.trigger`);
+      if (!rule.satisfy) errors.push(`Rule "${rule.id}" is missing ${rule.type}.satisfy`);
       if (rule.trigger?.paths !== void 0 && (!Array.isArray(rule.trigger.paths) || rule.trigger.paths.some((p) => typeof p !== "string" || !p))) {
-        errors.push(`Rule "${rule.id}" has an invalid verification.trigger.paths (expected an array of non-empty strings)`);
+        errors.push(`Rule "${rule.id}" has an invalid ${rule.type}.trigger.paths (expected an array of non-empty strings)`);
       }
       for (const boundary of Object.values(rule.boundaries || {})) {
         if (!boundary.pattern) errors.push(`Rule "${rule.id}" has a boundary without a pattern`);
@@ -6590,6 +6592,9 @@ function commandString(input) {
 }
 
 // ../core/src/enforce/verification.ts
+function isObligationRule(rule) {
+  return rule.type === "verification" || rule.type === "claim";
+}
 var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set(["write", "edit", "apply_patch", "patch", "writefile", "write_file"]);
 function matchesToolList(tools, input) {
   if (tools.some((tool) => tool.toLowerCase() === input.tool.toLowerCase())) return true;
@@ -6608,11 +6613,13 @@ function matches(matcher, input) {
     if (!pathTargets.some((target) => value.includes(target))) return false;
   }
   if (matcher.pattern) {
+    let re;
     try {
-      if (!new RegExp(matcher.pattern, "i").test(JSON.stringify(args))) return false;
+      re = new RegExp(matcher.pattern, "i");
     } catch {
       return false;
     }
+    if (!re.test(JSON.stringify(args)) && !re.test(commandString(input))) return false;
   }
   return true;
 }
@@ -6627,7 +6634,7 @@ var VerificationTracker = class {
     return `${rule.id}:${input.cwd}`;
   }
   observeTrigger(rule, input) {
-    if (rule.type !== "verification" || !matches(rule.trigger, input)) return;
+    if (!isObligationRule(rule) || !matches(rule.trigger, input)) return;
     const key = this.key(rule, input);
     const previous = this.stateManager?.verification[key];
     const generation = Math.max(this.generations.get(key) || 0, previous?.generation || 0) + 1;
@@ -6642,7 +6649,7 @@ var VerificationTracker = class {
     this.stateManager?.setVerification(key, { createdAt: Date.now(), generation });
   }
   markSatisfied(rule, input) {
-    if (rule.type !== "verification" || !matches(rule.satisfy, input)) return;
+    if (!isObligationRule(rule) || !matches(rule.satisfy, input)) return;
     if (this.isFakeSatisfy(input)) return;
     this.pending.delete(this.key(rule, input));
     this.stateManager?.clearVerification(this.key(rule, input));
@@ -6666,7 +6673,7 @@ var VerificationTracker = class {
     return /--(help|list[a-z-]*|dry[-_]?run|version)(=|\s|$)|(^|\s)-h(\s|$)|(\|\||;)\s*(true|exit(\s+0)?|:)(\s|$)|(^|\s)\|\s*(cat|tee|head|tail|grep|true)(\s|$)/i.test(command);
   }
   isPending(rule, input) {
-    if (rule.type !== "verification") return false;
+    if (!isObligationRule(rule)) return false;
     const key = this.key(rule, input);
     const pending = this.pending.get(key) || this.stateManager?.verification[key];
     if (!pending) return false;
@@ -6681,11 +6688,15 @@ var VerificationTracker = class {
   boundary(rule, input) {
     if (!this.isPending(rule, input) || !rule.boundaries) return null;
     const args = JSON.stringify(stripContentArgs(input.args || {}));
+    const cmd = commandString(input);
     const mcp = mcpToolString(input);
     for (const boundary of Object.values(rule.boundaries)) {
       try {
-        if (boundary.pattern && new RegExp(boundary.pattern, "i").test(args)) {
-          return { message: rule.message, action: boundary.action };
+        if (boundary.pattern) {
+          const re = new RegExp(boundary.pattern, "i");
+          if (re.test(args) || re.test(cmd)) {
+            return { message: rule.message, action: boundary.action };
+          }
         }
       } catch {
       }
@@ -6714,7 +6725,7 @@ var FileRuleOverrideStore = class {
   file;
   lock;
   constructor(home = homedir()) {
-    this.directory = join(home, ".keel");
+    this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, ".keel");
     this.file = join(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
   }
@@ -6788,6 +6799,71 @@ var FileRuleOverrideStore = class {
     renameSync(temporary, this.file);
   }
 };
+
+// ../core/src/enforce/claim.ts
+var CODE_FENCE_RE = /```[\s\S]*?```/g;
+var INLINE_CODE_RE = /`[^`\n]*`/g;
+var URL_RE = /\bhttps?:\/\/\S+/gi;
+var PATH_RE = /\b(?:\.{0,2}\/)?[\w.-]+(?:\/[\w.-]+)+\b/g;
+function stripNoise(text) {
+  return text.replace(CODE_FENCE_RE, " ").replace(INLINE_CODE_RE, " ").replace(URL_RE, " ").replace(PATH_RE, " ");
+}
+var QUOTED_RE = /"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g;
+function stripQuoted(text) {
+  return text.replace(QUOTED_RE, " ");
+}
+var HEDGE_RE = /\b(wip|w\.i\.p\.|draft|todo|to-do|partial|pending|incomplete|in[- ]progress|not\s+(?:yet\s+)?(?:run|ran|tested|verified|complete[d]?|done|passing|working)|no\s+tests?|untested|unverified|not\s+sure|might|maybe|probably|should\s+(?:now\s+)?(?:be|pass)|still\s+(?:need|broken|failing))\b/i;
+var CLAIM_PATTERNS = [
+  // "all tests pass", "the test suite is passing", "tests succeeded"
+  { name: "tests-pass", re: /\b(?:all |the )?tests?(?:\s+suite)?\s+(?:(?:is|are|now)\s+)?(?:pass(?:ed|ing)?|green|succeed(?:ed|s)?)\b/i },
+  // "build is passing/green/successful/clean"
+  { name: "build-pass", re: /\bbuild\s+(?:is\s+)?(?:passing|green|successful|clean)\b/i },
+  // "verification passed/complete"
+  { name: "verification-noun", re: /\bverification\s+(?:passed|complete[d]?)\b/i },
+  // "this/it/the fix is done/fixed/complete/tested/verified/working/resolved/ready"
+  { name: "linking-verb", re: /\b(?:this|that|it|everything|the\s+(?:fix|bug|issue|feature|change|pr))\s+(?:is|are|was|now)\s+(?:done|complete[d]?|fixed|tested|verified|working|resolved|ready)\b/i },
+  // clause-leading past-participle claim: "Fixed and passing.", "Done."
+  // The negative lookahead excludes a conventional-commit-style label
+  // ("fixed:" as a header) from being read as an assertion.
+  { name: "clause-leading", re: /(?:^|[.!;]\s+|,\s*(?:and\s+)?|\band\s+)(done|fixed|complete[d]?|tested|verified|resolved)\b(?!\s*[:\-])/i },
+  // bare "verified" is a rarer, stronger signal than "done"/"fixed" — kept
+  // as its own pattern so it does not need clause-leading position.
+  { name: "verified-explicit", re: /\bverified\b(?!\s*[:\-])/i }
+];
+function scanUtterance(raw, source) {
+  if (!raw) return null;
+  let text = stripNoise(raw);
+  if (source === "reasoning") text = stripQuoted(text);
+  if (HEDGE_RE.test(text)) return null;
+  for (const { name, re } of CLAIM_PATTERNS) {
+    const m = re.exec(text);
+    if (m) return { phrase: m[0].trim(), pattern: name, source };
+  }
+  return null;
+}
+var MESSAGE_FLAG_RE = /(?:-m|--message|--body|--title)[\s=]+(?:"([^"]*)"|'([^']*)')/g;
+function extractCommandMessages(cmd) {
+  const out = [];
+  const re = new RegExp(MESSAGE_FLAG_RE);
+  let m;
+  while (m = re.exec(cmd)) {
+    const value = m[1] ?? m[2] ?? "";
+    if (value) out.push(value);
+  }
+  return out;
+}
+function detectClaim(input) {
+  if (input.reasoning) {
+    const hit = scanUtterance(input.reasoning, "reasoning");
+    if (hit) return hit;
+  }
+  const cmd = commandString(input);
+  for (const message of extractCommandMessages(cmd)) {
+    const hit = scanUtterance(message, "command-message");
+    if (hit) return hit;
+  }
+  return null;
+}
 
 // ../core/src/enforce/pipeline.ts
 var EnforcementPipeline = class {
@@ -6888,7 +6964,7 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
-      (rule) => ["verification", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
+      (rule) => ["verification", "claim", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow"].includes(rule.type)
     );
     const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
@@ -6903,6 +6979,13 @@ var EnforcementPipeline = class {
           const stateKey = `${rule.id}:${input.cwd}`;
           const boundaryRule = boundaryMessage.action ? { ...rule, action: boundaryMessage.action } : rule;
           return this.violation(input, boundaryRule, boundaryMessage.message, start, 6, stateKey);
+        }
+      }
+      if (rule.type === "claim" && this.verificationTracker.isPending(rule, input)) {
+        const claim = detectClaim(input);
+        if (claim) {
+          const message = `${rule.message} (claimed via ${claim.source}: "${claim.phrase}")`;
+          return this.violation(input, rule, message, start, 6, rule.id);
         }
       }
       if (rule.type === "research" && rule.trigger && this.config.researchTracker) {
@@ -7139,7 +7222,7 @@ var EnforcementPipeline = class {
           return this.violation(input, rule, seqResult, start, 6);
         }
       }
-      if (rule.type === "verification") {
+      if (rule.type === "verification" || rule.type === "claim") {
         this.verificationTracker.observeTrigger(rule, input);
       }
       if (deepChecks && rule.type === "flow" && rule.sources && rule.sinks) {
@@ -7181,7 +7264,7 @@ var EnforcementPipeline = class {
   markVerificationSatisfied(input) {
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
     for (const rule of rules) {
-      if (rule.type === "verification") this.verificationTracker.markSatisfied(rule, input);
+      if (rule.type === "verification" || rule.type === "claim") this.verificationTracker.markSatisfied(rule, input);
     }
   }
   /**
@@ -8311,7 +8394,7 @@ var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
 var DISABLED_PATH = path.join(KEEL_DIR, "DISABLED");
 var sentinelCorrupted = false;
-var TRACES_DIR = path.join(KEEL_DIR, "traces");
+var TRACES_DIR = process.env.KEEL_TRACES_DIR || path.join(KEEL_DIR, "traces");
 var DEFAULT_RULES_YAML = `version: 1
 level: balanced
 rules:
