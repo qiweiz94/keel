@@ -1,6 +1,6 @@
 # The three tiers
 
-`keel install` writes 42 default rules into `~/.keel/rules.yaml`, split into three
+`keel install` writes 43 default rules into `~/.keel/rules.yaml`, split into three
 tiers. This page explains what each tier does, how the "speed dial" (`keel level`)
 interacts with them, and how a rule moves from silently watching to actually blocking.
 
@@ -9,7 +9,7 @@ Two different things are both called "level" here, and it's worth pulling apart 
 - **`keel level`** is the global dial you set — `sprint`, `balanced`, or `protect`.
   It's one setting for the whole ruleset.
 - **A rule's own `level:` field** is a per-rule floor. Most rules don't set one (or
-  carry `level: sprint`, meaning "no floor — obey the dial"). Eleven rules set
+  carry `level: sprint`, meaning "no floor — obey the dial"). Twelve rules set
   `level: protect`, and those are what this page calls **Tier 1**.
 
 So when a Tier-2 rule's source says `level: sprint`, that is *not* "only active at the
@@ -35,7 +35,7 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   ladder is the wrong shape — the first hit *is* the incident.
 
 Three tiers resolve that tension by giving each rule the posture its own evidence
-earns it, instead of applying one policy to all 42.
+earns it, instead of applying one policy to all 43.
 
 | Tier | What it does | Can the dial soften it? | Example rules |
 |---|---|---|---|
@@ -43,7 +43,7 @@ earns it, instead of applying one policy to all 42.
 | **2 — balanced** | Warns once, then blocks (dial-dependent) | Yes — `sprint` downgrades its deny/block to warn | `no-push-to-main`, `no-secrets-in-code`, `cicd-and-infra` |
 | **3 — observe** | Evaluated and recorded, never interrupts | N/A — records what it *would* have done regardless of dial | `no-repeat-loops`, `research-before-fix`, `claim-without-evidence` |
 
-## Tier 1 — protect floor (11 rules)
+## Tier 1 — protect floor (12 rules)
 
 Every rule below ships with `level: protect`. That makes two things true regardless of
 what dial you're on: the dial can never soften or hide it, and it denies on the very
@@ -57,6 +57,7 @@ violation... warning only") on its first call under the same dial.
 | `keel-control-gate` | An agent running keel's own control commands (`disable`, `allow`, `level`, `install`, `uninstall`, `rules --append`) |
 | `no-rules-tampering` | Editing keel's own rules/state/plugin files, or host auto-approve config (`.claude/settings*.json`, `.mcp.json`, `.vscode/settings.json`, git hooks) |
 | `no-enforcer-removal` | Deleting keel's enforcement files |
+| `no-self-protection-write` | Shell writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `python3 -c`, `node -e`, `ln`, `git config core.hooksPath`, …) targeting keel's files, host trust/approval config, or git hooks — closes the gap `no-rules-tampering`/`no-enforcer-removal` leave open, since `filesystem`-type rules only see a tool call's declared path argument, not a shell redirect target |
 | `agent-env-hijack` | Persisting a mutated `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`/`KEEL_*` into shell or config files |
 | `no-destructive-commands` | Destructive commands, including fork bombs |
 | `no-force-push` | `git push --force` (suggests `--force-with-lease`) |
@@ -66,7 +67,7 @@ violation... warning only") on its first call under the same dial.
 | `no-exfil-flow` | Data read from a sensitive file, then sent over the network |
 | `prod-db-destruction` | A destructive DB operation against a connection tagged prod/production/live |
 
-## Tier 2 — balanced (22 + 1 rules)
+## Tier 2 — balanced (22 rules)
 
 These carry no floor (`level: sprint` in the YAML, meaning "obey the dial normally") or
 no `level:` field at all. Most `deny` actions here warn on the first hit and block on
@@ -131,7 +132,7 @@ observe-first pattern.
 — it's also the one exception to "every rule evaluates at every dial": switching to
 `sprint` deactivates it. Confirmed live: `keel level sprint` from `protect` printed
 `1 rule(s) deactivated (their level floor is above sprint): test-oracle-tampering`, and
-`keel status` reported `Active at current dial: 41 of 42`.
+`keel status` reported `Active at current dial: 42 of 43`.
 
 ## The speed dial
 
@@ -159,8 +160,8 @@ Dial diff (protect → sprint), from the merged ruleset:
   4 rule(s) soften deny/block → warn: no-secrets-in-code, no-secret-files,
     no-credential-echo, source-change-requires-test
   1 rule(s) deactivated (their `level` floor is above sprint): test-oracle-tampering
-  11 `level: protect` floor(s) unchanged: keel-control-gate, no-rules-tampering,
-    no-enforcer-removal, agent-env-hijack, no-destructive-commands,
+  12 `level: protect` floor(s) unchanged: keel-control-gate, no-self-protection-write,
+    no-rules-tampering, no-enforcer-removal, agent-env-hijack, no-destructive-commands,
     protected-branch-reset, protected-branch-delete, pipe-to-shell,
     prod-db-destruction, no-exfil-flow, no-force-push
 ```
