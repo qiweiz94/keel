@@ -94,3 +94,19 @@
   tree (core 264, cli 649, plugin 56). GATE NOTE: touches types.ts/rule-parser.ts/
   pipeline.ts — expect small overlaps with w2-seq (enum) and possibly w2-claim;
   merge dial after seq/claim, before rules.
+- 2026-08-11 supervisor: W2 lane 3 landed (w2-claim dcf223c, d000d8a): claim grammar
+  (6 named shapes, fence/URL/quote stripping, hedge suppression), type 'claim' reusing
+  VerificationTracker; verification.ts BOTH sites fixed additively; KEEL_TRACES_DIR +
+  KEEL_OVERRIDES_DIR per-construction reads (module-level env consts empirically miss
+  runtime overrides). Honest finding: EnforceInput.reasoning is UNWIRED in all 6
+  hosts — claim text visible only via commit/PR message args; hence confidence: low.
+  Disclosed: one stray key briefly written to real ~/.keel/state during a probe,
+  removed key-only.
+- 2026-08-11 supervisor RULING — observe-mode short-circuit: claim-without-evidence
+  and source-change-requires-test share a trigger; first-match short-circuit means one
+  swallows the other on the commit-message channel. BOTH order hacks are controls that
+  lie. Root-cause fix ASSIGNED to Wave-3 promotion lane: matched mode:observe rules
+  record observed_action and CONTINUE; verdict = first non-observe match (Gatekeeper
+  dryrun semantics; also makes shadow counts see full traffic). Wave-2 gate keeps file
+  order (shipped rule wins; claim underfires until Wave 3 — accepted, logged).
+  overrideStoreForStatus module-level import-timing hazard flagged, not fixed.
