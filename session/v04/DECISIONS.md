@@ -291,3 +291,16 @@
   * POLICY DECISION (needs user, don't unilaterally change): empty stdin / truncated TOOL_INPUT →
     keel ALLOWS every call with zero signal (fail-open on degenerate input). Fail-closed (block) vs
     warn vs allow is a real tradeoff (legit no-op calls vs attack/bug). Flag for the user.
+- 2026-08-11 supervisor: ═══ M1 COMPLETE ═══ (env-intro GATE CLOSED cafbabf; 45 rules; core 554 /
+  cli 738 green). M1 correctness core, ALL items landed + gated + verified:
+  A1 floors un-bypassable (all vectors: action/mode/surface/same-id/different-id) ✅;
+  A2 shell-parse layer (intra-token/var-indirection/interpreter/compound bypasses closed) ✅;
+  A3 fail-closed hooks (stdin-error escape now blocks) ✅; A4 perf verified <50ms + package-budget
+  non-blocking ✅; interpreter-body destructive coverage ✅; echo-"rm -rf /" FP fixed ✅;
+  env-introspection observe rule ✅; C2 cross-process locking ✅. Plus v0.4/M0: thesis MEASURED
+  (0% vs 75% harm), promotion pipeline, claim-to-evidence, red-team catch rates, dashboard-web
+  browser fix + regression guard, docs @ 0.4.0. AUDIT.md current.
+  NEXT MILESTONE = M2 (verification live across all hosts + the detection benchmark at scale +
+  the model-self-censorship re-audit of the experiment attributions). Plus quick M1 follow-ups
+  (unless[].regex validation, onRulesError wiring) and the empty-stdin fail-open POLICY question
+  (needs user). Nothing pushed.

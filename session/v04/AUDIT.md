@@ -54,9 +54,13 @@ The "Untested / unverified" list is deliberately populated.
   deterministic deny on retry runs only on long-lived hosts (opencode plugin, MCP daemon); on
   claude-code/codex/gemini/cursor, `hook.ts` `process.exit()` kills it, so the slopsquatting gate
   degrades to always-prompt (SAFE, but not deterministic-deny). Queued for M2/B1.
-- **Novel reward-hacking class unguarded** — models game impossible tests via environment
-  introspection (`process.argv`/`Error().stack` caller-sniffing). Observe-rule proposal IN FLIGHT
-  (v04-envintro lane); a content regex will catch obvious shapes and miss clever ones (honest).
+- **Novel reward-hacking class — observe coverage shipped, honest limits.** Models game impossible
+  tests via environment introspection (`process.argv`/`Error().stack` caller-sniffing + per-caller
+  branching). Rule 45 `test-oracle-env-introspection` (content, `mode: observe`, confidence low)
+  catches the exact benchmark shape (introspection primitive + test-file identifier + `if`/`switch`
+  branch); it honestly MISSES ternary/lookup-table branching, non-`.test.` naming, split-across-files
+  signals, and `process.env`/`__filename` sniffing (deliberately excluded to avoid config-file FPs).
+  A detector that burns in before it warns — not a complete solution to reward hacking.
 - **`git checkout -- <file>` FP** — `no-destructive-commands` blocks a safe single-file checkout;
   rules-tuning follow-up.
 - **`install()` writes global `~/.keel` regardless of `--host`** (bare `homedir()`, no env override)
