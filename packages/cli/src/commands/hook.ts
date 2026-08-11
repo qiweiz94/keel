@@ -365,68 +365,122 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8')
 }
 
-export async function hookCommand(hostArg: string, options: { cwd?: string; level?: string } = {}) {
+/**
+ * Everything `keel hook <host>` does short of actually exiting the process:
+ * read the call, evaluate it, and render the verdict the host must act on.
+ * Pulled out of `hookCommand` (a pure function, no `process.exit`) for two
+ * reasons:
+ *
+ * 1. Testability. `process.exit` truly exits — even a mocked one can't be
+ *    made to "return" without either falling through into code that
+ *    assumes it didn't (e.g. the claim-reach branch below, which must stop
+ *    dead at `process.exit(0)` and never reach the tool-call evaluation
+ *    beneath it) or being caught by this function's OWN fail-closed catch
+ *    and producing a second, spurious verdict. A pure function sidesteps
+ *    both traps: tests call `hookVerdict` directly and assert on its
+ *    return value, the same way the existing `renderVerdict`/`parsePayload`
+ *    tests do, with no process-exit mocking anywhere.
+ * 2. Fail-closed coverage. `readStdin()` and `parsePayload()` used to run
+ *    BEFORE any try/catch in this function. A stdin stream error (a host
+ *    closing its write end mid-read, an EPIPE, ...) thrown out of the
+ *    `for await` in readStdin() was an escaped rejection: `index.ts` calls
+ *    `program.parse()` (not `parseAsync`), so nothing awaits this
+ *    function's promise, and Node's default unhandled-rejection behavior
+ *    is to exit the process with code 1. Every exit-code host in
+ *    renderVerdict blocks ONLY on exit 2 — Codex's own docs are explicit
+ *    that any OTHER non-zero code means "the hook failed, execution
+ *    continues" — and the stdout-signaling hosts (cursor/cline) never even
+ *    got a stdout envelope written. A crash before evaluation began was
+ *    therefore a silent ALLOW: the exact fail-open this lane exists to
+ *    close. The fix is the outer try/catch below, covering the entire body
+ *    including the stdin read, rendering the same fail-closed verdict
+ *    (`renderVerdict(host, null)`) as an in-evaluation error already did.
+ */
+export async function hookVerdict(hostArg: string, options: { cwd?: string; level?: string } = {}): Promise<HostVerdict> {
   const host = (HOSTS as readonly string[]).includes(hostArg) ? hostArg as Host : 'generic'
 
-  // The TOOL_NAME/TOOL_INPUT env-var path below is a defensive fallback,
-  // not the confirmed contract: Claude Code's current hook docs
-  // (code.claude.com/docs/en/hooks) pass the call as JSON on stdin,
-  // including session_id — same as every other exit-code host — and that
-  // is the path this lane's session-id wiring below actually depends on.
-  // It stays as a fallback because it is what an already-live-verified
-  // installed hook (session/transcripts/claude-code-force-push.txt) was
-  // written against; env vars simply never populate against a real host,
-  // so readStdin() is what fires in practice.
-  const raw = (host === 'claude-code' || host === 'gemini') && process.env.TOOL_NAME
-    ? JSON.stringify({ tool_name: process.env.TOOL_NAME, tool_input: safeJson(process.env.TOOL_INPUT) })
-    : await readStdin()
+  try {
+    // The TOOL_NAME/TOOL_INPUT env-var path below is a defensive fallback,
+    // not the confirmed contract: Claude Code's current hook docs
+    // (code.claude.com/docs/en/hooks) pass the call as JSON on stdin,
+    // including session_id — same as every other exit-code host — and that
+    // is the path this lane's session-id wiring below actually depends on.
+    // It stays as a fallback because it is what an already-live-verified
+    // installed hook (session/transcripts/claude-code-force-push.txt) was
+    // written against; env vars simply never populate against a real host,
+    // so readStdin() is what fires in practice.
+    const raw = (host === 'claude-code' || host === 'gemini') && process.env.TOOL_NAME
+      ? JSON.stringify({ tool_name: process.env.TOOL_NAME, tool_input: safeJson(process.env.TOOL_INPUT) })
+      : await readStdin()
 
-  const call = parsePayload(host, raw)
+    const call = parsePayload(host, raw)
 
-  // Claim-reach event (v0.4 Phase 1 — today only a Claude Code `Stop`
-  // payload sets `call.reasoning`, see ParsedCall's comment). This is
-  // structurally NOT a pre-tool-call verdict: the agent has already
-  // finished its turn, `type: claim` is `mode: observe` and never blocks,
-  // and this detector's own binding contract is "observe-mode ONLY — never
-  // blocks." Exiting non-zero here would tell Claude Code's Stop hook to
-  // keep the agent going with keel's own internal failure as the reason —
-  // a self-inflicted loop for a detector that structurally cannot block —
-  // so this path ALWAYS exits 0, even if evaluation throws, and never
-  // touches renderVerdict's PreToolUse-shaped block/advisory envelopes.
-  if (call.reasoning !== undefined) {
+    // Claim-reach event (v0.4 Phase 1 — today only a Claude Code `Stop`
+    // payload sets `call.reasoning`, see ParsedCall's comment). This is
+    // structurally NOT a pre-tool-call verdict: the agent has already
+    // finished its turn, `type: claim` is `mode: observe` and never blocks,
+    // and this detector's own binding contract is "observe-mode ONLY — never
+    // blocks." Exiting non-zero here would tell Claude Code's Stop hook to
+    // keep the agent going with keel's own internal failure as the reason —
+    // a self-inflicted loop for a detector that structurally cannot block —
+    // so this path ALWAYS reports exit 0, even if evaluation throws, and
+    // never touches renderVerdict's PreToolUse-shaped block/advisory
+    // envelopes.
+    if (call.reasoning !== undefined) {
+      try {
+        const cwd = options.cwd || process.cwd()
+        const level = (options.level as ProtectionLevel | undefined)
+        initEnforce(cwd, level ? { level } : undefined)
+        await evaluateClaimText(call.reasoning, { cwd, agent: host, sessionId: call.sessionId })
+      } catch {
+        // Fail open, on purpose — see the comment above.
+      }
+      return { blocked: false, exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    let result: EnforceResult | null = null
     try {
       const cwd = options.cwd || process.cwd()
       const level = (options.level as ProtectionLevel | undefined)
       initEnforce(cwd, level ? { level } : undefined)
-      await evaluateClaimText(call.reasoning, { cwd, agent: host, sessionId: call.sessionId })
+      result = await evaluateToolCall(call.tool, call.args, {
+        cwd,
+        turnNumber: 0,
+        contextTokens: 0,
+        level,
+        context: 'local',
+        agent: host,
+        subagentOf: null,
+        sessionId: call.sessionId,
+      })
     } catch {
-      // Fail open, on purpose — see the comment above.
+      result = null      // fail closed — renderVerdict blocks on null
     }
-    process.exit(0)
-  }
 
-  let result: EnforceResult | null = null
-  try {
-    const cwd = options.cwd || process.cwd()
-    const level = (options.level as ProtectionLevel | undefined)
-    initEnforce(cwd, level ? { level } : undefined)
-    result = await evaluateToolCall(call.tool, call.args, {
-      cwd,
-      turnNumber: 0,
-      contextTokens: 0,
-      level,
-      context: 'local',
-      agent: host,
-      subagentOf: null,
-      sessionId: call.sessionId,
-    })
+    return renderVerdict(host, result)
   } catch {
-    result = null      // fail closed — renderVerdict blocks on null
+    // Anything that escaped the guards above — most concretely a stdin
+    // stream error out of readStdin(), before the per-call try/catch even
+    // starts — must still fail CLOSED rather than let an unhandled
+    // rejection exit 1. See this function's header comment.
+    return renderVerdict(host, null)
   }
+}
 
-  const verdict = renderVerdict(host, result)
-  if (verdict.stdout) process.stdout.write(`${verdict.stdout}\n`)
-  if (verdict.stderr) process.stderr.write(`${verdict.stderr}\n`)
+export async function hookCommand(hostArg: string, options: { cwd?: string; level?: string } = {}) {
+  const verdict = await hookVerdict(hostArg, options)
+  // Writing and exiting are kept separate: if stdout/stderr itself throws
+  // (e.g. EPIPE on a broken pipe), the write attempt must not prevent the
+  // process from still exiting on the fail-closed code computed above —
+  // retrying the write from a second catch would just risk the same EPIPE
+  // again and never reach process.exit at all.
+  try {
+    if (verdict.stdout) process.stdout.write(`${verdict.stdout}\n`)
+    if (verdict.stderr) process.stderr.write(`${verdict.stderr}\n`)
+  } catch {
+    // The verdict's exit code still fires below regardless of whether the
+    // write landed.
+  }
   process.exit(verdict.exitCode)
 }
 
