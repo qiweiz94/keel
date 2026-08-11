@@ -1,0 +1,5 @@
+cases:
+  - note: "reading history is not rewriting it"
+    tool: Bash
+    args:
+      command: "git log --oneline"

@@ -1,0 +1,5 @@
+cases:
+  - note: "interactive rebase rewrites shared history"
+    tool: Bash
+    args:
+      command: "git rebase -i HEAD~3"

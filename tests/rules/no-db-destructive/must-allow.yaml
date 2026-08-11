@@ -1,0 +1,5 @@
+cases:
+  - note: "a read-only SELECT is not destructive"
+    tool: Bash
+    args:
+      command: "psql mydb -c 'SELECT * FROM users;'"

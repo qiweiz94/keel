@@ -1,0 +1,5 @@
+cases:
+  - note: "plain --force push"
+    tool: Bash
+    args:
+      command: "git push --force"

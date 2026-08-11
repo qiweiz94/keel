@@ -1,0 +1,5 @@
+cases:
+  - note: "npx downloads and runs a package on the fly"
+    tool: Bash
+    args:
+      command: "npx create-react-app myapp"

@@ -1,0 +1,5 @@
+cases:
+  - note: "removing an unrelated directory is not enforcer removal"
+    tool: Bash
+    args:
+      command: "rm -rf node_modules"

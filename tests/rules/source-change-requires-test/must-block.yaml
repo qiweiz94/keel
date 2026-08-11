@@ -1,0 +1,14 @@
+# Stateful verification rule: editing src/ opens an obligation; the push
+# boundary denies if no satisfying test run (npm test / vitest / jest) was
+# observed since. The harness replays each step's after-hook via
+# markVerificationSatisfied, mirroring the real CLI's post-tool-call hook.
+cases:
+  - note: "src/ edited, then git push with no test run in between — boundary denies"
+    steps:
+      - tool: write
+        args:
+          path: "src/index.ts"
+          content: "export const x = 1"
+      - tool: Bash
+        args:
+          command: "git push origin feature"

@@ -1,0 +1,5 @@
+cases:
+  - note: "removing a dependency directory is routine, not destructive"
+    tool: Bash
+    args:
+      command: "rm -rf node_modules"

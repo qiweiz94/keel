@@ -1,0 +1,5 @@
+cases:
+  - note: "DROP TABLE via psql"
+    tool: Bash
+    args:
+      command: "psql mydb -c 'DROP TABLE users;'"

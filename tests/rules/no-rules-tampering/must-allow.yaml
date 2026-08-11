@@ -1,0 +1,6 @@
+cases:
+  - note: "ordinary source file write, unrelated to keel's own state"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/src/index.ts"
+      content: "export const x = 1"
