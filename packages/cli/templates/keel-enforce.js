@@ -6580,7 +6580,13 @@ function commandString(input) {
   const mcp = mcpCallString(input);
   if (mcp) return mcp;
   const direct = commandArrayString(args.command ?? args.cmd);
-  return direct || JSON.stringify(stripContentArgs(args));
+  if (direct) return direct;
+  if (args.args && typeof args.args === "object" && !Array.isArray(args.args)) {
+    const nestedArgs = args.args;
+    const nested = commandArrayString(nestedArgs.command ?? nestedArgs.cmd);
+    if (nested) return nested;
+  }
+  return JSON.stringify(stripContentArgs(args));
 }
 
 // ../core/src/enforce/verification.ts
@@ -6937,7 +6943,7 @@ var EnforcementPipeline = class {
     for (const rule of rules) {
       if (rule.type === "rate") {
         const matchPattern = rule.match || input.tool;
-        if (rule.match && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue;
+        if (rule.match && !this.matchesRulePattern(rule.match, `${input.tool} ${commandString(input)}`) && !this.matchesRulePattern(rule.match, `${input.tool} ${JSON.stringify(input.args)}`)) continue;
         const windowSec = rule.window_seconds || 60;
         const maxCalls = rule.max_calls || 10;
         const rateKey = `rate:${rule.id}:${matchPattern}`;
@@ -7066,8 +7072,9 @@ var EnforcementPipeline = class {
           continue;
         }
         if (!rule.match) continue;
-        const haystack = `${input.tool} ${JSON.stringify(input.args)}`;
-        if (!this.matchesRulePattern(rule.match, haystack)) continue;
+        const cmdHaystack = `${input.tool} ${cmdStr}`;
+        const jsonHaystack = `${input.tool} ${JSON.stringify(input.args)}`;
+        if (!this.matchesRulePattern(rule.match, jsonHaystack) && !this.matchesRulePattern(rule.match, cmdHaystack)) continue;
         const windowSec = rule.hypothesis_window_seconds ?? 900;
         const problemKey2 = this.config.ledger.activeProblemKey(input.session_id);
         if (!problemKey2) continue;
