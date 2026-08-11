@@ -99,6 +99,77 @@ it does not have this two-pass escape-ordering bug, and it was not reported
 broken. Out of scope per the task brief ("the private pathMatches function
 in pipeline.ts, used by every filesystem-type rule"); left untouched.
 
+### 3.1 Same-bug-class sweep beyond DEFAULT_RULES_YAML
+
+Grepped the whole repo (excluding the generated `packages/cli/src/core/`
+mirror and `packages/cli/templates/keel-enforce.js`) for every other
+path/glob-matching surface, not just the word "glob":
+
+- `packages/opencode-plugin/src/plugin.ts` — does **not** define its own
+  `pathMatches`. It imports `EnforcementPipeline` straight from
+  `../../core/src/keel-core.js` (confirmed by reading the top of the file),
+  so this lane's fix reaches the plugin automatically through
+  `npm run build` (verified §6/§7 — `dist/index.js` and
+  `packages/cli/templates/keel-enforce.js` both regenerated and contain the
+  fixed regex construction). No separate instance to fix.
+- `packages/core/src/policy-engine.ts` (the legacy `ToolCallEvent`-based
+  engine, line 508, `globToRegexBody`) has its **own** independent glob
+  compiler. Read it end to end: it already uses the correct single-pass
+  shape —
+  `pattern.replace(/\*\*|\*|\?|[.+^${}()|[\]\\]/g, token => ...)` — and its
+  own doc comment (lines 499-506) describes fixing the *same class* of bug
+  previously ("escaped `.` LAST, after doublestar had already been
+  expanded... a rule such as `config/**/secrets.yaml` protected none of the
+  files the author believed it covered"). This corroborates that the fix
+  applied here (§2) matches the codebase's own established pattern for
+  correct glob compilation, and confirms policy-engine.ts needs no change.
+- `packages/core/src/enforce/flow-tracker.ts` (line 168) — covered in §3
+  above (different, already-working idiom; not this bug; out of scope).
+- `packages/core/src/enforce/verification.ts` and `sequencer.ts` — grepped
+  for `glob`/`pathMatches`: zero hits. `trigger.pattern` /
+  `trigger.paths` (used by `source-change-requires-test`) are matched as
+  plain regex via `matchesRulePattern`, not globs — confirmed by reading
+  `DEFAULT_RULES_YAML`'s `pattern: "(src/|package[.]json)"` field, which is
+  regex syntax, not glob syntax. No glob compiler there.
+
+No other broken instance found. The bug was isolated to
+`pipeline.ts`'s `pathMatches`.
+
+**`?` wildcard decision:** no shipped rule in `DEFAULT_RULES_YAML` (either
+copy — see below) uses `?`. `pathMatches`'s escape class included `?`
+before this fix and still does after it, so `?` is treated as a literal
+character, not a single-char wildcard — unchanged behavior, a deliberate
+minimal-diff choice. (For comparison, `policy-engine.ts`'s independent
+compiler does map `?` to `[^/]` — the two engines are not required to
+agree, and nothing in this repo depends on `?` wildcard semantics in
+`pathMatches`.)
+
+**Two-copy check (install.ts vs. plugin.ts):** `DEFAULT_RULES_YAML` is
+shipped in two places — `packages/cli/src/commands/install.ts` (installs
+`~/.keel/rules.yaml`) and `packages/opencode-plugin/src/plugin.ts`
+(in-session enforcement default). `packages/cli/src/__tests__/drift.test.ts`
+guards these two staying in sync, but only compares each rule's `id`,
+`match`, and `action` fields (`ruleTable()`, drift.test.ts:41-43) —
+filesystem-type rules have no `match` field, so `paths`/`exclude` drift
+between the two copies is **not** covered by that test. Wrote a one-off
+script (`parseRulesContent` on both files, diffing `paths`/`exclude` per
+filesystem-type rule id) to check directly rather than assume:
+
+```
+$ node /tmp/compare-fs-rules.mjs
+no-rules-tampering MATCH {"installPaths":[...6 entries...],"pluginPaths":[...same 6...]}
+no-secret-files MATCH {"installPaths":[...11 entries...],"pluginPaths":[...same 11...],
+  "installExclude":["**/.env.example","**/.env.sample","**/.env.test"],
+  "pluginExclude":["**/.env.example","**/.env.sample","**/.env.test"]}
+```
+
+Both filesystem rules are byte-for-byte identical between the two copies
+today — the fix and the fixture additions apply equally to both. Flagging
+the `drift.test.ts` gap (paths/exclude unguarded) for the supervisor as an
+assign, not fixing it here — it is a rule-copy-sync invariant, not this
+lane's glob-matching bug, and matches the precedent Wave-1 lane-1 set for
+flagging same-class-but-out-of-scope surfaces rather than absorbing them.
+
 ## 4. Before/after matching table (every shipped bare-`*` glob)
 
 All paths below tested through the real `EnforcementPipeline.evaluate()`
@@ -173,17 +244,28 @@ bare `*` with a `**`-free pattern except the `paths: ["*"]` /
 `exclude: ["/tmp/*"]` test fixtures in `pipeline.test.ts`, both of which
 still pass).
 
-## 6. Fixture sweep: `tests/rules/no-secret-files/{must-block,must-allow}.yaml`
+## 6. Fixture sweep: `tests/rules/no-secret-files/{must-block,must-allow}.yaml` and `tests/rules/no-rules-tampering/must-block.yaml`
 
-Added must-block cases: `.env.local`, `.env.production`, `id_rsa.pub`,
-`id_ed25519.pub`, a nested `certs/nested/server.pem`, `client.pfx`,
-`client.p12`, and a write into `.ssh/config`.
+`no-secret-files` must-block: added `.env.local`, `.env.production`,
+`id_rsa.pub`, `id_ed25519.pub`, a nested `certs/nested/server.pem`,
+`client.pfx`, `client.p12`, a write into `.ssh/config`, and — closing the
+"every shipped filesystem rule" ask completely, not just the paths this
+bug touched — `.npmrc`, `.git-credentials`, `.netrc`, `.pgpass` (these four
+have no bare `*` in their glob and are unaffected by the bug, but had zero
+fixture coverage before this lane).
 
-Added must-allow cases: `.env.sample` and `.env.test` (both were already in
-the rule's `exclude` list in `DEFAULT_RULES_YAML` but had no fixture
-coverage before this lane — only `.env.example` did), plus two
+`no-secret-files` must-allow: added `.env.sample` and `.env.test` (both
+were already in the rule's `exclude` list in `DEFAULT_RULES_YAML` but had
+no fixture coverage before this lane — only `.env.example` did), plus two
 must-NOT-overmatch cases: `env.txt` (no leading dot) and `foo.pemx`
 (extension must match exactly, not as a prefix).
+
+`no-rules-tampering` must-block: added `.keel.local.yaml` and a file two
+segments below `.opencode/plugins/` (`nested/dir/x.js`) — this rule's globs
+have no bare `*` and are unaffected by the bug (§3.1), but had no fixture
+proving the `**`-crosses-segments join logic still works after this
+lane's rewrite of the same code path, and the "every shipped filesystem
+rule" instruction covers it.
 
 Ran the fixture harness (`packages/cli/src/__tests__/fixture-harness.test.ts`,
 which loads `DEFAULT_RULES_YAML` straight from `install.ts` and runs every
@@ -200,8 +282,17 @@ $ npm run build
 
 $ npx vitest run packages/cli/src/__tests__/fixture-harness.test.ts
  Test Files  1 passed (1)
-      Tests  65 passed (65)
+      Tests  71 passed (71)
 ```
+
+(Wave-1's fixture harness landed at 53 cases across 22 rules. This lane
+added 18 total: 12 no-secret-files cases — 8 must-block
+[`.env.local`, `.env.production`, `id_rsa.pub`, `id_ed25519.pub`,
+nested `.pem`, `.pfx`, `.p12`, `.ssh/config`] + 4 must-allow
+[`.env.sample`, `.env.test`, `env.txt`, `foo.pemx`] — plus 4 more
+no-secret-files must-block cases [`.npmrc`, `.git-credentials`, `.netrc`,
+`.pgpass`] and 2 no-rules-tampering must-block cases
+[`.keel.local.yaml`, nested `.opencode/plugins/`]. 53 + 18 = 71.)
 
 ## 7. Files changed
 
@@ -218,12 +309,19 @@ $ npx vitest run packages/cli/src/__tests__/fixture-harness.test.ts
   `.` not matching "any character"), the `exclude` list still carving out
   `.env.example`/`.env.sample`/`.env.test`, and two non-regression guards
   on previously-passing `**/*.log` and `**/.ssh/**` behavior.
-- `tests/rules/no-secret-files/must-block.yaml` — 8 new cases (listed §6).
+- `tests/rules/no-secret-files/must-block.yaml` — 12 new cases (listed §6).
 - `tests/rules/no-secret-files/must-allow.yaml` — 4 new cases (listed §6).
+- `tests/rules/no-rules-tampering/must-block.yaml` — 2 new cases (listed §6).
 - `packages/cli/src/core/` and `packages/cli/templates/keel-enforce.js` —
   regenerated by `npm run build` (per binding constraint, never hand-edited).
 - `DEFAULT_RULES_YAML` in `install.ts` / `install.ts` itself — read-only,
   not modified, per binding constraint.
+- Not modified, checked read-only: `packages/opencode-plugin/src/plugin.ts`
+  (its `DEFAULT_RULES_YAML` copy verified identical to install.ts's for
+  both filesystem rules — §3.1), `packages/core/src/policy-engine.ts`
+  (already-correct independent glob compiler — §3.1),
+  `packages/cli/src/__tests__/drift.test.ts` (gap flagged, not fixed —
+  §3.1).
 
 ## 8. Full suite results (unfiltered `vitest run`, no grep/head/tail filtering the runs themselves)
 
@@ -235,12 +333,12 @@ $ npx vitest run
       Tests  262 passed (262)
 ```
 
-CLI (`packages/cli`):
+CLI (`packages/cli`), after the fixture additions in §6:
 
 ```
 $ npx vitest run
  Test Files  1 failed | 45 passed (46)
-      Tests  4 failed | 641 passed (645)
+      Tests  4 failed | 647 passed (651)
 ```
 
 The 1 failing file is `src/__tests__/level.test.ts`, all 4 failures are
@@ -252,3 +350,12 @@ failures called out in the task brief. Confirmed none of the 4 failures
 mention `no-secret-files`, `no-rules-tampering`, `pathMatches`, or
 `glob-matching` (`grep -c` over the captured output: 0 matches). No other
 test file failed.
+
+## 9. Open item for the supervisor (not fixed in this lane — out of scope)
+
+`packages/cli/src/__tests__/drift.test.ts`'s `install.ts` vs. `plugin.ts`
+sync guard does not compare `paths`/`exclude` on filesystem-type rules
+(only `id`/`match`/`action` — see §3.1). Both filesystem rules are
+verified identical today between the two copies, but nothing stops them
+drifting apart in a future edit to just one file. Assign to whichever lane
+owns rule-copy-sync / drift-test hardening.

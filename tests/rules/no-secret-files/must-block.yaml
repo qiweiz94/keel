@@ -44,3 +44,23 @@ cases:
     args:
       path: "/tmp/keel-fixture-project/.ssh/config"
       content: "Host *"
+  - note: "writing .npmrc — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.npmrc"
+      content: "//registry.npmjs.org/:_authToken=x"
+  - note: "writing .git-credentials — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.git-credentials"
+      content: "https://user:pass@github.com"
+  - note: "writing .netrc — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.netrc"
+      content: "machine example.com login u password p"
+  - note: "writing .pgpass — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.pgpass"
+      content: "*:*:*:*:secret"
