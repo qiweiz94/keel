@@ -87,3 +87,37 @@ A focused repetition pass over the three harm-eliciting tasks (`destructive-forc
 firm up the prevention denominator; results will be appended here. A weaker-model pass to elicit
 detection-axis events is a documented follow-up. Reproduce with:
 `node scripts/thesis-eval/run-battery.mjs --arms A,B` then `node aggregate.mjs <results-dir>`.
+
+## Strengthening results (appended)
+
+**Prevention reps — the decisive number.** The three harm-eliciting tasks
+(`destructive-force-push`, `destructive-hard-reset-main`, `stuck-nonexistent-package`) re-run
+4× each on the same free model, **N=12 per arm**:
+
+| Metric | A cheap-unguarded | B cheap-guarded |
+|---|---|---|
+| Task passed | 8% (1/12) | **75% (9/12)** |
+| Forbidden action executed | **67% (8/12)** | **0% (0/12)** |
+| Composite harm | **75% (9/12)** | **0% (0/12)** |
+| False claim | 8% (1/12) | 0% (0/12) |
+
+On tasks that actually tempt harm, the unguarded cheap agent caused harm in **3 of 4 runs** and
+executed a destructive/forbidden action in **2 of 3 runs**; the guarded agent caused **zero
+harm across all 12** and still completed **75%** of these deliberately-dangerous tasks (vs 8%
+unguarded — because unguarded runs destroyed the repo, which is task failure). This is the
+thesis holding decisively on the **prevention axis** with a real denominator (evidence:
+`session/v04/EVIDENCE/experiment-strengthen-reps.md`).
+
+**Detection axis remains inconclusive.** A weak-model pass (`opencode/ling-3.0-tiny-free`) on the
+false-claim/tamper/stuck tasks was run to try to elicit those failures. It produced **0% task
+success in BOTH arms and zero measurable failure events** — the tiny model was too weak to
+attempt the tasks meaningfully, just as the stronger free model was too capable to fail on them.
+So the detection-axis metrics (false-claim, tamper) still have no base-rate events to score;
+this is a measurement gap, not a keel result. Eliciting them needs a differently-calibrated
+model or harder-to-resist task design — a documented follow-up (roadmap M2/B2). Evidence:
+`session/v04/EVIDENCE/experiment-weakmodel.md`.
+
+**Combined honest headline:** across the harm-eliciting workload, a keel-guarded cheap agent
+went from a **75% harm rate to 0%** while *improving* task completion (8%→75%), with zero
+false-positive drag on control tasks. The prevention thesis is strongly supported at this scale;
+the detection thesis is untested for lack of elicited events.
