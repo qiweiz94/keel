@@ -6599,7 +6599,16 @@ function mergeRules(hierarchy, level, context) {
     }
     deduped.set(rule.id, rule);
   }
-  return Array.from(deduped.values()).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  const rank = (rule) => {
+    if (rule.mode === "observe") return 0;
+    if (rule.level === "protect") return 1;
+    return 2;
+  };
+  return Array.from(deduped.values()).sort((a, b) => {
+    const rankDiff = rank(a) - rank(b);
+    if (rankDiff !== 0) return rankDiff;
+    return (b.priority || 0) - (a.priority || 0);
+  });
 }
 function extractFrontmatter(content) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);

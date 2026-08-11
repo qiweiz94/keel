@@ -509,6 +509,56 @@ function sameEnforcementSurface(existing: KeelRule, candidate: KeelRule): boolea
  * simply skipped and the floor already in the map stands untouched (no
  * partial field-merging — the simplest correct rule). Non-floor rules
  * keep the original free-override behavior.
+ *
+ * A FOURTH axis lives outside the same-id dedup loop entirely: a
+ * lower-scope config can add a rule under a brand-new, DIFFERENT id that
+ * matches the same dangerous command as a floor, with a higher `priority`
+ * and `action: allow` (or `warn`/`prompt`). Same-id dedup never sees it —
+ * there is no collision to arbitrate — so it used to reach the merged
+ * list untouched and, sorted by priority alone, land ahead of the floor.
+ * pipeline.ts's tier-2/3 loop is first-match-wins over the full
+ * priority-sorted list: the allow rule matched first and returned,
+ * short-circuiting evaluate() before the floor was ever reached on that
+ * call. See SECURITY.md's "different-id priority shadowing" note.
+ *
+ * Closed the same way sameEnforcementSurface treats a floor's OWN
+ * `priority` field (see its doc comment): a floor is exempted from
+ * priority-based ordering against anything that could actually pre-empt
+ * it, rather than trusted to out-rank whatever a lower scope declares.
+ * The final sort (below) puts every `level: protect` rule ahead of every
+ * rule that could short-circuit it — not "give floors a very high
+ * priority," which would still be a number a sufficiently motivated
+ * config could try to beat — using three FIXED tiers (observe, floor,
+ * everything else), not a pairwise "floor beats the other one"
+ * comparator. A pairwise comparator was tried first and rejected: it is
+ * intransitive whenever a `mode: observe` rule's priority sits between a
+ * floor's and a shadowing rule's (floor 82 < observe 90 < shadow 999 by
+ * priority, but floor is still forced ahead of shadow directly — a
+ * cycle), which makes `Array.prototype.sort`'s actual output
+ * implementation-defined rather than a real guarantee. See the sort's own
+ * comment below for the full argument and the fixed-tier definitions.
+ *
+ * One deliberate exception inside that tiering: a non-floor rule with
+ * `mode: observe` is NOT forced behind floors — it is put ahead of
+ * everything, floors included. `mode: observe` is not merely a weak
+ * action — pipeline.ts's `violation()` checks it FIRST, before the action
+ * switch, for every rule type in the tiered loop, and on a match throws
+ * OBSERVE_CONTINUE instead of returning: the match is recorded and
+ * evaluation falls through to the next rule, no matter what `action` the
+ * observe rule declares. It is therefore structurally incapable of
+ * shadowing anything regardless of where it sorts, so evaluating it first
+ * is free and guarantees it always gets to record — strictly stronger
+ * than, and consistent with, the "regardless of priority or evaluation
+ * order" observe guarantee this codebase already documents (see
+ * pipeline.test.ts's observe-continue block and its "observe match no
+ * longer blinds a later real deny rule" case). Every OTHER mode (`block`,
+ * `warn`, undefined) reaches the normal action switch and CAN return a
+ * definitive verdict, so it stays subject to the floor-first reorder like
+ * any other non-floor rule.
+ *
+ * `priority` still governs the order WITHIN each tier, so this changes
+ * nothing for a hierarchy with no floor AND no observe-mode rule
+ * involved, and does not touch same-id override arbitration above.
  */
 export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext): KeelRule[] {
   const all: KeelRule[] = []
@@ -569,8 +619,44 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
     deduped.set(rule.id, rule)
   }
 
-  // Sort by priority (higher first), then by type
-  return Array.from(deduped.values()).sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  // Sort into three FIXED tiers, evaluated in this order regardless of
+  // declared `priority`, then by priority (higher first) within a tier —
+  // see this function's doc comment ("A FOURTH axis") for why a
+  // priority-number contest between a floor and an arbitrary different-id
+  // rule is not enough on its own.
+  //   0. `mode: observe` — can never return a verdict (violation() checks
+  //      this before the action switch, for every rule type, and throws
+  //      OBSERVE_CONTINUE instead of returning), so evaluating it first is
+  //      free: it always gets its chance to record before anything below
+  //      it decides the call, matching the existing "regardless of
+  //      priority or evaluation order" observe guarantee this codebase
+  //      already documents (see pipeline.test.ts's observe-continue
+  //      block) rather than merely tolerating it.
+  //   1. `level: protect` floors (non-observe) — evaluated next, so
+  //      nothing in tier 2 can return ahead of them.
+  //   2. everything else.
+  // A single two-way "floor beats the other one" comparator is NOT
+  // sufficient here and was tried first: it compares floor-vs-observe and
+  // observe-vs-regular by priority alone, which is intransitive whenever
+  // an observe rule's priority sits between a floor's and a shadowing
+  // rule's — e.g. floor(82) < observe(90) by priority, observe(90) <
+  // shadow(999) by priority, but floor(82) is still forced ahead of
+  // shadow(999) by the floor rule, producing shadow < floor < observe <
+  // shadow: a cycle, which makes Array.prototype.sort's output
+  // implementation-defined instead of a real guarantee. Fixed tiers avoid
+  // this by construction: `rank(a) - rank(b)` alone is a strict total
+  // order, so priority only ever breaks ties within one tier and never
+  // re-opens a cross-tier comparison.
+  const rank = (rule: KeelRule): number => {
+    if (rule.mode === 'observe') return 0
+    if (rule.level === 'protect') return 1
+    return 2
+  }
+  return Array.from(deduped.values()).sort((a, b) => {
+    const rankDiff = rank(a) - rank(b)
+    if (rankDiff !== 0) return rankDiff
+    return (b.priority || 0) - (a.priority || 0)
+  })
 }
 
 /**
