@@ -301,9 +301,14 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
   console.log(chalk.dim('  Press Ctrl+C to stop the server.'))
   console.log()
 
-  // Convenience: open the browser automatically (macOS). The token is in the
-  // hash fragment, so it is not sent anywhere by the browser.
-  if (process.platform === 'darwin') {
+  // Convenience: open the browser automatically (macOS) — but ONLY for a real
+  // interactive user at a TTY. The TTY guard above can be bypassed for tests /
+  // automation via KEEL_DASHBOARD_ALLOW_NON_TTY=1; in that path (and under CI,
+  // or when KEEL_NO_OPEN=1) a real `open` would spawn a browser tab per run,
+  // which floods a developer running the suite. Gate the convenience open on an
+  // actual interactive terminal so automated server starts never open a tab.
+  const interactive = process.stdin.isTTY && !process.env.CI && process.env.KEEL_NO_OPEN !== '1'
+  if (process.platform === 'darwin' && interactive) {
     try {
       const { spawn } = await import('node:child_process')
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
