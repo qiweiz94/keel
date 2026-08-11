@@ -146,3 +146,12 @@
   preserved; if the repo-hook trust gate blocks headless, record honestly).
   Toolbox: with-timeout.mjs wrapper (no coreutils timeout on this machine);
   lv_verify_block gate requires ref-unmoved + non-tautological marker + no timeout.
+- 2026-08-11 supervisor: pathfix micro-lane landed (w2-pathfix 55e807f, 5ca185c).
+  Root cause: two-pass escape ordering — `*` was never escaped in pass 1 so pass 2's
+  `\*`→`[^/]*` NEVER fired; a bare `*` survived as a raw regex quantifier (e.g.
+  `**/.env*` compiled to `^.*/\.env*$`, quantifying the letter v). Single-pass fix;
+  13 tests (4 reproduce on unpatched code); +18 fixture cases. .pem/.pfx/.p12 matched
+  before only by coincidence of `*` position. Sweep: policy-engine has its own
+  correct compiler; plugin imports the fixed pipeline. NEW OPEN ITEM relayed to
+  w2-rules: drift.test.ts does not guard paths/exclude fields — make the cross-source
+  comparison field-complete.
