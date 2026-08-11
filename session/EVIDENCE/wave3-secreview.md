@@ -521,3 +521,69 @@ fp.jsonl,fsprobes.json,run.sh,runfs.sh,apply.mjs,FINAL1.tsv,FINAL2.tsv,
 FINALFP.tsv,FINALFS.tsv}` — regenerate with `bash /tmp/w3sb/run.sh sprint
 /tmp/w3sb/probes.jsonl` after pointing the sandbox `rules.yaml` at the
 freshly-built `DEFAULT_RULES_YAML`.
+
+---
+
+## PART 7 — a PRE-EXISTING flake that undermines the floor-first proof
+
+Found while establishing a green baseline, not caused by this lane, and
+worth its own entry because the tests it breaks are exactly the ones that
+assert the block-first floor guarantee.
+
+`npm test` fails intermittently on two assertions, and which one fails
+changes between runs:
+
+```
+FAIL public-v1.test.ts   > inherits the configured protection level ...
+FAIL level-reload.test.ts > an expired sprint reverts to balanced ...
+AssertionError: expected 'warn' to be 'deny'
+```
+
+Both reproduce on the PRISTINE baseline commit e55ee5c, in a clean
+`git archive` extract with its own `npm ci`: 3 full runs, run 3 failed.
+So this predates the wave-3 edits. (This lane's 38 new fixture cases change
+the interleaving and appear to make it hit more often — 2 of 3 runs — which
+is why it surfaced now.)
+
+**Mechanism, confirmed empirically.** `state-manager.ts:25` captures
+
+```ts
+const STATE_DIR = process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
+```
+
+at MODULE LOAD. Five test files set `KEEL_STATE_DIR`; the rest do not — so
+those run against the developer's REAL `~/.keel/state`, in parallel vitest
+workers, all reading and writing one `deny-first-time.json`. One worker
+consuming another's first-warning marker turns a block-first assertion into
+a warn.
+
+The state file on this machine, after a suite run, literally contains the
+suites' own rule ids:
+
+```
+{"b-warn":{...},"demo-deny":{...},"expiry-rule":{...}}
+```
+
+Isolated proof — same test file, nothing else changed:
+
+```
+npx vitest run src/__tests__/public-v1.test.ts   x3  ->  pass, pass, FAIL
+KEEL_STATE_DIR=$(mktemp -d) npx vitest run same  x3  ->  pass, pass, pass
+```
+
+**Two consequences, both for the supervisor:**
+
+1. The suite MUTATES the operator's own keel state as a side effect of
+   running tests. A developer's real first-warning ledger is written by
+   `npm test`.
+2. Any green run of the floor-first tests is probabilistic. The floor-first
+   guarantee itself is sound — this lane proved it independently, through
+   the built CLI, across all nine dial combinations — but the suite's proof
+   of it is not trustworthy until this is fixed.
+
+Fix direction (test infrastructure, not touched by this lane): give each
+vitest project a `setupFiles` entry that points `KEEL_STATE_DIR` at a
+per-worker temp directory before any module loads, or make `STATE_DIR` a
+function evaluated per `StateManager` construction rather than a
+module-level const. The second is the more durable of the two and would also
+stop a long-lived daemon from pinning a stale directory.
