@@ -1,0 +1,7 @@
+cases:
+  - note: "opt-in rule prompts on any test-file write"
+    expect_action: prompt
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/src/foo.test.ts"
+      content: "it('x', () => {})"

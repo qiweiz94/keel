@@ -1,0 +1,6 @@
+cases:
+  - note: "non-test source writes are untouched"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/src/foo.ts"
+      content: "export const x = 1"

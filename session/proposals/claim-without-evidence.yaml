@@ -7,15 +7,15 @@
 # pastes the snippet below into both at the Wave-2 gate.
 #
 # Indentation below matches DEFAULT_RULES_YAML's own convention exactly
-# (2-space list marker under `rules:`, 4-space rule fields) so the paste
+# (2-space list marker under 'rules:', 4-space rule fields) so the paste
 # is literal, not a reindent — verified by
 # packages/core/src/enforce/__tests__/claim.test.ts, which parses this
 # exact file both alone and pasted directly after the shipped
-# `source-change-requires-test` rule (see that file's "gate-integration
+# 'source-change-requires-test' rule (see that file's "gate-integration
 # ordering" describe block and EVIDENCE.md §9 for why that combination
 # specifically needed checking).
 #
-# Engine support (rule type `claim`, threaded through types.ts,
+# Engine support (rule type 'claim', threaded through types.ts,
 # rule-parser.ts, pipeline.ts, verification.ts, and the grammar in
 # enforce/claim.ts) already ships in this wave regardless of when/whether
 # this snippet is adopted — see session/EVIDENCE/wave2-claim.md for the
@@ -27,7 +27,7 @@
     severity: high
     # LOW, not medium, and not rounded up: see EVIDENCE.md §6 for the honest
     # accounting — the two channels this rule can see (an unwired
-    # `reasoning` field in every surveyed host, and commit/PR message text)
+    # 'reasoning' field in every surveyed host, and commit/PR message text)
     # mean it fires on a small, host-dependent slice of real false-success
     # claims, and the grammar itself is a regex heuristic, not a parser.
     confidence: low
@@ -61,13 +61,13 @@
       actually ran can. This rule does exactly that: it does not evaluate
       whether the claim is TRUE, only whether a verification command visibly
       ran and passed since the edit the claim is about — the same
-      trigger/satisfy/pending shape the shipped `source-change-requires-test`
+      trigger/satisfy/pending shape the shipped 'source-change-requires-test'
       verification rule already uses, applied to the agent's own words
       instead of a commit/push boundary.
     remediation: >-
       Before stating a task is done/fixed/tested/passing/verified/complete,
       run the project's test or build command and let it finish (not
-      `--help`, `--dry-run`, or a swallowed exit code — see verification.ts's
+      '--help', '--dry-run', or a swallowed exit code — see verification.ts's
       isFakeSatisfy for what does not count). If verification genuinely
       cannot be run yet, say so plainly instead of claiming completion.
     false_positives:
@@ -91,8 +91,8 @@
         someone else's claim is not caught by that exclusion and may
         false-fire.
       - >-
-        Docs-only or config-only sessions that never touch `src/` or
-        `package.json` never arm the obligation at all, so a "done" claim
+        Docs-only or config-only sessions that never touch 'src/' or
+        'package.json' never arm the obligation at all, so a "done" claim
         about non-code work correctly never fires — not a false positive,
         but worth listing so a reviewer does not expect this rule to cover
         that case.
@@ -101,23 +101,23 @@
 # ── GATE INTEGRATION NOTE — read before adopting, not a false_positives
 #    entry (this is a suppression, not a wrong fire) ──
 #
-# This rule and the shipped `source-change-requires-test` verification rule
-# have an IDENTICAL `trigger` (same tools/path/paths/pattern) and neither
-# sets `priority` (both default to 0). Proven empirically
+# This rule and the shipped 'source-change-requires-test' verification rule
+# have an IDENTICAL 'trigger' (same tools/path/paths/pattern) and neither
+# sets 'priority' (both default to 0). Proven empirically
 # (claim.test.ts's "gate-integration ordering" describe block, which
 # extracts the exact shipped rule text the way fixture-harness.test.ts
 # extracts DEFAULT_RULES_YAML — see EVIDENCE.md §9): on the ONE channel
 # this rule can actually reach in production today (see the confidence:low
-# rationale above — commit/PR message text, not the unwired `reasoning`
-# field), `git commit -m "<claim>"` while both rules are active, the
+# rationale above — commit/PR message text, not the unwired 'reasoning'
+# field), 'git commit -m "<claim>"' while both rules are active, the
 # EARLIER rule in file order wins EnforcementPipeline.evaluate()'s
-# short-circuit — the shipped verification rule's commit-boundary `warn`
+# short-circuit — the shipped verification rule's commit-boundary 'warn'
 # fires and THIS rule is never evaluated on that call at all. This is not a
 # bug in either rule; it is a consequence of both watching the same trigger
 # with the same priority. Adopting this rule needs an explicit ordering
-# decision at the gate — a `priority` above the shipped rule (which then
-# raises a DIFFERENT problem: `mode: observe` short-circuits
-# `evaluate()` too, so it would swallow the shipped rule's real `warn` on
+# decision at the gate — a 'priority' above the shipped rule (which then
+# raises a DIFFERENT problem: 'mode: observe' short-circuits
+# 'evaluate()' too, so it would swallow the shipped rule's real 'warn' on
 # that call — see EVIDENCE.md §9 before changing that behavior), or
 # accepting the shipped rule's warn as the one users see on that
 # trajectory. Not something this rule's own YAML can resolve.

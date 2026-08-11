@@ -459,8 +459,12 @@ describe('gate-integration ordering: claim-without-evidence alongside the shippe
     // This is the finding, not a desired behavior: the shipped rule's
     // commit-boundary match short-circuits evaluate() first. The claim
     // rule's own observed_action never gets recorded on this call.
+    // Post-restructure the shipped rule itself carries mode: observe
+    // (Tier 3), so the boundary verdict surfaces as allow + observed_action
+    // rather than a live warn — the preemption is unchanged.
     expect(r.rule_id).toBe('source-change-requires-test')
-    expect(r.action).toBe('warn')
+    expect(r.action).toBe('allow')
+    expect(r.observed_action).toBeDefined()
   })
 
   it('reversing file order does not fix it: an earlier-declared claim rule (mode: observe) swallows the shipped rule\'s warn instead', async () => {

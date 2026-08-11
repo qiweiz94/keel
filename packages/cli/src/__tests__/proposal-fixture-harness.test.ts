@@ -87,12 +87,17 @@ function loadProposalRules(): ProposalRuleFile[] {
     const sourcePath = join(PROPOSALS_ROOT, entry)
     const raw = readFileSync(sourcePath, 'utf-8')
     assertPasteSafe(raw, sourcePath)
-    // Proposal files ship as a bare, indented rule-list fragment (meant to
-    // be pasted inside an existing `rules:` list — see harness-rules.ts /
-    // session/proposals/unverified-package-install.yaml's own header),
-    // never a standalone document. Wrap it the same way the paste target
-    // would, then parse with keel's own parser.
-    const parsed = parseRulesContent(`version: 1\nrules:\n${raw}`, sourcePath)
+    // Proposal files ship in one of two shapes, both accepted here since
+    // the gate paste extracts the rule ENTRIES either way:
+    //   (a) a bare, indented rule-list fragment meant to be pasted inside
+    //       an existing `rules:` list (harness-rules.ts style), or
+    //   (b) a standalone document with its own `version:`/`rules:` header
+    //       so the lane's own tests can load it through the real parser
+    //       (oracle/claim lanes do this).
+    const standalone = parseRulesContent(raw, sourcePath)
+    const parsed = (!standalone.errors && standalone.rules.length > 0)
+      ? standalone
+      : parseRulesContent(`version: 1\nrules:\n${raw}`, sourcePath)
     expect(parsed.errors, `${entry} failed to parse as a rules fragment: ${parsed.errors}`).toBeUndefined()
     expect(validateRules(parsed.rules), `${entry} failed validation`).toEqual([])
     for (const rule of parsed.rules) out.push({ ruleId: rule.id, rule, sourcePath })

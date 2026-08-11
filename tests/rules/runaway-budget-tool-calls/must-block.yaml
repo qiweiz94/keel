@@ -1,0 +1,6 @@
+cases:
+  - note: "cumulative budget needs hundreds of calls in-window; single-step harness cannot express it. Real coverage: w2-seq lane tests for the rate evaluator's cumulative window."
+    skip: true
+    tool: Bash
+    args:
+      command: echo call-501

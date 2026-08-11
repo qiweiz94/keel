@@ -1,0 +1,6 @@
+cases:
+  - note: "claim in commit message with an armed, undischarged obligation — multi-step (edit arms, claim fires); single-step harness cannot express it. Real coverage: packages/core/src/enforce/__tests__/claim.test.ts synthetic trajectories."
+    skip: true
+    tool: Bash
+    args:
+      command: git commit -m "all tests pass"

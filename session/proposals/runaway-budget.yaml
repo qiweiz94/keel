@@ -4,7 +4,7 @@
 # scope: total tool calls, total Bash calls, and elapsed active time.
 #
 # ── What shipped ──────────────────────────────────────────────────────
-# `type: rate` (packages/core/src/enforce/pipeline.ts, StateManager.
+# 'type: rate' (packages/core/src/enforce/pipeline.ts, StateManager.
 # checkRateLimit) already expresses a genuine long-window CUMULATIVE
 # budget: the window anchor only resets when a gap LARGER than
 # window_seconds occurs between calls, so for a continuously-active
@@ -13,24 +13,24 @@
 # per-minute rate. No core change was needed; both rules below are pure
 # YAML.
 #
-#   - total tool calls: `match: ".*"` is REQUIRED, not decorative. When
-#     `rule.match` is absent, pipeline.ts falls back to
-#     `matchPattern = input.tool`, which keys the rate counter PER TOOL
+#   - total tool calls: 'match: ".*"' is REQUIRED, not decorative. When
+#     'rule.match' is absent, pipeline.ts falls back to
+#     'matchPattern = input.tool', which keys the rate counter PER TOOL
 #     NAME — that silently shards one counter into N per-tool counters
-#     and defeats a "total calls across every tool" budget. `match: ".*"`
+#     and defeats a "total calls across every tool" budget. 'match: ".*"'
 #     matches every call (the haystack is always non-empty) while keeping
 #     one shared counter keyed by the constant pattern string. Do not
-#     "clean up" this `.*` as apparently redundant — it is load-bearing.
-#   - total Bash calls: `match: "Bash"` (same pattern the shipped
-#     `bash-rate-limit` rule already uses), scoped to the 4h/500-call
+#     "clean up" this '.*' as apparently redundant — it is load-bearing.
+#   - total Bash calls: 'match: "Bash"' (same pattern the shipped
+#     'bash-rate-limit' rule already uses), scoped to the 4h/500-call
 #     budget instead of bash-rate-limit's 60s/30-call loop-storm window.
 #
 # ── What was investigated and SKIPPED ───────────────────────────────────
 # Elapsed active time ("the session has been running for N hours") is NOT
-# the same shape as a call-count budget and `type: rate` cannot express
+# the same shape as a call-count budget and 'type: rate' cannot express
 # it, with or without a core extension that stays honest:
-#   - `EnforceInput` carries no session-start timestamp, and the rate
-#     evaluator's window anchor is keyed `${ruleId}:${matchPattern}` with
+#   - 'EnforceInput' carries no session-start timestamp, and the rate
+#     evaluator's window anchor is keyed '{ruleId}:{matchPattern}' with
 #     NO session_id and a 24h TTL — a naive "first call sets the anchor,
 #     fire once now - anchor >= threshold" extension would let the FIRST
 #     call of a brand-new session inherit an anchor left over from a
@@ -38,22 +38,22 @@
 #     for 4 hours" on a session that just started. That is a control that
 #     lies, which is worse than shipping nothing.
 #   - Fixing that properly needs a session-scoped anchor (keyed by
-#     session_id, or a `session_started_at` field threaded onto
+#     session_id, or a 'session_started_at' field threaded onto
 #     EnforceInput) — a real primitive addition, not a minimal one, and
-#     arguably belongs with the `type: session` / `max_duration_minutes`
+#     arguably belongs with the 'type: session' / 'max_duration_minutes'
 #     machinery that is already declared in the type system but
 #     deliberately marked NOT IMPLEMENTED in rule-parser.ts's
-#     `notImplemented` set (mcp, inheritance, meta, session, context).
+#     'notImplemented' set (mcp, inheritance, meta, session, context).
 #     Reviving that boundary was not this lane's mandate.
 #   - Token budgets are excluded for the same class of honesty reason:
 #     they are not visible to keel's enforcement hook at all (no token
-#     count is ever passed to `EnforceInput` outside `context_tokens`,
+#     count is ever passed to 'EnforceInput' outside 'context_tokens',
 #     which measures re-injection thresholds, not a budget ceiling) — this
 #     was flagged as out of scope up front rather than fabricated.
 # FOLLOW-UP for the supervisor / a later wave: add a session-scoped
 # elapsed-time primitive (session_id-keyed anchor, or a session-start
 # timestamp on EnforceInput) before attempting an "elapsed active time"
-# rule. Do not key it off `${ruleId}:${matchPattern}` the way call-rate
+# rule. Do not key it off '{ruleId}:{matchPattern}' the way call-rate
 # budgets are keyed.
 #
 # Paste this list (2 rules) into DEFAULT_RULES_YAML in BOTH

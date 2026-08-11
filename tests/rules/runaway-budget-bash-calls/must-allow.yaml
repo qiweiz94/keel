@@ -1,0 +1,5 @@
+cases:
+  - note: "a single tool call is far under any budget"
+    tool: Bash
+    args:
+      command: echo one-call

@@ -1,0 +1,5 @@
+cases:
+  - note: "commit with no armed obligation (no prior src edit) passes"
+    tool: Bash
+    args:
+      command: 'git commit -m "chore: bump docs"'
