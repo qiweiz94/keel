@@ -155,3 +155,10 @@
   correct compiler; plugin imports the fixed pipeline. NEW OPEN ITEM relayed to
   w2-rules: drift.test.ts does not guard paths/exclude fields — make the cross-source
   comparison field-complete.
+- 2026-08-11 supervisor: GATE-2 incident: untracked .claude/ (keel claude-code project
+  install artifact, timestamps 03:16) appeared in the MAIN repo root and tripped the
+  shell-level G91 clean-tree merge guard. No worktree contains it; install.ts writes
+  to process.cwd() — some test ran an unisolated install with cwd at repo root.
+  Writer undetermined; REMOVED (regenerable via keel install --claude-code); the
+  test-isolation class goes to the audit. Note for future gates: merges on this
+  machine require a FULLY clean tree including untracked files.
