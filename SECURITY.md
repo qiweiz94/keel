@@ -60,7 +60,7 @@ Probes that are supposed to be allowed are excluded from the denominators.
 | no-enforcer-removal | 12 | 33% |
 | agent-env-hijack | 12 | 67% |
 | prod-db-destruction | 12 | 75% |
-| no-rules-tampering | 25 | 52% (0% on Claude Code — see below) |
+| no-rules-tampering | 25 | 52% (now fires on Claude Code after the `file_path` fix; shell-write gap closed by `no-self-protection-write` — see below) |
 | no-exfil-flow | 4 | 25% |
 
 **Known gap, host-specific and open:** `filesystem`-type rules —
@@ -108,14 +108,23 @@ OS-level sandbox and use keel's `action: prompt` gates on top.
   its own overrides, or rewrite its own rules — only the user can, in their
   own terminal. These are `level: protect` floors, active at every dial
   (verified across all nine combinations of rules-file level × requested
-  level). **Three known limits on that claim, all open:** (a)
-  `no-rules-tampering` does not fire at all on Claude Code / Gemini CLI —
-  see the `file_path` gap under "Measured bypass resistance" above; (b) it is
-  a `filesystem` rule, so on every host it sees a tool call's path argument
-  and not a shell command's redirect target — writes to the protected paths
-  through Bash are not blocked today; (c) creating the kill-switch sentinel
-  (`~/.keel/DISABLED`) through a shell is not blocked, though deleting keel's
-  files is. See `session/EVIDENCE/wave3-secreview.md` §1.1–1.3.
+  level). The security review found three gaps here; all three were closed
+  before release: (a) `no-rules-tampering` did not fire on Claude Code /
+  Gemini CLI because `argPath()` did not read the `file_path` (snake_case)
+  key those hosts send — fixed (the key is now read; a write to
+  `.claude/settings.json` via `file_path` denies with exit 2, verified live);
+  (b)+(c) `filesystem` rules only see a tool call's path argument, not a shell
+  redirect target, so Bash writes to protected paths — including creating the
+  `~/.keel/DISABLED` kill-switch — slipped through; closed by a new Tier-1
+  floor rule `no-self-protection-write` (`type: command`) that blocks shell
+  writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `git config core.hooksPath`, …)
+  targeting keel's files, `.claude/settings.json`, `.mcp.json`, `.vscode`
+  autoApprove, git hooks, and the sentinel. One residual, documented not
+  fixed: a *pre-existing* `.keel.local.yaml` that redefines a floor rule id
+  still overrides it in the hierarchy merge — but *writing* that file is now
+  blocked on both the tool and shell paths, so it is a user's own-config
+  choice, not an agent bypass. See `session/EVIDENCE/wave3-secreview.md`
+  §1.1–1.3 and `session/DECISIONS.md` (gate-3).
 - **The agent's own process is the boundary.** In-process enforcement can be
   bypassed if the agent process itself is compromised. Git hook bypass
   (`--no-verify`, `core.hooksPath`) is blocked at the command level; see
