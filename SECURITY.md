@@ -161,19 +161,97 @@ scope, or priority cannot express it from a lower scope at all; it has to go
 through keel's shipped defaults. That is treated as the correct tradeoff for
 a floor, not a gap.
 
-Also not covered, and a distinct residual from the one this pass closes:
-`mergeRules` only ever arbitrates collisions on a **matching rule id** — it
-never compares a floor to a rule with a **different** id. A lower-scope
-config can still add a brand-new rule, under its own id, with a higher
-`priority` and `action: allow` whose `match` happens to overlap a floor's —
-`pipeline.ts`'s tier-2/3 loop is first-match-wins over the full
-priority-sorted list of ALL rules regardless of id, so that new rule can
-still return before the floor is ever reached on a matching call. This
-pass closes an override *of a floor's own id* demoting that floor's own
-priority; it does not, and by construction cannot, close a same-priority-class
-race between two independently-authored rule ids — that is an engine-level
-property of the tier loop, not a gap in this id-collision guard, and is out
-of scope for this pass.
+**Residual on different-id priority shadowing — CLOSED in a later v0.4
+pass.** A distinct residual from the same-id override guard above:
+`mergeRules`' dedup loop only ever arbitrates collisions on a **matching
+rule id** — it never compared a floor to a rule with a **different** id.
+A lower-scope config could add a brand-new rule, under its own id, with a
+higher `priority` and `action: allow` (or `warn`/`prompt`) whose `match`
+happened to overlap a floor's. `pipeline.ts`'s tier-2/3 loop is
+first-match-wins over the full priority-sorted list of ALL rules
+regardless of id, so that new rule returned before the floor was ever
+reached on a matching call — reproduced and measured, not assumed: a
+`.keel.local.yaml` adding `id: my-allow, priority: 999, action: allow`
+against `no-force-push`'s own `match` let `git push --force` through, and
+the same shape with `action: warn` or `action: prompt` shadowed the floor
+too (the vector isn't specific to `allow` — any action that returns a
+verdict before the floor gets a turn defeats it).
+
+Closed by changing the ORDERING `mergeRules` produces, not by extending
+the same-id dedup loop (there is no id collision here for dedup to
+arbitrate): the final sort in `mergeRules` now assigns every rule to one
+of three FIXED tiers — `mode: observe` rules, then `level: protect`
+floors, then everything else — evaluated in that order regardless of
+declared `priority`, with `priority` breaking ties only *within* a tier.
+A hierarchy with no floor AND no observe-mode rule involved sorts exactly
+as before (plain priority). This specific guarantee is scoped to
+`pipeline.ts`'s tier-2/3 command/filesystem/network/... loop, which is the
+first-match-wins pass over this exact sorted list and the one this pass
+verified end to end; the earlier `statefulRules` pass (verification/
+claim/research obligations, evaluated before tier-2/3 on every call) is a
+separate loop this pass did not need to reorder, since those rule types
+gate on trigger/boundary state rather than an arbitrary `match` an
+attacker-authored rule could point at the same command text a floor
+matches.
+
+A tiered sort, not a pairwise "floor beats the other one" comparator, is
+required for this to be an actual guarantee rather than an accident of
+`Array.prototype.sort`'s implementation: a pairwise comparator (tried
+first) compares floor-vs-observe and observe-vs-other by priority alone,
+which is intransitive whenever an observe rule's priority sits between a
+floor's and a shadowing rule's — e.g. floor priority 82, shadow rule
+priority 999, observe rule priority 90 gives floor < observe by priority,
+observe < shadow by priority, but floor is still forced ahead of shadow
+directly, which is a cycle (shadow < floor < observe < shadow). A cyclic
+comparator makes the sorted output implementation-defined, not something
+this document can honestly call a guarantee. The fixed-tier sort avoids
+this by construction: comparing tier numbers alone is a strict total
+order, so priority can never re-open a cross-tier comparison. See
+`packages/core/src/enforce/__tests__/rule-parser.test.ts`'s "transitivity"
+test and `protect-floor-priority-shadow.test.ts`'s end-to-end twin, both
+reproducing this exact three-rule shape.
+
+One deliberate design choice inside that tiering: a non-floor rule with
+`mode: observe` sorts AHEAD of everything, floors included, rather than
+behind them. `mode: observe` is checked first in `pipeline.ts`'s
+`violation()`, ahead of the action switch, for every rule type — a match
+is recorded and evaluation falls through to the next rule no matter what
+`action` the observe rule declares; it can never return a verdict, so it
+can never shadow anything regardless of where it sorts. Evaluating it
+first is therefore free and guarantees it always gets to record — this is
+what keeps the pre-existing regression from resurfacing
+(`packages/core/src/enforce/__tests__/pipeline.test.ts`'s "observe match no
+longer blinds a later real deny rule" case, which depends on an observe
+rule still getting evaluated ahead of a floor on the same call, and is
+strictly stronger than a mere "not disadvantaged" carve-out would have
+been). Any other mode (`block`, `warn`, undefined) reaches the normal
+action switch and CAN return a verdict, so it stays subject to the
+floor-first tiering like any other non-floor rule — verified with a
+`mode: warn`, `priority: 999`, `action: allow` different-id rule, which
+is still sorted (and evaluated) after the floor despite the priority gap.
+
+Verified end-to-end through the real `EnforcementPipeline`: a
+`.keel.local.yaml`-shaped different-id rule with `priority: 999` and
+`action: allow`/`warn`/`prompt` matching `git push --force` no longer lets
+it through — `no-force-push` still returns `deny`/`block` as
+`result.rule_id`. See
+`packages/core/src/enforce/__tests__/protect-floor-priority-shadow.test.ts`
+(pipeline-level) and the "a different-id rule cannot priority-shadow a
+level:protect floor" describe block in
+`packages/core/src/enforce/__tests__/rule-parser.test.ts` (unit-level
+ordering, including the `mode: observe` exemption and its `mode: warn`
+counterexample).
+
+This closes the priority-ordering half of the different-id vector — a
+new rule id can no longer pre-empt a floor by racing it on `priority`
+alone. It does not, and by construction cannot, give `mergeRules` any way
+to recognize that two independently-authored rule ids target "the same
+dangerous command" in the first place; nothing here validates or flags an
+overlapping `match` across ids. The floor-first ordering guarantee holds
+regardless of what a different-id rule's `match` looks like, which is what
+closes the exploitable consequence (a floor being out-run on a call it
+should have caught) without requiring that harder, more speculative
+detection.
 
 The metadata allowlist itself (which fields count as
 "cosmetic") is a judgment call, not a proof — `category`/`severity`/
@@ -302,16 +380,23 @@ OS-level sandbox and use keel's `action: prompt` gates on top.
   writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `python3 -c`, `node -e`, `ln`,
   `git config core.hooksPath`, …) targeting keel's files,
   `.claude/settings.json`, `.mcp.json`, `.vscode` autoApprove, git hooks, and
-  the sentinel, while allowing *reads* of those paths. One residual remains open
-  and is documented not fixed: a *pre-existing* lower-scope config
-  (`.keel.local.yaml` or a scoped `rules.yaml`) that redefines a floor rule id
-  keeping `action: deny` + `level: protect` but adding `mode: observe`, or a
-  no-op `match`, still neutralizes that floor — the merge guard checks the
-  action field only. *Writing* such a file is blocked on both the tool and shell
-  paths, so it is a user's own-config choice, not a one-command agent bypass,
-  but closing the mode/match axes is a pending `mergeRules` engine change. See
-  `session/v04/EVIDENCE/phase-3-redteam.md` §(a) and
-  `session/EVIDENCE/wave3-secreview.md` §1.1–1.3.
+  the sentinel, while allowing *reads* of those paths. Two residuals were found
+  and both are now closed (see "Residual on floor overrides" and "Residual on
+  different-id priority shadowing" above for the full detail): a *pre-existing*
+  lower-scope config that redefines a floor rule id keeping `action: deny` +
+  `level: protect` but adding `mode: observe` or a no-op `match` no longer
+  neutralizes that floor (the merge guard now compares mode and enforcement
+  surface, not action alone), and a lower-scope config that adds a rule under a
+  brand-new, *different* id with a higher `priority` and `action: allow`/
+  `warn`/`prompt` matching the same command can no longer sort ahead of the
+  floor and short-circuit it either (`mergeRules` now sorts every floor ahead
+  of any rule capable of returning a verdict before it, `mode: observe` rules
+  excepted since they structurally cannot shadow anything). *Writing* such a
+  file is blocked on both the tool and shell paths in either case, so it
+  remains a user's own-config choice, not a one-command agent bypass. See
+  `session/v04/EVIDENCE/phase-3-redteam.md` §(a),
+  `session/EVIDENCE/wave3-secreview.md` §1.1–1.3, and
+  `session/v04/EVIDENCE/a1-floorpriority.md`.
 - **The agent's own process is the boundary.** In-process enforcement can be
   bypassed if the agent process itself is compromised. Git hook bypass
   (`--no-verify`, `core.hooksPath`) is blocked at the command level; see
