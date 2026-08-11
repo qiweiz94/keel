@@ -27,6 +27,19 @@ export {
   type EvaluateInstallOptions,
 } from './package-verifier.js'
 export {
+  detectSandbox,
+  detectContainer,
+  detectAnthropicSandboxRuntime,
+  detectCodexSandbox,
+  detectCI,
+  sandboxSuggestion,
+  type SandboxKind,
+  type Confidence,
+  type SandboxSignal,
+  type SandboxDetectionResult,
+  type SandboxProbe,
+} from './sandbox-detector.js'
+export {
   parseRulesFile,
   parseRulesContent,
   loadRuleHierarchy,
