@@ -80,7 +80,7 @@ export function validateRules(rules: unknown): string[] {
   const validTypes = new Set([
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
-    'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim',
+    'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim', 'oracle',
   ])
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
@@ -111,6 +111,14 @@ export function validateRules(rules: unknown): string[] {
     if (typeof rule.id !== 'string' || !rule.id.trim()) errors.push('Rule is missing a non-empty id')
     if (rule.type === 'research' && !rule.topics?.length && !rule.trigger) {
       errors.push(`Research rule "${label}" needs topics (freshness form) or a trigger (research-before-solve form)`)
+    }
+    if (rule.type === 'oracle') {
+      if (!rule.paths?.length && !rule.match) {
+        errors.push(`Oracle rule "${label}" needs paths (content-diff surface) or match (command-surface) — remove it or add a detection surface`)
+      }
+      if (!rule.trigger) {
+        errors.push(`Oracle rule "${label}" needs a trigger (the failing test-run matcher that arms the recency window) — without it the rule can never fire`)
+      }
     }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine — remove it or use a supported type`)

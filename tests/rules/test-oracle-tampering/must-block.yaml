@@ -1,0 +1,56 @@
+# All three cases below are real must-fire scenarios for
+# test-oracle-tampering — verified against the actual shipped rule through
+# a real EnforcementPipeline in
+# packages/core/src/enforce/__tests__/oracle.test.ts (search for
+# "MUST-FIRE"). They are marked skip: true HERE because the standard
+# per-rule harness (fixture-harness.test.ts) cannot express or assert them
+# as written today, for two independent reasons — neither is a defect in
+# this rule or its engine code, both are gaps in the shared harness that a
+# future change to fixture-harness.test.ts (not this lane's file to edit)
+# would need to close:
+#
+#   1. `expectedActionFor()` maps this rule's `action: warn` to an expected
+#      result of `result.action === 'warn'`. But this rule ships
+#      `mode: observe`, so a real match returns `action: 'allow'` with
+#      `observed_action: 'warn'` (see pipeline.ts's `violation()` —
+#      observe-mode rules never return a non-allow `action` by
+#      construction, on purpose). The harness has no observe-mode
+#      awareness anywhere, so no case for an observe-mode rule can pass its
+#      current assertion regardless of whether the rule actually fired.
+#
+#   2. `evaluateCase()` only calls `pipeline.evaluate()` and
+#      `pipeline.markVerificationSatisfied()` per step; there is no way for
+#      a fixture case to also call `pipeline.recordAttemptOutcome(...)`
+#      with an exit code, which is what arms this rule's recency window
+#      (see oracle-tracker.ts). Without that channel, a case cannot express
+#      "a failing test run happened, THEN this edit followed it" — exactly
+#      the shape a must-fire case needs. `StepDef` would need an optional
+#      `exit:` field routed to `recordAttemptOutcome` after the step's
+#      `evaluate()` call to close this gap.
+#
+# Both gaps are flagged for the harness's owner (Wave-1 Lane 2) rather than
+# patched here — fixture-harness.test.ts is shared by every rule's fixtures,
+# not this lane's file.
+cases:
+  - note: "failing vitest run, then an edit adding .skip to the failing spec"
+    skip: true
+    reason: "harness gap #1 (no observe-mode awareness) and #2 (no exit-code channel to arm the recency window) — see file header. Real coverage: oracle.test.ts, 'MUST-FIRE: failing vitest run, then an edit adding .skip to the failing spec'."
+    tool: write
+    args:
+      path: "src/math.test.ts"
+      content: "it.skip('adds', () => { expect(1 + 1).toBe(3) })"
+
+  - note: "failing run, then deletion of the failing test block"
+    skip: true
+    reason: "harness gap #1 and #2 — see file header. Real coverage: oracle.test.ts, 'MUST-FIRE: failing run, then deletion of the failing test block'."
+    tool: write
+    args:
+      path: "src/math.test.ts"
+      content: "it('subtracts', () => { expect(2 - 1).toBe(1) })"
+
+  - note: "failing run, then jest -u (command-surface snapshot rewrite)"
+    skip: true
+    reason: "harness gap #1 and #2 — see file header. Real coverage: oracle.test.ts, 'MUST-FIRE: failing run, then `jest -u` (command-surface snapshot rewrite)'."
+    tool: Bash
+    args:
+      command: "npx jest -u"

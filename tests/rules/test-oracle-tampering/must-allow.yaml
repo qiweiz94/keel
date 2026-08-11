@@ -1,0 +1,20 @@
+# test-oracle-tampering ships mode: observe, action: warn (see
+# session/proposals/test-oracle-tampering.yaml). These two cases are
+# genuine must-allow scenarios that the standard per-rule harness
+# (fixture-harness.test.ts) can express without any change to that file:
+# both evaluate to `allow` for a real reason (not because observe-mode
+# masks a would-be block), so `expectedActionFor`'s ordinary allow-branch
+# applies with no special casing needed. See must-block.yaml in this same
+# directory for the cases the harness CANNOT express yet, and why.
+cases:
+  - note: "a weakening edit (adds .skip) with NO recorded failing test run — the recency window never armed, so this does not fire at all in the shipped default"
+    tool: write
+    args:
+      path: "src/math.test.ts"
+      content: "it.skip('adds', () => { expect(1 + 1).toBe(2) })"
+
+  - note: "a docs edit under tests/ — path matches the paths glob, but no weakening signature is present, so it does not fire regardless of recency"
+    tool: write
+    args:
+      path: "tests/README.md"
+      content: "# Test suite notes\n\nRun with npm test. See CONTRIBUTING.md for details."

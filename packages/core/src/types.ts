@@ -14,7 +14,7 @@ export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
-  | 'research' | 'stuck' | 'diagnosis' | 'claim'
+  | 'research' | 'stuck' | 'diagnosis' | 'claim' | 'oracle'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -106,6 +106,24 @@ export interface KeelRule {
   hypothesis_tools?: string[]       // tools that record hypotheses (default ['keel_hypothesis'])
   fallback_tools?: string[]         // diagnosis EVIDENCE tools that also discharge (e.g. Bash)
   fallback_pattern?: string         // regex for fallback evidence commands (git log|blame|bisect)
+
+  // ── Oracle rules (test-tampering detector) ── deliberately reuses fields
+  // from other rule shapes rather than adding new ones:
+  //   `paths`          — test-file globs to watch for weakening EDITS
+  //                       (content-diff surface — see oracle-signatures.ts)
+  //   `match`          — a command-surface pattern, for tampering that
+  //                       happens via CLI flag rather than a file edit
+  //                       (e.g. `jest -u` / `vitest --update-snapshot`)
+  //   `trigger`        — the FAILING test-run matcher (VerificationMatcher
+  //                       with `exit: 'nonzero'`) that arms the recency
+  //                       window; reuses the exact shape research rules use
+  //                       for their research-before-solve obligation
+  //   `window_seconds` — the recency window itself (default 900s / 15min);
+  //                       a weakening edit/command outside this window of
+  //                       the last failing test run does not fire at all in
+  //                       the shipped default — see
+  //                       session/proposals/test-oracle-tampering.yaml for
+  //                       why that threshold is a hard gate, not a dial.
 
   // ── Environment rules ──
   vars?: string[]
