@@ -175,6 +175,24 @@ describe('claim-without-evidence rule via the real pipeline (mode: observe)', ()
     expect(r.rule_id).toBe('claim-without-evidence')
   })
 
+  it('MUST-FIRE: edit, then the claim arrives via a commit message — the channel that actually fires in production (see EVIDENCE.md §2)', async () => {
+    // The two MUST-FIRE cases above deliver the claim via `input.reasoning`
+    // — proven in EVIDENCE.md §2 to be unwired in every surveyed host's
+    // automatic hook today. This is the channel that IS reachable in
+    // production: whatever the agent writes into a command's own message
+    // argument. Without this case, nothing in this file end-to-end-proves
+    // the rule fires through the channel it is actually expected to fire
+    // through — a real gap, found only by checking (see also the
+    // "gate-integration ordering" describe block below, which is what
+    // surfaced the need to add this case).
+    const p = makePipeline()
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'export const a = 1' }))
+    const r = await p.evaluate(input('bash', { command: 'git commit -m "All tests pass."' }))
+    expect(r.action).toBe('allow')
+    expect(r.observed_action).toBe('warn')
+    expect(r.rule_id).toBe('claim-without-evidence')
+  })
+
   it('MUST-NOT-FIRE: edit, test exits 0 (obligation discharged), then the same claim — mechanism: satisfied obligation, text never scanned', async () => {
     const p = makePipeline()
     await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'export const a = 1' }))
@@ -396,6 +414,70 @@ describe('session/proposals/claim-without-evidence.yaml', () => {
     silent.markVerificationSatisfied(testCall)
     const notFired = await silent.evaluate(input('bash', {}, { reasoning: 'All tests pass.' }))
     expect(notFired.observed_action).toBeUndefined()
+  })
+})
+
+// ── Gate-integration ordering (the finding that changed the proposal) ──
+//
+// The proposal's trigger is IDENTICAL to the shipped `source-change-
+// requires-test` verification rule's (same tools/path/paths/pattern), and
+// neither sets `priority` (both default to 0). Extracted straight from the
+// real DEFAULT_RULES_YAML source — not a hand-copied duplicate that could
+// drift — the same technique packages/cli/src/__tests__/fixture-harness.test.ts
+// uses for install.ts's copy of the same constant.
+function loadShippedRule(id: string): KeelRule {
+  const pluginSrc = readFileSync(join(findRepoRoot(fileURLToPath(new URL('.', import.meta.url))), 'packages', 'opencode-plugin', 'src', 'plugin.ts'), 'utf-8')
+  const m = pluginSrc.match(/DEFAULT_RULES_YAML = `([\s\S]*?)`\n/)
+  expect(m, 'DEFAULT_RULES_YAML not found in plugin.ts').toBeTruthy()
+  const parsed = parseRulesContent(m![1], 'plugin.ts:DEFAULT_RULES_YAML')
+  expect(parsed.errors, `DEFAULT_RULES_YAML failed to parse: ${parsed.errors}`).toBeUndefined()
+  const rule = parsed.rules.find(r => r.id === id)
+  expect(rule, `rule "${id}" not found in DEFAULT_RULES_YAML`).toBeTruthy()
+  return rule!
+}
+
+describe('gate-integration ordering: claim-without-evidence alongside the shipped source-change-requires-test', () => {
+  function buildCombined(rules: KeelRule[]): EnforcementPipeline {
+    const hierarchy = { global: null, user: null, local: null, project: { config: { version: 1, rules }, rules, sourcePath: '/tmp/combined.yaml', version: 1, markdown: '' } }
+    return new EnforcementPipeline({
+      level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
+      ruleHierarchy: hierarchy, ruleVersion: 1, allowedFixTransforms: true,
+    })
+  }
+
+  it('on the production-reachable commit-message channel, the shipped verification rule preempts the claim rule (file order, both priority 0)', async () => {
+    const shipped = loadShippedRule('source-change-requires-test')
+    const proposal = loadProposalRule()
+    // File order matters for a stable sort at equal priority — shipped
+    // rule first, matching where it actually sits in DEFAULT_RULES_YAML
+    // relative to where a paste would land the proposal (appended after).
+    const p = buildCombined([shipped, proposal])
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    const r = await p.evaluate(input('bash', { command: 'git commit -m "all tests pass"' }))
+    // This is the finding, not a desired behavior: the shipped rule's
+    // commit-boundary match short-circuits evaluate() first. The claim
+    // rule's own observed_action never gets recorded on this call.
+    expect(r.rule_id).toBe('source-change-requires-test')
+    expect(r.action).toBe('warn')
+  })
+
+  it('reversing file order does not fix it: an earlier-declared claim rule (mode: observe) swallows the shipped rule\'s warn instead', async () => {
+    const shipped = loadShippedRule('source-change-requires-test')
+    const proposal = loadProposalRule()
+    const p = buildCombined([proposal, shipped])
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    const r = await p.evaluate(input('bash', { command: 'git commit -m "all tests pass"' }))
+    // mode: observe short-circuits evaluate() too (pipeline.ts's
+    // violation() returns the allow result for observe rules) — so
+    // reordering trades one suppressed rule for the other, it does not
+    // let both fire. Documented in the proposal's gate-integration note,
+    // not fixed here: changing that shared short-circuit is out of this
+    // lane's scope (other rules across the catalog depend on it).
+    expect(r.action).toBe('allow')
+    expect(r.observed_action).toBe('warn')
+    expect(r.rule_id).toBe('claim-without-evidence')
   })
 })
 

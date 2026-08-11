@@ -373,22 +373,25 @@ $ npm run lint     # tsc --noEmit across core/cli/mcp-server
 (clean, no output)
 
 $ node packages/opencode-plugin/scripts/load-test.js
-All checks passed   (37/37, including "dist matches canonical template")
+All checks passed   (54/54, including "dist matches canonical template")
 ```
 
-`claim.test.ts` (22 tests) covers: grammar unit tests (10), synthetic
+`claim.test.ts` (25 tests) covers: grammar unit tests (10), synthetic
 trajectories through the real pipeline in `mode: observe` matching the
 shipped proposal exactly — asserting `observed_action`, not `action`,
 since `action` is `'allow'` in both the fire and no-fire cases and would
-pass vacuously otherwise (2 must-fire, 5 must-not-fire, each annotated
-with which SINGLE mechanism it exercises so no case is suppressed by two
-independent paths at once — satisfied-obligation / hedge / trigger-scope /
-grammar-precision / quote-stripping), window semantics (2), the shipped
-proposal file's own validity and end-to-end behavior (2), and cross-
-process persistence via a shared fake `StateManager` across separate
-`EnforcementPipeline` instances, the same pattern `pipeline.test.ts`'s
-"shares rate-limit and first-warning state between pipeline instances"
-test already established (2).
+pass vacuously otherwise (3 must-fire — including one delivered via the
+commit-message channel specifically, see §9 for why that one was added
+after the fact — and 5 must-not-fire, each annotated with which SINGLE
+mechanism it exercises so no case is suppressed by two independent paths
+at once — satisfied-obligation / hedge / trigger-scope / grammar-precision
+/ quote-stripping), window semantics (2), the shipped proposal file's own
+validity and end-to-end behavior (2), gate-integration ordering against
+the shipped verification rule (2, see §9), and cross-process persistence
+via a shared fake `StateManager` across separate `EnforcementPipeline`
+instances, the same pattern `pipeline.test.ts`'s "shares rate-limit and
+first-warning state between pipeline instances" test already established
+(2).
 
 ## 8. Proposal
 
@@ -404,7 +407,74 @@ exact snippet is loaded and validated by `claim.test.ts`'s
 running it through the real pipeline end to end — not just YAML-valid,
 provably behaves as designed.
 
-## 9. Files changed / added
+## 9. Found after "done": the shipped verification rule preempts the claim rule
+
+While treating the proposal as finished, a review pass traced the ONLY
+production-reachable trajectory (per §2: commit-message text, not
+`reasoning`) against the FULL default catalog, not the claim rule in
+isolation — and found the shipped `source-change-requires-test`
+verification rule (`plugin.ts`'s `DEFAULT_RULES_YAML`) has an IDENTICAL
+`trigger` to this proposal's (same `tools`/`path`/`paths`/`pattern`), and
+neither sets `priority` (both default to 0).
+
+On `edit src/a.ts` → `git commit -m "all tests pass"` with both rules
+active: `EnforcementPipeline.evaluate()`'s first stateful-rule loop checks
+rules in the merged/sorted order and `return`s on the first match. The
+shipped rule's `boundaries.commit` pattern (`"git commit"`) matches first
+(whichever rule is earlier in file order at equal priority — a stable
+sort, confirmed both ways) and its `warn` fires; the claim rule is never
+evaluated on that call, so its `observed_action` never gets recorded.
+**Reversing the order does not fix it, it trades one suppression for the
+other:** `violation()` short-circuits `evaluate()` for `mode: observe`
+rules too (returns the `allow` result immediately), so a claim rule
+declared earlier / with higher priority would swallow the shipped
+verification rule's real `warn` on that same call — silently changing
+another rule's verdict, which contradicts "observe never interrupts."
+
+Both directions proven empirically in `claim.test.ts`'s
+"gate-integration ordering" describe block (2 tests), which extracts the
+shipped rule directly from `plugin.ts`'s `DEFAULT_RULES_YAML` — the same
+technique `fixture-harness.test.ts` uses for `install.ts`'s copy of the
+same constant — rather than a hand-copied duplicate that could drift from
+the real file. `fixture-harness.test.ts`'s own file header names this
+exact trap: running a rule against the full catalog is required precisely
+because an isolated-pipeline test cannot see an earlier rule stealing the
+match.
+
+**Not fixed this wave, by design:** changing `violation()`'s shared
+observe-mode short-circuit behavior to "record and continue" instead of
+"return" would affect every other rule in the catalog across every other
+lane, not just this one — a unilateral change here is out of scope. The
+finding is instead written into the proposal itself (a top-of-file GATE
+INTEGRATION NOTE, not a `false_positives` entry — this is a suppression,
+not a wrong fire, a different failure shape the catalog metadata schema
+has no dedicated field for) so the ordering decision — a `priority` above
+the shipped rule and accepting the observe-mode swallow, or leaving file
+order as-is and accepting the shipped rule's warn is what users see on
+that trajectory — is made explicitly at the Wave-2 gate, not defaulted to
+by accident of paste order.
+
+This also closes a real coverage gap the same review pass found: both
+original MUST-FIRE tests delivered the claim via `input.reasoning` — the
+channel §2 already proves is unwired in production. Added a third
+MUST-FIRE case delivering the claim via `git commit -m "..."` (the channel
+that DOES fire in production) directly to the isolated-pipeline suite, so
+at least one must-fire case in this file exercises the actual production
+path end to end.
+
+**One more instance of the same import-timing/module-level-instance
+pattern documented in §6(b)/(c), found while reviewing `allow.ts` for the
+reader/writer-split note:** `packages/cli/src/commands/allow.ts:98` —
+`export const overrideStoreForStatus = new FileRuleOverrideStore()` — is a
+MODULE-LEVEL instance, so with `KEEL_OVERRIDES_DIR` set at runtime (after
+this module's first import), `keel status`'s override reader is bound to
+whatever the env var held at import time, the identical hazard §6(b)
+empirically found and specifically avoided in `AuditLog`'s constructor.
+`allow.ts` is unchanged this wave (still out of this lane's ownership, per
+§6(c)) — flagged here as a second instance of the same class rather than
+silently left for someone to rediscover from scratch.
+
+## 10. Files changed / added
 
 - New: `packages/core/src/enforce/claim.ts` (grammar + `detectClaim`),
   `packages/core/src/enforce/__tests__/claim.test.ts` (22 tests),
