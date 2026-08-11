@@ -110,3 +110,15 @@
   dryrun semantics; also makes shadow counts see full traffic). Wave-2 gate keeps file
   order (shipped rule wins; claim underfires until Wave 3 — accepted, logged).
   overrideStoreForStatus module-level import-timing hazard flagged, not fixed.
+- 2026-08-11 supervisor: W2 lane 2 landed (w2-slop 6f0a468): two-stage package
+  verifier (sync extractor pays nothing on non-installs; async check only on real
+  installs), fail-open semantics per amendment 3; scoped-name 404 → prompt not deny
+  (public 404 is not proof a private package is fake). Tiered cache TTLs 24h/1h/5min
+  by verdict type — documented deviation from flat 24h, ACCEPTED (worst case is
+  re-checking sooner, never staleness). Added 'supply-chain' category (enum overlap
+  with w2-seq/'verification' at merge — expected). TWO GATE AIDS: (1)
+  proposal-fixture-harness.test.ts globs session/proposals/*.yaml so every lane's
+  proposal gets fixture coverage with no shared-file edits; (2) assertPasteSafe()
+  guards proposals against template-literal corruption — USE IT during the gate paste
+  into DEFAULT_RULES_YAML (backticks/escapes in YAML would silently corrupt the JS
+  template literal; lane caught this on its own proposal).
