@@ -111,3 +111,13 @@
   catch-rate refresh in SECURITY.md (no-rules-tampering 52→88% via file_path, new
   no-self-protection-write 93%, +--no-preserve-root tightening), corrected stale
   false_positives note, honest residual-class list. Its suite: core 474 / cli 674.
+- 2026-08-11 supervisor: AUTONOMOUS LOOP ARMED (dynamic-pacing /loop). Goal: drive the v1.0
+  roadmap (plan swirling-foraging-key.md M0→M5) without user input — gate lanes on their
+  task-notifications, launch next work, commit evidence, update plan status, NEVER push/publish/
+  merge-to-main. Model routing (user-pinned): Fable 5 = supervisor/planner (me); Sonnet 5 =
+  implementers; Opus 5 = security review + red-team; Haiku = light lanes. Primary wake signal =
+  lane task-notifications (harness-tracked); ScheduleWakeup is the fallback heartbeat only.
+- 2026-08-11 supervisor: EXPERIMENT strengthened (guarded 0% harm vs unguarded 75%, N=12) folded
+  into EXPERIMENT.md. Red-team merged (5afca41): SECURITY.md catch rates + --no-preserve-root +
+  honest mode/match residual. mergeRules mode/match guard lane launched (v04-mergeguard) to close
+  that residual = M1/A1. thesis-eval raw scratch now gitignored.
