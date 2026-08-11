@@ -1002,13 +1002,27 @@ export class EnforcementPipeline {
 
   private pathMatches(value: string, pattern: string): boolean {
     const normalized = pattern
-    // `**` matches across any number of segments; `*` matches one segment.
-    // Only engaged for patterns that use `**`, keeping the legacy prefix and
-    // includes semantics for simple patterns (existing rules depend on them).
+    // `**` matches across any number of segments; `*` matches within one
+    // segment only (never crosses `/`). Only engaged for patterns that use
+    // `**`, keeping the legacy prefix and includes semantics for simple
+    // patterns (existing rules depend on them).
+    //
+    // A single pass over each `**`-split part handles both jobs at once: a
+    // literal `*` becomes `[^/]*` directly, and every other regex-special
+    // character gets backslash-escaped. The previous implementation tried
+    // to do this in two passes -- escape special characters first (with a
+    // class that did not include `*`), then convert an escaped `\*` to
+    // `[^/]*` -- but since `*` was never a member of the escape class, no
+    // `\*` was ever produced, so that second step never fired. A bare `*`
+    // then survived into the final regex as a raw quantifier applied to
+    // whatever character preceded it (e.g. `.env*` compiled to a regex
+    // where `*` quantified the "v" in "env", not "match anything after
+    // it"), so patterns like `**/.env*` silently failed to match
+    // `.env.local`.
     if (normalized.includes('**')) {
       const regex = '^' + normalized
         .split('**')
-        .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '[^/]*'))
+        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, ch => (ch === '*' ? '[^/]*' : `\\${ch}`)))
         .join('.*') + '$'
       try { return new RegExp(regex).test(value) } catch { return false }
     }

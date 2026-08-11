@@ -4,3 +4,63 @@ cases:
     args:
       path: "/tmp/keel-fixture-project/.env"
       content: "SECRET=1"
+  - note: "writing .env.local — a real per-machine credential file, not a template (regression: bare * glob bug used to miss anything after '.env')"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env.local"
+      content: "SECRET=1"
+  - note: "writing .env.production — a real credential file"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env.production"
+      content: "SECRET=1"
+  - note: "writing id_rsa.pub — the wildcard after id_rsa must catch the .pub suffix, not just the bare key file (regression: bare * glob bug)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/id_rsa.pub"
+      content: "ssh-rsa AAAA..."
+  - note: "writing id_ed25519.pub"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/id_ed25519.pub"
+      content: "ssh-ed25519 AAAA..."
+  - note: "writing a nested .pem certificate"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/certs/nested/server.pem"
+      content: "-----BEGIN CERTIFICATE-----"
+  - note: "writing a .pfx bundle"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/client.pfx"
+      content: "binary"
+  - note: "writing a .p12 bundle"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/client.p12"
+      content: "binary"
+  - note: "writing into the .ssh directory"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.ssh/config"
+      content: "Host *"
+  - note: "writing .npmrc — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.npmrc"
+      content: "//registry.npmjs.org/:_authToken=x"
+  - note: "writing .git-credentials — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.git-credentials"
+      content: "https://user:pass@github.com"
+  - note: "writing .netrc — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.netrc"
+      content: "machine example.com login u password p"
+  - note: "writing .pgpass — no bare * in this glob, unaffected by the bug, but had no fixture coverage before this lane"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.pgpass"
+      content: "*:*:*:*:secret"

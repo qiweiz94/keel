@@ -9,3 +9,13 @@ cases:
     args:
       path: "/tmp/keel-fixture-project/.keel/DISABLED"
       content: "{}"
+  - note: "overwriting the local rules override file"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.keel.local.yaml"
+      content: "version: 1\nrules: []\n"
+  - note: "writing a plugin file two segments below .opencode/plugins (double-star must cross more than one segment)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.opencode/plugins/nested/dir/x.js"
+      content: "module.exports = {}"
