@@ -4,6 +4,38 @@ import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { shouldAutoOpenBrowser } from '../commands/dashboard-web.js'
+
+// Regression guard for the browser-flood bug: the ONLY gate on the
+// `spawn('open', url)` convenience is shouldAutoOpenBrowser(). It MUST return
+// false in every non-interactive context — otherwise the dashboard-web test
+// (which sets KEEL_DASHBOARD_ALLOW_NON_TTY=1 to exercise the server) opens a
+// browser tab on every `npm test` run and floods the developer. A prior version
+// gated only on platform==darwin; this pins the correct gate so it can't regress.
+describe('dashboard --web auto-open gate (browser-flood regression guard)', () => {
+  const origTTY = process.stdin.isTTY
+  const origCI = process.env.CI
+  const origNoOpen = process.env.KEEL_NO_OPEN
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: origTTY, configurable: true })
+    if (origCI === undefined) delete process.env.CI; else process.env.CI = origCI
+    if (origNoOpen === undefined) delete process.env.KEEL_NO_OPEN; else process.env.KEEL_NO_OPEN = origNoOpen
+  })
+  const setTTY = (v: unknown) => Object.defineProperty(process.stdin, 'isTTY', { value: v, configurable: true })
+
+  it('does NOT auto-open without a TTY (the automation / test path)', () => {
+    setTTY(undefined); delete process.env.CI; delete process.env.KEEL_NO_OPEN
+    expect(shouldAutoOpenBrowser()).toBe(false)
+  })
+  it('does NOT auto-open under CI even with a TTY', () => {
+    setTTY(true); process.env.CI = '1'; delete process.env.KEEL_NO_OPEN
+    expect(shouldAutoOpenBrowser()).toBe(false)
+  })
+  it('does NOT auto-open when KEEL_NO_OPEN=1 even with a TTY', () => {
+    setTTY(true); delete process.env.CI; process.env.KEEL_NO_OPEN = '1'
+    expect(shouldAutoOpenBrowser()).toBe(false)
+  })
+})
 
 /**
  * `keel dashboard --web` security and function tests:
