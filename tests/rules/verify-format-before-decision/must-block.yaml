@@ -1,0 +1,5 @@
+cases:
+  - note: "agent silently picks a format/config without asking the user"
+    tool: Bash
+    args:
+      command: "choose json format for output"

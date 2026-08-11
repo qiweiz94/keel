@@ -1,0 +1,5 @@
+cases:
+  - note: "removing the opencode plugin directory that carries the enforcer"
+    tool: Bash
+    args:
+      command: "rm -rf .opencode/plugins/foo"

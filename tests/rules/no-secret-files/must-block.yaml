@@ -1,0 +1,6 @@
+cases:
+  - note: "writing a real .env file"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env"
+      content: "SECRET=1"

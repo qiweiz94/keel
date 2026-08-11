@@ -1,0 +1,5 @@
+cases:
+  - note: "already carries --signoff, negative lookahead excludes it"
+    tool: Bash
+    args:
+      command: 'git commit -m "test" --signoff'

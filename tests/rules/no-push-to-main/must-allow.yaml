@@ -1,0 +1,5 @@
+cases:
+  - note: "pushing to a feature branch is fine"
+    tool: Bash
+    args:
+      command: "git push origin feature-branch"

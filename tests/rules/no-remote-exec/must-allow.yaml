@@ -1,0 +1,5 @@
+cases:
+  - note: "a regular install (not an on-the-fly exec) is fine"
+    tool: Bash
+    args:
+      command: "npm install create-react-app"

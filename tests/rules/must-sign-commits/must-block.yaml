@@ -1,0 +1,7 @@
+# action: fix — this rule never blocks; it mutates the command. The harness
+# expects action "fix" here, not deny/block.
+cases:
+  - note: "a commit without --signoff gets auto-signed"
+    tool: Bash
+    args:
+      command: 'git commit -m "test"'

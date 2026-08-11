@@ -1,0 +1,10 @@
+# Time rule: schedule is 09:00-22:00 local. `fake_time` (hour/minute, local
+# clock) drives the harness's vi.setSystemTime for this case only.
+cases:
+  - note: "pushing at 03:00, outside the 09:00-22:00 window"
+    tool: Bash
+    args:
+      command: "git push origin main"
+    fake_time:
+      hour: 3
+      minute: 0

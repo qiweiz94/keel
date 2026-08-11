@@ -1,0 +1,6 @@
+cases:
+  - note: "ordinary source content, no credential shape"
+    tool: Write
+    args:
+      path: "src/config.ts"
+      content: 'const greeting = "hello world"'

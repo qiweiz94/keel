@@ -1,0 +1,5 @@
+cases:
+  - note: "plain curl download, no pipe to a shell"
+    tool: Bash
+    args:
+      command: "curl -O https://example.com/file.tar.gz"

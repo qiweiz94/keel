@@ -1,0 +1,5 @@
+cases:
+  - note: "echoing a known credential env var"
+    tool: Bash
+    args:
+      command: "echo $GITHUB_TOKEN"

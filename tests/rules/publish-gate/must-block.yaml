@@ -1,0 +1,5 @@
+cases:
+  - note: "publishing to the npm registry"
+    tool: Bash
+    args:
+      command: "npm publish"

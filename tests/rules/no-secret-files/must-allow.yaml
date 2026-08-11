@@ -1,0 +1,6 @@
+cases:
+  - note: ".env.example is explicitly excluded (a template, not a real credential file)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env.example"
+      content: "SECRET=changeme"

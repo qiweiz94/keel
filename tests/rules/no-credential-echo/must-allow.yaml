@@ -1,0 +1,5 @@
+cases:
+  - note: "an unrelated env var name"
+    tool: Bash
+    args:
+      command: "echo $MY_CUSTOM_VAR"

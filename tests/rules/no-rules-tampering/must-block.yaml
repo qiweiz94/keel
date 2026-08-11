@@ -1,0 +1,11 @@
+cases:
+  - note: "overwriting keel's own rules file"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.keel/rules.yaml"
+      content: "version: 1\nrules: []\n"
+  - note: "deleting the kill-switch sentinel by writing over it"
+    tool: Edit
+    args:
+      path: "/tmp/keel-fixture-project/.keel/DISABLED"
+      content: "{}"
