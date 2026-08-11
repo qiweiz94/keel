@@ -279,6 +279,15 @@ export interface AuditEntry {
 
   reasoning?: string
   fix_applied?: boolean
+
+  /**
+   * Mirrors EnforceResult.observed_action: set only for rules in
+   * `mode: observe`, carrying the action that WOULD have been enforced while
+   * `action` itself stays "allow". Optional so entries written before this
+   * field existed still parse — every reader here does a plain `JSON.parse`
+   * with no schema check, so an absent key is just `undefined`, not an error.
+   */
+  observed_action?: EnforcementAction
 }
 
 // ── Cache ───────────────────────────────────────────────────────────

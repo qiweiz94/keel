@@ -8188,7 +8188,7 @@ function isVerifiableFile(filePath) {
 import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
 import { join as join7 } from "node:path";
 import { homedir as homedir6 } from "node:os";
-var STATE_DIR = join7(homedir6(), ".keel", "state");
+var STATE_DIR = process.env.KEEL_STATE_DIR || join7(homedir6(), ".keel", "state");
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
   denyFirstTime = {};
@@ -8763,7 +8763,7 @@ var plugin_default = {
       const args = output?.args || {};
       const enforceInput = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
       const result = await pipeline.evaluate(enforceInput);
-      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, message: result.message, hook: "tool.execute.before" });
+      record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, observed_action: result.observed_action, message: result.message, hook: "tool.execute.before" });
       if (result.action === "warn" && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID);
       if (result.action === "fix") applyFix(args, result);
       if (result.action === "warn" && result.rule_id && verificationIds.has(result.rule_id)) {
