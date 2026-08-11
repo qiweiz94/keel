@@ -275,3 +275,19 @@
   floor-neutralization vector — floors now un-bypassable on action/mode/surface/same-id/different-id.
   Suite green core 554 / cli 708. AUDIT.md updated (residual → CLOSED). Remaining M1: A3 fail-closed
   (running), env-intro observe rule (running).
+- 2026-08-11 supervisor: M1/A3 GATE CLOSED (66c9a00). Fail-closed audit found + fixed a GENUINE
+  FAIL-OPEN: readStdin/parsePayload ran before hook.ts's try/catch, so a stdin stream error →
+  unhandled rejection → Node exit 1 → exit-code hosts (which only block on exit 2) LET THE CALL
+  THROUGH. Fixed: hookVerdict() wraps the whole body; any escape renders a block (exit 2). Empirically
+  reproduced before(exit 1)/after(exit 2). 4 other paths confirmed already fail-closed. Suite green
+  core 554 / cli 726. M1 now: A1✅ A2✅ A3✅ A4✅ interpreter-body✅ echo-FP✅; only env-intro running.
+  FLAGGED FOLLOW-UPS (queued, not fixed — the lane correctly didn't unilaterally decide):
+  * rule-parser validateRules() doesn't validate unless[].regex (a bad regex throws at eval; caught
+    → fail-closed, but should validate at LOAD) — quick fix.
+  * onRulesError never wired from enforce.ts → daemon/plugin's last-known-good path is SILENT on a
+    mid-session rules typo (user doesn't know their reload failed) — quick fix, real UX gap.
+  * claim rules can be authored with a blocking action that structurally can't block on the Stop
+    channel — a footgun; validate or document.
+  * POLICY DECISION (needs user, don't unilaterally change): empty stdin / truncated TOOL_INPUT →
+    keel ALLOWS every call with zero signal (fail-open on degenerate input). Fail-closed (block) vs
+    warn vs allow is a real tradeoff (legit no-op calls vs attack/bug). Flag for the user.
