@@ -198,6 +198,112 @@ lv_verify_block() {
   return 0
 }
 
+# lv_verify_warn <marker_source_file> <marker_regex>
+# The `warn` mirror of lv_verify_block — for a verdict that must NOT stop
+# the action, so ref/HEAD-unmoved is the wrong signal (a warn and a
+# swallowed warn are BOTH "the action happened"). The CALLER must have
+# already confirmed the side effect actually occurred (e.g. a new commit
+# exists) before calling this — that is the block-vs-warn discriminator.
+# This checks the other half: the marker text appears in a channel the
+# CALLER's script did not itself write (a host's own log file, or the
+# child's own captured stdout for hosts with no independent log), and the
+# child did not time out (a timed-out child never got far enough to
+# produce a genuine marker either way). Sets LV_VERIFY_VERDICT to
+# pass/fail/timeout, same convention as lv_verify_block. NOTE: this is a
+# different string than lv_verify_warn_exitcode_host below sets for its
+# own analogous not-a-real-failure state ("could-not-test", not
+# "timeout") — the two functions are never mixed in the same script today
+# (OpenCode uses this one; Claude/Gemini/Codex use the other), but a
+# future script pairing the wrong function with the wrong branch check
+# would silently mis-verdict. Check which function you called before
+# branching on the string.
+lv_verify_warn() {
+  marker_source="$1"
+  marker="$2"
+  if [ "${LV_CHILD_EXIT:-0}" -eq 124 ]; then
+    lv_log "  child timed out — the warn was never confirmed surfaced. Verdict: could-not-test, not PASS."
+    LV_VERIFY_VERDICT="timeout"
+    return 1
+  fi
+  if [ ! -f "$marker_source" ] || ! grep -qE "$marker" "$marker_source"; then
+    lv_log "  no keel warn marker ($marker) found in $marker_source — warn was swallowed, or never fired"
+    LV_VERIFY_VERDICT="fail"
+    return 1
+  fi
+  lv_log "  confirmed: marker \"$marker\" found in $marker_source"
+  LV_VERIFY_VERDICT="pass"
+  return 0
+}
+
+# lv_verify_warn_exitcode_host <transcript> <marker_regex> <head_before> <head_after>
+# lv_verify_warn (above) assumes the marker source is a channel INDEPENDENT
+# of the child's own output (OpenCode's opencode.log — written by the real
+# host process, never by this harness). Claude Code, Gemini and Codex have
+# no such independent channel: a warn's advisory text is keel's hook CLI's
+# own stdout JSON (systemMessage / hookSpecificOutput.additionalContext),
+# and whether the HOST ITSELF echoes that stdout back into its own
+# `--output-format json` event stream is NOT independently confirmed —
+# unlike the marker TEXT, which a direct `keel hook <host>` call (bypassing
+# the child entirely) can and should confirm separately, once, before
+# trusting any of this. Treating "marker absent" the same as
+# lv_verify_warn's FAIL would conflate two different failure causes: keel
+# never warned (a real defect) vs. the host swallowed/reformatted its own
+# hook's stdout before this harness could see it (a host-observability
+# gap this harness cannot close). This function keeps them apart:
+#   HEAD unmoved            -> FAIL (the action was blocked, not warned —
+#                               this IS a real, unambiguous failure)
+#   HEAD moved + marker     -> PASS
+#   HEAD moved + no marker  -> COULD-NOT-TEST, not FAIL
+#   child timed out         -> COULD-NOT-TEST
+# Sets LV_VERIFY_VERDICT to pass/fail/could-not-test.
+lv_verify_warn_exitcode_host() {
+  transcript="$1"
+  marker="$2"
+  head_before="$3"
+  head_after="$4"
+  if [ "${LV_CHILD_EXIT:-0}" -eq 124 ]; then
+    lv_log "  child timed out — the warn was never confirmed either way. Verdict: could-not-test."
+    LV_VERIFY_VERDICT="could-not-test"
+    return 1
+  fi
+  if [ "$head_after" = "$head_before" ]; then
+    lv_log "  HEAD did not move — the action was BLOCKED, not warned. This is a real FAIL, not a channel gap."
+    LV_VERIFY_VERDICT="fail"
+    return 1
+  fi
+  if grep -qE "$marker" "$transcript" 2>/dev/null; then
+    lv_log "  HEAD moved AND marker \"$marker\" found in the child's own transcript."
+    LV_VERIFY_VERDICT="pass"
+    return 0
+  fi
+  lv_log "  HEAD moved (the action was NOT blocked) but marker \"$marker\" was NOT found in the"
+  lv_log "  child's own transcript. This is COULD-NOT-TEST, not FAIL: keel's own hook CLI was"
+  lv_log "  independently confirmed (a direct 'keel hook <host>' call, decoupled from this child)"
+  lv_log "  to emit that exact marker on stdout for this payload — whether THIS HOST echoes its"
+  lv_log "  hook's stdout JSON back into --output-format json is an unconfirmed host-observability"
+  lv_log "  gap, not a demonstrated keel defect."
+  LV_VERIFY_VERDICT="could-not-test"
+  return 1
+}
+
+# lv_no_marker <marker_source_file> <marker_regex>
+# The warn-path analogue of lv_negative_control: proves the marker check
+# above is not tainted (e.g. matching some unrelated, always-present log
+# line). Call this BEFORE the rule-triggering command has ever run, using
+# a fixture where the same command runs WITHOUT the trigger (no
+# --no-verify, etc.) — if the marker is already present, the detector
+# itself is broken and any later PASS would be meaningless.
+lv_no_marker() {
+  marker_source="$1"
+  marker="$2"
+  if [ -f "$marker_source" ] && grep -qE "$marker" "$marker_source"; then
+    lv_log "  FAIL: marker ($marker) found in $marker_source even though the triggering command was never run — detector is tainted."
+    return 1
+  fi
+  lv_log "  confirmed absent: marker \"$marker\" not present in $marker_source without the trigger"
+  return 0
+}
+
 lv_cleanup() {
   [ -n "${LV_ROOT:-}" ] && rm -rf "$LV_ROOT"
 }

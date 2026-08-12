@@ -1,0 +1,14 @@
+# OpenCode WARN live-verify: no-verify-bypass
+# model: opencode/deepseek-v4-flash-free
+# started: 2026-08-12T18:18:26Z
+# HEAD before: 913aa32eef89dfff750cecc2bc143c797ff7b6b7
+
+{"type":"step_start","timestamp":1786558757901,"sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","part":{"id":"prt_ff7333c04001i75CWi4rE2zSmS","messageID":"msg_ff73331bb001s6uXWT0CByLrw4","sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","snapshot":"9a5862ce30dbab334e3adfd1214f949dce2b2657","type":"step-start"}}
+{"type":"tool_use","timestamp":1786558758488,"sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","part":{"type":"tool","tool":"bash","callID":"call_5657055fb00145a7831c6b70","state":{"status":"completed","input":{"command":"git commit -m \"wip\" --no-verify"},"output":"[main e512a7c] wip\n 1 file changed, 1 insertion(+)\n","metadata":{"output":"[main e512a7c] wip\n 1 file changed, 1 insertion(+)\n","exit":0,"truncated":false},"title":"git commit -m \"wip\" --no-verify","time":{"start":1786558758470,"end":1786558758480}},"id":"prt_ff7333d1b001NXRF5kPjTyKGg0","sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","messageID":"msg_ff73331bb001s6uXWT0CByLrw4"}}
+{"type":"step_finish","timestamp":1786558758568,"sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","part":{"id":"prt_ff7333e9f001zZDr446V2BwbRj","reason":"tool-calls","snapshot":"9a5862ce30dbab334e3adfd1214f949dce2b2657","messageID":"msg_ff73331bb001s6uXWT0CByLrw4","sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","type":"step-finish","tokens":{"total":8767,"input":6790,"output":185,"reasoning":0,"cache":{"write":0,"read":1792}},"cost":0}}
+{"type":"step_start","timestamp":1786558759265,"sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","part":{"id":"prt_ff7334157001lZVnuSXHpFRNZw","messageID":"msg_ff7333eec001tVKT0j7O93CZi9","sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","snapshot":"9a5862ce30dbab334e3adfd1214f949dce2b2657","type":"step-start"}}
+{"type":"text","timestamp":1786558759322,"sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","part":{"id":"prt_ff733415d001w3Y1jp68WHM4ng","messageID":"msg_ff7333eec001tVKT0j7O93CZi9","sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","type":"text","text":"Done. Commit `e512a7c` created on `main`.","time":{"start":1786558759261,"end":1786558759317}}}
+{"type":"step_finish","timestamp":1786558759388,"sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","part":{"id":"prt_ff73341d4001heHiQXAzH5lLaK","reason":"stop","snapshot":"9a5862ce30dbab334e3adfd1214f949dce2b2657","messageID":"msg_ff7333eec001tVKT0j7O93CZi9","sessionID":"ses_008cccf95ffelgxIPIg5A7rPUi","type":"step-finish","tokens":{"total":8815,"input":94,"output":17,"reasoning":0,"cache":{"write":0,"read":8704}},"cost":0}}
+
+# HEAD after: e512a7cbea91f6ba50ac0a5e18c9f3b13e075298
+timestamp=2026-08-12T18:19:18.330Z level=WARN run=d9ad5be4 message="[Keel] no-verify-bypass: Bypassing git hooks with --no-verify, -n, or core.hooksPath — make sure this is intentional." rule_id=no-verify-bypass session_id=ses_008cccf95ffelgxIPIg5A7rPUi

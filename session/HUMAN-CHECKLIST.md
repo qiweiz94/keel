@@ -261,3 +261,108 @@ next live-verified (as Claude Code and OpenCode already were, for the
 
 ---
 
+## M4 host-breadth lane (2026-08-12) — what changed, what's still manual
+
+Full write-up: `session/v1/EVIDENCE/m4-hostbreadth.md`. This lane added automated
+WARN scripts (`scripts/live-verify/{claude,gemini,codex,opencode}-warn.sh`,
+mirroring the pre-existing block scripts) and re-ran every existing block script
+plus the new warn ones in this environment. **Run these first, before hand-driving
+items 1–2 above for Claude Code and Gemini's warn path** — but their warn-marker
+assertion for the three exit-code hosts (Claude, Gemini, Codex) is UNVALIDATED
+against a real authenticated run, because auth was blocked in every environment
+this lane had access to. Specifically: keel's own hook CLI was confirmed, auth-free,
+to emit the correct `[keel:no-verify-bypass]` marker on stdout for all three hosts'
+payload shapes (`echo '<payload>' | keel hook claude-code|gemini|codex` — see
+`session/v1/EVIDENCE/m4-hostbreadth.md` §3 for the exact captured output); what is
+NOT confirmed is whether each host echoes that stdout back into its own
+`--output-format json` (or equivalent) event stream where this harness can see it.
+The scripts already account for this — a HEAD-moved-but-marker-absent result reports
+COULD-NOT-TEST, not FAIL, with the reason printed inline (see
+`lv_verify_warn_exitcode_host` in `scripts/live-verify/lib/common.sh`) — but if a
+real authenticated run DOES report FAIL or COULD-NOT-TEST, do not read that as
+"keel's warn is broken" without first checking whether the marker made it into the
+raw transcript at all; it may be a host-observability gap this harness cannot close,
+not a keel defect. If it fails and doesn't recover with a manual look at the raw
+transcript, hand-drive items 1–2 above to see the message directly.
+
+**OpenCode WARN is now live-verified**, not manual — `opencode-warn.sh` passed in
+this environment: `session/transcripts/opencode-warn-no-verify-bypass.txt` plus the
+real `opencode.log` line it captured. Nothing left to do here unless a future change
+touches `surfaceWarn()` in `packages/opencode-plugin/src/plugin.ts`.
+
+### Cursor — no CLI available in any environment tested so far
+
+Neither block nor warn has ever been live-verified; `cursor` is not on PATH here.
+A human with a real Cursor install needs to:
+
+1. Install keel: `keel install --cursor` in a scratch project (never a real one).
+2. Wire `.cursor/hooks.json` (or wherever Cursor's own current docs say a
+   `beforeShellExecution` hook is registered — this may have moved since the
+   `docs`-confidence citation in `docs/integrations.md` was written).
+3. Trigger a command matching `no-force-push` or `no-push-to-main` (e.g. `git push
+   --force origin main`) through Cursor's agent chat, not a raw shell — confirm the
+   command is actually stopped (`permission: 'deny'` or `'ask'`) and that the
+   message text renders in Cursor's own UI.
+4. **Specifically check the casing fix from this lane**: `keel hook cursor` (or the
+   real end-to-end path) now emits BOTH `userMessage`/`agentMessage` and
+   `user_message`/`agent_message` on the warn (`permission: 'allow'`) path — confirm
+   Cursor actually displays the message (proving one of the two spellings is read)
+   and that neither extra/duplicate field causes Cursor to reject the hook response
+   outright (the Codex-#249 fail-open concern hook.ts's own comment raises). If
+   confirmed safe, apply the same additive fix to the BLOCK path (`case 'cursor'`
+   under the `blocked` switch in `packages/cli/src/commands/hook.ts`), which still
+   ships camelCase-only.
+5. Repeat with a `no-verify-bypass`-triggering command (`git commit -m x
+   --no-verify`) for a genuine warn-path check — permission must be `'allow'`, not
+   `'deny'`, and the message should still render.
+
+### Hermes — no CLI available in any environment tested so far
+
+Same status as Cursor: `docs`-confidence only, `hermes` not on PATH here, never
+live-verified for block or warn.
+
+1. Install keel: `keel install --hermes`, wire the `pre_tool_call` plugin per
+   Hermes's own current plugin-loading docs.
+2. Trigger `no-push-to-main` or `no-verify-bypass` through a real Hermes agent
+   session; confirm `{"action": "block"}` actually stops the call for the former,
+   and that the `systemMessage`-equivalent field (not independently confirmed to
+   exist in Hermes's real schema — `docs/integrations.md`'s own Failure-behaviour
+   section does not name one) surfaces the warn text for the latter.
+3. Confirm Hermes's approval gate (`approve` — its human gate, per
+   `docs/integrations.md`'s capability table) actually pauses for a `prompt`-action
+   rule, since this is unverified end-to-end.
+
+### Cline — headless path confirmed LIVE this lane, no harness built yet
+
+Not blocked the way this checklist's other entries are — the opposite problem.
+`cline --json -P cline "say hi"` authenticated and responded in the M4 environment
+(real cost incurred, ~$0.025), contradicting a prior "cline provider 403
+fleet-wide" note elsewhere. No automated `cline.sh`/`cline-warn.sh` harness exists
+yet; building one properly (benign probe, negative control, block test, warn test —
+the same four-step shape every other host script uses) means several more real,
+paid Cline calls, which this lane did not have explicit budget authorization to
+spend beyond the one $0.025 confirmation probe. Whoever picks this up next:
+
+1. Confirm `cline --json -P cline` still authenticates (billing state can change).
+2. Follow `scripts/live-verify/claude.sh` as the template — Cline installs to
+   `~/.cline/hooks/PreToolUse` (global path, not project-scoped; isolate via `HOME`
+   like every other script here) and speaks `HOOK_CONTROL` lines, per
+   `packages/cli/src/commands/hook.ts`'s existing `case 'cline'` branches.
+3. Also resolve the `sessionId` field guess (see item 4 in the Wave-3 list above) —
+   real payload capture would settle it in the same run.
+
+### OpenClaw — plugin installs cleanly under isolation, config wiring not finished
+
+`openclaw` (2026.4.15) is installed in the M4 environment. `keel install
+--openclaw` under an isolated `HOME` installs the three plugin files cleanly. What
+was NOT completed this lane: wiring `plugins.load.paths`/`plugins.allow` into
+OpenClaw's own config format under an isolated profile (`openclaw --profile
+<name>` isolates `OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`) and confirming
+`openclaw plugins list` reports it loaded — which would only reproduce the
+EXISTING claim, not close the openclaw#5943 hook-fires-per-call gap noted above.
+A human with time budget for this should also attempt a real `openclaw agent` turn
+against a configured provider to test the block/warn paths end-to-end, which no
+lane has done yet.
+
+---
+
