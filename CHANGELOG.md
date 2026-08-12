@@ -8,11 +8,23 @@ The v1 release. Four correctness/hardening lanes landed on top of 0.4.0's defaul
 ruleset and thesis experiment: a fail-closed sweep across every enforcement entry
 point, a `KEEL_HOME` fix that closes the install/read split-brain on both sides,
 verification-obligation discharge on three more hosts, Windows support, and a wider
-host-breadth pass with one real user-facing fix (Cursor's warn-message casing). The
-default ruleset grew from 43 to 45 rules along the way (13 protect-floor, 22
-balanced, 10 observe) — `docs/tiers.md` and the README are reconciled to the current
-count, verified live via `keel status`. Evidence for every item below:
-`session/v1/EVIDENCE/*.md`.
+host-breadth pass with one real user-facing fix (Cursor's warn-message casing).
+Separately, this release corrects a stale documentation count unrelated to any of
+those four lanes: `no-destructive-interpreter-body` (the same destructive-wipe
+class as the shell-command floor, caught when issued through an interpreter
+instead — `shutil.rmtree('/')`, `os.system('rm -rf ~')`, Node's `rmSync`/
+`rmdirSync`) and `test-oracle-env-introspection` (an observe-mode rule flagging
+code that detects which test is calling it and branches on that, the
+caller-detection pattern used to fake two contradictory tests passing) were both
+added in post-0.4.0 "ruleset follow-up" commits (`v04/M1`, `v04/M2` — before the
+v1 lanes existed, after the 0.4.0 release notes were already written), bringing
+the shipped default ruleset to 45 rules
+(13 protect-floor, 22 balanced, 10 observe) while the README/`docs/tiers.md`/
+CHANGELOG kept citing the 43-rule count that was accurate only at the moment
+0.4.0 shipped. Found by direct count against `DEFAULT_RULES_YAML` while
+preparing this release and reconciled everywhere, verified live via
+`keel status`. Evidence for every v1-lane item below: `session/v1/EVIDENCE/*.md`;
+the rule-count correction: `session/v1/EVIDENCE/m5-release.md`.
 
 ### Fixed
 

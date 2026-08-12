@@ -83,9 +83,35 @@ rule count: 45
 tier1(protect floor): 13 tier2(balanced): 22 tier3(observe): 10
 ```
 
-Two rules were added since 0.4.0 without the docs being updated:
-`no-destructive-interpreter-body` (tier 1) and `test-oracle-env-introspection`
-(tier 3). Confirmed live against a fresh install:
+Two rules account for the gap: `no-destructive-interpreter-body` (tier 1) and
+`test-oracle-env-introspection` (tier 3). **Correction after an advisor review
+caught the first draft of this section mis-attributing them:** neither is v1
+lane work. Both were added in post-0.4.0 "ruleset follow-up" commits, confirmed
+via `git log -S`:
+
+```
+$ git log --oneline -S 'no-destructive-interpreter-body' -- packages/cli/src/commands/install.ts
+e755806 v04/M1: ruleset followups - interpreter-body destructive coverage + G2 quote fix
+
+$ git log --oneline -S 'test-oracle-env-introspection' -- packages/cli/src/commands/install.ts
+4e6f0d4 v04/M2: add observe rule for caller-detection test gaming
+
+$ git merge-base --is-ancestor e755806 <the 0.4.0 version-bump commit>; echo $?
+1   # NOT an ancestor — e755806 lands AFTER the 0.4.0 release commit
+$ git merge-base --is-ancestor 4e6f0d4 <the 0.4.0 version-bump commit>; echo $?
+1   # same — also lands after
+```
+
+Both commits are dated after `session/v04/EVIDENCE/release-docs.md` correctly
+counted 43, and their `v04/M1`/`v04/M2` prefixes place them in the v0.4-era
+branch structure — before any v1 lane (`M1r`/`M2`/`M3`/`M4`) existed. The
+correct framing is: the shipped default ruleset has been 45 rules since those
+two follow-up commits landed, and the 43-rule figure in README/CHANGELOG/
+`docs/tiers.md` was simply never updated to match — a stale-docs bug this
+release lane found and fixed, not new work attributable to any v1 lane. The
+CHANGELOG's v1.0.0 entry is worded to reflect this precisely rather than
+implying the four v1 lanes grew the ruleset. Confirmed live against a fresh
+install:
 
 ```
 $ keel install --opencode && keel status
@@ -295,12 +321,17 @@ $ cd packages/cli && npm publish --dry-run 2>&1 | grep -i pycache
 ... total files: 358    (was 359 with the stray .pyc)
 ```
 
-A root-level `.npmignore` entry and a `packages/cli/.npmignore` entry for
-`__pycache__/`/`*.pyc` were left in place as defense-in-depth documentation, but
-per the finding above, **neither is the actual fix** — they don't reach inside an
-explicitly `files`-listed directory. The source-level redirect is what matters;
-noted here so a future reader doesn't mistake the `.npmignore` additions for
-working protection.
+A root-level `.npmignore` entry and a new `packages/cli/.npmignore` for
+`__pycache__/`/`*.pyc` were tried first and initially committed, but per the
+finding above **neither actually works** — confirmed by re-testing with each in
+place: the stray `.pyc` still appeared in `npm pack --dry-run --json`'s listing
+both times, because `files`-listed directories bypass ignore-file filtering
+entirely. An advisor review caught that shipping non-functional ignore rules as
+if they were protection is exactly the "absence rendered as reassurance"
+failure mode this project's own house style warns against — a future reader
+sees `__pycache__/` excluded and stops looking, when it isn't. Both were removed
+in a follow-up commit; the source-level `cfile=` redirect (verified above) is
+the only real fix, and needs no ignore-file support to work.
 
 `check-packages.mjs` does not check for this class of file (only `__tests__`,
 `dist/core/dist`, `dist/core/src`) — a gap worth a future lane's attention, noted
@@ -352,15 +383,69 @@ entire final verification pass and after — nothing was corrupted this time.
 
 `scripts/demo/keel-disable-trace.sh` — reproduces the exact rule chain from
 `session/v04/EVIDENCE/attribution-reaudit.md`'s strongest finding (an agent
-blocked from force-pushing to main, then blocked again attempting a
-`keel disable`-class command) via `keel test`, the real dry-run evaluation
-pipeline, no LLM required. Runs clean:
+blocked from pushing to main, then blocked again attempting a `keel disable`-
+class command) via `keel test`, the same `EnforcementPipeline.evaluate()` call
+every live host uses, no LLM required.
+
+**A real bug was caught by testing from a genuinely virgin environment (no
+prior `keel install`, no `.keel/` anywhere), per an advisor review — the
+script's first version only worked because every manual test of it up to that
+point happened in a directory that already had `~/.keel/rules.yaml` installed
+from an earlier step.** `keel test` evaluates strictly against whatever
+`rules.yaml` is on disk; it does not fall back to the shipped defaults in
+memory. On a truly clean `HOME`, both demo steps read `✓ ALLOWED (no matching
+rule)` — a silent no-op, not a demo:
 
 ```
-$ scripts/demo/keel-disable-trace.sh
-  ... prompt (Pushing directly to a protected branch — approval required. ...)
-  ... ✗ DENY by rule "keel-control-gate" ...
+$ rm -rf /tmp/keel-virgin && mkdir -p /tmp/keel-virgin/home && cd /tmp/keel-virgin
+$ HOME=/tmp/keel-virgin/home scripts/demo/keel-disable-trace.sh
+  ... ✓ ALLOWED (no matching rule)   ← both steps, before the fix
+  ... ✓ ALLOWED (no matching rule)
 ```
+
+Fixed by having the script install into an isolated, throwaway `HOME`
+(`mktemp -d`, cleaned up on exit via `trap`) before running its two `keel test`
+demonstrations — never touching the real user's `~/.keel`. Re-verified from a
+maximally stripped environment (`env -i`, nonexistent `HOME`) after the fix:
+
+```
+$ rm -rf /tmp/keel-virgin3 && mkdir -p /tmp/keel-virgin3 && cd /tmp/keel-virgin3
+$ env -i PATH="$PATH" HOME=/tmp/keel-virgin3-nonexistent \
+    bash scripts/demo/keel-disable-trace.sh
+  ... prompt (Pushing directly to a protected branch — approval required.
+       -> Approval required: run `keel allow no-push-to-main --once` ...)
+  ... DENY by rule "keel-control-gate"
+    keel controls are user-owned - run keel disable|allow|level|install|rules --append ...
+```
+
+Both verdicts render correctly. Separately, the exact command tested was
+changed from `git push --force origin main` to `git push origin main` — the
+former was hitting a *different* rule (`no-force-push`, a Tier 1 floor with
+higher match priority) than the one `attribution-reaudit.md` actually
+documents firing in the real experiment (`no-push-to-main`), because in the
+real task setup the agent's plain first push already gets rejected
+non-fast-forward before it would ever type `--force` (see
+`attribution-reaudit.md`'s "A second nuance on destructive-force-push"). The
+plain-push form reproduces the documented rule exactly.
 
 `scripts/demo/HUMAN-CHECKLIST.md` documents the one manual step (recording the
 actual GIF) this lane deliberately does not perform.
+
+## 9. Note on the perf-budget flake observed during this lane
+
+Cited above (§5) as passing 2/2 in isolation after a full-suite flake. Worth
+stating precisely: the failed run's own assertion message says the machine's
+load average was *under* its own skip threshold — i.e. the test's own
+diagnostic explicitly does not blame the machine. The strong evidence this was
+a load-contention artifact and not a real regression is the isolation timing
+itself: 593ms in isolation vs. ~14,000ms (with a 810ms single-attempt outlier)
+inside the full suite, a roughly 20x gap, while every logical assertion in the
+test passed both times. Cited as the load-contention explanation on that basis,
+not on the test's own (self-disclaiming) load-average message.
+
+Separately: `packages/cli/src/__tests__/docs-drift.test.ts` was green
+throughout this entire lane, including while the "43 rules" claim in
+README/CHANGELOG/`docs/tiers.md` was actually wrong (§4) — whatever that test
+checks, default rule counts are not among them. Worth a future lane's
+attention as a real coverage gap; not expanded here since it's outside this
+lane's explicit deliverables.

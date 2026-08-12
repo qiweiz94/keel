@@ -1,9 +1,0 @@
-# Package-scoped: npm's packer (npm pack/publish) resolves .npmignore
-# relative to the package being packed, not the monorepo root — the root
-# .npmignore's exclusions do NOT apply here. Confirmed empirically via
-# `npm pack --dry-run --json` still listing
-# templates/hermes/__pycache__/*.pyc after only the root .npmignore was
-# updated. See session/v1/EVIDENCE/m5-release.md.
-__pycache__/
-*.pyc
-*.pyo

@@ -6,13 +6,3 @@ tests/
 data/
 *.ts
 tsconfig.json
-# .npmignore, once present, replaces .gitignore for `npm pack`/`publish`
-# purposes rather than merging with it — so patterns already covered by
-# .gitignore (like __pycache__/*.pyc, generated whenever
-# templates/hermes/keel_plugin.py is imported/compiled by a test) still
-# need to be repeated here, or a locally-generated, Python-version-specific
-# bytecode cache file can leak into a published tarball. Confirmed via a
-# real `npm publish --dry-run` — see session/v1/EVIDENCE/m5-release.md.
-__pycache__/
-*.pyc
-*.pyo

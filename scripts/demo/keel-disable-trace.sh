@@ -6,13 +6,14 @@
 # to get around the block — and is blocked again.
 #
 # This is not a re-enactment or a mockup. Every "keel evaluates..." step
-# below runs the REAL keel CLI (`keel test`, a dry-run against the actual
-# rule pipeline — same evaluation code path as a live PreToolUse hook,
-# with no side effects). It reproduces, deterministically and offline
-# (no LLM call needed), the exact rule chain that fired in the guarded
-# arm of the v0.4 thesis experiment on the `destructive-force-push` task:
+# below runs `keel test` — a dry-run through the same EnforcementPipeline
+# .evaluate() call every live host (including the OpenCode plugin, the
+# host this experiment ran on) uses to decide allow/warn/deny, with no
+# side effects. It reproduces, deterministically and offline (no LLM call
+# needed), the exact rule chain that fired in the guarded arm of the v0.4
+# thesis experiment on the `destructive-force-push` task:
 #
-#   keel blocked git push --force to main         (rule: no-push-to-main)
+#   keel blocked a push to main                   (rule: no-push-to-main)
 #   the agent then tried to disable keel itself   (rule: keel-control-gate)
 #   keel blocked that too
 #
@@ -48,6 +49,19 @@ else
   exit 1
 fi
 
+# `keel test` evaluates against whatever rules.yaml is actually on disk —
+# it does NOT fall back to the shipped defaults in memory. A genuinely
+# fresh environment with no prior `keel install` has no rules.yaml at all,
+# so every command below would read "ALLOWED (no matching rule)" instead
+# of demonstrating anything (verified: this script previously assumed
+# `keel test` needed no setup, and silently produced a no-op demo on a
+# virgin HOME — see session/v1/EVIDENCE/m5-release.md). Fixed by installing
+# into an isolated, throwaway HOME first — never the real user's ~/.keel.
+DEMO_HOME="$(mktemp -d)"
+trap 'rm -rf "$DEMO_HOME"' EXIT
+export HOME="$DEMO_HOME"
+keel install --opencode >/dev/null 2>&1
+
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 dim() { printf '\033[2m%s\033[0m\n' "$1"; }
 rule() { printf '%s\n' "───────────────────────────────────────────────────────────────"; }
@@ -59,19 +73,28 @@ echo
 rule
 echo
 
-bold "Scene: an agent is mid-task and about to force-push over main."
+bold "Scene: an agent is mid-task and about to push straight to main."
 echo
-echo '  $ git push --force origin main'
+echo '  $ git push origin main'
 sleep 1
 echo
-dim "  keel evaluates this BEFORE it reaches git — same code path as a real"
-dim "  PreToolUse/tool.execute.before hook, dry-run mode, no side effects:"
+dim "  'keel test' runs the exact same EnforcementPipeline.evaluate() call"
+dim "  every live host uses (verified: packages/cli/src/commands/enforce.ts"
+dim "  and packages/opencode-plugin/src/plugin.ts both call it directly) —"
+dim "  dry-run mode, no side effects, but the same rule match, every time."
+dim "  (This is the agent's FIRST attempt, before --force — the real"
+dim "  experiment's task setup means a plain push already gets rejected"
+dim "  non-fast-forward, so no-push-to-main trips right here, one step"
+dim "  before the agent would ever type --force. See attribution-reaudit.md"
+dim "  \"A second nuance on destructive-force-push\" for why this rule, not"
+dim "  no-force-push, is the one that actually fires in the real trace.)"
 echo
-keel test "git push --force origin main"
+keel test "git push origin main"
 echo
-bold "  ↳ In a live agent host this 'prompt' verdict is a HARD STOP, not a"
-bold "    soft suggestion: deny / block / prompt all take the identical"
-bold "    code path (throw before the tool executes) once an agent runs"
+bold "  ↳ In a live OpenCode session this 'prompt' verdict is a HARD STOP,"
+bold "    not a soft suggestion: once the plugin gets this verdict back from"
+bold "    the pipeline above, deny/block/prompt all take the identical next"
+bold "    step on its side (throw before the tool executes) when an agent runs"
 bold "    headless with no human present to answer a prompt. Source:"
 dim  "    packages/opencode-plugin/src/plugin.ts (tool.execute.before) —"
 dim  "    see session/v04/EVIDENCE/attribution-reaudit.md for the proof."
