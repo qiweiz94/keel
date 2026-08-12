@@ -1406,6 +1406,21 @@ async function installGemini() {
     target: join(resolveHome(), '.gemini', 'hooks', 'PreToolUse'),
     note: 'Claude-Code-compatible by construction. If Gemini\'s format has drifted, run `gemini hooks migrate --from-claude`.',
   })
+  // v1 M2-B1: claim-to-evidence real reach, same Claude-Code-compatible
+  // citation as PreToolUse above. Docs confidence only — see
+  // session/v1/EVIDENCE/m2-b1-verify.md.
+  await installHostHook({
+    label: 'Gemini CLI',
+    template: 'gemini-posttooluse.sh',
+    target: join(resolveHome(), '.gemini', 'hooks', 'PostToolUse'),
+    note: 'Discharges verification/claim obligations — docs confidence, not live-verified.',
+  })
+  await installHostHook({
+    label: 'Gemini CLI',
+    template: 'gemini-stop.sh',
+    target: join(resolveHome(), '.gemini', 'hooks', 'Stop'),
+    note: 'Claim-to-evidence real reach (last_assistant_message) — docs confidence, not live-verified.',
+  })
   console.log(chalk.dim('    Gemini also has its own Policy Engine (--policy/--admin-policy);'))
   console.log(chalk.dim('    this hook is independent of it and enforces your keel rules.'))
 }
@@ -1572,6 +1587,21 @@ async function installClaudeCode() {
     console.log(chalk.green(`  ✓ Installed PostToolUse hook → ${postToolUsePath}`))
   }
 
+  // PostToolUse (second entry) — claim-to-evidence DISCHARGE (v1 M2-B1).
+  // A separate file from keel-reinject above: this is the "satisfy" half
+  // of the verification/claim obligation OpenCode's tool.execute.after
+  // already provides, not a requirements re-injection. Both run on every
+  // PostToolUse call — Claude Code's hooks.PostToolUse accepts multiple
+  // command entries per matcher.
+  const postVerifyPath = join(hooksDir, 'PostToolUse', 'keel-verify')
+  const postVerifySource = await findTemplateSource('claude-posttooluse-verify.sh')
+  if (postVerifySource) {
+    mkdirSync(join(hooksDir, 'PostToolUse'), { recursive: true })
+    copyFileSync(postVerifySource, postVerifyPath)
+    chmodSync(postVerifyPath, 0o755)
+    console.log(chalk.green(`  ✓ Installed PostToolUse verify hook → ${postVerifyPath}`))
+  }
+
   // Stop — claim-to-evidence real reach (v0.4 Phase 1): the agent's own
   // completed-turn text (`last_assistant_message`) is only visible here,
   // not on PostToolUse (which carries the tool's OWN output, not the
@@ -1617,6 +1647,10 @@ async function installClaudeCode() {
         {
           type: 'command',
           command: `.claude/hooks/PostToolUse/keel-reinject`,
+        },
+        {
+          type: 'command',
+          command: `.claude/hooks/PostToolUse/keel-verify`,
         },
       ],
     },
@@ -1764,6 +1798,22 @@ async function installCodex() {
     template: 'codex-pretooluse.sh',
     target: join(resolveHome(), '.codex', 'hooks', 'keel-enforce.sh'),
     note: 'UNVERIFIED against a live Codex CLI — register it in ~/.codex/hooks.json as a PreToolUse hook. Codex requires the hook file hash to be trusted before it runs.',
+  })
+  // v1 M2-B1: claim-to-evidence real reach + verification discharge, same
+  // citation tier and the same "UNVERIFIED against a live Codex CLI"
+  // caveat as the PreToolUse hook above — see session/v1/EVIDENCE/
+  // m2-b1-verify.md.
+  await installHostHook({
+    label: 'Codex CLI',
+    template: 'codex-posttooluse.sh',
+    target: join(resolveHome(), '.codex', 'hooks', 'keel-verify.sh'),
+    note: 'UNVERIFIED against a live Codex CLI — register it in ~/.codex/hooks.json as a PostToolUse hook.',
+  })
+  await installHostHook({
+    label: 'Codex CLI',
+    template: 'codex-stop.sh',
+    target: join(resolveHome(), '.codex', 'hooks', 'keel-claim.sh'),
+    note: 'UNVERIFIED against a live Codex CLI — register it in ~/.codex/hooks.json as a Stop hook.',
   })
 
   const cwd = process.cwd()

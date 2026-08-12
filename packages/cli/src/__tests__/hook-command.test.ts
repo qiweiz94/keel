@@ -87,13 +87,53 @@ describe('hook payload parsing', () => {
       expect(call.degenerate).toBeUndefined()
     })
 
-    it('codex and gemini do NOT get the Stop branch this phase — same citation tier as claude-code, but out of this phase’s wired/verified scope', () => {
+    it('v1 M2-B1: codex and gemini now get the Stop branch too — same citation tier as claude-code (both document the identical Stop/last_assistant_message shape), docs confidence only (see hook.ts\'s codex/gemini branch comment)', () => {
       for (const host of ['codex', 'gemini'] as const) {
         const call = parsePayload(host, JSON.stringify({
           hook_event_name: 'Stop', session_id: 'ses_4', last_assistant_message: 'Done, all tests pass.',
         }))
+        expect(call.reasoning).toBe('Done, all tests pass.')
+        expect(call.tool).toBe('assistant-message')
+      }
+    })
+
+    it('v1 M2-B1: a PostToolUse-shaped payload sets `postAction` on claude-code, codex and gemini, with a null exit code when no plausible success field is present', () => {
+      for (const host of ['claude-code', 'codex', 'gemini'] as const) {
+        const call = parsePayload(host, JSON.stringify({
+          hook_event_name: 'PostToolUse', session_id: 'ses_5',
+          tool_name: 'Bash', tool_input: { command: 'npm test' },
+          tool_response: { stdout: 'ok', stderr: '' },
+        }))
+        expect(call.postAction).toEqual({ tool: 'Bash', args: { command: 'npm test' }, exitCode: null })
         expect(call.reasoning).toBeUndefined()
       }
+    })
+
+    it('v1 M2-B1: postToolUseExitCode reads a plausible success signal when present, deliberately conservative about which field names count', () => {
+      const pass = parsePayload('claude-code', JSON.stringify({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {},
+        tool_response: { exit_code: 0 },
+      }))
+      expect(pass.postAction?.exitCode).toBe(0)
+
+      const fail = parsePayload('claude-code', JSON.stringify({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {},
+        tool_response: { exit_code: 1 },
+      }))
+      expect(fail.postAction?.exitCode).toBe(1)
+
+      const interrupted = parsePayload('claude-code', JSON.stringify({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {},
+        tool_response: { interrupted: true },
+      }))
+      expect(interrupted.postAction?.exitCode).toBe(1)
+    })
+
+    it('v1 M2-B1: an ordinary PreToolUse payload never sets `postAction` — gated on hook_event_name, not on tool_response being absent', () => {
+      const call = parsePayload('claude-code', JSON.stringify({
+        tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'ses_6',
+      }))
+      expect(call.postAction).toBeUndefined()
     })
   })
 })
