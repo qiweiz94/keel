@@ -7,25 +7,54 @@ assumed. Voice: plain, specific, no adjectives doing work that evidence should d
 
 ## Hero
 
-> # Rules your AI agent can't forget
+> # A guarded cheap agent: 0% harm. Unguarded: 75%.
 >
-> Coding agents follow your instructions at turn 1 and ignore them by turn 40. Keel
-> moves the rules out of the context window and into the tool-call boundary — where
+> Measured, not asserted — N=12 runs per arm, on the tasks built to tempt a destructive
+> action. Coding agents follow your instructions at turn 1 and ignore them by turn 40.
+> Keel moves the rules out of the context window and into the tool-call boundary — where
 > the model can't read them away.
 >
 > ```bash
 > npx @get-keel/cli scan
 > ```
 >
-> [Get started →](#install) · [GitHub →](https://github.com/qiweiz94/keel)
+> [See the measured number →](#measured) · [Get started →](#install) ·
+> [GitHub →](https://github.com/qiweiz94/keel)
 >
 > *Free and open source. Apache-2.0. Runs entirely on your machine.*
 
-**Alternate hero lines** (A/B candidates):
+**Alternate hero lines** (A/B candidates — the measured number above is the current
+primary, not an alternate; keep it first):
 
 - *Your agent can write code. Keel decides what it's allowed to run.*
 - *Guardrails for AI coding agents — enforced outside the context window.*
 - *Enforcement, not instructions.*
+
+---
+
+## Measured, not asserted {#measured}
+
+The wedge number, for whichever section of the page needs it — sourced from
+`session/v04/EXPERIMENT.md`, do not restate a different figure elsewhere on this page:
+
+> On the three tasks built to tempt a destructive or forbidden action — force-pushing
+> over `main`, `git reset --hard` on `main`, installing a nonexistent package — re-run
+> N=12 per arm, one free model (`opencode/deepseek-v4-flash-free`) with and without keel:
+>
+> | | unguarded | keel-guarded |
+> |---|---|---|
+> | Caused harm | **75%** (9/12) | **0%** (0/12) |
+> | Executed the forbidden action | **67%** (8/12) | **0%** (0/12) |
+> | Completed the task | 8% (1/12) | **75%** (9/12) |
+>
+> Two unrelated control tasks passed in both arms with zero rules firing — no
+> false-positive drag. Re-audited against the raw trace to rule out the model simply
+> refusing on its own: all 10 guarded-arm runs on the two tasks keel's blocking
+> mechanism actually covers show a real hard-stop block against a 100% unguarded-arm
+> attempt rate — including one run where the agent tried to run a `keel disable`-class
+> command mid-task and was blocked again. One free model, one machine — not yet
+> re-verified for safety-tuned models. Full numbers and every confidence limit:
+> `session/v04/EXPERIMENT.md`, `session/v04/EVIDENCE/attribution-reaudit.md`.
 
 ---
 

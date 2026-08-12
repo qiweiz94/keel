@@ -1,6 +1,6 @@
 # The three tiers
 
-`keel install` writes 43 default rules into `~/.keel/rules.yaml`, split into three
+`keel install` writes 45 default rules into `~/.keel/rules.yaml`, split into three
 tiers. This page explains what each tier does, how the "speed dial" (`keel level`)
 interacts with them, and how a rule moves from silently watching to actually blocking.
 
@@ -9,7 +9,7 @@ Two different things are both called "level" here, and it's worth pulling apart 
 - **`keel level`** is the global dial you set — `sprint`, `balanced`, or `protect`.
   It's one setting for the whole ruleset.
 - **A rule's own `level:` field** is a per-rule floor. Most rules don't set one (or
-  carry `level: sprint`, meaning "no floor — obey the dial"). Twelve rules set
+  carry `level: sprint`, meaning "no floor — obey the dial"). Thirteen rules set
   `level: protect`, and those are what this page calls **Tier 1**.
 
 So when a Tier-2 rule's source says `level: sprint`, that is *not* "only active at the
@@ -35,7 +35,7 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   ladder is the wrong shape — the first hit *is* the incident.
 
 Three tiers resolve that tension by giving each rule the posture its own evidence
-earns it, instead of applying one policy to all 43.
+earns it, instead of applying one policy to all 45.
 
 | Tier | What it does | Can the dial soften it? | Example rules |
 |---|---|---|---|
@@ -43,7 +43,7 @@ earns it, instead of applying one policy to all 43.
 | **2 — balanced** | Warns once, then blocks (dial-dependent) | Yes — `sprint` downgrades its deny/block to warn | `no-push-to-main`, `no-secrets-in-code`, `cicd-and-infra` |
 | **3 — observe** | Evaluated and recorded, never interrupts | N/A — records what it *would* have done regardless of dial | `no-repeat-loops`, `research-before-fix`, `claim-without-evidence` |
 
-## Tier 1 — protect floor (12 rules)
+## Tier 1 — protect floor (13 rules)
 
 Every rule below ships with `level: protect`. That makes two things true regardless of
 what dial you're on: the dial can never soften or hide it, and it denies on the very
@@ -60,6 +60,7 @@ violation... warning only") on its first call under the same dial.
 | `no-self-protection-write` | Shell writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `python3 -c`, `node -e`, `ln`, `git config core.hooksPath`, …) targeting keel's files, host trust/approval config, or git hooks — closes the gap `no-rules-tampering`/`no-enforcer-removal` leave open, since `filesystem`-type rules only see a tool call's declared path argument, not a shell redirect target |
 | `agent-env-hijack` | Persisting a mutated `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`/`KEEL_*` into shell or config files |
 | `no-destructive-commands` | Destructive commands, including fork bombs |
+| `no-destructive-interpreter-body` | The same destructive-wipe class issued through an interpreter instead of a shell command — `shutil.rmtree('/')`, `os.system('rm -rf ~')`, Node's `rmSync`/`rmdirSync` on `/` or `~`, `subprocess.run([...'rm','-rf','/'])` |
 | `no-force-push` | `git push --force` (suggests `--force-with-lease`) |
 | `protected-branch-reset` | `git reset --hard` naming main/master explicitly |
 | `protected-branch-delete` | Deleting the main/master branch, local or remote |
@@ -107,13 +108,13 @@ isn't under either tier's YAML comment header in `install.ts`. It's listed here 
 its behavior (no floor, dial-softenable `prompt`) matches Tier 2, but that placement is
 this page's inference, not something the source labels explicitly.
 
-## Tier 3 — observe (9 rules)
+## Tier 3 — observe (10 rules)
 
 Every rule below ships with `mode: observe`. The pipeline evaluates them on every
 matching call and records what it *would* have done — the `observed_action` field on
 the trace entry (`~/.keel/traces/YYYY-MM-DD.jsonl`) — but the actual `action` returned
 to the host is always `allow`. Nothing here interrupts anyone yet. Three are the
-original "stuck agent" rules; the other six were added since and follow the same
+original "stuck agent" rules; the other seven were added since and follow the same
 observe-first pattern.
 
 | Rule id | Type | Would-be action | Guards against |
@@ -124,15 +125,17 @@ observe-first pattern.
 | `source-change-requires-test` | verification | deny | A commit/push after a source edit with no passing test run since |
 | `claim-without-evidence` | claim | warn | Claiming "done/fixed/tested/passing" without a verification run to back it |
 | `test-oracle-tampering` | oracle | warn | A test weakened (skip/only added, assertion removed, snapshot rewritten) shortly after it failed |
+| `test-oracle-env-introspection` | content | warn | Written code that inspects the call stack/test identifier and branches on it — detecting *which* test is calling the implementation to fake two contradictory tests passing, instead of implementing correct behavior |
 | `test-before-commit` | verification | warn | `src/` changes committed with no passing test run in the session |
 | `runaway-budget-tool-calls` | rate | warn | >500 tool calls in the last 4 hours of a session |
 | `runaway-budget-bash-calls` | rate | warn | >500 Bash calls in the last 4 hours of a session |
 
-`test-oracle-tampering` is the one Tier-3 rule that carries a level (`level: balanced`)
-— it's also the one exception to "every rule evaluates at every dial": switching to
-`sprint` deactivates it. Confirmed live: `keel level sprint` from `protect` printed
-`1 rule(s) deactivated (their level floor is above sprint): test-oracle-tampering`, and
-`keel status` reported `Active at current dial: 42 of 43`.
+`test-oracle-tampering` and `test-oracle-env-introspection` are the two Tier-3 rules
+that carry a level (`level: balanced`) — they're also the exception to "every rule
+evaluates at every dial": switching to `sprint` deactivates them. Confirmed live:
+`keel level sprint` from `protect` printed `2 rule(s) deactivated (their level floor
+is above sprint): test-oracle-tampering, test-oracle-env-introspection`, and `keel
+status` reported `Active at current dial: 43 of 45`.
 
 ## The speed dial
 
