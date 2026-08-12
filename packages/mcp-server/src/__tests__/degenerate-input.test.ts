@@ -38,18 +38,29 @@ import { fileURLToPath } from 'node:url'
  * index.ts directly, which would trigger its top-level `startStdioServer()`
  * side effect (a live `process.stdin.on('data', ...)` listener) outside a
  * real subprocess boundary.
+ *
+ * Isolation: HOME and cwd are BOTH pinned to a unique mkdtemp dir per case.
+ * `PolicyEngine.audit()` writes a signed receipt/audit trail through
+ * `createReceipt()` (packages/core/src/receipts.ts) on every blocked call —
+ * every case here blocks — and that write lands under `homedir()` AND
+ * `process.cwd()`. Without pinning both, a first pass of this file wrote
+ * real receipts/audit logs into this repo's own `packages/mcp-server/.keel/`
+ * (gitignored, so not a commit risk, but real state pollution outside
+ * /tmp scratch all the same — caught in review and fixed here). Never the
+ * real ~/.keel.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SERVER = join(HERE, '..', '..', 'dist', 'index.js')
 
 const dirs: string[] = []
-function policyHome(yaml: string): string {
+/** A fresh temp dir doubling as HOME/cwd, with a `.keel.yaml` policy inside it. */
+function policyHome(yaml: string): { dir: string; policyPath: string } {
   const dir = mkdtempSync(join(tmpdir(), 'keel-mcp-degenerate-'))
   const policyPath = join(dir, '.keel.yaml')
   writeFileSync(policyPath, yaml, 'utf-8')
   dirs.push(dir)
-  return policyPath
+  return { dir, policyPath }
 }
 
 afterAll(() => {
@@ -57,10 +68,14 @@ afterAll(() => {
 })
 
 /** Sends one JSON-RPC request over stdin and reads the one response line back. */
-function callServer(policyPath: string, request: Record<string, unknown>): Promise<{ raw: string; parsed: any }> {
+function callServer(
+  home: { dir: string; policyPath: string },
+  request: Record<string, unknown>,
+): Promise<{ raw: string; parsed: any }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SERVER], {
-      env: { ...process.env, KEEL_POLICY: policyPath },
+      cwd: home.dir,
+      env: { ...process.env, HOME: home.dir, KEEL_POLICY: home.policyPath },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -152,7 +167,8 @@ describe('mcp-server: degenerate input fails closed (v1 M1r-2)', () => {
     const home = policyHome(POLICY_YAML)
     const result = await new Promise<any>((resolve, reject) => {
       const child = spawn(process.execPath, [SERVER], {
-        env: { ...process.env, KEEL_POLICY: home },
+        cwd: home.dir,
+        env: { ...process.env, HOME: home.dir, KEEL_POLICY: home.policyPath },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       let stdout = ''

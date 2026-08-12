@@ -147,7 +147,16 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       // alongside either shape (cursor.com/docs/hooks).
       const sessionId = stringField(body.conversation_id)
       if (typeof body.command === 'string') {
-        return { tool: 'bash', args: { command: body.command }, sessionId }
+        // Unlike every other host, Cursor's shell shape carries the tool
+        // identity AND the argument in the SAME field: `command` is not an
+        // optional argument on an otherwise-identified call, it IS the
+        // call. A blank command here is the same consequence as (a2)'s
+        // empty stdin — lost data, not a legitimate zero-arg tool — so it
+        // gets the same degenerate treatment rather than the "missing args
+        // is fine" line drawn for TOOL_INPUT elsewhere in this file.
+        return body.command.length > 0
+          ? { tool: 'bash', args: { command: body.command }, sessionId }
+          : { tool: 'bash', args: { command: body.command }, sessionId, degenerate: true }
       }
       const identity = toolField(body.tool_name)
       return { ...identity, args: asRecord(body.tool_input), sessionId }

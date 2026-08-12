@@ -396,6 +396,13 @@ rules:
       expect(payload.userMessage).toContain('Keel could not evaluate')
     })
 
+    it('cursor: `command` present but BLANK — the literal "empty string" case from the locked decision\'s own list. Unlike every other host, command IS the identity here, not an optional argument alongside one — so a blank command is lost data, not a legitimate zero-arg call, and denies the same way', () => {
+      const r = runHook('cursor', home, JSON.stringify({ command: '' }))
+      const payload = JSON.parse(r.stdout)
+      expect(payload.permission).toBe('deny')
+      expect(payload.userMessage).toContain('Keel could not evaluate')
+    })
+
     it('cline: preToolUse.toolName absent — cancels via the HOOK_CONTROL envelope', () => {
       const r = runHook('cline', home, JSON.stringify({ preToolUse: { parameters: { command: 'rm -rf /' } } }))
       const control = JSON.parse(r.stdout.replace(/^HOOK_CONTROL\t/, '').trim())

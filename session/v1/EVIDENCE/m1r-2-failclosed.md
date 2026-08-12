@@ -182,6 +182,86 @@ verified this stayed in sync.
 | opencode `tool.execute.before` | `input.tool` missing | throws `[Keel] fail-closed-degenerate-input` | `load-test.js` |
 | opencode `tool.execute.before` | `input.tool === ''` | throws `[Keel] fail-closed-degenerate-input` | `load-test.js` |
 | opencode `tool.execute.before` | real, unmatched `input.tool` | **allows** (unaffected) | `load-test.js` |
+| `keel hook cursor` (shell shape) | `command: ''` (blank, not absent) | deny (stdout envelope) | `fail-closed.test.ts` (a5) |
+
+## Second-pass review — 3 gaps found and closed before this lane's evidence
+## could be trusted
+
+A self-review against the locked decision's own literal wording surfaced
+three issues the first pass missed. All three are fixed and reverified
+below; none required reopening the design.
+
+### A. `hook_event_name`-gated events — verified against the INSTALLER, not just the templates
+
+The Stop carve-out (item 2 above) rests on the claim that `keel hook
+claude-code` only ever receives a PreToolUse-shaped or Stop-shaped payload
+in practice. The first pass supported that by reading the three
+`claude-*.sh` templates. That's necessary but not sufficient — the
+templates only prove what a script WOULD do if installed; `install.ts` is
+the authority on what actually gets registered into `.claude/settings.json`.
+Verified directly:
+
+```
+grep -n "hooks.PreToolUse\|hooks.PostToolUse\|hooks.Stop" packages/cli/src/commands/install.ts
+```
+
+confirms `installClaudeCode()` (`install.ts:1533`) registers exactly three
+events: `PreToolUse` → `keel-enforce` (→ `keel hook claude-code`),
+`PostToolUse` → `keel-reinject` (a standalone script that does NOT call
+`keel hook` at all — it only echoes `~/.keel/requirements.md` and exits 0),
+and `Stop` → `keel-claim` (→ `keel hook claude-code`). No other Claude Code
+event (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreCompact`,
+`Notification`, `SubagentStop`) is registered against `keel hook` anywhere
+in `install.ts`. The same check across `installGemini`, `installCline`,
+`installCodex`, `installCursor` confirms each wires PreToolUse (or, for
+Cursor, `beforeShellExecution`/`beforeMCPExecution`) only — no Stop
+equivalent exists for any host but claude-code. The Stop carve-out is
+therefore complete: it is the only non-PreToolUse-shaped event this binary
+ever receives from a real install.
+
+### B. Cursor's blank `command: ''` — the literal first item on the locked decision's own list
+
+Missed in the first pass, caught on review: cursor is the one host where
+the tool identity and the argument are the SAME field. Every other host
+has a separate identity field (`tool_name`, `tool`, `preToolUse.toolName`)
+that can be checked independently of its arguments, which is why an absent
+argument (e.g. `TOOL_INPUT`) is legitimate — the identity is still intact.
+Cursor's shell shape has no separate identity: `command` IS the call. A
+blank `command` is the same consequence as (a2)'s empty stdin (data lost),
+not (a4)'s legitimately-absent-argument case, and reads "empty string" —
+literally the first item in the locked decision's own enumeration.
+Verified broken pre-fix (`echo '{"command":""}' | keel hook cursor` →
+`{"permission":"allow"}`, exit 0) and fixed in `parsePayload`'s cursor
+branch: an empty `command` now sets `degenerate: true` while still
+correctly identifying `tool: 'bash'`. New test in `fail-closed.test.ts`
+(a5).
+
+### C. The mcp-server test itself wrote real state outside /tmp scratch
+
+`PolicyEngine.audit()` calls `createReceipt()`
+(`packages/core/src/receipts.ts`) on every blocked call, which writes under
+BOTH `homedir()` (`~/.keel/receipt-key.json`,
+`~/.keel/receipts-archive/`) and `process.cwd()`
+(`<cwd>/.keel/receipts/receipts.log`, `<cwd>/.keel/audit/audit.log`). The
+new `degenerate-input.test.ts` spawned the real server binary with
+`KEEL_POLICY` set but neither `HOME` nor `cwd` overridden — every case in
+that file blocks, so every run wrote real audit/receipt files. Confirmed:
+`packages/mcp-server/.keel/receipts/receipts.log` and
+`packages/mcp-server/.keel/audit/audit.log` existed post-run with entries
+timestamped to this session (`rule_name: "fail-closed-degenerate-input"`,
+matching this lane's own new guard). Both paths are covered by
+`**/.keel/receipts/` and `**/.keel/audit/` in `.gitignore` — never a commit
+risk — but it is real filesystem state outside the `/tmp` scratch this
+lane's hard constraints require, and it did not match the isolation
+convention every other test file in this suite documents and follows
+(`fail-closed.test.ts`'s own header: "Every temp HOME/KEEL_STATE_DIR below
+is unique per test file (mkdtemp) — never the real ~/.keel."). The real
+`~/.keel` itself was never touched (confirmed:
+`~/.keel/receipt-key.json`'s mtime is unchanged from before this session).
+Fixed: `callServer()` now spawns with both `cwd` and `HOME` pinned to the
+same per-case `mkdtempSync` directory as the policy file already used.
+Reverified clean: `find packages/mcp-server/.keel -type f` returns nothing
+after a full rerun.
 
 ## Hard constraints honored
 
@@ -195,6 +275,9 @@ verified this stayed in sync.
   uses `mkdtempSync(tmpdir())` for `HOME`/`KEEL_STATE_DIR`/policy files.
 
 ## Final verification — full `npm test`, raw output
+
+Captured AFTER the second-pass fixes above (A/B/C) — this is the state of
+the delivered commits, not an intermediate one.
 
 ```
 > keel-monorepo@0.4.0 test
@@ -210,7 +293,7 @@ verified this stayed in sync.
 > vitest run
 
  Test Files  41 passed (41)
-      Tests  760 passed | 15 skipped (775)
+      Tests  761 passed | 15 skipped (776)
 
 > @get-keel/mcp-server@0.4.0 test
 > vitest run --passWithNoTests
@@ -288,7 +371,7 @@ PASS  OpenCode auto-load probe
 All checks passed
 ```
 
-Net test delta: core 557→560 (+3), cli 751→760 (+9), mcp-server 0→6 (new
+Net test delta: core 557→560 (+3), cli 751→761 (+10), mcp-server 0→6 (new
 package test infra), opencode-plugin 57→60 (+3). No regressions in any
 package.
 
@@ -296,10 +379,12 @@ package.
 
 - `packages/cli/src/commands/hook.ts` — `ParsedCall.degenerate`,
   `toolField()`, degenerate checks in `parsePayload`/`hookVerdict`,
-  `safeJson()` corrupt-tracking, Stop-event gating fix.
+  `safeJson()` corrupt-tracking, Stop-event gating fix, cursor blank-`command`
+  fix (second pass, item B).
 - `packages/cli/src/__tests__/fail-closed.test.ts` — (a2)/(a3) flipped
   from documented-allow to proven-block, new (a4) absent-vs-corrupt line
-  test, new (a5) missing-identity sweep across 4 hosts.
+  test, new (a5) missing-identity sweep across 4 hosts plus cursor's blank
+  `command` (second pass, item B).
 - `packages/cli/src/__tests__/hook-command.test.ts` — updated
   `degenerate: true` assertions, rewrote the Stop-without-message
   expectation.
@@ -310,7 +395,8 @@ package.
 - `packages/core/src/__tests__/policy-engine.test.ts` — new test group.
 - `packages/mcp-server/src/index.ts` — `keel_check` action/target guard.
 - `packages/mcp-server/src/__tests__/degenerate-input.test.ts` — new file,
-  first test coverage this package has ever had.
+  first test coverage this package has ever had; `HOME`/`cwd` isolation
+  fixed on review (second pass, item C).
 - `packages/mcp-server/tsconfig.json` — added the `__tests__` exclude
   `packages/core/tsconfig.json` already had.
 - `packages/opencode-plugin/src/plugin.ts` — `input.tool` degenerate guard
