@@ -1387,7 +1387,29 @@ export default {
         surfaceWarn('post-edit-syntax', findings.join(' · '), input?.sessionID, false)
       }
       const args = output?.args || {}
-      const enforceInput = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)
+      // v1 M1r-2 — locked product decision: degenerate input fails closed,
+      // never a silent allow. opencode types `input` as `any`; a missing/
+      // blank `input.tool` means there is no tool identity to evaluate a
+      // rule against — structurally the same gap `keel hook <host>` had
+      // (hook.ts's ParsedCall.degenerate) for the out-of-process hosts.
+      // Falling back to the literal string 'unknown' and evaluating anyway
+      // would just match no rule in pipeline.ts (which has no `tool ===
+      // 'unknown'` special case) and pass through silently — proven via
+      // `record()`'s own trace: nothing downstream could tell the identity
+      // was lost. Blocked here, before pipeline.evaluate() ever runs.
+      if (typeof input?.tool !== 'string' || input.tool === '') {
+        const message = 'No tool identity on this call — keel could not evaluate it, so it was blocked.'
+        record({
+          session_id: input?.sessionID, turn_number: 0, tool: input?.tool,
+          args: projectAuditArgs(args), rule_id: 'fail-closed-degenerate-input',
+          action: 'deny', message, hook: 'tool.execute.before',
+        })
+        try {
+          createReceipt('opencode-plugin', 'unknown', projectAuditArgs(args), 'deny', 'fail-closed-degenerate-input', 'keel', input?.sessionID)
+        } catch {}
+        throw new Error(`[Keel] fail-closed-degenerate-input: ${message}`)
+      }
+      const enforceInput = toEnforceInput(input.tool, args, input, level, directory)
       const result = await pipeline.evaluate(enforceInput)
       // observed_matches carries EVERY `mode: observe` rule that matched
       // this call (pipeline.ts's evaluate()/violation() — a matched

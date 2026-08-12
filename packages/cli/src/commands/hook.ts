@@ -61,6 +61,32 @@ export interface ParsedCall {
    * verified scope (see phase-1.md's host matrix).
    */
   reasoning?: string
+  /**
+   * Set when the payload could not supply the ONE field every rule needs to
+   * match against: a real tool identity (or, for the env-var TOOL_INPUT
+   * path, real argument data — present-but-corrupt is data LOSS, distinct
+   * from legitimately absent). `hookVerdict` fails closed on this rather
+   * than letting `tool: 'unknown', args: {}` sail through evaluation and
+   * match nothing (v1 M1r-2 — locked product decision: degenerate input
+   * fails closed, never a silent allow). Never set for a value that is
+   * merely missing where absence is normal (e.g. no session_id, no
+   * tool_input for a zero-arg tool) — only for JSON that failed to parse,
+   * a non-object/array top level, or a missing/blank/non-string tool
+   * identity field.
+   */
+  degenerate?: boolean
+}
+
+/**
+ * A missing/blank/non-string tool name is not "a call to a tool literally
+ * named unknown" — it is proof the payload lost the one field every rule
+ * pattern matches against. Every host branch below runs identity through
+ * this so the degenerate flag is set uniformly, not reinvented per host.
+ */
+function toolField(value: unknown): { tool: string; degenerate?: true } {
+  return typeof value === 'string' && value.length > 0
+    ? { tool: value }
+    : { tool: 'unknown', degenerate: true }
 }
 
 /** What the host must do, expressed uniformly so tests can assert it. */
@@ -91,14 +117,18 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
   try {
     body = asRecord(JSON.parse(raw))
   } catch {
-    return { tool: 'unknown', args: {} }
+    // Empty stdin hits this same catch (JSON.parse('') throws) — a
+    // misconfigured hook that never sends a payload is indistinguishable
+    // from a genuinely garbled one, and both must fail closed the same way.
+    return { tool: 'unknown', args: {}, degenerate: true }
   }
 
   switch (host) {
     case 'cline': {
       const pre = asRecord(body.preToolUse)
+      const identity = toolField(pre.toolName)
       return {
-        tool: typeof pre.toolName === 'string' ? pre.toolName : 'unknown',
+        ...identity,
         args: asRecord(pre.parameters),
         // No published or installed-type source confirms cline's session
         // field name (docs/integrations.md rates cline "types", but that
@@ -119,11 +149,8 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       if (typeof body.command === 'string') {
         return { tool: 'bash', args: { command: body.command }, sessionId }
       }
-      return {
-        tool: typeof body.tool_name === 'string' ? body.tool_name : 'unknown',
-        args: asRecord(body.tool_input),
-        sessionId,
-      }
+      const identity = toolField(body.tool_name)
+      return { ...identity, args: asRecord(body.tool_input), sessionId }
     }
     case 'claude-code': {
       // A Stop-shaped payload (`hook_event_name: "Stop"`) carries no
@@ -134,19 +161,29 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       // the citations). Checked by hook_event_name specifically, not by
       // absence of tool_name, so a malformed/truncated PreToolUse payload
       // never gets misread as a Stop event.
-      if (body.hook_event_name === 'Stop' && typeof body.last_assistant_message === 'string') {
+      //
+      // Gated on hook_event_name alone now — NOT also on
+      // last_assistant_message being a valid string. A Stop payload with a
+      // missing/null message used to fall through to the ordinary
+      // tool-call branch below, where the absent tool_name produced
+      // `tool: 'unknown'`; that was harmless only because 'unknown' never
+      // matched a real rule. Once a missing tool identity fails closed
+      // (this lane), that same fall-through would have turned a Stop event
+      // — required by its own contract to NEVER block (see hookVerdict's
+      // header comment: exit 2 on Stop is a self-inflicted loop) — into an
+      // exit-2 block. Routing every Stop-shaped payload through the
+      // claim-reach path (reasoning: '' when the message is missing/not a
+      // string) keeps it on the structurally-can't-block channel instead.
+      if (body.hook_event_name === 'Stop') {
         return {
           tool: 'assistant-message',
           args: {},
           sessionId: stringField(body.session_id),
-          reasoning: body.last_assistant_message,
+          reasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : '',
         }
       }
-      return {
-        tool: typeof body.tool_name === 'string' ? body.tool_name : 'unknown',
-        args: asRecord(body.tool_input),
-        sessionId: stringField(body.session_id),
-      }
+      const identity = toolField(body.tool_name)
+      return { ...identity, args: asRecord(body.tool_input), sessionId: stringField(body.session_id) }
     }
     case 'codex':
     case 'gemini': {
@@ -158,19 +195,13 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       // same hookSpecificOutput-shaped hook contract). Neither host's Stop
       // shape is wired here (see ParsedCall.reasoning's comment) — this
       // branch stays PreToolUse-only for both.
-      return {
-        tool: typeof body.tool_name === 'string' ? body.tool_name : 'unknown',
-        args: asRecord(body.tool_input),
-        sessionId: stringField(body.session_id),
-      }
+      const identity = toolField(body.tool_name)
+      return { ...identity, args: asRecord(body.tool_input), sessionId: stringField(body.session_id) }
     }
     case 'generic':
     default: {
-      return {
-        tool: typeof body.tool === 'string' ? body.tool : 'unknown',
-        args: asRecord(body.args),
-        sessionId: stringField(body.session_id),
-      }
+      const identity = toolField(body.tool)
+      return { ...identity, args: asRecord(body.args), sessionId: stringField(body.session_id) }
     }
   }
 }
@@ -409,11 +440,25 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
     // installed hook (session/transcripts/claude-code-force-push.txt) was
     // written against; env vars simply never populate against a real host,
     // so readStdin() is what fires in practice.
+    // Tracks whether TOOL_INPUT was PRESENT but failed to parse — data loss,
+    // not the legitimate "no arguments" case. safeJson() used to swallow a
+    // truncated TOOL_INPUT into `{}` with no trace of the truncation: a real
+    // tool name plus empty args looks exactly like a legitimate zero-arg
+    // call, so nothing downstream could tell the arguments were dropped
+    // (v1 M1r-2's (a3) gap). An ABSENT TOOL_INPUT stays non-degenerate —
+    // many real tools take no arguments — only a present-but-unparseable
+    // value marks the call.
+    let toolInputCorrupt = false
     const raw = (host === 'claude-code' || host === 'gemini') && process.env.TOOL_NAME
-      ? JSON.stringify({ tool_name: process.env.TOOL_NAME, tool_input: safeJson(process.env.TOOL_INPUT) })
+      ? (() => {
+          const parsed = safeJson(process.env.TOOL_INPUT)
+          toolInputCorrupt = parsed.corrupt
+          return JSON.stringify({ tool_name: process.env.TOOL_NAME, tool_input: parsed.value })
+        })()
       : await readStdin()
 
     const call = parsePayload(host, raw)
+    if (toolInputCorrupt) call.degenerate = true
 
     // Claim-reach event (v0.4 Phase 1 — today only a Claude Code `Stop`
     // payload sets `call.reasoning`, see ParsedCall's comment). This is
@@ -436,6 +481,18 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
         // Fail open, on purpose — see the comment above.
       }
       return { blocked: false, exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    // Degenerate payload (empty stdin, unparseable JSON, a missing/blank
+    // tool identity, or truncated TOOL_INPUT data) — the input needed to
+    // evaluate this call was lost, so it must never reach `evaluateToolCall`
+    // and silently match nothing. Render exactly the same fail-closed
+    // verdict as an internal keel failure (`result === null` below):
+    // per-host tested already (cursor's deny envelope, cline's cancel,
+    // exit 2 for the exit-code hosts) and honest — keel genuinely could not
+    // evaluate a call it cannot identify.
+    if (call.degenerate) {
+      return renderVerdict(host, null)
     }
 
     let result: EnforceResult | null = null
@@ -489,7 +546,7 @@ export async function hookCommand(hostArg: string, options: { cwd?: string; leve
   process.exit(verdict.exitCode)
 }
 
-function safeJson(text: string | undefined): Record<string, unknown> {
-  if (!text) return {}
-  try { return asRecord(JSON.parse(text)) } catch { return {} }
+function safeJson(text: string | undefined): { value: Record<string, unknown>; corrupt: boolean } {
+  if (!text) return { value: {}, corrupt: false }
+  try { return { value: asRecord(JSON.parse(text)), corrupt: false } } catch { return { value: {}, corrupt: true } }
 }

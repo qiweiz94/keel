@@ -160,4 +160,33 @@ describePosixShim('Claude Code Stop hook (claim-to-evidence real reach)', () => 
     const result = runPreToolUse(ctx, 'Bash', { command: 'ls -la' })
     expect(result.code).toBe(0)
   })
+
+  it('v1 M1r-2 regression guard: a Stop payload with last_assistant_message MISSING still exits 0, never the exit-2 block a fall-through to the PreToolUse branch would now produce', () => {
+    // Before this lane, hook_event_name === 'Stop' was gated on the
+    // message ALSO being a valid string; a malformed Stop payload (message
+    // missing/null) fell through to the ordinary tool-call branch, where an
+    // absent tool_name produced `tool: 'unknown'` — harmless only because
+    // 'unknown' matched no real rule. Once a missing tool identity fails
+    // closed (degenerate-input sweep), that same fall-through would have
+    // turned a Stop event into an exit-2 block: Stop's own contract says it
+    // can NEVER block (see hookVerdict's header comment — exit 2 on Stop
+    // tells Claude Code to keep going with keel's own failure as the
+    // reason, a self-inflicted loop). parsePayload now gates on
+    // hook_event_name alone, so every Stop-shaped payload — valid message
+    // or not — stays on the structurally-can't-block claim path.
+    const ctx = freshProject(CLAIM_RULES)
+    dirsToClean.push(ctx.testDir, ctx.tempHome)
+    const payload = JSON.stringify({ hook_event_name: 'Stop', session_id: 'ses-no-message' })
+    let result: { stdout: string; code: number }
+    try {
+      const stdout = execSync(`bash "${STOP_HOOK}"`, {
+        encoding: 'utf-8', cwd: ctx.testDir, timeout: 10000, input: payload,
+        env: { ...process.env, HOME: ctx.tempHome, PATH: `${ctx.shimPath}:${process.env.PATH}` },
+      })
+      result = { stdout, code: 0 }
+    } catch (err: any) {
+      result = { stdout: err.stdout || '', code: err.status ?? 1 }
+    }
+    expect(result.code).toBe(0)
+  })
 })

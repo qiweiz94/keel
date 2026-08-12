@@ -11009,7 +11009,25 @@ var plugin_default = {
         surfaceWarn("post-edit-syntax", findings.join(" \xB7 "), input?.sessionID, false);
       }
       const args = output?.args || {};
-      const enforceInput = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
+      if (typeof input?.tool !== "string" || input.tool === "") {
+        const message = "No tool identity on this call \u2014 keel could not evaluate it, so it was blocked.";
+        record({
+          session_id: input?.sessionID,
+          turn_number: 0,
+          tool: input?.tool,
+          args: projectAuditArgs(args),
+          rule_id: "fail-closed-degenerate-input",
+          action: "deny",
+          message,
+          hook: "tool.execute.before"
+        });
+        try {
+          createReceipt("opencode-plugin", "unknown", projectAuditArgs(args), "deny", "fail-closed-degenerate-input", "keel", input?.sessionID);
+        } catch {
+        }
+        throw new Error(`[Keel] fail-closed-degenerate-input: ${message}`);
+      }
+      const enforceInput = toEnforceInput(input.tool, args, input, level, directory);
       const result = await pipeline.evaluate(enforceInput);
       record({ session_id: input?.sessionID, turn_number: enforceInput.turn_number, tool: input?.tool, args: projectAuditArgs(args), rule_id: result.rule_id, action: result.action, observed_action: result.observed_action, observed_matches: result.observed_matches, message: result.message, hook: "tool.execute.before" });
       if (result.action === "warn" && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID);

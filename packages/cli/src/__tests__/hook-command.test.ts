@@ -40,10 +40,14 @@ describe('hook payload parsing', () => {
       .toEqual({ tool: 'bash', args: { command: 'ls' } })
   })
 
-  it('degrades to an unknown tool rather than throwing on junk', () => {
+  it('degrades to an unknown tool rather than throwing on junk, and flags it degenerate so the caller fails closed instead of silently evaluating it', () => {
     // A hook that crashes is a hook the host skips — a silent fail-open.
-    expect(parsePayload('cline', 'not json at all')).toEqual({ tool: 'unknown', args: {} })
-    expect(parsePayload('cursor', '')).toEqual({ tool: 'unknown', args: {} })
+    // Degrading to a well-formed `unknown`-tool call avoids that crash, but
+    // (v1 M1r-2) that call must still be marked so hookVerdict blocks it
+    // rather than letting it fall through pipeline evaluation matching no
+    // rule — see ParsedCall.degenerate's comment in hook.ts.
+    expect(parsePayload('cline', 'not json at all')).toEqual({ tool: 'unknown', args: {}, degenerate: true })
+    expect(parsePayload('cursor', '')).toEqual({ tool: 'unknown', args: {}, degenerate: true })
   })
 
   describe('claude-code Stop payload (v0.4 Phase 1 — claim-to-evidence real reach)', () => {
@@ -65,11 +69,22 @@ describe('hook payload parsing', () => {
       expect(call.tool).toBe('Bash')
     })
 
-    it('a payload claiming hook_event_name: Stop but missing last_assistant_message falls back to the ordinary tool-call shape rather than fabricating an empty claim', () => {
+    it('a payload claiming hook_event_name: Stop but missing last_assistant_message STAYS on the claim-reach path with empty reasoning, rather than falling back to the ordinary tool-call shape', () => {
+      // Pre-v1-M1r-2 this fell back to the ordinary tool-call branch, where
+      // an absent tool_name produced `tool: 'unknown'` — harmless only
+      // because 'unknown' never matched a real rule. Once a missing tool
+      // identity fails closed (this lane), that fall-through would have
+      // turned a Stop event into an exit-2 block — violating Stop's own
+      // contract that it can NEVER block a self-inflicted-loop risk (see
+      // hookVerdict's header comment). Every Stop-shaped payload — valid
+      // message or not — now stays on the structurally-can't-block
+      // claim-reach path instead.
       const call = parsePayload('claude-code', JSON.stringify({
         hook_event_name: 'Stop', session_id: 'ses_3',
       }))
-      expect(call.reasoning).toBeUndefined()
+      expect(call.reasoning).toBe('')
+      expect(call.tool).toBe('assistant-message')
+      expect(call.degenerate).toBeUndefined()
     })
 
     it('codex and gemini do NOT get the Stop branch this phase — same citation tier as claude-code, but out of this phase’s wired/verified scope', () => {
