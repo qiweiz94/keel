@@ -28,6 +28,15 @@ rules:
     message: "Complex change without a stated root cause."
 `
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/
+// warn/redirect verdict calls `overrideStore.consume()` — which touches
+// real ~/.keel (mkdir + lock file) even when no override is ever armed.
+// An in-memory stub keeps this suite's redirect scenarios off the real
+// filesystem (see match-surface.test.ts's `noopOverrideStore`, same fix,
+// same root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 function makePipeline(yaml: string, ledger: ProblemLedger): EnforcementPipeline {
   const rules = parseRulesContent(yaml, '/tmp/diagnosis-rules.yaml')
   return new EnforcementPipeline({
@@ -37,6 +46,7 @@ function makePipeline(yaml: string, ledger: ProblemLedger): EnforcementPipeline 
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     ledger,
     ruleHierarchy: { global: rules, user: null, project: null, local: null },
     ruleVersion: 1,

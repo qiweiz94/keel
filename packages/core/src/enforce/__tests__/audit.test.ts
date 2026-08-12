@@ -105,6 +105,12 @@ rules:
     mode: observe
     message: "Destructive delete."
 `, '/tmp/test-rules.md')
+      // mode: observe keeps result.action at 'allow', so this rule never
+      // reaches the deny/warn branch that calls overrideStore.consume() —
+      // but EnforcementPipeline still defaults `overrideStore` to a real
+      // FileRuleOverrideStore rooted at homedir() when none is supplied.
+      // An in-memory stub keeps this test off the real filesystem
+      // regardless (see match-surface.test.ts's `noopOverrideStore`).
       const pipeline = new EnforcementPipeline({
         level: 'balanced',
         context: 'local',
@@ -112,6 +118,7 @@ rules:
         contentTracker: new ContentTracker(),
         sequenceDetector: new SequenceDetector(),
         flowTracker: new FlowTracker(),
+        overrideStore: { consume: () => false, peek: () => null, list: () => ({}) },
         ruleHierarchy: { global: null, user: null, project: rules, local: null },
         ruleVersion: 1,
         allowedFixTransforms: true,

@@ -25,6 +25,14 @@ import type { RuleContext } from '../../types.js'
 // (pathMatches is private) using filesystem-type rules shaped exactly like
 // the ones DEFAULT_RULES_YAML ships in packages/cli/src/commands/install.ts.
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. An in-memory
+// stub keeps this suite's deny scenarios off the real filesystem (see
+// match-surface.test.ts's `noopOverrideStore`, same fix, same root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 function buildPipeline(yaml: string): EnforcementPipeline {
   const rules = parseRulesContent(yaml, '/tmp/glob-matching-rules.yaml')
   return new EnforcementPipeline({
@@ -34,6 +42,7 @@ function buildPipeline(yaml: string): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     ruleHierarchy: { global: null, user: null, project: rules, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
