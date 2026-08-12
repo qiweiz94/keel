@@ -418,15 +418,42 @@ $ env -i PATH="$PATH" HOME=/tmp/keel-virgin3-nonexistent \
     keel controls are user-owned - run keel disable|allow|level|install|rules --append ...
 ```
 
-Both verdicts render correctly. Separately, the exact command tested was
-changed from `git push --force origin main` to `git push origin main` — the
-former was hitting a *different* rule (`no-force-push`, a Tier 1 floor with
-higher match priority) than the one `attribution-reaudit.md` actually
-documents firing in the real experiment (`no-push-to-main`), because in the
-real task setup the agent's plain first push already gets rejected
-non-fast-forward before it would ever type `--force` (see
-`attribution-reaudit.md`'s "A second nuance on destructive-force-push"). The
-plain-push form reproduces the documented rule exactly.
+Both verdicts render correctly. Also re-verified running the script from the
+repo root itself (not just an isolated scratch dir) — the repo dogfoods keel on
+itself and has its own `.keel/rules.yaml`, which merges with the isolated
+`$DEMO_HOME`'s global rules at evaluation time, so this was a real thing to
+check, not a formality:
+
+```
+$ cd /Users/nanoclaw/code/keel-v1-m5-release && bash scripts/demo/keel-disable-trace.sh 2>&1 | grep -E "prompt|DENY|ALLOWED"
+  prompt (Pushing directly to a protected branch — approval required. ...)
+  ✗ DENY by rule "keel-control-gate"
+```
+
+Identical verdicts to the fully-stripped run above — the script is
+invocation-independent.
+
+Separately, the exact command tested was changed from
+`git push --force origin main` to `git push origin main` — the former was
+hitting a *different* rule (`no-force-push`, a Tier 1 floor with higher match
+priority) than the one `attribution-reaudit.md` actually documents firing in
+the real experiment (`no-push-to-main`), because in the real task setup the
+agent's plain first push already gets rejected non-fast-forward before it
+would ever type `--force` (see `attribution-reaudit.md`'s "A second nuance on
+destructive-force-push"). The plain-push form reproduces the documented rule
+exactly, at every cwd tested.
+
+One more gap closed: `installOpenCodePlugin`'s "plugin source not found" path
+returns without a non-zero exit, so the script's `set -e` would not have
+caught that failure — a broken template lookup would have silently degraded
+back to the exact "ALLOWED, nothing to show" no-op this whole fix exists to
+prevent. Added an explicit post-install check
+(`[ ! -f "$DEMO_HOME/.keel/rules.yaml" ]`) that exits 1 with a clear message
+instead of proceeding silently. Verified the check doesn't false-positive on
+the real working path (rules.yaml is present, script proceeds normally) and
+does fire correctly when tested against the failure shape directly (a stub
+reproducing "install returns 0, produces nothing" exits 1 with the message,
+as intended).
 
 `scripts/demo/HUMAN-CHECKLIST.md` documents the one manual step (recording the
 actual GIF) this lane deliberately does not perform.

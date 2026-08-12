@@ -61,6 +61,17 @@ DEMO_HOME="$(mktemp -d)"
 trap 'rm -rf "$DEMO_HOME"' EXIT
 export HOME="$DEMO_HOME"
 keel install --opencode >/dev/null 2>&1
+# `installOpenCodePlugin`'s "plugin source not found" path returns without a
+# non-zero exit, so `set -e` above would NOT catch that failure — the demo
+# would silently fall back to the exact "ALLOWED, nothing to show" no-op this
+# setup step exists to prevent. Verify the rules file this whole script
+# depends on actually landed before going any further.
+if [ ! -f "$DEMO_HOME/.keel/rules.yaml" ]; then
+  echo "Error: demo setup failed — keel install did not produce a rules.yaml,"
+  echo "so nothing below would actually be blocked. Run 'npm run build' in"
+  echo "the repo first, or check that @get-keel/cli's templates are intact."
+  exit 1
+fi
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 dim() { printf '\033[2m%s\033[0m\n' "$1"; }
