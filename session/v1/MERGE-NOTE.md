@@ -1,3 +1,7 @@
+> **Authoritative human checklist: `session/v1/HUMAN-CHECKLIST.md`.** The
+> human decisions in this note (publish, CHANGELOG skim, the two stale console
+> messages, demo GIF) are folded into that consolidated file.
+
 # Merge note — v1-m5-release → main (not performed)
 
 This branch (`v1-m5-release`, based on `v0.4-thesis` with all v1 correctness/

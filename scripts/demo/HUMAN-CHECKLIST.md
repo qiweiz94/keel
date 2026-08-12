@@ -1,3 +1,6 @@
+> **Authoritative index: `session/v1/HUMAN-CHECKLIST.md`** (§6). This file is
+> retained as the detailed demo-GIF recording appendix.
+
 # Demo — human checklist
 
 `keel-disable-trace.sh` is fully scripted and runs unattended (it's a dry-run
