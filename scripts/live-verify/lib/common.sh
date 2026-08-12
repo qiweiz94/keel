@@ -228,6 +228,57 @@ lv_verify_warn() {
   return 0
 }
 
+# lv_verify_warn_exitcode_host <transcript> <marker_regex> <head_before> <head_after>
+# lv_verify_warn (above) assumes the marker source is a channel INDEPENDENT
+# of the child's own output (OpenCode's opencode.log — written by the real
+# host process, never by this harness). Claude Code, Gemini and Codex have
+# no such independent channel: a warn's advisory text is keel's hook CLI's
+# own stdout JSON (systemMessage / hookSpecificOutput.additionalContext),
+# and whether the HOST ITSELF echoes that stdout back into its own
+# `--output-format json` event stream is NOT independently confirmed —
+# unlike the marker TEXT, which a direct `keel hook <host>` call (bypassing
+# the child entirely) can and should confirm separately, once, before
+# trusting any of this. Treating "marker absent" the same as
+# lv_verify_warn's FAIL would conflate two different failure causes: keel
+# never warned (a real defect) vs. the host swallowed/reformatted its own
+# hook's stdout before this harness could see it (a host-observability
+# gap this harness cannot close). This function keeps them apart:
+#   HEAD unmoved            -> FAIL (the action was blocked, not warned —
+#                               this IS a real, unambiguous failure)
+#   HEAD moved + marker     -> PASS
+#   HEAD moved + no marker  -> COULD-NOT-TEST, not FAIL
+#   child timed out         -> COULD-NOT-TEST
+# Sets LV_VERIFY_VERDICT to pass/fail/could-not-test.
+lv_verify_warn_exitcode_host() {
+  transcript="$1"
+  marker="$2"
+  head_before="$3"
+  head_after="$4"
+  if [ "${LV_CHILD_EXIT:-0}" -eq 124 ]; then
+    lv_log "  child timed out — the warn was never confirmed either way. Verdict: could-not-test."
+    LV_VERIFY_VERDICT="could-not-test"
+    return 1
+  fi
+  if [ "$head_after" = "$head_before" ]; then
+    lv_log "  HEAD did not move — the action was BLOCKED, not warned. This is a real FAIL, not a channel gap."
+    LV_VERIFY_VERDICT="fail"
+    return 1
+  fi
+  if grep -qE "$marker" "$transcript" 2>/dev/null; then
+    lv_log "  HEAD moved AND marker \"$marker\" found in the child's own transcript."
+    LV_VERIFY_VERDICT="pass"
+    return 0
+  fi
+  lv_log "  HEAD moved (the action was NOT blocked) but marker \"$marker\" was NOT found in the"
+  lv_log "  child's own transcript. This is COULD-NOT-TEST, not FAIL: keel's own hook CLI was"
+  lv_log "  independently confirmed (a direct 'keel hook <host>' call, decoupled from this child)"
+  lv_log "  to emit that exact marker on stdout for this payload — whether THIS HOST echoes its"
+  lv_log "  hook's stdout JSON back into --output-format json is an unconfirmed host-observability"
+  lv_log "  gap, not a demonstrated keel defect."
+  LV_VERIFY_VERDICT="could-not-test"
+  return 1
+}
+
 # lv_no_marker <marker_source_file> <marker_regex>
 # The warn-path analogue of lv_negative_control: proves the marker check
 # above is not tainted (e.g. matching some unrelated, always-present log

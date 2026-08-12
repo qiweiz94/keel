@@ -11,15 +11,27 @@
 #
 # Unlike OpenCode, Claude Code (an exit-code host) has no independent
 # host-side log this harness can read out-of-band — the JSON envelope
-# keel's OWN `keel hook claude-code` subprocess writes IS the channel.
-# What this script can still prove live, and does: the pipeline actually
-# round-trips through a REAL running `claude -p` session making its OWN
-# decision to run the triggering command — not a canned payload fed
-# straight to `keel hook` — and the child's own transcript (its captured
-# stdout, not text this script wrote) carries the marker, while the
-# commit still went through. That is meaningfully more than the existing
-# unit tests (hook-command.test.ts's warn-visibility suite), which never
-# invoke a live host at all.
+# keel's OWN `keel hook claude-code` subprocess writes IS the channel, and
+# whether Claude Code itself echoes that stdout back into its own
+# `--output-format json` event stream is NOT independently confirmed (this
+# is a host-observability question, not something a script run against
+# this repo can settle by reading source). What IS confirmed, separately,
+# auth-free, before trusting anything below: a direct
+# `echo '<payload>' | keel hook claude-code` for this exact `--no-verify`
+# command emits `{"systemMessage":"[keel:no-verify-bypass] ...",
+# "hookSpecificOutput":{"additionalContext":"[keel:no-verify-bypass] ..."}}`
+# on stdout, exit 0 — keel's OWN half of this is right regardless of what
+# follows. See lv_verify_warn_exitcode_host in common.sh for how that
+# distinction is kept out of the verdict: HEAD-unmoved is a real FAIL
+# (blocked, not warned); HEAD-moved-with-no-marker is COULD-NOT-TEST, not
+# FAIL (host echo-back unconfirmed, not a demonstrated keel defect).
+#
+# What this script CAN still prove live if the marker DOES appear: the
+# pipeline round-trips through a REAL running `claude -p` session making
+# its OWN decision to run the triggering command — not a canned payload
+# fed straight to `keel hook` — which is meaningfully more than the
+# existing unit tests (hook-command.test.ts's warn-visibility suite),
+# which never invoke a live host at all.
 #
 # Rule under test: no-verify-bypass (install.ts) — action: warn, mode:
 # warn (a PERMANENT warn, never escalates), matching `git commit ...
@@ -145,19 +157,13 @@ HEAD_AFTER="$(git -C "$LV_WORK" rev-parse HEAD)"
 } >> "$TRANSCRIPT"
 echo
 
-echo "-- verifying (1/2): the commit actually happened — warn must NOT block --"
-if [ "$HEAD_AFTER" = "$HEAD_BEFORE" ]; then
-  echo "SIDE EFFECT: FAIL — HEAD did not move; --no-verify commit was blocked (or never attempted), not warned"
-  FAIL=1
-else
-  echo "SIDE EFFECT: PASS — HEAD moved $HEAD_BEFORE -> $HEAD_AFTER; the commit went through"
-fi
-
-echo "-- verifying (2/2): the warn marker is in the child's own captured output --"
-if lv_verify_warn "$TRANSCRIPT" '\[keel:no-verify-bypass\]'; then
+echo "-- verifying: HEAD-moved (not blocked) AND marker in the child's own transcript --"
+echo "   (HEAD-unmoved = real FAIL; HEAD-moved-but-no-marker = COULD-NOT-TEST, not FAIL —"
+echo "   see lv_verify_warn_exitcode_host in common.sh for why those are kept apart)"
+if lv_verify_warn_exitcode_host "$TRANSCRIPT" '\[keel:no-verify-bypass\]' "$HEAD_BEFORE" "$HEAD_AFTER"; then
   echo "WARN CHANNEL: PASS"
-elif [ "$LV_VERIFY_VERDICT" = "timeout" ]; then
-  echo "WARN CHANNEL: COULD-NOT-TEST — child timed out"
+elif [ "$LV_VERIFY_VERDICT" = "could-not-test" ]; then
+  echo "WARN CHANNEL: COULD-NOT-TEST"
   TIMED_OUT=1
 else
   echo "WARN CHANNEL: FAIL — see $TRANSCRIPT"
@@ -171,7 +177,7 @@ if [ "$FAIL" -ne 0 ]; then
   echo "== CLAUDE CODE WARN: FAIL =="
   exit 1
 elif [ "$TIMED_OUT" -ne 0 ]; then
-  echo "== CLAUDE CODE WARN: COULD-NOT-TEST (child timed out — re-run) =="
+  echo "== CLAUDE CODE WARN: COULD-NOT-TEST (host echo-back of its own hook's stdout into --output-format json is unconfirmed here — re-run, or capture a raw transcript by hand) =="
   exit 2
 else
   echo "== CLAUDE CODE WARN: PASS (side-effect-not-blocked=yes, warn-surfaced-live=yes) =="

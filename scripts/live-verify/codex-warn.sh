@@ -3,11 +3,17 @@
 #
 # codex.sh (Wave-1) already live-proves BLOCK when Codex is installable
 # and authenticated. This is the WARN mirror — same reasoning and rule
-# under test (no-verify-bypass) as claude-warn.sh/gemini-warn.sh: Codex
-# converged on the same hookSpecificOutput-shaped contract per hook.ts's
-# own comment, and is likewise an exit-code host with no independent log
-# this harness reads out-of-band (see claude-warn.sh's header for why the
-# child's own transcript is the channel here).
+# under test (no-verify-bypass) as claude-warn.sh/gemini-warn.sh. Codex's
+# warn envelope is `{"systemMessage": "..."}` only (hookSpecificOutput is
+# deliberately omitted — see hook.ts's comment on the external
+# permissionDecision:'allow' rejection report, #249), still carrying the
+# same `[keel:no-verify-bypass]` marker text. Codex is likewise an
+# exit-code host with no independent log this harness reads out-of-band —
+# see claude-warn.sh's header in full for why a marker-absent-but-
+# HEAD-moved result is COULD-NOT-TEST rather than FAIL (Codex's own
+# echo-back of its hook's stdout into its own output is not independently
+# confirmed), and for the auth-free `keel hook codex` check that
+# validates keel's own half of this separately from host auth.
 #
 # Per the binding constraint this attempts exactly ONE throwaway install
 # (npm install --prefix into a scratch /tmp dir, never -g, never touching
@@ -146,19 +152,13 @@ HEAD_AFTER="$(git -C "$LV_WORK" rev-parse HEAD)"
 } >> "$TRANSCRIPT"
 echo
 
-echo "-- verifying (1/2): the commit actually happened — warn must NOT block --"
-if [ "$HEAD_AFTER" = "$HEAD_BEFORE" ]; then
-  echo "SIDE EFFECT: FAIL — HEAD did not move; --no-verify commit was blocked (or never attempted), not warned"
-  FAIL=1
-else
-  echo "SIDE EFFECT: PASS — HEAD moved $HEAD_BEFORE -> $HEAD_AFTER; the commit went through"
-fi
-
-echo "-- verifying (2/2): the warn marker is in the child's own captured output --"
-if lv_verify_warn "$TRANSCRIPT" '\[keel:no-verify-bypass\]'; then
+echo "-- verifying: HEAD-moved (not blocked) AND marker in the child's own transcript --"
+echo "   (HEAD-unmoved = real FAIL; HEAD-moved-but-no-marker = COULD-NOT-TEST, not FAIL —"
+echo "   see lv_verify_warn_exitcode_host in common.sh for why those are kept apart)"
+if lv_verify_warn_exitcode_host "$TRANSCRIPT" '\[keel:no-verify-bypass\]' "$HEAD_BEFORE" "$HEAD_AFTER"; then
   echo "WARN CHANNEL: PASS"
-elif [ "$LV_VERIFY_VERDICT" = "timeout" ]; then
-  echo "WARN CHANNEL: COULD-NOT-TEST — child timed out"
+elif [ "$LV_VERIFY_VERDICT" = "could-not-test" ]; then
+  echo "WARN CHANNEL: COULD-NOT-TEST"
   TIMED_OUT=1
 else
   echo "WARN CHANNEL: FAIL — see $TRANSCRIPT"
@@ -173,7 +173,7 @@ if [ "$FAIL" -ne 0 ]; then
   echo "== CODEX CLI WARN: FAIL =="
   exit 1
 elif [ "$TIMED_OUT" -ne 0 ]; then
-  echo "== CODEX CLI WARN: COULD-NOT-TEST (child timed out — re-run) =="
+  echo "== CODEX CLI WARN: COULD-NOT-TEST (host echo-back of its own hook's stdout into its own output is unconfirmed here — re-run, or capture a raw transcript by hand) =="
   exit 2
 else
   echo "== CODEX CLI WARN: PASS (side-effect-not-blocked=yes, warn-surfaced-live=yes) =="

@@ -266,13 +266,24 @@ next live-verified (as Claude Code and OpenCode already were, for the
 Full write-up: `session/v1/EVIDENCE/m4-hostbreadth.md`. This lane added automated
 WARN scripts (`scripts/live-verify/{claude,gemini,codex,opencode}-warn.sh`,
 mirroring the pre-existing block scripts) and re-ran every existing block script
-plus the new warn ones in this environment. **Items 1–2 above for Claude Code and
-Gemini's warn path are now superseded** — do not hand-drive the steps they
-describe; just get real auth working and re-run `claude-warn.sh` / `gemini-warn.sh`
-/ `codex-warn.sh` verbatim, the same way item 7/8/6 already say to do for the block
-scripts. They implement the exact two-sided assertion (side effect happened AND the
-warn marker is in the child's own captured output) with a negative control baked
-in.
+plus the new warn ones in this environment. **Run these first, before hand-driving
+items 1–2 above for Claude Code and Gemini's warn path** — but their warn-marker
+assertion for the three exit-code hosts (Claude, Gemini, Codex) is UNVALIDATED
+against a real authenticated run, because auth was blocked in every environment
+this lane had access to. Specifically: keel's own hook CLI was confirmed, auth-free,
+to emit the correct `[keel:no-verify-bypass]` marker on stdout for all three hosts'
+payload shapes (`echo '<payload>' | keel hook claude-code|gemini|codex` — see
+`session/v1/EVIDENCE/m4-hostbreadth.md` §3 for the exact captured output); what is
+NOT confirmed is whether each host echoes that stdout back into its own
+`--output-format json` (or equivalent) event stream where this harness can see it.
+The scripts already account for this — a HEAD-moved-but-marker-absent result reports
+COULD-NOT-TEST, not FAIL, with the reason printed inline (see
+`lv_verify_warn_exitcode_host` in `scripts/live-verify/lib/common.sh`) — but if a
+real authenticated run DOES report FAIL or COULD-NOT-TEST, do not read that as
+"keel's warn is broken" without first checking whether the marker made it into the
+raw transcript at all; it may be a host-observability gap this harness cannot close,
+not a keel defect. If it fails and doesn't recover with a manual look at the raw
+transcript, hand-drive items 1–2 above to see the message directly.
 
 **OpenCode WARN is now live-verified**, not manual — `opencode-warn.sh` passed in
 this environment: `session/transcripts/opencode-warn-no-verify-bypass.txt` plus the

@@ -5,10 +5,13 @@
 # This is the WARN mirror — same reasoning and same rule under test
 # (no-verify-bypass) as claude-warn.sh, since hook.ts reads Gemini through
 # the identical Claude-Code-shaped payload/response contract (`gemini
-# hooks migrate --from-claude`). See claude-warn.sh's header comment for
-# why the child's own transcript is the channel this can observe (Gemini,
-# like Claude Code, is an exit-code host with no independent log this
-# harness reads out-of-band the way OpenCode's opencode.log allows).
+# hooks migrate --from-claude`). See claude-warn.sh's header comment in
+# full for why the child's own transcript is the channel this observes,
+# why a marker-absent-but-HEAD-moved result is COULD-NOT-TEST rather than
+# FAIL (Gemini's own echo-back of its hook's stdout into
+# `--output-format json` is not independently confirmed), and for the
+# auth-free `keel hook gemini` check (same payload, same marker) that
+# validates keel's own half of this separately from host auth.
 #
 # Auth honesty (checked FIRST, same empirical finding as gemini.sh): the
 # real OAuth session under ~/.gemini is file-based and off-limits under
@@ -123,19 +126,13 @@ HEAD_AFTER="$(git -C "$LV_WORK" rev-parse HEAD)"
 } >> "$TRANSCRIPT"
 echo
 
-echo "-- verifying (1/2): the commit actually happened — warn must NOT block --"
-if [ "$HEAD_AFTER" = "$HEAD_BEFORE" ]; then
-  echo "SIDE EFFECT: FAIL — HEAD did not move; --no-verify commit was blocked (or never attempted), not warned"
-  FAIL=1
-else
-  echo "SIDE EFFECT: PASS — HEAD moved $HEAD_BEFORE -> $HEAD_AFTER; the commit went through"
-fi
-
-echo "-- verifying (2/2): the warn marker is in the child's own captured output --"
-if lv_verify_warn "$TRANSCRIPT" '\[keel:no-verify-bypass\]'; then
+echo "-- verifying: HEAD-moved (not blocked) AND marker in the child's own transcript --"
+echo "   (HEAD-unmoved = real FAIL; HEAD-moved-but-no-marker = COULD-NOT-TEST, not FAIL —"
+echo "   see lv_verify_warn_exitcode_host in common.sh for why those are kept apart)"
+if lv_verify_warn_exitcode_host "$TRANSCRIPT" '\[keel:no-verify-bypass\]' "$HEAD_BEFORE" "$HEAD_AFTER"; then
   echo "WARN CHANNEL: PASS"
-elif [ "$LV_VERIFY_VERDICT" = "timeout" ]; then
-  echo "WARN CHANNEL: COULD-NOT-TEST — child timed out"
+elif [ "$LV_VERIFY_VERDICT" = "could-not-test" ]; then
+  echo "WARN CHANNEL: COULD-NOT-TEST"
   TIMED_OUT=1
 else
   echo "WARN CHANNEL: FAIL — see $TRANSCRIPT"
@@ -149,7 +146,7 @@ if [ "$FAIL" -ne 0 ]; then
   echo "== GEMINI CLI WARN: FAIL =="
   exit 1
 elif [ "$TIMED_OUT" -ne 0 ]; then
-  echo "== GEMINI CLI WARN: COULD-NOT-TEST (child timed out — re-run) =="
+  echo "== GEMINI CLI WARN: COULD-NOT-TEST (host echo-back of its own hook's stdout into --output-format json is unconfirmed here — re-run, or capture a raw transcript by hand) =="
   exit 2
 else
   echo "== GEMINI CLI WARN: PASS (side-effect-not-blocked=yes, warn-surfaced-live=yes) =="

@@ -140,6 +140,57 @@ writes to `session/transcripts/claude-force-push.txt`, but the cited evidence fi
 is `claude-code-force-push.txt` — a pre-existing filename mismatch, left as-is per
 the constraint against touching things blind.
 
+**Self-review caught a real gap in the original verdict logic, fixed before
+committing further.** The first draft of these three scripts asserted the warn
+marker directly against the child's `--output-format json` transcript with a
+binary pass/fail, the same shape as the block scripts' `lv_verify_block`. That's
+wrong for warn specifically: a warn's advisory text is keel's hook CLI's own stdout
+JSON (`systemMessage`/`hookSpecificOutput.additionalContext`), and whether the HOST
+ITSELF echoes that stdout back into its own `--output-format json` event stream is
+a host-observability question this repo has never answered — unlike the block
+path, where exit-2 + stderr is independently known to surface as
+`permission_denials` (visible in the committed `claude-code-force-push.txt`). A
+plain FAIL on marker-absent would have conflated "keel never warned" (a real
+defect) with "the host swallowed its own hook's stdout before this harness could
+see it" (a harness limitation) — exactly the ambiguity that makes a result
+untrustworthy.
+
+Fixed two ways, both before any of these three scripts had produced a false
+verdict against a real auth session (auth was blocked in every attempt, so no
+result was ever reported either way beyond AUTH-BLOCKED):
+
+1. **Validated keel's own half, auth-free.** `echo '<no-verify payload>' | keel hook
+   claude-code|codex|gemini` (isolated `HOME`/`KEEL_STATE_DIR`, real built CLI, no
+   host, no auth needed) for all three hosts. All three emit the exact
+   `[keel:no-verify-bypass]` marker on stdout with exit 0, in each host's own
+   documented envelope shape (Claude/Gemini: `hookSpecificOutput.additionalContext`
+   + `systemMessage`; Codex: `systemMessage` only, matching its deliberate
+   `hookSpecificOutput` omission). This is the keel-side half of the claim, settled
+   independently of whatever the three warn scripts report.
+2. **Added `lv_verify_warn_exitcode_host`** (`scripts/live-verify/lib/common.sh`) —
+   a three-valued verdict specific to hosts with no independent out-of-band
+   channel: HEAD-unmoved is a real FAIL (the action was blocked, not warned — an
+   unambiguous defect); HEAD-moved-with-marker is PASS; HEAD-moved-without-marker
+   is COULD-NOT-TEST, not FAIL, with the reasoning printed inline at the point of
+   the result. `claude-warn.sh`/`gemini-warn.sh`/`codex-warn.sh` now use this
+   instead of the OpenCode-shaped `lv_verify_warn`. OpenCode's own warn script is
+   unaffected — it has the independent `opencode.log` channel, so its FAIL still
+   means FAIL.
+
+All four scripts re-syntax-checked (`sh -n`) and re-run after this fix:
+`opencode-warn.sh` still PASSes live; `claude-warn.sh`/`gemini-warn.sh` still
+correctly exit 2 (AUTH-BLOCKED) before ever reaching the new verdict logic.
+`codex-warn.sh` was syntax-checked but not re-run a second time (its throwaway
+`npm install` step is the slow part and the verdict-logic change is identical to
+the other two, already exercised live via `opencode-warn.sh`'s codepath and
+auth-free via the `keel hook codex` check above).
+
+`session/HUMAN-CHECKLIST.md`'s M4 section was worded to match: it tells a human
+to run these scripts first, but explicitly warns that a FAIL or COULD-NOT-TEST
+from the three exit-code hosts needs a manual look at the raw transcript before
+being read as "keel's warn is broken" — it may be the unconfirmed host-echo gap,
+not a keel defect.
+
 ---
 
 ## 4. Cursor warn-key casing fix
