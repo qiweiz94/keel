@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel scan` reports which agent hosts are installed and unprotected. If
@@ -61,8 +62,8 @@ describe('keel install must not make keel scan hallucinate a host', () => {
       // test's business. What must never happen is `installed: true`.
       expect(host?.installed ?? false).toBe(false)
     } finally {
-      rmSync(home, { recursive: true, force: true })
-      rmSync(project, { recursive: true, force: true })
+      rmSafe(home)
+      rmSafe(project)
     }
   })
 })

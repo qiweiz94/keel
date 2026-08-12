@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { execSync } from 'node:child_process'
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 import { PolicyEngine as CorePolicyEngine } from '@get-keel/core'
 import { PolicyEngine as CliPolicyEngine } from '../policy-engine.js'
@@ -86,7 +87,7 @@ describe('policy-absence semantics are the same at every entry point', () => {
       delete process.env.KEEL_CLI_ENTRY
       if (previousHome === undefined) delete process.env.HOME
       else process.env.HOME = previousHome
-      rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true })
+      rmSafe(home); rmSafe(project)
       try {
         const { loadDaemonState } = await import('../commands/daemon.js')
         const state = loadDaemonState()

@@ -1,8 +1,9 @@
 import { describe, expect, it, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { StateManager } from '../state-manager.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * STATE_DIR must be read PER CONSTRUCTION, not once at module import —
@@ -24,7 +25,7 @@ afterEach(() => {
   delete process.env.KEEL_STATE_DIR
   while (tmpDirs.length) {
     const dir = tmpDirs.pop()!
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   }
 })
 

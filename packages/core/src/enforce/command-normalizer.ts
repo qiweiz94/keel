@@ -113,7 +113,12 @@ function interpreterFlags(kind: InterpreterKind): string[] {
 }
 
 function basename(path: string): string {
-  const parts = path.split('/')
+  // The command text this reads argv[0] from is shell-command text, not a
+  // resolved filesystem path, so it is not run through path-normalize.ts's
+  // canonicalizer — but a Windows-style invocation (`C:\Python\python.exe`,
+  // a cmd.exe/PowerShell interpreter path) still uses `\`, so both
+  // separators are split on here.
+  const parts = path.split(/[/\\]/)
   return parts[parts.length - 1] || path
 }
 

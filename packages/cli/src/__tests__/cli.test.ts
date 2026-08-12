@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 // Resolve from this file's own location, NOT process.cwd(). `npm test` runs
 // vitest with cwd=packages/cli, where a cwd-relative path resolves to
@@ -56,8 +57,8 @@ describe('CLI Integration', () => {
   })
 
   afterAll(() => {
-    rmSync(testDir, { recursive: true, force: true })
-    rmSync(tempHome, { recursive: true, force: true })
+    rmSafe(testDir)
+    rmSafe(tempHome)
   })
 
   it('shows version', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,6 +17,7 @@ import {
 import type {
   EnforceInput, EnforceResult, KeelRule, PipelineConfig, ProtectionLevel, RuleContext, RuleHierarchy,
 } from '@get-keel/core'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Extension point for tests/rules/<rule-id>/{must-block,must-allow}.yaml
@@ -318,5 +319,5 @@ beforeAll(() => {
   scratchRoot = mkdtempSync(join(tmpdir(), 'keel-proposal-fixture-scratch-'))
 })
 afterAll(() => {
-  rmSync(scratchRoot, { recursive: true, force: true })
+  rmSafe(scratchRoot)
 })

@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ProblemLedger, problemKey } from '../problem-ledger.js'
 import { commandFingerprint } from '../command-fingerprint.js'
 import { runWorkersConcurrently } from './fixtures/spawn-worker.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Cross-process safety for ProblemLedger's read-modify-write cycle
@@ -31,7 +32,7 @@ function freshLedgerPath(): string {
 afterEach(() => {
   while (tmpDirs.length) {
     const dir = tmpDirs.pop()!
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   }
 })
 

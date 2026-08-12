@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { parseRulesContent } from '@get-keel/core'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel install --all` must install ALL of them.
@@ -35,8 +36,8 @@ describe('keel install --all', () => {
     })
   })
   afterAll(() => {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(project, { recursive: true, force: true })
+    rmSafe(home)
+    rmSafe(project)
   })
 
   const homeFile = (...p: string[]) => join(home, ...p)

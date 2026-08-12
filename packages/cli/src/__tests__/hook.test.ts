@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { writeFileSync, mkdirSync, chmodSync, mkdtempSync, rmSync } from 'node:fs'
+import { writeFileSync, mkdirSync, chmodSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Contract test for the canonical Claude Code PreToolUse hook
@@ -103,8 +104,8 @@ describePosixShim('Claude Code PreToolUse hook', () => {
   })
 
   afterAll(() => {
-    rmSync(testDir, { recursive: true, force: true })
-    rmSync(tempHome, { recursive: true, force: true })
+    rmSafe(testDir)
+    rmSafe(tempHome)
   })
 
   it('warns on the first destructive command, denies the repeat', () => {

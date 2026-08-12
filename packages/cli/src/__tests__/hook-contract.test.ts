@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * The exit-code contract every shell hook depends on.
@@ -67,7 +68,7 @@ describe('keel evaluate exit-code contract', () => {
     mkdirSync(join(home, '.keel'), { recursive: true })
     writeFileSync(join(home, '.keel', 'rules.yaml'), RULES)
   })
-  afterAll(() => rmSync(home, { recursive: true, force: true }))
+  afterAll(() => rmSafe(home))
 
   it('exits non-zero for a deny verdict', () => {
     const { status, out } = evaluate('rm -rf /')
@@ -139,8 +140,8 @@ rules:
 `)
   })
   afterAll(() => {
-    rmSync(shim, { recursive: true, force: true })
-    rmSync(hookHome, { recursive: true, force: true })
+    rmSafe(shim)
+    rmSafe(hookHome)
   })
 
   const run = (script: string, payload: string, env: Record<string, string> = {}) =>

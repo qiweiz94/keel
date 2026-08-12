@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,7 @@ import { OracleTracker } from '../oracle-tracker.js'
 import { detectWeakening } from '../oracle-signatures.js'
 import { parseRulesContent, validateRules } from '../rule-parser.js'
 import type { EnforceInput, KeelRule } from '../../types.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Wave-2 Lane 4 — test-oracle tampering detector.
@@ -192,7 +193,7 @@ describe('OracleTracker: recency window', () => {
     afterEach(() => {
       if (priorStateDir === undefined) delete process.env.KEEL_STATE_DIR
       else process.env.KEEL_STATE_DIR = priorStateDir
-      rmSync(stateDir, { recursive: true, force: true })
+      rmSafe(stateDir)
     })
 
     it('survives a brand-new tracker + StateManager instance (simulates a fresh process per hook call)', () => {
@@ -294,8 +295,8 @@ describe('oracle pipeline: session/proposals/test-oracle-tampering.yaml through 
   afterEach(() => {
     if (priorStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = priorStateDir
-    rmSync(stateDir, { recursive: true, force: true })
-    rmSync(scratchRoot, { recursive: true, force: true })
+    rmSafe(stateDir)
+    rmSafe(scratchRoot)
   })
 
   it('ships mode: observe, action: warn — never blocks by construction', () => {
@@ -534,7 +535,7 @@ describe('session/proposals/tests-read-only.yaml (opt-in, never a default)', () 
     } finally {
       if (prior === undefined) delete process.env.KEEL_STATE_DIR
       else process.env.KEEL_STATE_DIR = prior
-      rmSync(stateDir, { recursive: true, force: true })
+      rmSafe(stateDir)
     }
   })
 })

@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { allowCommand, isRuleOverridden } from '../commands/allow.js'
 import { AuditLog } from '../core/enforce/audit.js'
 import { DEFAULT_RULES_YAML } from '../commands/install.js'
 import type { EnforceResult } from '../core/types.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel allow <id> --session` — scopes an override to "the current agent
@@ -88,9 +89,9 @@ afterEach(() => {
   if (previousTracesDir === undefined) delete process.env.KEEL_TRACES_DIR
   else process.env.KEEL_TRACES_DIR = previousTracesDir
   process.exitCode = 0
-  rmSync(overridesDir, { recursive: true, force: true })
-  rmSync(tracesDir, { recursive: true, force: true })
-  rmSync(cwd, { recursive: true, force: true })
+  rmSafe(overridesDir)
+  rmSafe(tracesDir)
+  rmSafe(cwd)
 })
 
 describe('keel allow --session', () => {

@@ -197,3 +197,44 @@ rules:
     expect(nested.action).toBe('deny')
   })
 })
+
+// Regression coverage for the negated-path OR/AND bug fixed alongside the
+// Windows path-normalization rewrite: a `paths` list mixing a positive
+// pattern with a `!`-negated one used to run through a single `.some()`,
+// so it matched on EITHER "matches the positive" OR "isn't matched by the
+// negative" — the latter is true for almost every value, so the negation
+// inverted into matching nearly everything instead of excluding a subtree
+// from the positive match. No shipped rule uses this shape today (see
+// install.ts's no-outside-project-writes rationale, which explicitly
+// rejected a negated-allowlist pattern), but the single-entry
+// `["!/src/*"]` case in pipeline.test.ts alone doesn't exercise the
+// mixed-list interaction, so it stayed broken silently.
+describe('pathMatches — negated path combined with a positive pattern', () => {
+  const TS_EXCEPT_NODE_MODULES = `version: 1
+level: protect
+rules:
+  - id: ts-outside-node-modules
+    type: filesystem
+    paths: ["**/*.ts", "!**/node_modules/**"]
+    action: deny
+    message: "no .ts writes outside node_modules"
+`
+
+  it('fires for a .ts file outside node_modules (positive matches, negative does not exclude it)', async () => {
+    const pipeline = buildPipeline(TS_EXCEPT_NODE_MODULES)
+    const result = await pipeline.evaluate(writeInput('/repo/src/a.ts', 's19'))
+    expect(result.action).toBe('deny')
+  })
+
+  it('does NOT fire for a .ts file inside node_modules (negative excludes despite the positive matching)', async () => {
+    const pipeline = buildPipeline(TS_EXCEPT_NODE_MODULES)
+    const result = await pipeline.evaluate(writeInput('/repo/node_modules/pkg/a.ts', 's20'))
+    expect(result.action).toBe('allow')
+  })
+
+  it('does NOT fire for a non-.ts file outside node_modules (proves positives are still REQUIRED, not short-circuited to true by the negated entry\'s presence)', async () => {
+    const pipeline = buildPipeline(TS_EXCEPT_NODE_MODULES)
+    const result = await pipeline.evaluate(writeInput('/repo/src/a.md', 's21'))
+    expect(result.action).toBe('allow')
+  })
+})

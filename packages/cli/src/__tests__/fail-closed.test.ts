@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { hookVerdict } from '../commands/hook.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * v0.4 M1/A3 — the fail-closed audit lane.
@@ -68,7 +69,7 @@ function newHome(rulesYaml?: string): string {
 }
 
 afterAll(() => {
-  for (const h of homes) rmSync(h, { recursive: true, force: true })
+  for (const h of homes) rmSafe(h)
 })
 
 describePosixShim('fail-closed: real built CLI, real error paths', () => {
@@ -185,7 +186,7 @@ rules:
     level: sprint
     message: "blocked despite corrupt state dir"
 `)
-    afterAll(() => rmSync(home, { recursive: true, force: true }))
+    afterAll(() => rmSafe(home))
     const stateDirAsFile = join(home, 'not-a-directory')
     beforeAll(() => writeFileSync(stateDirAsFile, 'this is a file, not a directory', 'utf-8'))
 
@@ -369,7 +370,7 @@ describe('fail-closed: stdin stream error (deterministic, in-process)', () => {
     process.env.HOME = home
     process.env.KEEL_STATE_DIR = join(home, '.keel', 'state')
   })
-  afterAll(() => rmSync(home, { recursive: true, force: true }))
+  afterAll(() => rmSafe(home))
 
   function withThrowingStdin<T>(run: () => Promise<T>): Promise<T> {
     const real = Object.getOwnPropertyDescriptor(process, 'stdin')!

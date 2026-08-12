@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { resolveMaybeRelative, normalizeForMatch } from './path-normalize.js'
 import type {
   KeelRule, EnforceInput, EnforceResult, EnforcementAction,
   ProtectionLevel, RuleContext, CacheEntry, AuditEntry, ResearchDirective, RedirectDirective,
@@ -654,12 +655,29 @@ export class EnforcementPipeline {
       if (rule.type === 'filesystem' && rule.paths && !/^read/i.test(input.tool)) {
         const args = input.args as Record<string, unknown>
         const pathStr = argPath(args)
-        const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
+        const resolvedPath = resolveMaybeRelative(pathStr, input.cwd)
         const operation = String(args.operation || '')
         const excluded = (rule.exclude || []).some(p => this.pathMatches(resolvedPath, p))
-        const pathMatched = rule.paths.some(p => p.startsWith('!')
-          ? !this.pathMatches(resolvedPath, p.slice(1))
-          : this.pathMatches(resolvedPath, p))
+        // Positives OR together (matches if ANY positive pattern matches);
+        // negations (`!pattern`) AND-exclude (excluded if it matches ANY
+        // negated pattern) — standard allow/deny-list semantics. An
+        // earlier version ran the whole list through a single `.some()`,
+        // which meant a negated entry alongside a positive one (e.g.
+        // `["**/*.ts", "!**/node_modules/**"]`) matched on EITHER "is a
+        // .ts file" OR "is outside node_modules" — the latter is true for
+        // nearly every write, so the negation inverted into matching
+        // almost everything instead of excluding node_modules from the
+        // .ts match. A paths list containing ONLY negated entries (no
+        // shipped rule does this, but the pipeline test suite does) keeps
+        // its existing meaning: matches when the value matches NONE of
+        // the negated patterns (there's no positive to require).
+        const positivePatterns = rule.paths.filter(p => !p.startsWith('!'))
+        const negatedPatterns = rule.paths.filter(p => p.startsWith('!')).map(p => p.slice(1))
+        const positiveMatched = positivePatterns.length === 0
+          ? true
+          : positivePatterns.some(p => this.pathMatches(resolvedPath, p))
+        const negatedExcluded = negatedPatterns.some(p => this.pathMatches(resolvedPath, p))
+        const pathMatched = positiveMatched && !negatedExcluded
         const operationMatched = !rule.operations?.length || rule.operations.includes(operation as any)
         if (pathMatched && operationMatched && !excluded) return this.violation(input, rule, rule.message, start, 3)
       }
@@ -896,7 +914,7 @@ export class EnforcementPipeline {
       if (deepChecks && rule.type === 'content' && rule.patterns && !/^read/i.test(input.tool)) {
         const args = input.args as Record<string, unknown>
         const pathStr = argPath(args)
-        const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
+        const resolvedPath = resolveMaybeRelative(pathStr, input.cwd)
         // apply_patch carries the new content in patchText and the target
         // path only inside `*** Add File:` markers — both are honored here.
         const patchText = String(args.patchText || '')
@@ -954,7 +972,7 @@ export class EnforcementPipeline {
         if (rule.paths && !/^read/i.test(input.tool)) {
           const args = input.args as Record<string, unknown>
           const pathStr = argPath(args)
-          const resolvedPath = pathStr && !pathStr.startsWith('/') ? resolve(input.cwd, pathStr) : pathStr
+          const resolvedPath = resolveMaybeRelative(pathStr, input.cwd)
           // NOT this.pathMatches — see oracle-glob.ts's header for the
           // pre-existing bug in that shared matcher that made it unusable
           // for a pattern like "**/*.test.*".
@@ -1332,8 +1350,20 @@ export class EnforcementPipeline {
     return this.config.stateManager?.isFirstTime(ruleId, this.lastRulesHash) ?? true
   }
 
-  private pathMatches(value: string, pattern: string): boolean {
-    const normalized = pattern
+  private pathMatches(rawValue: string, rawPattern: string): boolean {
+    // Canonicalize separators/drive-letter-case/case-fold (Windows: `\` ->
+    // `/`, UNC preserved, NTFS case-insensitivity applied) BEFORE running
+    // the glob-to-regex conversion below. That conversion — including its
+    // documented "**" + bare "*" interaction — is deliberately unchanged:
+    // see oracle-glob.ts's header for why fixing that specific bug is out
+    // of this lane's scope (every shipped filesystem rule depends on its
+    // current matching behavior; changing it needs its own ruleset-wide
+    // verification). What's fixed here is Windows path-string handling
+    // only, so `**/.env` still matches the same POSIX values it always did
+    // (normalizeForMatch is identity on posix) and now ALSO matches a real
+    // Windows argument path like `C:\repo\.env`.
+    const value = normalizeForMatch(rawValue)
+    const normalized = normalizeForMatch(rawPattern)
     // `**` matches across any number of segments; `*` matches within one
     // segment only (never crosses `/`). Only engaged for patterns that use
     // `**`, keeping the legacy prefix and includes semantics for simple

@@ -1,4 +1,5 @@
 import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync } from 'node:fs'
+import { currentFlavor, type PathFlavor } from './path-normalize.js'
 
 /**
  * file-lock — a dependency-light cross-process advisory lock built on
@@ -79,6 +80,61 @@ function makeToken(): string {
 }
 
 /**
+ * Classifies an `openSync`/`unlinkSync` error code as retryable lock
+ * CONTENTION (someone else legitimately holds or is mid-delete-of the
+ * lockfile — keep retrying) vs FATAL (a real problem backoff can't fix —
+ * give up per the fail-safe contract).
+ *
+ * On POSIX, `openSync(path, 'wx')` against an existing file always yields
+ * exactly `EEXIST` — the only contention code there. On Windows, the same
+ * call against a file another process holds open (or that Windows is
+ * mid-deleting, which the OS treats as a pending-delete state until the
+ * last handle closes) can instead yield `EBUSY` or `EPERM` — mandatory
+ * file locking means "this name is momentarily unusable" surfaces as a
+ * sharing-violation code, not always EEXIST. Before this, any of those
+ * codes hit the pre-existing `!= 'EEXIST'` branch and returned `null`
+ * immediately (the fail-safe "run unlocked" path) instead of retrying —
+ * so on Windows, ordinary two-process contention (not a real fault) could
+ * silently skip locking on the very first collision instead of waiting
+ * out the (typically sub-millisecond) window.
+ *
+ * A pure function of `(code, flavor)` — not `fs` — specifically so this
+ * classification is unit-testable on macOS with `flavor: 'win32'` without
+ * faking the filesystem or a real Windows host.
+ */
+export function classifyLockError(
+  code: string | undefined,
+  flavor: PathFlavor = currentFlavor(),
+): 'contention' | 'fatal' {
+  if (code === 'EEXIST') return 'contention'
+  if (flavor === 'win32' && (code === 'EBUSY' || code === 'EPERM')) return 'contention'
+  return 'fatal'
+}
+
+/**
+ * `unlinkSync` with bounded retries. On Windows, deleting a file another
+ * handle still has open (or that a just-exited child process hasn't fully
+ * released yet) raises `EBUSY`/`EPERM` rather than succeeding as it would
+ * on POSIX — a `try { unlinkSync } catch {}` there doesn't make the
+ * failure harmless, it makes the lockfile PERSIST, so every later
+ * acquirer hits `EEXIST` until `staleMs` elapses (an 8s stall by
+ * default). A short retry loop absorbs the race instead.
+ */
+function unlinkWithRetry(path: string, attempts = 5, delayMs = 5): void {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      unlinkSync(path)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return // already gone — the goal state
+      if (i === attempts - 1) throw err
+      sleepSync(delayMs * (i + 1))
+    }
+  }
+}
+
+/**
  * Attempt to acquire an exclusive lockfile at `lockPath`, retrying with
  * backoff until `timeoutMs` elapses. Returns the token written into the
  * lockfile on success (pass it to `releaseLock`), or `null` on timeout /
@@ -103,18 +159,19 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): string
       }
       return token
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+      if (classifyLockError((err as NodeJS.ErrnoException).code) !== 'contention') {
         // Unexpected error (EACCES, missing parent dir, ...) — don't spin
         // on something backoff can't fix.
         return null
       }
     }
 
-    // Someone else holds the lock. Reclaim it if it looks abandoned.
+    // Someone else holds the lock (or, on Windows, it's in a transient
+    // sharing-violation state). Reclaim it if it looks abandoned.
     try {
       const heldFor = Date.now() - statSync(lockPath).mtimeMs
       if (heldFor > staleMs) {
-        try { unlinkSync(lockPath) } catch { /* raced another reclaimer; loop and retry */ }
+        try { unlinkWithRetry(lockPath) } catch { /* raced another reclaimer; loop and retry */ }
         continue // no backoff — try to create it again immediately
       }
     } catch {
@@ -147,7 +204,7 @@ export function releaseLock(lockPath: string, token?: string): void {
       const current = readFileSync(lockPath, 'utf-8')
       if (current !== token) return // reclaimed by someone else — not ours to remove
     }
-    unlinkSync(lockPath)
+    unlinkWithRetry(lockPath)
   } catch { /* already gone, never acquired, or vanished while we read it — all fine */ }
 }
 

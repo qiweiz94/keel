@@ -1,6 +1,6 @@
 import type { KeelRule, EnforceInput } from '../types.js'
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolveMaybeRelative, canonicalizePath } from './path-normalize.js'
 
 interface DataTag {
   source: string     // matched source path or source tool
@@ -34,7 +34,7 @@ export class FlowTracker {
 
     // Check if this tool reads a sensitive file
     const rawPath = String(args.path || args.file || args.filePath || '')
-    const path = rawPath && !rawPath.startsWith('/') ? resolve(input.cwd, rawPath) : rawPath
+    const path = resolveMaybeRelative(rawPath, input.cwd)
     if (path && existsSync(path)) {
       const configuredSources = typeof rule === 'object' ? rule.sources : undefined
       const matchedRule = configuredSources?.find(source => this.pathMatches(path, source))
@@ -151,7 +151,11 @@ export class FlowTracker {
   }
 
   private matchesSensitivePath(path: string): string | null {
-    // Common sensitive paths
+    // Common sensitive paths (all `/`-authored, so canonicalize the real
+    // filesystem `path` — which is `\`-separated on Windows — before the
+    // substring check; otherwise `.ssh/` never matches a resolved
+    // `C:\Users\x\.ssh\id_rsa`).
+    const normalizedPath = canonicalizePath(path)
     const sensitivePaths = [
       '.env', '.env.local', '.env.production',
       '.git-credentials', '.ssh/',
@@ -160,16 +164,21 @@ export class FlowTracker {
       'token', 'api-key', 'apikey',
     ]
     for (const s of sensitivePaths) {
-      if (path.includes(s)) return `sensitive-path:${s}`
+      if (normalizedPath.includes(s)) return `sensitive-path:${s}`
     }
     return null
   }
 
   private pathMatches(value: string, pattern: string): boolean {
-    const escaped = pattern
+    // Separator-normalize both sides (Windows: `\` -> `/`, UNC preserved)
+    // before building the regex. Case-insensitivity is unchanged from the
+    // existing behavior (the `i` flag below, already applied on every
+    // platform — not a Windows-specific change).
+    const normalizedValue = canonicalizePath(value)
+    const escaped = canonicalizePath(pattern)
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
       .replace(/\*/g, '.*')
-    try { return new RegExp(`^${escaped}$`, 'i').test(value) || new RegExp(escaped, 'i').test(value) } catch { return false }
+    try { return new RegExp(`^${escaped}$`, 'i').test(normalizedValue) || new RegExp(escaped, 'i').test(normalizedValue) } catch { return false }
   }
 
   private matchesSink(sink: string, tool: string, args: Record<string, unknown>): boolean {

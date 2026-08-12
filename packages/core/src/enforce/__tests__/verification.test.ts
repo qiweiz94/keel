@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { writeFileSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { EnforcementPipeline } from '../pipeline.js'
@@ -9,6 +9,7 @@ import { FlowTracker } from '../flow-tracker.js'
 import { parseRulesContent } from '../rule-parser.js'
 import { pathFromPatch, argPath } from '../arg-utils.js'
 import type { RuleContext } from '../../types.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 // Agentic tool-name coverage: opencode's real file tools are lowercase
 // `write`/`edit`/`apply_patch` and its shell tool is `bash`. The verification
@@ -76,7 +77,7 @@ function tmpFile(name: string): string {
 
 describe('Verification tracker (agentic tool names)', () => {
   afterAll(() => {
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+    if (tmpDir) rmSafe(tmpDir)
   })
 
   it('write to src/ creates the obligation; commit warns, push escalates warn→deny', async () => {
@@ -138,7 +139,7 @@ describe('Verification tracker (agentic tool names)', () => {
 
 describe('Content rules (disk scan)', () => {
   afterAll(() => {
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+    if (tmpDir) rmSafe(tmpDir)
   })
 
   const CONTENT_RULES = `version: 1
@@ -191,7 +192,7 @@ rules:
     writeFileSync(notes, 'PRIVATE_KEY_xyz\n')
     expect((await dataInput(notes, 'clean payload 3')).action).toBe('deny')
     expect((await dataInput(notes, 'clean payload 4')).action).toBe('allow')
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   })
 
   it('inline content is always checked, even overwriting an already-scanned file (F9 regression)', async () => {
@@ -204,6 +205,6 @@ rules:
     // Overwrite with another inline secret: must STILL be flagged even though
     // the on-disk file was marked unchanged by the previous scan.
     expect((await fileInput(p, target, 'PRIVATE_KEY_inline_2', 'f9')).action).toBe('deny')
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   })
 })

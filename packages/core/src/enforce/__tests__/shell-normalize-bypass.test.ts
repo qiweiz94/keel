@@ -10,6 +10,7 @@ import { FlowTracker } from '../flow-tracker.js'
 import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
 import { parseRulesContent } from '../rule-parser.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * M1/A2 — proves the shell-normalization layer (command-normalizer.ts,
@@ -92,7 +93,7 @@ describe('shell-normalization closes bypasses of the shipped defaults (M1/A2)', 
     if (existsSync(sentinelPath)) rmSync(sentinelPath)
   })
   afterAll(() => {
-    rmSync(join(SENTINEL, '..'), { recursive: true, force: true })
+    rmSafe(join(SENTINEL, '..'))
   })
 
   describe('class 1 — intra-token quoting (GENUINELY NEW catches)', () => {

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { writeRuleMode, promoteCommand } from '../commands/promote.js'
 import { parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel promote <rule-id>` advances a rule's `mode` one rung up the
@@ -55,7 +56,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true })
+  rmSafe(dir)
 })
 
 describe('writeRuleMode (surgical, comment-preserving rules.yaml writer)', () => {

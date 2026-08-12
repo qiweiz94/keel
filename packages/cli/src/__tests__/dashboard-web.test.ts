@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execSync, spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { shouldAutoOpenBrowser } from '../commands/dashboard-web.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 // Regression guard for the browser-flood bug: the ONLY gate on the
 // `spawn('open', url)` convenience is shouldAutoOpenBrowser(). It MUST return
@@ -74,7 +75,7 @@ rules:
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true })
+  rmSafe(dir); rmSafe(home)
 })
 
 function startServer(): Promise<{ port: number; token: string; kill: () => void }> {

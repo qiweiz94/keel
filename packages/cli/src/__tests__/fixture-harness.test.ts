@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,7 @@ import {
   ProblemLedger,
   parseRulesContent,
 } from '@get-keel/core'
+import { rmSafe } from './helpers/fs-safe.js'
 import type {
   EnforceInput,
   EnforceResult,
@@ -329,8 +330,8 @@ beforeAll(() => {
 
 afterAll(() => {
   delete process.env.KEEL_STATE_DIR
-  rmSync(stateDir, { recursive: true, force: true })
-  rmSync(scratchRoot, { recursive: true, force: true })
+  rmSafe(stateDir)
+  rmSafe(scratchRoot)
 })
 
 describe('per-rule fixture coverage', () => {

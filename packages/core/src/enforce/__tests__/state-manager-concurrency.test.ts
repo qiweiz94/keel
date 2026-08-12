@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { runWorkersConcurrently } from './fixtures/spawn-worker.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Cross-process safety for StateManager's read-modify-write cycle
@@ -38,7 +39,7 @@ function freshDir(): string {
 afterEach(() => {
   while (tmpDirs.length) {
     const dir = tmpDirs.pop()!
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   }
 })
 

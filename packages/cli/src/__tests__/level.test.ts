@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync, chmodSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
@@ -65,7 +66,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true })
+  rmSafe(dir); rmSafe(home)
 })
 
 describePosixShim('keel level (the speed dial)', () => {
