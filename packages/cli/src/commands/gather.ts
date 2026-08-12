@@ -1,10 +1,10 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { extractLessons } from './lessons.js'
 import { buildReport, type TraceEntry } from './retrospective.js'
 import type { AuditEntry } from '../core/types.js'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel gather` — distill audit history into standing requirements.
@@ -173,8 +173,8 @@ export async function gatherCommand(options: {
   applyAndSave?: boolean
   dryRun?: boolean
 }) {
-  const auditDir = join(homedir(), '.keel', 'traces')
-  const outputPath = options.output || join(homedir(), '.keel', 'requirements.md')
+  const auditDir = join(resolveHome(), '.keel', 'traces')
+  const outputPath = options.output || join(resolveHome(), '.keel', 'requirements.md')
 
   if (!existsSync(auditDir)) {
     console.log(chalk.yellow('\n  No audit data found. Run some sessions with Keel enabled first.\n'))
@@ -198,7 +198,7 @@ export async function gatherCommand(options: {
       return
     }
     if (options.applyAndSave) {
-      const rulesPath = join(homedir(), '.keel', 'rules.yaml')
+      const rulesPath = join(resolveHome(), '.keel', 'rules.yaml')
       mkdirSync(dirname(rulesPath), { recursive: true })
       let existing = ''
       if (existsSync(rulesPath)) existing = readFileSync(rulesPath, 'utf-8')

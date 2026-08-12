@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolveHome } from '../home.js'
 import type { AuditEntry, EnforceResult, ProtectionLevel, RuleContext } from '../types.js'
 import { projectAuditArgs, sanitizeReasoning } from './audit-redaction.js'
 
@@ -20,7 +20,7 @@ export class AuditLog {
     // triggered the import (verified empirically this wave — see
     // session/EVIDENCE/wave2-claim.md). Reading it per-construction makes
     // the override correct regardless of import order.
-    this.logDir = logDir || process.env.KEEL_TRACES_DIR || join(homedir(), '.keel', 'traces')
+    this.logDir = logDir || process.env.KEEL_TRACES_DIR || join(resolveHome(), '.keel', 'traces')
     if (!existsSync(this.logDir)) {
       mkdirSync(this.logDir, { recursive: true })
     }

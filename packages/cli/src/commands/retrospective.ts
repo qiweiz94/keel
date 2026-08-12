@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
 import { commandFingerprint } from '../core/enforce/command-fingerprint.js'
 import { loadRuleHierarchy, winningPromotionThreshold } from '../core/enforce/rule-parser.js'
 import type { AuditEntry } from '../core/types.js'
@@ -641,7 +641,7 @@ export async function retrospectiveCommand(options: { since?: string; project?: 
   // triggered the import — the exact reasoning documented on AuditLog's
   // constructor (audit.ts) for the identical env-override-else-real-home
   // shape.
-  const auditDir = process.env.KEEL_TRACES_DIR || join(homedir(), '.keel', 'traces')
+  const auditDir = process.env.KEEL_TRACES_DIR || join(resolveHome(), '.keel', 'traces')
   const entries = loadTraceEntries(auditDir, options.since)
   const filtered = buildReport(entries, options.since, options.project)
 
@@ -713,7 +713,7 @@ export async function retrospectiveCommand(options: { since?: string; project?: 
 
   if (options.write) {
     const week = filtered.window.end
-    const dir = join(homedir(), '.keel', 'retrospectives', options.project || 'all')
+    const dir = join(resolveHome(), '.keel', 'retrospectives', options.project || 'all')
     mkdirSync(dir, { recursive: true })
     const path = join(dir, `${week}.md`)
     const lines = [`## keel retrospective (${filtered.window.start} → ${filtered.window.end})`, '']

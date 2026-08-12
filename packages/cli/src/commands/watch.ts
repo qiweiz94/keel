@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel watch` — tails the audit trail for live monitoring.
@@ -10,7 +10,7 @@ import chalk from 'chalk'
  * Run this in one terminal while using OpenCode in another.
  */
 export async function watchCommand(options: { json?: boolean }) {
-  const tracesDir = join(homedir(), '.keel', 'traces')
+  const tracesDir = join(resolveHome(), '.keel', 'traces')
 
   if (!existsSync(tracesDir)) {
     console.log(chalk.yellow('\n  No audit trail found. Plugin has not recorded any activity yet.\n'))

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { withFileLock, type LockOptions } from './file-lock.js'
+import { resolveHome } from '../home.js'
 
 export interface DenyState {
   [ruleId: string]: number | { timestamp: number; version?: string }  // legacy timestamp or versioned first warning
@@ -32,9 +32,13 @@ export interface OracleFailureState {
  * own beforeEach/it after some other file already triggered the import.
  * Called from the constructor's default parameter below, so every `new
  * StateManager()` with no explicit dir re-reads the current env var.
+ * KEEL_STATE_DIR still wins outright when set (narrower override); when
+ * unset the default is now rooted at resolveHome() (KEEL_HOME > HOME >
+ * homedir()) instead of a bare homedir(), so this reader agrees with
+ * `keel install` under KEEL_HOME.
  */
 export function stateDir(): string {
-  return process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
+  return process.env.KEEL_STATE_DIR || join(resolveHome(), '.keel', 'state')
 }
 
 const TTL_MS = 24 * 60 * 60 * 1000  // 24 hours

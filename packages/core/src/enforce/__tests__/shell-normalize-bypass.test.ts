@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { existsSync, rmSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
+import { resolveHome } from '../../home.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -89,7 +90,8 @@ function input(tool: string, args: Record<string, unknown>, session: string, lev
 
 describe('shell-normalization closes bypasses of the shipped defaults (M1/A2)', () => {
   beforeAll(() => {
-    const sentinelPath = join(homedir(), '.keel', 'DISABLED')
+    // Mirrors pipeline.ts's own resolveHome()-based fallback.
+    const sentinelPath = join(resolveHome(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) rmSync(sentinelPath)
   })
   afterAll(() => {

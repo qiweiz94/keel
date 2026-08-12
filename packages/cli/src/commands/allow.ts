@@ -1,10 +1,10 @@
 import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { loadRuleHierarchy, parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore, type RuleOverride } from '../core/enforce/overrides.js'
 import { AuditLog } from '../core/enforce/audit.js'
+import { resolveHome } from '../core/home.js'
 
 // Read per-call, not as a module-level const: a module-level const is
 // fixed at first import, which is exactly the class of bug this repo has
@@ -21,7 +21,7 @@ import { AuditLog } from '../core/enforce/audit.js'
 // KEEL_OVERRIDES_DIR set would arm an override the pipeline could never
 // see. Same file, same env var, both ends now.
 function overridesDirectory(): string {
-  return process.env.KEEL_OVERRIDES_DIR || join(homedir(), '.keel')
+  return process.env.KEEL_OVERRIDES_DIR || join(resolveHome(), '.keel')
 }
 
 function overrideFilePath(): string {

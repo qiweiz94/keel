@@ -2,6 +2,7 @@
 // Bundled into keel-core.mjs for in-process enforcement in OpenCode plugin.
 // Exports everything the v2 plugin needs to run in-process.
 
+export { resolveHome } from './home.js'
 export { EnforcementPipeline } from './enforce/pipeline.js'
 export type { PipelineConfig, PipelineTier } from './enforce/pipeline.js'
 export { ActionCache, ContentTracker } from './enforce/cache.js'

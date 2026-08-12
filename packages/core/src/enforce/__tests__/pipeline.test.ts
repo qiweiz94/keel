@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
+import { resolveHome } from '../../home.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -152,7 +153,9 @@ describe('EnforcementPipeline', () => {
 
   beforeAll(() => {
     // Do not let a developer's live kill switch affect unrelated unit tests.
-    const sentinelPath = join(homedir(), '.keel', 'DISABLED')
+    // Mirrors pipeline.ts's own resolveHome()-based fallback so this stays
+    // in lockstep with the code under test.
+    const sentinelPath = join(resolveHome(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) rmSync(sentinelPath)
   })
 

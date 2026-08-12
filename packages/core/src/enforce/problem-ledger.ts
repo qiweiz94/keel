@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { commandFingerprint } from './command-fingerprint.js'
 import { withFileLock, type LockOptions } from './file-lock.js'
+import { resolveHome } from '../home.js'
 
 /**
  * ProblemLedger — the session/task memory of the harness.
@@ -57,7 +57,7 @@ export interface LedgerData {
 }
 
 export function ledgerPath(): string {
-  return join(process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state'), 'ledger.json')
+  return join(process.env.KEEL_STATE_DIR || join(resolveHome(), '.keel', 'state'), 'ledger.json')
 }
 
 export function problemKey(cwd: string, fingerprint: string): string {
