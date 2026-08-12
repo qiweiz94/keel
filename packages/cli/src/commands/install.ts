@@ -1264,6 +1264,20 @@ export async function installCommand(options: {
     console.log(chalk.dim('    2. Run `keel install --opencode` to wire the OpenCode plugin'))
   }
   console.log(chalk.dim('    3. Run `keel validate` to check for conflicts'))
+  // ── First-run messaging: close the scan → install loop ──────────────
+  // `keel scan` is the discovery step; this line is what confirms the
+  // finding actually got fixed, so a user doesn't have to take the install
+  // on faith. Gated on whether a host was ACTUALLY wired this run — a bare
+  // `keel install` with no flags (commander does not default `--all` to
+  // true) only creates ~/.keel/rules.yaml and traces/, wires nothing, and
+  // must not claim scan will now show anything enforced.
+  const wiredAnyHost = Boolean(
+    options.all || options.opencode || options.project || options.claudeCode || options.cline ||
+    options.cursor || options.codex || options.hermes || options.openclaw || options.gemini,
+  )
+  if (wiredAnyHost) {
+    console.log(chalk.dim('    4. Run `keel scan` again — it should now show this host as ✓ enforced'))
+  }
 
   // Print-only: never writes to rules.yaml (DEFAULT_RULES_YAML above is
   // untouched). If the install environment is already sandboxed at the OS

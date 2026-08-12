@@ -421,6 +421,95 @@ export function computeLessons(sessions: SessionMetrics[]): Pick<RetrospectiveRe
   }
 }
 
+// ── Action summary ──────────────────────────────────────────────────
+//
+// "What did keel do for me": raw counts of enforcement actions in the
+// window, independent of the per-session productivity metrics above. Feeds
+// `keel report` (report.ts). Scoped to the same TRACKED_AGENTS / isBefore
+// filter as everything else in this file — see isBefore's comment for why
+// that filter is mandatory (the `keel evaluate` test harness would
+// otherwise inflate every count with entries that never enforced anything).
+
+export interface RuleTally {
+  rule_id: string
+  count: number
+}
+
+export interface ActionSummary {
+  total_evaluations: number
+  /** deny | block | prompt — the pipeline interrupted the call. */
+  blocked: number
+  /** warn — surfaced but did not interrupt. */
+  warned: number
+  /** redirect — interrupted with a suggested alternative (escalation ladder). */
+  redirected: number
+  /** Every `mode: observe` rule match, whether or not it would have blocked. */
+  observe_fires: number
+  top_blocking_rules: RuleTally[]
+  top_warning_rules: RuleTally[]
+  top_observe_rules: RuleTally[]
+}
+
+function topN(counts: Map<string, number>, n = 5): RuleTally[] {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([rule_id, count]) => ({ rule_id, count }))
+}
+
+export function computeActionSummary(entries: TraceEntry[]): ActionSummary {
+  const before = entries.filter(isBefore)
+  let blocked = 0
+  let warned = 0
+  let redirected = 0
+  let observeFires = 0
+  const blockingCounts = new Map<string, number>()
+  const warningCounts = new Map<string, number>()
+  const observeCounts = new Map<string, number>()
+  const bump = (m: Map<string, number>, id: string) => m.set(id, (m.get(id) || 0) + 1)
+
+  for (const e of before) {
+    if (e.rule_id) {
+      if (e.action === 'deny' || e.action === 'block' || e.action === 'prompt') {
+        blocked++
+        bump(blockingCounts, e.rule_id)
+      } else if (e.action === 'warn') {
+        warned++
+        bump(warningCounts, e.rule_id)
+      } else if (e.action === 'redirect') {
+        redirected++
+        bump(blockingCounts, e.rule_id)
+      }
+    }
+
+    // observed_matches is the comprehensive list (every observe rule that
+    // matched this call, see its field comment above); observed_action is
+    // the single-slot legacy fallback for entries written before
+    // observed_matches existed. Preferring the comprehensive list when
+    // present avoids both under- and double-counting: a call where the
+    // winning verdict's own rule_id happens to differ from the observe
+    // rule's id would misattribute the legacy single-slot count.
+    if (e.observed_matches && e.observed_matches.length > 0) {
+      observeFires += e.observed_matches.length
+      for (const m of e.observed_matches) bump(observeCounts, m.rule_id)
+    } else if (e.observed_action && e.rule_id) {
+      observeFires += 1
+      bump(observeCounts, e.rule_id)
+    }
+  }
+
+  return {
+    total_evaluations: before.length,
+    blocked,
+    warned,
+    redirected,
+    observe_fires: observeFires,
+    top_blocking_rules: topN(blockingCounts),
+    top_warning_rules: topN(warningCounts),
+    top_observe_rules: topN(observeCounts),
+  }
+}
+
 // ── Promotion pipeline ───────────────────────────────────────────────
 //
 // Shadow counters per `mode: observe` rule, derived from the SAME trace
