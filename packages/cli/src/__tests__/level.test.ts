@@ -116,10 +116,47 @@ describePosixShim('keel level (the speed dial)', () => {
     expect(readFileSync(join(dir, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: protect$/m)
   })
 
-  it('enforce --level without --persist refuses instead of silently doing nothing', () => {
+  it('enforce --level without --persist applies the dial for this invocation only, and says so', () => {
+    // Was: refused outright ("has no effect without --persist") and never
+    // showed status at all. Now: --level is honest about what it does — it
+    // previews the named dial for THIS run (rule count / conflicts /
+    // "Level:" line all reflect it), and says plainly that nothing was
+    // written, rather than either silently no-opping or blocking the whole
+    // command on a flag that has real, scoped effect.
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), PROJECT_RULES)
     const out = run('enforce --level=protect')
-    expect(out.stdout).toMatch(/without --persist|--persist/i)
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('Level: protect')
+    expect(out.stdout).toMatch(/preview.*not persisted/i)
+    // Nothing was actually written to the rules file.
+    expect(readFileSync(join(dir, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: balanced$/m)
+  })
+
+  it('bare `keel enforce` (no --level at all) shows status instead of refusing', () => {
+    // Regression: the commander option used to default --level to
+    // 'balanced', which made options.level truthy even when the user never
+    // typed --level — so EVERY bare `keel enforce` hit the "no effect
+    // without --persist" refusal and exited 1 before printing anything.
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), PROJECT_RULES)
+    const out = run('enforce')
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('Ready. Connect your agent')
+    expect(out.stdout).not.toMatch(/preview/i)
+  })
+
+  it('bare `keel enforce` reflects the real persisted dial, not a hardcoded balanced', () => {
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), PROJECT_RULES.replace('level: balanced', 'level: protect'))
+    const out = run('enforce')
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('Level: protect')
+  })
+
+  it('enforce --persist without --level refuses — nothing to persist', () => {
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), PROJECT_RULES)
+    const out = run('enforce --persist')
     expect(out.code).toBe(1)
+    expect(out.stdout).toMatch(/--persist requires --level/i)
+    expect(readFileSync(join(dir, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: balanced$/m)
   })
 
   it('setting sprint records sprint_started_at next to level (the expiry clock)', () => {

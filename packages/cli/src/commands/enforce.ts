@@ -16,6 +16,7 @@ import {
   validateRules,
   Suggester,
   StateManager,
+  effectiveHierarchyLevel,
 } from '../core/enforce/index.js'
 import type { ProtectionLevel, RuleContext, EnforcementAction, EnforcementDepth, EnforceInput, EnforceResult } from '../core/types.js'
 
@@ -263,7 +264,14 @@ export async function enforceCommand(options: {
   learn?: boolean
   audit?: boolean
 }) {
-  const level = (options.level || 'balanced') as ProtectionLevel
+  // `options.level` is `undefined` unless the caller actually typed
+  // `--level=X` (the commander option below carries no default) — that
+  // distinction is load-bearing. It used to default to 'balanced', which
+  // made `options.level` truthy on EVERY invocation, including a bare
+  // `keel enforce` that never mentioned --level at all: the "has no effect
+  // without --persist" refusal below fired unconditionally and the status
+  // view was unreachable without --persist. See EVIDENCE/m1r-4-mask.md.
+  const explicitLevel = options.level as ProtectionLevel | undefined
   const action = options.action as EnforcementAction | undefined
   const depth = options.depth as EnforcementDepth | undefined
   const dir = process.cwd()
@@ -289,20 +297,15 @@ export async function enforceCommand(options: {
     return
   }
 
-  if (!['sprint', 'balanced', 'protect'].includes(level)) {
-    console.log(chalk.red(`Invalid level: "${level}". Use sprint, balanced, or protect.`))
+  if (explicitLevel !== undefined && !['sprint', 'balanced', 'protect'].includes(explicitLevel)) {
+    console.log(chalk.red(`Invalid level: "${explicitLevel}". Use sprint, balanced, or protect.`))
     process.exitCode = 1
     return
   }
-  // `--level` without `--persist` used to print "Level: protect" and then
-  // exit — the level only lived in the ephemeral process and never reached
-  // the plugin. The dial must be persisted (or set with `keel level`).
-  if (options.level && !options.persist) {
-    console.log(chalk.red(`  --level=${options.level} has no effect without --persist.`))
-    console.log(chalk.cyan('  Use one of:'))
-    console.log(chalk.white('    keel level <sprint|balanced|protect>            # global dial (~/.keel/rules.yaml)'))
-    console.log(chalk.white('    keel level <sprint|balanced|protect> --project  # project dial (.keel/rules.yaml)'))
-    console.log(chalk.white('    keel enforce --level=X --persist                # persist into the project rules'))
+  // --persist without --level has nothing to persist — say so rather than
+  // silently writing a fallback the caller never asked for.
+  if (options.persist && explicitLevel === undefined) {
+    console.log(chalk.red('  --persist requires --level=<sprint|balanced|protect>.'))
     process.exitCode = 1
     return
   }
@@ -328,8 +331,8 @@ export async function enforceCommand(options: {
       process.exitCode = 1
       return
     }
-    writeRulesLevel(rulesPath, level)
-    console.log(chalk.green(`  ✓ Persisted project level: ${level} (${rulesPath})`))
+    writeRulesLevel(rulesPath, explicitLevel!)
+    console.log(chalk.green(`  ✓ Persisted project level: ${explicitLevel} (${rulesPath})`))
   }
   if (action && !['report', 'warn', 'deny', 'fix'].includes(action)) {
     console.log(chalk.red(`Invalid action: "${action}". Use report, warn, deny, or fix.`))
@@ -340,6 +343,9 @@ export async function enforceCommand(options: {
     return
   }
 
+  // Loaded AFTER any --persist write above, so a `--level=X --persist` in
+  // the same invocation reports back the level it just wrote, not a stale
+  // pre-write read.
   const hierarchy = loadRuleHierarchy(dir)
   const rulesPath = hierarchy.project?.sourcePath
   if (!rulesPath) {
@@ -348,11 +354,21 @@ export async function enforceCommand(options: {
     return
   }
 
+  // The dial this invocation actually evaluates against: an explicit
+  // --level applies for this run only (see the preview note below);
+  // otherwise fall back to the real persisted/effective dial — the same
+  // resolution `keel status` uses — rather than a hardcoded assumption
+  // that would misreport a project actually running at sprint or protect.
+  const level = explicitLevel ?? effectiveHierarchyLevel(hierarchy, 'balanced')
+
   // Initialize
   initEnforce(dir, { level, learn: options.learn, action, depth })
 
   console.log(chalk.bold.cyan('\n  ⚓ Keel Enforce'))
   console.log(chalk.dim(`  Level: ${chalk.white(level)}`))
+  if (explicitLevel !== undefined && !options.persist) {
+    console.log(chalk.dim('  (preview for this run only — not persisted; add --persist to make it the standing dial)'))
+  }
   console.log(chalk.dim(`  Config: ${rulesPath}`))
   console.log()
 

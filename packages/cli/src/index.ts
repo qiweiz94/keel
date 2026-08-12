@@ -146,8 +146,8 @@ policy
 
 const enforceCmd = program.command('enforce')
   .description('Enforce rules on AI agent behavior')
-  .option('--level <level>', 'Protection level: sprint, balanced, or protect', 'balanced')
-  .option('--persist', 'Persist the --level into the project rules.yaml (the speed dial)')
+  .option('--level <level>', 'Protection level for this run: sprint, balanced, or protect (omit to show the current dial; add --persist to make it the standing dial)')
+  .option('--persist', 'Persist --level into the project rules.yaml (the speed dial) — requires --level')
   .option('--action <action>', 'Override action: report, warn, deny, or fix')
   .option('--depth <depth>', 'Override depth: fast, full, or deep')
   .option('--learn', 'Learning mode: observe only, never block')

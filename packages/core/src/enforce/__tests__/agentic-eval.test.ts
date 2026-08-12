@@ -380,7 +380,15 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'echo $PROD_API_KEY' }))).action).toBe('warn')
       expect((await p.evaluate(input('Bash', { command: 'printenv PROD_API_KEY' }))).action).toBe('deny')
     })
-    it('mcp/inheritance/meta/session/context rule types are rejected at validation, not silent no-ops', () => {
+    it('mcp/inheritance/meta/session/context rule types, and the removed `mask` action, are rejected at validation, not silent no-ops', () => {
+      // `mask` was removed from EnforcementAction entirely (see types.ts and
+      // rule-parser.ts's validActions comment) rather than shipped
+      // perpetually declared-but-rejected — its only plausible meaning
+      // either duplicates `fix` or needs an output-rewrite channel keel does
+      // not have. A rules file still carrying `action: mask` (an old rule,
+      // a stale example) must fail closed via the generic unsupported-action
+      // check, exactly like any other action typo — not silently pass
+      // through to the pipeline where it would fall through to a bare warn.
       const yaml = `version: 1
 rules:
   - id: legacy-mcp
@@ -415,7 +423,7 @@ rules:
       for (const id of ['legacy-mcp', 'legacy-inheritance', 'legacy-meta', 'legacy-session', 'legacy-context']) {
         expect(errors.some(e => e.includes(`"${id}"`) && e.includes('not implemented'))).toBe(true)
       }
-      expect(errors.some(e => e.includes('"masked"') && e.includes('mask'))).toBe(true)
+      expect(errors.some(e => e.includes('"masked"') && e.includes('unsupported action') && e.includes('mask'))).toBe(true)
     })
     it('sequence rule fires on read-then-delete at balanced, protect, AND now sprint too', async () => {
       // Deep checks (content/sequence/flow) used to be skipped entirely at

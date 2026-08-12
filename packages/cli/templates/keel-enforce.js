@@ -6397,7 +6397,7 @@ function validateRules(rules) {
     "oracle",
     "package"
   ]);
-  const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "mask", "fix", "report", "research", "redirect"]);
+  const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
   const validModes = /* @__PURE__ */ new Set(["observe", "warn", "block"]);
   const validSeverities = /* @__PURE__ */ new Set(["critical", "high", "medium", "low"]);
@@ -6440,9 +6440,6 @@ function validateRules(rules) {
       continue;
     }
     if (typeof rule.type !== "string" || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`);
-    if (rule.action === "mask") {
-      errors.push(`Rule "${label}" uses action "mask", which is not implemented by the enforcement engine \u2014 use "warn" or "deny"`);
-    }
     if (rule.mode !== void 0 && !validModes.has(String(rule.mode))) {
       errors.push(`Rule "${label}" has an unsupported mode: ${String(rule.mode)} (expected observe, warn, or block)`);
     }
@@ -6566,7 +6563,6 @@ var ACTION_STRENGTH = {
   deny: 4,
   block: 4,
   prompt: 3,
-  mask: 2,
   fix: 2,
   redirect: 2,
   warn: 1,

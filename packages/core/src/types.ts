@@ -8,7 +8,11 @@ export type RuleContext = 'local' | 'ci' | 'both'
 
 export type EnforcementDepth = 'fast' | 'full' | 'deep'
 
-export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'mask' | 'fix' | 'report' | 'research' | 'redirect'
+// `mask` (redact matched content) was removed from this vocabulary — see
+// rule-parser.ts's `validActions` comment for why (declared meaning would
+// either duplicate `fix` or require an output-rewrite channel keel does not
+// have) — rather than ship it perpetually declared-but-rejected.
+export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'fix' | 'report' | 'research' | 'redirect'
 
 export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'

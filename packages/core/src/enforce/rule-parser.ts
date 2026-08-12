@@ -93,7 +93,17 @@ export function validateRules(rules: unknown): string[] {
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
     'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim', 'oracle', 'package',
   ])
-  const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'mask', 'fix', 'report', 'research', 'redirect'])
+  // `mask` was deliberately dropped from this set (and from EnforcementAction
+  // in types.ts) rather than shipped perpetually declared-but-rejected: its
+  // only plausible concrete meaning — redact matched sensitive content —
+  // either duplicates what `fix` already does (rewrite the command's args
+  // pre-execution, e.g. `fix: [{pattern, replace: '[REDACTED]'}]`) or would
+  // need to rewrite TOOL OUTPUT after the fact, a channel this pipeline does
+  // not have (opencode-plugin/src/plugin.ts's own `tool.execute.after`
+  // comment: "the hook cannot inject tool results"). A rule author who wants
+  // redaction should reach for `fix`; the generic action-unsupported check
+  // below still fails closed on any leftover `action: mask` in a rules file.
+  const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
   // Catalog metadata. These MUST be validated rather than passed through:
   // a typo'd `mode: observ` that silently fell back to enforcing is the
@@ -136,9 +146,6 @@ export function validateRules(rules: unknown): string[] {
       continue
     }
     if (typeof rule.type !== 'string' || !validTypes.has(rule.type)) errors.push(`Rule "${label}" has an unsupported type: ${String(rule.type)}`)
-    if (rule.action === 'mask') {
-      errors.push(`Rule "${label}" uses action "mask", which is not implemented by the enforcement engine — use "warn" or "deny"`)
-    }
     if (rule.mode !== undefined && !validModes.has(String(rule.mode))) {
       errors.push(`Rule "${label}" has an unsupported mode: ${String(rule.mode)} (expected observe, warn, or block)`)
     }
@@ -408,14 +415,14 @@ export function loadRuleHierarchy(projectDir: string): RuleHierarchy {
  * `undefined`:
  *   deny/block (4, tied)   — stop the action outright
  *   > prompt (3)           — requires a human decision before proceeding
- *   > mask/fix/redirect (2) — actively intervenes, but the turn continues
+ *   > fix/redirect (2)     — actively intervenes, but the turn continues
  *   > warn (1)             — surfaces the issue, does not stop it
  *   > allow/report/research (0) — no intervention
  */
 const ACTION_STRENGTH: Record<EnforcementAction, number> = {
   deny: 4, block: 4,
   prompt: 3,
-  mask: 2, fix: 2, redirect: 2,
+  fix: 2, redirect: 2,
   warn: 1,
   allow: 0, report: 0, research: 0,
 }
