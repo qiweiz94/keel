@@ -385,6 +385,14 @@ export async function scanCommand(options: { json?: boolean; dir?: string; ci?: 
     console.log(chalk.dim('  MCP servers execute commands on your machine with your privileges.\n'))
   }
 
+  // Close the loop for anyone already protected: scan found something,
+  // install fixed it — `keel report` is where the payoff shows up. Only
+  // surfaced once a host is actually enforced, so this never points at an
+  // empty report.
+  if (actionable.some(p => p.enforced)) {
+    console.log(chalk.dim('  Run `keel report` to see what keel has caught so far.\n'))
+  }
+
   if (options.ci && findings.length > 0) process.exit(1)
 }
 

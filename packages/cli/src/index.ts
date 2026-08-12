@@ -27,6 +27,7 @@ import { dashboardCommand } from './commands/dashboard.js'
 import { dashboardWebCommand } from './commands/dashboard-web.js'
 import { daemonCommand } from './commands/daemon.js'
 import { retrospectiveCommand } from './commands/retrospective.js'
+import { reportCommand } from './commands/report.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand, DEFAULT_RULES_YAML } from './commands/install.js'
@@ -243,6 +244,15 @@ program
   .option('--json', 'Emit machine-readable JSON')
   .option('--write', 'Append the report to ~/.keel/retrospectives/')
   .action((options: { since?: string; project?: string; json?: boolean; write?: boolean }) => retrospectiveCommand(options))
+
+program
+  .command('report')
+  .description('What did keel do for you: blocks, warns, redirects, and observe-mode fires over a session or week')
+  .option('--since <date>', 'Window start (YYYY-MM-DD), default: last 7 days')
+  .option('--project <path>', 'Filter to a project (matches on recorded cwd)')
+  .option('--session <id>', 'Filter to a single agent session')
+  .option('--json', 'Emit machine-readable JSON')
+  .action((options: { since?: string; project?: string; session?: string; json?: boolean }) => reportCommand(options))
 
 program
   .command('schedule')
