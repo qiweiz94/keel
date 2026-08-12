@@ -414,9 +414,18 @@ All checks passed (63/63)
 Baseline before any change (captured at the start of this lane): CLI 810
 passed | 15 skipped (44 files, 825 total). Now: 825 passed | 14 skipped
 (46 files, 839 total) — net +14 tests, matching the two new files exactly
-(`scan-install-flow.test.ts`: 3 tests, `report.test.ts`: 11 tests). The
-skip count moving 15→14 is `perf-budget.test.ts`'s own machine-load skip
-guard, unrelated to this diff. Zero regressions, zero failures.
+(`scan-install-flow.test.ts`: 3 tests, `report.test.ts`: 11 tests) and
+accounting for the entire delta on its own. The 15→14 skip-count move is
+plausibly `perf-budget.test.ts`'s dynamic, load-based `skip()` — confirmed
+that mechanism is real (it skips only when 1-minute load average exceeds
+1.5/core) and confirmed that in a later run at lower load it is NOT among
+the 14 skips (all 14 come from `fixture-harness.test.ts` and
+`proposal-fixture-harness.test.ts`'s documented can't-express-single-step
+skips). What's not verified is that specific machine-load state at the
+exact moment the baseline was captured, so treat the skip-count move as
+not attributable to this diff (none of the changed files touch that
+guard) rather than as a confirmed causal claim. Zero regressions, zero
+test failures caused by this diff.
 
 One transient failure was observed on an earlier full-suite run before the
 promotion-eligible test existed: `perf-budget.test.ts`'s p99 hot-path
