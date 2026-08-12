@@ -7220,7 +7220,9 @@ function normalizeSubcommand(rawSub, dict, depth) {
     if (kind) {
       const flags = interpreterFlags(kind);
       for (let k = 1; k < commandTokens.length - 1; k++) {
-        if (flags.includes(commandTokens[k].value)) {
+        const tok = commandTokens[k].value;
+        const isCodeFlag = flags.includes(tok) || kind === "shell" && /^-[a-z]*c$/.test(tok);
+        if (isCodeFlag) {
           const bodyToken = commandTokens[k + 1];
           sub.interpreterBody = bodyToken.value;
           if (kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {

@@ -79,10 +79,22 @@ See the dedicated section below — this is a M6 deliverable, verified.
 
 ## CONFIRMED BUGS AND RESIDUALS (stated honestly, not papered over)
 
-### 1. NEW red-team finding — the `bash -lc` wrapper: ONE mechanism, TWO verdicts. One instance is **RELEASE-BLOCKING**.
+### 1. NEW red-team finding — the `bash -lc` wrapper: ONE mechanism, TWO verdicts. One instance was **RELEASE-BLOCKING**.
 
-**🚩 RELEASE-BLOCKING instance — `bash -lc 'keel disable'` turns keel OFF in
-one command.** Verified `allow` at sprint AND balanced AND protect:
+> **✅ RESOLVED (post-audit fix).** The bundled-flag bypass below is **CLOSED**.
+> `command-normalizer.ts` now matches `/^-[a-z]*c$/` for shell interpreters, so a
+> bundled short-flag cluster (`bash -lc`, `-ic`, `sh -xc`) has its body extracted
+> and recursed exactly like `-c`. Verified: `bash -lc 'keel disable'` /
+> `keel uninstall` / `keel enforce` all **deny** via `keel-control-gate` at every
+> dial; `bash -lc 'rm -rf /'` / `-ic` / `sh -lc` **deny**; benign `bash -lc 'ls -la'`
+> still allows; all prior floor-holds unchanged. Guarded by
+> `shell-normalize-bypass.test.ts` (6 new cases, in `npm test`) and promoted to
+> `control-catch` regression probes in `scripts/redteam/round2.mjs` (exits 0). The
+> `bash -lc 'rm -rf /'` sibling finding is closed by the same one-line fix. The
+> original finding is preserved below as the record.
+
+**🚩 (RESOLVED) RELEASE-BLOCKING instance — `bash -lc 'keel disable'` turned keel OFF in
+one command.** Verified `allow` at sprint AND balanced AND protect BEFORE the fix:
 ```
 bash -lc 'keel disable'      → allow   (keel-control-gate DEFEATED — turns keel off)
 bash -lc 'keel uninstall'    → allow   (removes keel entirely)

@@ -371,7 +371,17 @@ function normalizeSubcommand(rawSub: string, dict: Record<string, string>, depth
     if (kind) {
       const flags = interpreterFlags(kind)
       for (let k = 1; k < commandTokens.length - 1; k++) {
-        if (flags.includes(commandTokens[k].value)) {
+        const tok = commandTokens[k].value
+        // A shell's `-c` code flag may arrive bundled with other short options
+        // (`bash -lc`, `bash -ic`, `sh -xc`): `-c` must be the LAST letter of a
+        // short-option cluster because it consumes the next argument as the
+        // command. Match that cluster too so the body is still extracted as a
+        // surface — closes the `bash -lc '...'` control-gate / destructive
+        // bypass (M6 red-team round 2). Extraction only ADDS a surface to test,
+        // never suppresses one, so an over-match is safe.
+        const isCodeFlag = flags.includes(tok)
+          || (kind === 'shell' && /^-[a-z]*c$/.test(tok))
+        if (isCodeFlag) {
           const bodyToken = commandTokens[k + 1]
           sub.interpreterBody = bodyToken.value
           if (kind === 'shell' && depth < MAX_INTERPRETER_DEPTH) {

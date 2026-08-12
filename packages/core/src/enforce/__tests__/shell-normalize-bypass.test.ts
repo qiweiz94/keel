@@ -159,6 +159,42 @@ describe('shell-normalization closes bypasses of the shipped defaults (M1/A2)', 
     })
   })
 
+  describe('class — bundled short interpreter flags (M6 red-team round 2: bash -lc/-ic/-xc)', () => {
+    // `-c` may be the LAST letter of a bundled short-option cluster (bash -lc,
+    // -ic, sh -xc). Before the fix the normalizer only matched the exact token
+    // `-c`, so the body was never extracted and `bash -lc 'keel disable'` — a
+    // one-command master-key bypass of the control gate — was allowed. Fixed in
+    // command-normalizer.ts by matching /^-[a-z]*c$/ for shell interpreters.
+    const pipeline = makeDefaultsPipeline()
+    it("bash -lc 'keel disable' DENIES via keel-control-gate (the RELEASE-BLOCKING master-key bypass — turned keel off in one command before the fix)", async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: `bash -lc 'keel disable'` }, 'bf1', 'protect'))
+      expect(r.action).toBe('deny')
+      expect(r.rule_id).toBe('keel-control-gate')
+    })
+    it("bash -lc 'keel uninstall' DENIES via keel-control-gate", async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: `bash -lc 'keel uninstall'` }, 'bf2', 'protect'))
+      expect(r.action).toBe('deny')
+      expect(r.rule_id).toBe('keel-control-gate')
+    })
+    it("bash -lc 'rm -rf /' DENIES via no-destructive-commands (combined -lc no longer misses)", async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: `bash -lc 'rm -rf /'` }, 'bf3'))
+      expect(r.action).toBe('deny')
+      expect(r.rule_id).toBe('no-destructive-commands')
+    })
+    it('bash -ic "rm -rf /" DENIES (interactive-shell bundled flag)', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: `bash -ic "rm -rf /"` }, 'bf4'))
+      expect(r.action).toBe('deny')
+    })
+    it('sh -lc "rm -rf /" DENIES (sh combined -lc, double-quoted body)', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: `sh -lc "rm -rf /"` }, 'bf5'))
+      expect(r.action).toBe('deny')
+    })
+    it('bash -lc "ls -la" stays allow — a benign bundled-flag invocation must not be falsely blocked', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: `bash -lc "ls -la"` }, 'bf6'))
+      expect(r.action).toBe('allow')
+    })
+  })
+
   describe('must-not-fire — a benign command must never be caught by the wider normalized surface', () => {
     const pipeline = makeDefaultsPipeline()
     it('rm -rf node_modules stays allow', async () => {

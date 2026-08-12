@@ -17,31 +17,27 @@ machines, or a governance decision.
 
 ---
 
-## 0. 🚩 RELEASE-BLOCKING DECISION — `bash -lc 'keel disable'` turns keel off
+## 0. ✅ RESOLVED — the `bash -lc 'keel disable'` master-key bypass is CLOSED
 
-**Decide this BEFORE publishing (§1).** The M6 red-team confirmed that
-`bash -lc 'keel disable'` (also `keel uninstall` / `keel enforce`) is **allowed
-at every dial** and turns keel off in a single agent command — defeating the
-`keel-control-gate` floor whose whole purpose is keeping keel armed, and
-falsifying SECURITY.md's (now-corrected) categorical "a compromised agent
-cannot turn keel off" promise. Once keel is off, every other floor is moot: a
-master-key bypass. Reachable in one command, no pre-existing config, at every
-dial. Reproduction + regression guard: `scripts/redteam/round2.mjs`; full
-detail and the exact mechanism: `session/v1/AUDIT.md` §1.
+**No longer a release blocker — fixed after the audit.** The M6 red-team found
+that `bash -lc 'keel disable'` (also `keel uninstall` / `keel enforce`) was
+allowed at every dial and turned keel off in a single agent command, defeating
+`keel-control-gate`. The supervisor then landed the fix: `command-normalizer.ts`
+now matches `/^-[a-z]*c$/` for shell interpreters, so a **bundled** short-flag
+cluster (`-lc`, `-ic`, `-xc`) has its command body extracted and recursed exactly
+like `-c`.
 
-This audit lane did NOT fix it — the fix is a `command-normalizer.ts` change
-(teach `interpreterFlags`/the recursion trigger to recognize bundled short
-flags like `-lc`/`-ic`) whose correctness across shell flag-bundling semantics
-cannot be made small-and-well-tested this late without regression risk to a
-security matcher, and this lane is barred from that class of late change.
+Verified closed: `bash -lc 'keel disable' | keel uninstall | keel enforce` all
+**deny** via `keel-control-gate`; `bash -lc 'rm -rf /'` / `-ic` / `sh -lc` **deny**;
+benign `bash -lc 'ls -la'` still allows; every prior floor-hold unchanged.
+Guarded by `shell-normalize-bypass.test.ts` (6 new cases, in `npm test`) and by
+`scripts/redteam/round2.mjs` (those probes promoted to `control-catch`, exits 0).
+The sibling `bash -lc 'rm -rf /'` finding closed by the same one-line fix.
 
-- [ ] **Decide: fix before v1.0.0, or ship with this documented and fix in
-      1.0.1.** The audit's recommendation is to fix before a public launch,
-      since the "you can't turn keel off" promise is a headline claim; but the
-      ship/no-ship call is yours. If shipping as-is, ensure the corrected
-      SECURITY.md text (self-protection section) is what goes public.
-- [ ] The related `bash -lc 'rm -rf /'` finding (same mechanism) is assessed
-      NOT blocking (indirect exec, disclaimed class) — the same fix closes it.
+- [x] Master-key bypass fixed and regression-guarded. Nothing to decide here.
+- [ ] (Optional, non-blocking) SECURITY.md still keeps the "cannot turn keel off"
+      claim appropriately non-categorical — a *novel* bypass class could always
+      exist. That honest hedge is intentional; keep it in any public copy.
 
 ## 1. Publish the packages to npm  (RELEASE — deliberate human action)
 
@@ -152,12 +148,12 @@ Done in the M6 audit (see AUDIT.md and the commit): full `npm test` green +
 - [ ] The `windows-latest` CI leg (§7) is a human step — it cannot run on the
       macOS build machine.
 
-## 10. The `bash -lc` code fix (closes BOTH §0's blocking finding and the `rm` one)
+## 10. ✅ DONE — the `bash -lc` code fix (closed BOTH §0's blocking finding and the `rm` one)
 
-- [ ] The one `command-normalizer.ts` fix (recognize bundled interpreter short
-      flags `-lc`/`-ic`/`-xc` so the `-c` body recursion fires) closes both the
-      RELEASE-BLOCKING `keel disable` bypass in §0 AND the non-blocking
-      `bash -lc 'rm -rf /'` wipe (same mechanism). It is the highest-leverage
-      remaining hardening. This item is the engineering follow-up; §0 is the
-      ship/no-ship decision. Reproduction + regression guard:
-      `scripts/redteam/round2.mjs`. Full detail: `session/v1/AUDIT.md` §1.
+- [x] The one `command-normalizer.ts` fix (match `/^-[a-z]*c$/` for shell
+      interpreters, so bundled short flags `-lc`/`-ic`/`-xc` trigger the `-c`
+      body recursion) was landed by the supervisor. It closed both the
+      (former) RELEASE-BLOCKING `keel disable` bypass in §0 AND the
+      `bash -lc 'rm -rf /'` wipe (same mechanism). Regression-guarded by
+      `shell-normalize-bypass.test.ts` (in `npm test`) and
+      `scripts/redteam/round2.mjs` (exits 0). Full detail: `session/v1/AUDIT.md` §1.

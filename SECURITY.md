@@ -73,6 +73,15 @@ global CLI rather than disarming the project enforcer — excluding it reads
 
 ### M6 audit (2026-08-12): round-2 red-team — mechanism re-check + new finding
 
+> **⚠️ READ FIRST — the `bash -lc` finding described in this section was FIXED
+> after the audit.** Any statement below that `bash -lc 'rm -rf /'` or
+> `bash -lc 'keel disable'` is "allowed at every dial" describes the PRE-FIX
+> state. `command-normalizer.ts` now matches `/^-[a-z]*c$/` for shell
+> interpreters, so bundled short-flag bodies (`-lc`/`-ic`/`-xc`) are recursed
+> like `-c` and all those forms now **deny** (guarded by
+> `shell-normalize-bypass.test.ts` + `scripts/redteam/round2.mjs`). This section
+> is retained as the honest record of the finding.
+
 The v0.3/v0.4 columns above are the historical record of two dated sweeps
 whose 260-probe corpus lived only in `/tmp` and no longer exists (see
 `docs/exfil.md`'s closing note). This M6 round did NOT reconstruct that
@@ -98,16 +107,17 @@ Results (full detail and exact inputs in `session/v1/AUDIT.md`):
   still denies, because the literal `shutil.rmtree('/')` is present on the raw
   surface regardless of argv0 identification. A prefix only matters combined
   with body obfuscation.
-- **NEW confirmed bypass (strongest of the round), `bash -lc 'rm -rf /'`.** A
-  bundled interpreter short-flag (`-lc`, `-ic`, `sh -lc`) defeats the class-3
-  `-c` recursion, and the resulting raw-only surface is excluded by the M1r-1
-  `(?<!["'])` lookbehind — so a **plainly-spelled root wipe is allowed at every
-  dial** (sprint/balanced/protect all verified `allow`). Documented in full in
-  classes 1 and 3 above and in AUDIT.md. **Assessed NOT release-blocking**
-  (indirect exec through a shell — the disclaimed evasion class; the
-  mistake-class the floor exists for is intact) — but the SECURITY.md text that
-  overclaimed "interpreter escape hatches CLOSED" and "`sh -c "rm -rf /"` …
-  all still deny" was itself a defect and is corrected in this lane.
+- **`bash -lc` bundled-flag bypass — FOUND then FIXED (M6).** The round's
+  strongest finding was that a bundled interpreter short-flag (`-lc`, `-ic`,
+  `sh -lc`) defeated the class-3 `-c` body recursion, so `bash -lc 'rm -rf /'`
+  and — worse — `bash -lc 'keel disable'` were **allowed at every dial**. ✅
+  **Now closed:** `command-normalizer.ts` matches `/^-[a-z]*c$/` for shell
+  interpreters, so the bundled cluster's body is extracted and recursed exactly
+  like `-c`. Verified: `bash -lc 'rm -rf /'` / `-ic` / `sh -lc` and
+  `bash -lc 'keel disable' | uninstall | enforce` all **deny**; benign
+  `bash -lc 'ls -la'` still allows. Guarded by `shell-normalize-bypass.test.ts`
+  and `scripts/redteam/round2.mjs`. (The finding is retained in classes 1/3
+  above and AUDIT.md §1 as the honest record; both are annotated RESOLVED.)
 - **Interpreter-body floor evadable by Python aliasing** —
   `python3 -c "__import__('shutil').rmtree('/')"` and the `getattr(...)` form
   allow: the floor regex requires the literal token `shutil.rmtree`, and an
@@ -488,25 +498,23 @@ OS-level sandbox and use keel's `action: prompt` gates on top.
   (`no-rules-tampering`), and from deleting enforcement files
   (`no-enforcer-removal`). These are `level: protect` floors, active at every
   dial (verified across all nine combinations of rules-file level × requested
-  level). **M6-audit correction — this is NOT a categorical guarantee, and the
-  previous unhedged wording ("a compromised agent cannot turn keel off … only
-  the user can") was an overclaim.** `keel-control-gate` matches the control
-  verbs with a trailing `([ \t]|$)` anchor, so a bundled-interpreter wrapper
-  where the verb is the final token defeats it: **`bash -lc 'keel disable'`**
-  (also `keel uninstall` / `keel enforce`) is **allowed** at every dial and
-  turns keel off in one command — a compromised agent CAN currently disable
-  keel through indirect shell exec. This is the RELEASE-BLOCKING finding in
-  `session/v1/AUDIT.md` §1; the same `bash -lc` mechanism as classes 1/3 above.
-  What still holds (verified, `scripts/redteam/round2.mjs`): `keel allow`/
-  `level`/`install` (the verb is not the final token, so the anchor is intact),
-  rules/plugin/enforcer file writes and deletes (`no-rules-tampering`,
-  `no-self-protection-write`, `no-enforcer-removal` — no end-anchor to break),
-  and every direct `keel disable` not wrapped in a bundled-flag interpreter.
-  The honest statement is: keel resists an agent turning it off on the DIRECT
-  command surface, not against a determined agent using indirect shell exec —
-  consistent with this document's own "the agent's own process is the boundary"
-  and "not a sandbox against a determined adversary" limits, which the earlier
-  categorical sentence contradicted. The v0.3 security review found three gaps here; all three were closed
+  level). **This is defense-in-depth, NOT a categorical guarantee** — the honest
+  framing, kept deliberately non-absolute. (History: the M6 red-team found that
+  a bundled-interpreter wrapper — `bash -lc 'keel disable'` — defeated the
+  gate's trailing `([ \t]|$)` anchor and turned keel off in one command; the
+  earlier unhedged "a compromised agent cannot turn keel off" wording was an
+  overclaim. That bypass is now **FIXED**: `command-normalizer.ts` matches
+  `/^-[a-z]*c$/` for shell interpreters, so the bundled body is recursed and
+  `bash -lc 'keel disable' | uninstall | enforce` all **deny** at every dial —
+  verified, `scripts/redteam/round2.mjs` + `shell-normalize-bypass.test.ts`.)
+  What holds (verified): the control verbs deny on the direct surface, through
+  compound/quoted/bundled-interpreter wrappers, and via `keel allow`/`level`/
+  `install`; rules/plugin/enforcer writes and deletes deny (`no-rules-tampering`,
+  `no-self-protection-write`, `no-enforcer-removal`). The honest limit remains:
+  keel resists an agent turning it off across the surfaces we have tested, but a
+  *novel* indirect-exec class could always exist — consistent with this
+  document's "the agent's own process is the boundary" and "not a sandbox
+  against a determined adversary" limits. Do not restore a categorical claim. The v0.3 security review found three gaps here; all three were closed
   in v0.4: (a) `no-rules-tampering` did not fire on Claude Code / Gemini CLI
   because `argPath()` did not read the `file_path` (snake_case) key those hosts
   send — fixed (the key is now read; a write to `.claude/settings.json` via
