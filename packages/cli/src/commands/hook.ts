@@ -363,21 +363,37 @@ export function renderVerdict(host: Host, result: EnforceResult | null): HostVer
     switch (host) {
       case 'cursor':
         // cursor.com/docs/hooks: beforeShellExecution's response carries
-        // userMessage (shown to the user) and agentMessage (shown to the
+        // user_message (shown to the user) and agent_message (shown to the
         // agent) alongside `permission`, for ANY permission value — not
-        // only deny/ask. The block-path below already uses this envelope
-        // (camelCase, matching the file's existing convention); Cursor's
-        // own current docs actually show snake_case (user_message/
-        // agent_message) for this field, a discrepancy this lane found
-        // but did NOT change on the already-shipped block path (out of
-        // scope, and untouched code a prior wave rated "docs"-verified) —
-        // flagged in evidence for a follow-up lane to resolve for both
-        // paths together.
+        // only deny/ask. FIX (M4 host-breadth lane): a prior wave shipped
+        // this envelope in camelCase (userMessage/agentMessage) and its own
+        // evidence (session/EVIDENCE/wave3-warnsurface.md §"Cursor
+        // field-casing discrepancy") already flagged that a live fetch of
+        // cursor.com/docs/hooks returns snake_case — re-fetched live again
+        // this lane (same result) before changing anything. Sent under
+        // BOTH keys rather than switched outright: hook.ts:440-449 (Codex's
+        // `permissionDecision:'allow'` rejection, external bug report
+        // #249) is this same repo's own precedent that an extra/wrong field
+        // can make a host mark a hook FAILED, not merely ignore it — a
+        // failed hook here would fail OPEN (advisory swallowed entirely),
+        // which is worse than the pre-fix state. Sending both spellings
+        // costs nothing if Cursor ignores unknown keys (the common case)
+        // and is strictly safer than a blind swap with no live Cursor
+        // access to confirm either behavior in this environment.
+        // NOT changed here: the already-shipped, already-tested BLOCK path
+        // below (case 'cursor' under `blocked`), which has the identical
+        // camelCase-only bug — left untouched deliberately (same reasoning
+        // the prior wave gave: no live Cursor access to verify a change
+        // against, and `permission` alone still gates the actual block
+        // correctly even if the message text doesn't render). Tracked as a
+        // manual follow-up in session/v1/EVIDENCE/m4-hostbreadth.md.
         return {
           blocked: false, exitCode: 0,
           stdout: JSON.stringify({
             permission: 'allow',
-            ...(advisory ? { userMessage: advisory, agentMessage: advisory } : {}),
+            ...(advisory
+              ? { userMessage: advisory, agentMessage: advisory, user_message: advisory, agent_message: advisory }
+              : {}),
           }),
           stderr: '',
         }

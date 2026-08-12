@@ -1,8 +1,15 @@
 # keel integrations — what is supported, and how well
 
-One page for "which platforms does keel work with". The **Verified** column is the
-important one: it says how much each row has actually been proven, rather than
+One page for "which platforms does keel work with". The **Verified** columns are the
+important ones: they say how much each row has actually been proven, rather than
 implying that everything listed is equally solid.
+
+**Block and warn are verified separately** (M4 host-breadth lane) — they are different
+code paths per host (a block that stops the call vs. an advisory that must reach a
+human/model-visible channel WITHOUT stopping anything), and "block is live" was never
+evidence that warn is. Before this lane only OpenCode had ever been exercised for warn
+against a real running host at all; everything else's warn confidence was inherited
+from the block row, which conflated two different claims into one cell.
 
 Verification levels, strongest first:
 
@@ -23,18 +30,62 @@ Cline's real control channel is a `HOOK_CONTROL` line that appears in no doc pag
 
 Every one of these evaluates a tool call **before it runs** and can stop it.
 
-| Host | Install | Interception point | How it blocks | Verified |
-|---|---|---|---|---|
-| OpenCode | `keel install --opencode` | `tool.execute.before` plugin | throws | **live** |
-| OpenClaw | `keel install --openclaw` | `before_tool_call` plugin | `block: true` / `requireApproval` | **live** — `openclaw plugins list` reports it loaded |
-| Claude Code | `keel install --claude-code` | `PreToolUse` hook | exit 2 | **live** — `claude -p` child blocked `git push --force origin main`; see `session/transcripts/claude-code-force-push.txt` |
-| Cline | `keel install --cline` | `PreToolUse` hook | `HOOK_CONTROL` + `cancel: true` | types — read from installed `@cline/core` |
-| Gemini CLI | `keel install --gemini` | `PreToolUse` hook | exit 2 | types — Claude-Code-compatible per `gemini hooks migrate --from-claude` |
-| Cursor | `keel install --cursor` | `beforeShellExecution` / `beforeMCPExecution` | `{permission: deny\|ask}` | docs |
-| Codex CLI | `keel install --codex` | `PreToolUse` hook | exit 2 | docs |
-| Hermes | `keel install --hermes` | `pre_tool_call` plugin | `{"action": "block"}` | docs |
+| Host | Install | Interception point | How it blocks / warns | Block Verified | Warn Verified |
+|---|---|---|---|---|---|
+| OpenCode | `keel install --opencode` | `tool.execute.before` plugin | throws / `client.app.log({level:'warn'})` | **live** | **live** — M4: `opencode-warn.sh`, marker captured in OpenCode's own `opencode.log` (not the `--format json` stream — confirmed empirically that channel carries no app-log events headlessly); `session/transcripts/opencode-warn-no-verify-bypass.txt` |
+| OpenClaw | `keel install --openclaw` | `before_tool_call` plugin | `block: true` / `requireApproval` / `api.logger.warn` | **live**¹ — `openclaw plugins list` reports it loaded | **docs** — `api.logger.warn` wired wave-3; reaching the chat UI vs. only an operator/gateway log is unconfirmed |
+| Claude Code | `keel install --claude-code` | `PreToolUse` hook | exit 2 / `hookSpecificOutput.additionalContext` + `systemMessage` | **live**² — `claude -p` child blocked `git push --force origin main`; see `session/transcripts/claude-code-force-push.txt` | **docs** — M4: `claude-warn.sh` exists and is ready; this environment's isolated `CLAUDE_CONFIG_DIR` is AUTH-BLOCKED (see footnote 2), so it correctly early-exits rather than fabricate a pass |
+| Cline | `keel install --cline` | `PreToolUse` hook | `HOOK_CONTROL` + `cancel: true` / `systemMessage` | types — read from installed `@cline/core` | docs, best-effort — see footnote 3 |
+| Gemini CLI | `keel install --gemini` | `PreToolUse` hook | exit 2 / same envelope as Claude Code | types — Claude-Code-compatible per `gemini hooks migrate --from-claude` | **docs** — M4: `gemini-warn.sh` exists; this environment is AUTH-BLOCKED (no OAuth session, no `GEMINI_API_KEY`), correctly early-exits |
+| Cursor | `keel install --cursor` | `beforeShellExecution` / `beforeMCPExecution` | `{permission: deny\|ask}` / `userMessage`+`agentMessage` | docs — casing bug NOT fixed here, see footnote 4 | **docs, upgraded schema fidelity (M4)** — now sends both `userMessage`/`agentMessage` AND `user_message`/`agent_message` (cursor.com/docs/hooks, live-refetched this lane); still docs-confidence, no Cursor CLI available to confirm which spelling the real host reads |
+| Codex CLI | `keel install --codex` | `PreToolUse` hook | exit 2 / `systemMessage` | docs | **docs** — M4: `codex-warn.sh` exists; throwaway-installs cleanly but is real-auth-blocked (401 from `api.openai.com`), correctly early-exits |
+| Hermes | `keel install --hermes` | `pre_tool_call` plugin | `{"action": "block"}` | docs | docs — no Hermes CLI available in this environment |
 
 `keel install --all` installs every one of them.
+
+¹ **Not the same claim as "the hook fires per call."** `openclaw plugins list` reporting
+the plugin loaded is a load-time check, not a per-call one; `session/EVIDENCE/wave3-warnsurface.md`
+§2 already flagged a GitHub issue (openclaw/openclaw#5943, "Wire up `before_tool_call`
+plugin hook in tool execution pipeline") suggesting the hook may not fire in some
+versions/builds at all. Not re-verified or downgraded this lane — restated here so the
+matrix carries the caveat, not just a linked evidence file. `openclaw` (2026.4.15) is
+installed in this M4 environment and keel's plugin installs cleanly under an isolated
+`HOME`, but wiring it into OpenClaw's own config (`plugins.load.paths`) to reproduce even
+the load-time check was not completed this lane — flagged as a follow-up, not attempted
+further, in `session/v1/EVIDENCE/m4-hostbreadth.md`.
+
+² **Two different trust boundaries, not one.** The committed block transcript was
+captured via a REAL, non-isolated `~/.claude` login (a privileged supervisor session —
+see the transcript's own header). Every isolated-`CLAUDE_CONFIG_DIR` attempt in this M4
+environment (and, per claude.sh's own comment, in the environment that wrote that
+script) returns `"Not logged in"` — isolation itself breaks Claude Code auth on this
+machine. That means the "live" block claim and this lane's own automated `claude.sh`/
+`claude-warn.sh` scripts rest on different auth paths; re-running the isolated script
+here reproduces AUTH-BLOCKED, not a regression. Also noted, not silently fixed: the
+script writes to `session/transcripts/claude-force-push.txt`, but the committed evidence
+file this row cites is `claude-code-force-push.txt` — a pre-existing filename mismatch,
+left as-is rather than guessing which one is "correct" and renaming blind.
+
+³ Cline's warn path (`systemMessage` on a non-cancelling `HOOK_CONTROL` line) is
+docs/best-effort, unchanged this lane. Separately, and NOT a verification of keel's
+Cline adapter: this lane found empirically that `cline --json -P cline "say hi"`
+authenticates and responds in this environment right now (real cost incurred, ~$0.025),
+which contradicts a prior "cline provider 403 fleet-wide" note. No automated keel
+block/warn harness for Cline was built this lane — doing so properly (benign probe,
+negative control, block test, warn test) means several more real, paid calls with no
+budget explicitly authorized for this lane. Flagged in
+`session/v1/EVIDENCE/m4-hostbreadth.md` as the most promising next-lane target, not
+claimed as verified here.
+
+⁴ Cursor's block-path envelope (`permission: deny|ask` + `userMessage`/`agentMessage`)
+still ships camelCase-only, a known bug (cursor.com/docs/hooks specifies snake_case).
+The warn path got the additive fix this lane (see Warn Verified cell); the block path
+was deliberately left untouched — no Cursor CLI is available in this or any prior lane's
+environment to confirm a changed envelope is still accepted, and this codebase has its
+own precedent (Codex bug #249, `permissionDecision:'allow'` rejection) for an
+unrecognized/wrong field making a host mark a hook FAILED, which fails OPEN. Resolving
+both paths together, with real Cursor access, is the recommended follow-up — see the
+manual checklist below.
 
 ### What each host can and cannot do
 

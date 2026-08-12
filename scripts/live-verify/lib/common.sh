@@ -198,6 +198,54 @@ lv_verify_block() {
   return 0
 }
 
+# lv_verify_warn <marker_source_file> <marker_regex>
+# The `warn` mirror of lv_verify_block — for a verdict that must NOT stop
+# the action, so ref/HEAD-unmoved is the wrong signal (a warn and a
+# swallowed warn are BOTH "the action happened"). The CALLER must have
+# already confirmed the side effect actually occurred (e.g. a new commit
+# exists) before calling this — that is the block-vs-warn discriminator.
+# This checks the other half: the marker text appears in a channel the
+# CALLER's script did not itself write (a host's own log file, or the
+# child's own captured stdout for hosts with no independent log), and the
+# child did not time out (a timed-out child never got far enough to
+# produce a genuine marker either way). Sets LV_VERIFY_VERDICT to
+# pass/fail/timeout, same convention as lv_verify_block.
+lv_verify_warn() {
+  marker_source="$1"
+  marker="$2"
+  if [ "${LV_CHILD_EXIT:-0}" -eq 124 ]; then
+    lv_log "  child timed out — the warn was never confirmed surfaced. Verdict: could-not-test, not PASS."
+    LV_VERIFY_VERDICT="timeout"
+    return 1
+  fi
+  if [ ! -f "$marker_source" ] || ! grep -qE "$marker" "$marker_source"; then
+    lv_log "  no keel warn marker ($marker) found in $marker_source — warn was swallowed, or never fired"
+    LV_VERIFY_VERDICT="fail"
+    return 1
+  fi
+  lv_log "  confirmed: marker \"$marker\" found in $marker_source"
+  LV_VERIFY_VERDICT="pass"
+  return 0
+}
+
+# lv_no_marker <marker_source_file> <marker_regex>
+# The warn-path analogue of lv_negative_control: proves the marker check
+# above is not tainted (e.g. matching some unrelated, always-present log
+# line). Call this BEFORE the rule-triggering command has ever run, using
+# a fixture where the same command runs WITHOUT the trigger (no
+# --no-verify, etc.) — if the marker is already present, the detector
+# itself is broken and any later PASS would be meaningless.
+lv_no_marker() {
+  marker_source="$1"
+  marker="$2"
+  if [ -f "$marker_source" ] && grep -qE "$marker" "$marker_source"; then
+    lv_log "  FAIL: marker ($marker) found in $marker_source even though the triggering command was never run — detector is tainted."
+    return 1
+  fi
+  lv_log "  confirmed absent: marker \"$marker\" not present in $marker_source without the trigger"
+  return 0
+}
+
 lv_cleanup() {
   [ -n "${LV_ROOT:-}" ] && rm -rf "$LV_ROOT"
 }

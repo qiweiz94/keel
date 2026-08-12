@@ -314,13 +314,21 @@ describe('warn-visibility per host', () => {
     expect(payload.hookSpecificOutput).toBeUndefined()
   })
 
-  it('cursor: userMessage and agentMessage on the allow response, not stderr', () => {
+  it('cursor: both userMessage/agentMessage (legacy) AND user_message/agent_message (cursor.com/docs/hooks current schema) on the allow response, not stderr', () => {
+    // M4 host-breadth: cursor.com/docs/hooks was re-fetched live and
+    // confirmed snake_case (`user_message`/`agent_message`) — see hook.ts's
+    // comment on this branch for why both spellings are sent additively
+    // rather than switching outright (an unrecognized field risks a
+    // Codex-#249-shaped "hook failed" fail-open with no live Cursor access
+    // to rule that out here).
     const v = renderVerdict('cursor', warned)
     expect(v.stderr).toBe('')
     const payload = JSON.parse(v.stdout)
     expect(payload.permission).toBe('allow')
     expect(payload.userMessage).toContain('no-destructive-commands')
     expect(payload.agentMessage).toContain('no-destructive-commands')
+    expect(payload.user_message).toContain('no-destructive-commands')
+    expect(payload.agent_message).toContain('no-destructive-commands')
   })
 
   it('cline: systemMessage on a non-cancelling HOOK_CONTROL line, not stderr', () => {
