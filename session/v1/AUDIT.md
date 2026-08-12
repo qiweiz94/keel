@@ -156,15 +156,15 @@ corrected in the SECURITY.md class-1/class-3 text it exposed as overclaims.
 The two verdicts are deliberately kept separate: same root mechanism, but one
 turns keel off (blocking) and one is a wipe within the disclaimed posture (not).
 
-**Deliberately NOT fixed here** (lane constraint: prefer reporting over a risky
-late rule/normalizer change). The fix teaches `interpreterFlags`/the recursion
-trigger to recognize bundled short flags — correctness across shell
-flag-bundling semantics (`-lc`, `-ic`, `-xc`, `-cx`, …) is not something that
-can be made "small and well-tested" this late without regression risk to a
-security matcher. No `must-allow` fixture was added (blessing `keel disable` or
-a root wipe as expected-allow would repeat the exact M1r-1 anti-pattern); the
-committed `round2.mjs` is the reproduction + regression guard instead. Full
-reproduction: `scripts/redteam/round2.mjs`.
+**Not fixed by the M6 audit lane; FIXED by the supervisor immediately after**
+(the audit lane was barred from a risky late security-matcher change, so it
+escalated with a committed reproduction — the correct division of labor). The
+fix taught the recursion trigger to recognize bundled short flags by matching
+`/^-[a-z]*c$/` for shell interpreters (`-lc`, `-ic`, `-xc`), so the body is
+extracted and recursed like `-c`. No `must-allow` fixture blesses `keel disable`
+or a root wipe (that would repeat the M1r-1 anti-pattern); the guard is the deny
+side — `shell-normalize-bypass.test.ts` (6 cases) + `round2.mjs` control-catch
+probes. Full reproduction/guard: `scripts/redteam/round2.mjs` (exits 0).
 
 ### 2. Interpreter-body floor evadable by Python aliasing (disclosed class)
 `python3 -c "__import__('shutil').rmtree('/')"` and
@@ -211,6 +211,21 @@ over-read the floor's reach.
 Confirms the disclosed SECURITY.md class-1 residual, unchanged.
 
 ### 5. Exfil cross-call correlation is INERT on hook-invoked hosts
+
+> **✅ RESOLVED for the warn-tier (post-audit fix, B1-exfil lane).** A new
+> `PersistentFlowStore` (`flow-store.ts`: `<stateDir()>/flow-tags.json`,
+> session-scoped, 1h TTL, bounded 50 tags/200 sessions LRU, `withFileLock`,
+> fails safe to "no correlation") lets `FlowTracker` correlate a secret read
+> then a later egress **across fresh `keel hook` processes** within one session,
+> surfaced by a new **warn-tier** rule `no-exfil-flow-cross-call` (rules 45→46,
+> drift-guarded), wired by default into `keel hook`/`test`/`evaluate`. The
+> existing `no-exfil-flow` **deny** floor is deliberately UNCHANGED (a hard block
+> would false-positive on the legitimate read-token-then-network build). So the
+> honest state is now: cross-call exfil is **detected (warn) on hook hosts**,
+> not blocked; the deny-tier gap and prompt injection remain open by design
+> (`docs/exfil.md`). 16 new tests incl. real spawned-process concurrency; an
+> advisor review confirmed the deny-ladder does not silently suppress the warn.
+
 `no-exfil-flow` correlates a credential read with a later network call **only
 inside one long-lived process** (OpenCode plugin, `keel daemon`). For every
 `keel hook <host>` integration (Claude Code, Gemini CLI, Cursor, Codex, cline,
@@ -224,6 +239,16 @@ follow-up, not attempted. For most installs this is the single biggest
 practical gap in the exfil mitigation.
 
 ### 6. `keel install --project` writes an empty rules stub (pre-existing, low-severity)
+
+> **✅ RESOLVED (post-audit fix, A3-install lane).** `installProjectPlugin()`
+> now writes the real `DEFAULT_RULES_YAML` (reused verbatim) to the project
+> `.keel/rules.yaml` instead of `rules: []`. This was worse than "low-severity":
+> the empty stub only enforced because a *separate* global `~/.keel/rules.yaml`
+> bootstrap masked it, so a teammate cloning a repo with a committed
+> `.keel/rules.yaml` but no global install got ZERO enforcement behind a green
+> checkmark. Verified live (isolated HOME, project ruleset alone denies
+> `rm -rf /`) + mutation-tested (`install-project-rules.test.ts`).
+
 Confirmed again this lane: `keel install --project` (and `--all`) writes a
 project `.keel/rules.yaml` with `rules: []`, and the per-host installers
 (`--claude-code`/`--gemini`/`--codex`) do NOT create it. Documented in
@@ -231,12 +256,34 @@ project `.keel/rules.yaml` with `rules: []`, and the per-host installers
 `--project`/`--all`; the workaround (delete the empty stub) is recorded there.
 
 ### 7. Two stale CLI console messages (human decision, from MERGE-NOTE)
+
+> **✅ RESOLVED (post-audit fix, A4 lane).** The Cursor and Codex install-time
+> "no blocking hooks — advisory only" lines were corrected to match the verified
+> real wiring: Cursor auto-writes `.cursor/hooks.json` with `failClosed: true`
+> blocking hooks; Codex installs real blocking hook scripts (exit 2 denies) that
+> are inert until manually registered in `~/.codex/hooks.json`. Copy now matches
+> reality without overclaiming either way.
+
 Cursor's and Codex CLI's install-time "no blocking hooks — advisory only" log
 lines are contradicted by the real hooks those same install paths wire. Left
 untouched by the release lane deliberately; carried into HUMAN-CHECKLIST as a
 before/after-release decision.
 
 ### 8b. Running the test suite writes a real override into `~/.keel/overrides.json` (pre-existing isolation leak, user-visible)
+
+> **✅ RESOLVED (post-audit fix, A5 lane) — and the file attribution below was
+> wrong.** The real leak was NOT `hook-command.test.ts` / `fixture-harness.test.ts`
+> (one never touches the pipeline; the other was already stubbed). It was **8
+> `packages/core` test files** constructing `EnforcementPipeline` with no
+> `overrideStore`, so every deny/warn `consume()` hit real
+> `~/.keel/overrides.json` — mutation-proven that a synthetic rule-id collision
+> could silently DELETE a genuinely armed override. Fixed: all 12 construction
+> sites given an in-memory stub, plus a committed `vitest` `globalSetup` guard
+> (`override-isolation-guard.ts`) that fails the suite if real
+> `~/.keel/overrides.json` is ever touched — mutation-verified to fire. The
+> supervisor also cleaned the one stale (expired, harmless) grant left in the
+> real file. Original (mis-attributed) analysis preserved below.
+
 Observed this lane, not introduced by it: after a full `npm test` on this
 machine, real `~/.keel/overrides.json` contained a `no-verify-bypass` grant
 with a future `expires_at`, mtime stamped to this session. A CLI test that
@@ -270,16 +317,17 @@ Fixed this lane — see the perf section.
   logic-implemented and unit-covered deterministically on macOS via explicit
   `flavor: 'win32'` parameters, and the `windows-latest` CI job is wired to
   run the full suite — but **none of it has run on a real Windows host or a
-  green `windows-latest` runner**. macOS cannot run it. Also note: a
-  pre-existing `nanoid <3.3.17` `npm audit` finding may fail that job's audit
-  step independent of any path-matcher correctness. PENDING the CI job going
-  green for real (see `session/v1/EVIDENCE/m3-windows.md`).
+  green `windows-latest` runner**. macOS cannot run it. (The `nanoid <3.3.17`
+  audit finding that would have failed the job's audit step is now FIXED — root
+  `overrides` pin, `npm audit` reports 0 vulnerabilities.) PENDING a real
+  `windows-latest` CI run, which needs a push — exact steps in
+  `session/v1/runbooks/windows.md`.
 - **Detection-axis benchmark at graded scale.** The four new elicitation
   tasks, the cost-cap/attribution-honesty wiring, and a live end-to-end
   attribution pair are built and verified at zero/near-zero spend
   (`m2-b2-bench.md`), but the full graded battery (real N across arms A/B, and
-  any Arm C frontier run) was deliberately NOT run — the supervisor runs the
-  paid arms. Elicitable, not run at scale.
+  any Arm C frontier run) was deliberately NOT run — needs budget. Exact
+  commands + cost gate: `session/v1/runbooks/benchmark.md`. Elicitable, not run at scale.
 - **Per-host verification discharge.** The PostToolUse discharge branch that
   makes the verification/claim thesis work on exit-code hosts is
   mechanism-tested and was live-verified on **Claude Code** (and OpenCode
@@ -290,7 +338,8 @@ Fixed this lane — see the perf section.
 - **Live per-host block/warn verification generally.** Confirmed live only via
   OpenCode (block AND warn) and, for the blocking path, Claude Code in earlier
   waves. Every other host's live verification needs a human with authenticated
-  credentials — this is the bulk of the consolidated HUMAN-CHECKLIST.
+  credentials — this is the bulk of the consolidated HUMAN-CHECKLIST. Exact
+  per-host auth + verify steps: `session/v1/runbooks/per-host.md`.
 - **Rego/WASM policy engine** is experimental (`@open-policy-agent/opa-wasm`),
   not part of the default enforcement path, and not exercised by this audit.
 - **perf-budget CPU-time blindness.** By design the new test cannot catch a
@@ -298,8 +347,8 @@ Fixed this lane — see the perf section.
   network round-trip added to the hot path). Accepted: the hot path is pure
   in-memory work today; `scripts/perf/bench.mjs` still reports wall-clock for
   the fuller corpus if that view is wanted.
-- **The `bash -lc` fix itself** (residual #1) is unbuilt and unverified — only
-  the bypass is verified.
+  (The earlier note here — "the `bash -lc` fix itself is unbuilt" — is
+  superseded: the fix IS built, tested, and verified; see §1's RESOLVED banner.)
 
 ---
 
@@ -353,21 +402,31 @@ quantity. Never a failure either way.
 
 ## Bottom line
 
-**One RELEASE-BLOCKING finding stands: `bash -lc 'keel disable'` (also
-`uninstall`/`enforce`) turns keel off in a single agent command at every dial,
-defeating the `keel-control-gate` floor and falsifying SECURITY.md's
-categorical "a compromised agent cannot turn keel off" promise.** It is not a
-code defect this lane fixed (the fix is a normalizer change too risky to land
-this late without regression testing) — it is escalated for the human's
-ship/no-ship decision (HUMAN-CHECKLIST §0). The related `bash -lc 'rm -rf /'`
-instance, same mechanism, is NOT blocking (indirect exec, disclaimed class,
-mistake-class protection intact).
+**UPDATE (post-audit close-all-gaps pass): the release-blocker is FIXED and the
+code-closable residuals are closed.** The `bash -lc 'keel disable'` master-key
+bypass this audit flagged RELEASE-BLOCKING was fixed by the supervisor
+(`command-normalizer.ts` `/^-[a-z]*c$/` bundled-flag match), regression-guarded
+by `shell-normalize-bypass.test.ts` + `scripts/redteam/round2.mjs`. On top of
+that, a follow-up pass closed: the `${IFS}` bare-word split (§4, partial —
+quote-wrapped/modifier forms accepted as documented arms-race residuals), the
+cross-process exfil correlation as a warn-tier rule (§5), the `install --project`
+empty-stub (§6, which was a real teammate-clone zero-enforcement bug), the stale
+Cursor/Codex copy (§7), the override-store test leak (§8b, with a committed
+guard), and the nanoid audit finding. Full suite green (core 622 / cli 840 /
+mcp 6 / plugin all-pass), `round2.mjs` exits 0, `npm publish --dry-run` clean at
+1.0.0.
 
-Setting that aside, v1.0.0 is a genuinely careful, honestly-documented release:
-the floors hold for the mistake/drift class they are built for on the direct
-command surface, the fail-closed and degenerate-input handling is real, and the
-perf claim is now measured against what it actually promises. The largest
-honest gaps beyond the blocking finding are runtime-unverified Windows, the
-inert-on-hook-hosts exfil correlation, the suite's override-store isolation
-leak, and the still-manual per-host live verification — all pre-existing, all
-now consolidated for a human in `session/v1/HUMAN-CHECKLIST.md`.
+v1.0.0 is a genuinely careful, honestly-documented release: the floors hold for
+the mistake/drift class they are built for AND now through the bundled-flag /
+`${IFS}` obfuscations; the fail-closed and degenerate-input handling is real; the
+perf claim is measured against what it actually promises; and exfil is now
+*detected* (warn) across hook processes, not only in one process.
+
+**What genuinely remains is human-gated, not unclosed code** — each with an exact
+runbook under `session/v1/runbooks/`: runtime-verify Windows (a `windows-latest`
+CI run needs a push), per-host block/warn live-verify (needs credentials), the
+graded/frontier benchmark (needs budget), and the deliberate release calls
+(publish / go-public / main-merge / dogfood / demo GIF). Accepted-as-documented
+limits: prompt injection is unsolved, the exfil deny-tier stays single-process by
+design, and the deeper `${IFS}`/Python-aliasing obfuscations are best-effort regex
+limits. All consolidated in `session/v1/HUMAN-CHECKLIST.md`.

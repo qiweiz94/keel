@@ -1,5 +1,17 @@
 # Keel v1.0.0 — authoritative human checklist
 
+> **UPDATE (post-audit close-all-gaps pass):** every *code-closable* AUDIT gap is
+> now closed (release-blocker `bash -lc` bypass, `${IFS}` split, cross-process
+> exfil warn-tier, `install --project` stub, stale Cursor/Codex copy,
+> override-store test leak, nanoid audit) — see `session/v1/AUDIT.md`. What
+> remains below is genuinely human-gated. Three of these now have exact,
+> step-by-step runbooks:
+> - **Windows CI green** → `session/v1/runbooks/windows.md` (needs a push)
+> - **Per-host live-verify** → `session/v1/runbooks/per-host.md` (needs credentials)
+> - **Benchmark at scale** → `session/v1/runbooks/benchmark.md` (needs budget)
+>
+> §0 (the `bash -lc` master-key bypass) is **RESOLVED** — no longer a blocker.
+
 **This is the single authoritative list of everything only a human can do for
 the v1.0.0 release.** It consolidates three earlier fragments, which are kept
 as detailed appendices and now point here:
