@@ -89,8 +89,16 @@ const probes = [
     cmd: `rm -rf /`, note: 'plain' },
   { group: 'destructive-commands', kind: 'control-catch',
     cmd: `r"m" -rf /`, note: 'intra-token quoting (A2 normalizer catch)' },
+  { group: 'destructive-commands', kind: 'control-catch',
+    cmd: `rm\${IFS}-rf\${IFS}/`, note: 'FIXED (A2 IFS seed): was a DISCLOSED miss; command-normalizer.ts now seeds expandVars with a known-default IFS=" " so this normalizes to "rm -rf /" and denies' },
+  { group: 'destructive-commands', kind: 'control-catch',
+    cmd: `rm\$IFS-rf\$IFS/`, note: 'FIXED (A2 IFS seed): unbraced form, same VAR_RE, same dict entry' },
   { group: 'destructive-commands', kind: 'bypass-attempt',
-    cmd: `rm\${IFS}-rf\${IFS}/`, note: 'IFS word-split (DISCLOSED miss)' },
+    cmd: `rm"\${IFS}"-rf"\${IFS}"/`, note: 'IFS word-split, DOUBLE-quoted — DISCLOSED residual: renderToken only calls expandVars in the unquoted branch, so a whitespace-free double-quoted run is stripped of its quotes but never expanded' },
+  { group: 'destructive-commands', kind: 'bypass-attempt',
+    cmd: `rm'\${IFS}'-rf'\${IFS}'/`, note: 'IFS word-split, SINGLE-quoted — DISCLOSED residual, same cause as the double-quoted form' },
+  { group: 'destructive-commands', kind: 'bypass-attempt',
+    cmd: `rm\${IFS:0:1}-rf\${IFS:0:1}/`, note: 'IFS with a parameter-expansion modifier — DISCLOSED residual: VAR_RE requires "}" immediately after the bare name, so ${IFS:0:1}/${IFS%x}/${IFS:-x} never match and never resolve' },
 
   // ── DISCRIMINATOR: SECURITY.md claims `sh|bash|dash|zsh|ksh -c` bodies
   //    are recursed and caught. Does the combined-flag form + the M1r-1

@@ -126,6 +126,34 @@ describe('shell-normalization closes bypasses of the shipped defaults (M1/A2)', 
     })
   })
 
+  describe('class 3 — IFS word-split (GENUINELY NEW catch, AUDIT §4)', () => {
+    // `${IFS}` / `$IFS` is a shell built-in that a real shell expands to
+    // the word-splitting separator (default space/tab/newline) BEFORE
+    // tokenizing — so `rm${IFS}-rf${IFS}/` runs as `rm -rf /` under a real
+    // shell but the raw string never contains that substring. This was an
+    // ALLOW before the fix: expandVars had no dict entry for IFS since
+    // nothing in the command itself assigns it. Fixed by seeding the
+    // bounded dict with a single hardcoded literal, IFS: ' ' (the shell's
+    // own POSIX default) — see BUILTIN_VAR_DEFAULTS in
+    // command-normalizer.ts. Still not real env access: it's one entry in
+    // the same dict `NAME=value` assignments already populate.
+    const pipeline = makeDefaultsPipeline()
+    it('rm${IFS}-rf${IFS}/ denies via no-destructive-commands (braced form)', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: 'rm${IFS}-rf${IFS}/' }, 'ifs1'))
+      expect(r.action).toBe('deny')
+      expect(r.rule_id).toBe('no-destructive-commands')
+    })
+    it('rm$IFS-rf$IFS/ denies via no-destructive-commands (unbraced form — VAR_RE matches both)', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: 'rm$IFS-rf$IFS/' }, 'ifs2'))
+      expect(r.action).toBe('deny')
+      expect(r.rule_id).toBe('no-destructive-commands')
+    })
+    it('echo "the value of IFS is ${IFS}" stays allow — must-not-fire: a literal ${IFS} inside a whitespace-bearing quoted argument is DATA, preserved verbatim like any other quoted segment, not expanded', async () => {
+      const r = await pipeline.evaluate(input('Bash', { command: 'echo "the value of IFS is ${IFS}"' }, 'ifs3'))
+      expect(r.action).toBe('allow')
+    })
+  })
+
   describe('compound-command splitting (already partly caught by unanchored substring matching; normalizer keeps it working and isolates the sub-command)', () => {
     const pipeline = makeDefaultsPipeline()
     it('FOO=1 rm -rf ~ denies (measured: ALREADY denied pre-normalizer — the shipped pattern has no start-of-string anchor, so a leading env-assignment prefix never blocked the match)', async () => {
