@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execSync } from 'node:child_process'
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * The audit log and action receipts are the tool's evidence trail.
@@ -42,7 +43,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true })
+  rmSafe(dir)
 })
 
 describe('audit log', () => {
@@ -169,7 +170,7 @@ describe('action receipts', () => {
       const out = execSync(`node "${scriptFile}"`, { encoding: 'utf-8', timeout: 10000 })
       expect(out).toContain('OK rotated-kids')
     } finally {
-      rmSync(home, { recursive: true, force: true })
+      rmSafe(home)
     }
   })
 })

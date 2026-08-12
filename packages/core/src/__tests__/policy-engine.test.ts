@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PolicyEngine } from '../policy-engine.js'
+import { rmSafe } from '../enforce/__tests__/helpers/fs-safe.js'
 
 function makeEngine(): PolicyEngine {
   const engine = new PolicyEngine()
@@ -339,7 +340,7 @@ describe('PolicyEngine', () => {
     let dir = ''
 
     beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'keel-autoverify-')) })
-    afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+    afterAll(() => { rmSafe(dir) })
 
     const write = (name: string, content: string) => {
       const p = join(dir, name)

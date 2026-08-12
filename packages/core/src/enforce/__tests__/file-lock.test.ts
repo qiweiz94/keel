@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { acquireLock, releaseLock, withFileLock } from '../file-lock.js'
+import { acquireLock, releaseLock, withFileLock, classifyLockError } from '../file-lock.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Unit tests for the two properties file-lock.ts's header comment claims
@@ -32,7 +33,7 @@ function freshLockPath(): string {
 afterEach(() => {
   while (tmpDirs.length) {
     const dir = tmpDirs.pop()!
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   }
 })
 
@@ -147,5 +148,40 @@ describe('file-lock — release only removes a lock this call actually owns', ()
     writeFileSync(lockPath, 'anything')
     releaseLock(lockPath)
     expect(existsSync(lockPath)).toBe(false)
+  })
+})
+
+/**
+ * classifyLockError is a pure function of (code, flavor) specifically so
+ * the Windows-only contention codes are deterministically testable on
+ * this macOS build machine — see the function's doc in file-lock.ts.
+ * These do not touch the real filesystem; they test the classification
+ * decision that acquireLock's catch block now delegates to, which used
+ * to be a hardcoded `!== 'EEXIST'` check that treated every Windows
+ * sharing-violation code as a fatal error instead of contention.
+ */
+describe('classifyLockError — Windows sharing-violation codes are contention, not fatal', () => {
+  it('EEXIST is contention on both flavors (the original, only-ever-POSIX case)', () => {
+    expect(classifyLockError('EEXIST', 'posix')).toBe('contention')
+    expect(classifyLockError('EEXIST', 'win32')).toBe('contention')
+  })
+
+  it('EBUSY is contention on win32 but fatal on posix', () => {
+    expect(classifyLockError('EBUSY', 'win32')).toBe('contention')
+    expect(classifyLockError('EBUSY', 'posix')).toBe('fatal')
+  })
+
+  it('EPERM is contention on win32 but fatal on posix', () => {
+    expect(classifyLockError('EPERM', 'win32')).toBe('contention')
+    expect(classifyLockError('EPERM', 'posix')).toBe('fatal')
+  })
+
+  it('EACCES is fatal on both flavors (a real permissions problem, not lock contention)', () => {
+    expect(classifyLockError('EACCES', 'win32')).toBe('fatal')
+    expect(classifyLockError('EACCES', 'posix')).toBe('fatal')
+  })
+
+  it('an undefined code is fatal (do not spin on something backoff cannot fix)', () => {
+    expect(classifyLockError(undefined, 'win32')).toBe('fatal')
   })
 })

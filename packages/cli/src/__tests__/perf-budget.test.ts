@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir, cpus, loadavg } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +13,7 @@ import {
   parseRulesContent,
 } from '@get-keel/core'
 import type { EnforceInput, KeelRule, PipelineConfig, ProtectionLevel, RuleContext, RuleHierarchy } from '@get-keel/core'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * A4 perf-budget regression guard (roadmap A4 — see session/v04/EVIDENCE/
@@ -191,8 +192,8 @@ beforeAll(() => {
 afterAll(() => {
   delete process.env.KEEL_STATE_DIR
   delete process.env.KEEL_OVERRIDES_DIR
-  rmSync(stateDir, { recursive: true, force: true })
-  rmSync(scratchRoot, { recursive: true, force: true })
+  rmSafe(stateDir)
+  rmSafe(scratchRoot)
 })
 
 describe('A4 perf budget: EnforcementPipeline.evaluate() vs the <50ms hot-path claim', () => {

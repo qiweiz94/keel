@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, chmodSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, chmodSync, mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Install-time and fail-closed behaviour.
@@ -46,7 +47,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true })
+  rmSafe(dir)
 })
 
 describePosixShim('init --hooks', () => {
@@ -166,7 +167,7 @@ describe('install --opencode creates the global rules', () => {
   })
 
   afterEach(() => {
-    rmSync(home, { recursive: true, force: true })
+    rmSafe(home)
   })
 
   it('creates ~/.keel/rules.yaml with the current defaults', () => {

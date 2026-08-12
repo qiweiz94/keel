@@ -6,11 +6,47 @@ import { spawnSync } from "node:child_process";
 
 // ../core/src/enforce/pipeline.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4, rmSync, statSync as statSync2 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { join as join3, resolve } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { join as join4 } from "node:path";
+
+// ../core/src/enforce/path-normalize.ts
+import { win32, posix } from "node:path";
+function currentFlavor() {
+  return process.platform === "win32" ? "win32" : "posix";
+}
+function impl(flavor) {
+  return flavor === "win32" ? win32 : posix;
+}
+function isAbsolutePath(p, flavor = currentFlavor()) {
+  return !!p && impl(flavor).isAbsolute(p);
+}
+function resolveMaybeRelative(rawPath, cwd, flavor = currentFlavor()) {
+  if (!rawPath) return rawPath;
+  return isAbsolutePath(rawPath, flavor) ? rawPath : impl(flavor).resolve(cwd, rawPath);
+}
+function canonicalizePath(p, flavor = currentFlavor()) {
+  if (!p) return p;
+  const isUnc = flavor === "win32" && /^[\\/]{2}/.test(p);
+  let s = p.replace(/\\/g, "/");
+  if (isUnc) {
+    s = "//" + s.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+  } else {
+    s = s.replace(/\/{2,}/g, "/");
+  }
+  s = s.replace(/^([a-zA-Z]):/, (_m, d) => `${d.toUpperCase()}:`);
+  return s;
+}
+function foldCase(p, flavor = currentFlavor()) {
+  return flavor === "win32" ? p.toLowerCase() : p;
+}
+function normalizeForMatch(p, flavor = currentFlavor()) {
+  return foldCase(canonicalizePath(p, flavor), flavor);
+}
 
 // ../core/src/enforce/rule-parser.ts
 import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ../../node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -6516,12 +6552,12 @@ function dialAction(rule, level) {
   return rule.action;
 }
 function loadRuleHierarchy(projectDir) {
-  const home = process.env.HOME || "~";
-  const projectRules = parseRulesFile(`${projectDir}/.keel/rules.yaml`) || parseRulesFile(`${projectDir}/AGENTS.md`) || parseRulesFile(`${projectDir}/CLAUDE.md`);
-  const localRules = parseRulesFile(`${projectDir}/.keel.local.yaml`) || parseRulesFile(`${projectDir}/AGENTS.local.md`) || parseRulesFile(`${projectDir}/CLAUDE.local.md`);
+  const home = process.env.HOME || homedir();
+  const projectRules = parseRulesFile(join(projectDir, ".keel", "rules.yaml")) || parseRulesFile(join(projectDir, "AGENTS.md")) || parseRulesFile(join(projectDir, "CLAUDE.md"));
+  const localRules = parseRulesFile(join(projectDir, ".keel.local.yaml")) || parseRulesFile(join(projectDir, "AGENTS.local.md")) || parseRulesFile(join(projectDir, "CLAUDE.local.md"));
   return {
-    global: parseRulesFile(`${home}/.keel/rules.yaml`) || parseRulesFile(`${home}/.config/keel/rules.yaml`),
-    user: parseRulesFile(`${home}/.config/keel/rules.yaml`) || null,
+    global: parseRulesFile(join(home, ".keel", "rules.yaml")) || parseRulesFile(join(home, ".config", "keel", "rules.yaml")),
+    user: parseRulesFile(join(home, ".config", "keel", "rules.yaml")) || null,
     project: projectRules,
     local: localRules
   };
@@ -6634,8 +6670,8 @@ function hashRulesFile(filePath) {
 
 // ../core/src/enforce/package-verifier.ts
 import { readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2, mkdirSync, renameSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { join as join2 } from "node:path";
+import { homedir as homedir2 } from "node:os";
 var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun"]);
 var ADD_SUBCOMMANDS = {
   npm: /* @__PURE__ */ new Set(["install", "i"]),
@@ -6805,7 +6841,7 @@ var CACHE_TTL_MS = {
   unverified: 5 * 60 * 1e3
 };
 function packageVerifierStateDir() {
-  return process.env.KEEL_STATE_DIR || join(homedir(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join2(homedir2(), ".keel", "state");
 }
 var PackageVerifierCache = class {
   constructor(stateDir2 = packageVerifierStateDir()) {
@@ -6813,7 +6849,7 @@ var PackageVerifierCache = class {
   }
   stateDir;
   filePath() {
-    return join(this.stateDir, "package-verifier.json");
+    return join2(this.stateDir, "package-verifier.json");
   }
   load() {
     try {
@@ -7011,7 +7047,7 @@ function interpreterFlags(kind) {
   }
 }
 function basename(path2) {
-  const parts = path2.split("/");
+  const parts = path2.split(/[/\\]/);
   return parts[parts.length - 1] || path2;
 }
 function isQuoteChar(c) {
@@ -7343,8 +7379,8 @@ function matches(matcher, input) {
   const args = input.args || {};
   const pathTargets = matcher.paths?.length ? [...matcher.paths, ...matcher.path ? [matcher.path] : []] : matcher.path ? [matcher.path] : [];
   if (pathTargets.length) {
-    const value = argPath(args);
-    if (!pathTargets.some((target) => value.includes(target))) return false;
+    const value = normalizeForMatch(argPath(args));
+    if (!pathTargets.some((target) => value.includes(normalizeForMatch(target)))) return false;
   }
   if (matcher.pattern) {
     let re;
@@ -7609,7 +7645,9 @@ var METACHAR_RE = /[.+^${}()|[\]\\]/g;
 var TOKEN_LEADING = "\0DSL\0";
 var TOKEN_TRAILING = "\0DST\0";
 var TOKEN_BARE = "\0DSB\0";
-function matchesTestGlob(value, pattern) {
+function matchesTestGlob(rawValue, rawPattern) {
+  const value = normalizeForMatch(rawValue);
+  const pattern = normalizeForMatch(rawPattern);
   const escaped = pattern.replace(METACHAR_RE, "\\$&");
   const withDoubleStarTokens = escaped.replace(/\*\*\//g, TOKEN_LEADING).replace(/\/\*\*/g, TOKEN_TRAILING).replace(/\*\*/g, TOKEN_BARE);
   const withStars = withDoubleStarTokens.replace(/\*/g, "[^/]*");
@@ -7626,15 +7664,15 @@ function matchesAnyTestGlob(value, patterns) {
 
 // ../core/src/enforce/overrides.ts
 import { closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { join as join3 } from "node:path";
 var FileRuleOverrideStore = class {
   directory;
   file;
   lock;
-  constructor(home = homedir2()) {
-    this.directory = process.env.KEEL_OVERRIDES_DIR || join2(home, ".keel");
-    this.file = join2(this.directory, "overrides.json");
+  constructor(home = homedir3()) {
+    this.directory = process.env.KEEL_OVERRIDES_DIR || join3(home, ".keel");
+    this.file = join3(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
   }
   consume(ruleId, sessionId) {
@@ -7976,7 +8014,7 @@ var EnforcementPipeline = class {
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const protectFloor = (rules2) => rules2.some((rule) => rule.level === "protect" && (rule.type === "content" || rule.type === "sequence" || rule.type === "flow"));
     const reasoningChecks = depth === "deep";
-    const sentinelPath = this.config.disableFile || join3(homedir3(), ".keel", "DISABLED");
+    const sentinelPath = this.config.disableFile || join4(homedir4(), ".keel", "DISABLED");
     if (existsSync4(sentinelPath)) {
       try {
         const sentinel = JSON.parse(readFileSync4(sentinelPath, "utf-8"));
@@ -8153,10 +8191,14 @@ var EnforcementPipeline = class {
         if (rule.type === "filesystem" && rule.paths && !/^read/i.test(input.tool)) {
           const args = input.args;
           const pathStr = argPath(args);
-          const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
+          const resolvedPath = resolveMaybeRelative(pathStr, input.cwd);
           const operation = String(args.operation || "");
           const excluded = (rule.exclude || []).some((p) => this.pathMatches(resolvedPath, p));
-          const pathMatched = rule.paths.some((p) => p.startsWith("!") ? !this.pathMatches(resolvedPath, p.slice(1)) : this.pathMatches(resolvedPath, p));
+          const positivePatterns = rule.paths.filter((p) => !p.startsWith("!"));
+          const negatedPatterns = rule.paths.filter((p) => p.startsWith("!")).map((p) => p.slice(1));
+          const positiveMatched = positivePatterns.length === 0 ? true : positivePatterns.some((p) => this.pathMatches(resolvedPath, p));
+          const negatedExcluded = negatedPatterns.some((p) => this.pathMatches(resolvedPath, p));
+          const pathMatched = positiveMatched && !negatedExcluded;
           const operationMatched = !rule.operations?.length || rule.operations.includes(operation);
           if (pathMatched && operationMatched && !excluded) return this.violation(input, rule, rule.message, start, 3);
         }
@@ -8272,7 +8314,7 @@ var EnforcementPipeline = class {
         if (deepChecks && rule.type === "content" && rule.patterns && !/^read/i.test(input.tool)) {
           const args = input.args;
           const pathStr = argPath(args);
-          const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
+          const resolvedPath = resolveMaybeRelative(pathStr, input.cwd);
           const patchText = String(args.patchText || "");
           const inlineContent = String(args.content || args.text || patchText || "");
           const isFile = resolvedPath && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
@@ -8301,7 +8343,7 @@ var EnforcementPipeline = class {
           if (rule.paths && !/^read/i.test(input.tool)) {
             const args = input.args;
             const pathStr = argPath(args);
-            const resolvedPath = pathStr && !pathStr.startsWith("/") ? resolve(input.cwd, pathStr) : pathStr;
+            const resolvedPath = resolveMaybeRelative(pathStr, input.cwd);
             const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths);
             if (pathMatched) {
               const patchText = String(args.patchText || "");
@@ -8585,8 +8627,9 @@ var EnforcementPipeline = class {
     if (this.denyFirstTime.has(ruleId)) return false;
     return this.config.stateManager?.isFirstTime(ruleId, this.lastRulesHash) ?? true;
   }
-  pathMatches(value, pattern) {
-    const normalized = pattern;
+  pathMatches(rawValue, rawPattern) {
+    const value = normalizeForMatch(rawValue);
+    const normalized = normalizeForMatch(rawPattern);
     if (normalized.includes("**")) {
       const regex = "^" + normalized.split("**").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, (ch) => ch === "*" ? "[^/]*" : `\\${ch}`)).join(".*") + "$";
       try {
@@ -8821,8 +8864,8 @@ var SequenceDetector = class {
     const { tool, args } = input;
     if (step.tool.toLowerCase() !== tool.toLowerCase()) return false;
     if (step.path) {
-      const argPath2 = String(args.path || args.filePath || args.file || args.dest || "");
-      if (!argPath2.includes(step.path)) return false;
+      const argPath2 = normalizeForMatch(String(args.path || args.filePath || args.file || args.dest || ""));
+      if (!argPath2.includes(normalizeForMatch(step.path))) return false;
     }
     if (step.pattern) {
       let regex;
@@ -8846,7 +8889,6 @@ var SequenceDetector = class {
 
 // ../core/src/enforce/flow-tracker.ts
 import { existsSync as existsSync6 } from "node:fs";
-import { resolve as resolve2 } from "node:path";
 var FlowTracker = class {
   taggedValues = /* @__PURE__ */ new Map();
   // tag_key → tool name that created the tag
@@ -8858,7 +8900,7 @@ var FlowTracker = class {
   record(input, rule) {
     const args = input.args;
     const rawPath = String(args.path || args.file || args.filePath || "");
-    const path2 = rawPath && !rawPath.startsWith("/") ? resolve2(input.cwd, rawPath) : rawPath;
+    const path2 = resolveMaybeRelative(rawPath, input.cwd);
     if (path2 && existsSync6(path2)) {
       const configuredSources = typeof rule === "object" ? rule.sources : void 0;
       const matchedRule = configuredSources?.find((source) => this.pathMatches(path2, source)) || (!configuredSources ? this.matchesSensitivePath(path2) : null);
@@ -8946,6 +8988,7 @@ var FlowTracker = class {
     return pBase.length > 2 && vBase.length > 2 && (pBase === vBase || value.includes(pBase));
   }
   matchesSensitivePath(path2) {
+    const normalizedPath = canonicalizePath(path2);
     const sensitivePaths = [
       ".env",
       ".env.local",
@@ -8961,14 +9004,15 @@ var FlowTracker = class {
       "apikey"
     ];
     for (const s of sensitivePaths) {
-      if (path2.includes(s)) return `sensitive-path:${s}`;
+      if (normalizedPath.includes(s)) return `sensitive-path:${s}`;
     }
     return null;
   }
   pathMatches(value, pattern) {
-    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    const normalizedValue = canonicalizePath(value);
+    const escaped = canonicalizePath(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
     try {
-      return new RegExp(`^${escaped}$`, "i").test(value) || new RegExp(escaped, "i").test(value);
+      return new RegExp(`^${escaped}$`, "i").test(normalizedValue) || new RegExp(escaped, "i").test(normalizedValue);
     } catch {
       return false;
     }
@@ -9177,8 +9221,8 @@ var ResearchTracker = class {
 
 // ../core/src/enforce/problem-ledger.ts
 import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync4, renameSync as renameSync3, statSync as statSync4 } from "node:fs";
-import { join as join4 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // ../core/src/enforce/file-lock.ts
@@ -9202,6 +9246,24 @@ function makeToken() {
   tokenCounter += 1;
   return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`;
 }
+function classifyLockError(code, flavor = currentFlavor()) {
+  if (code === "EEXIST") return "contention";
+  if (flavor === "win32" && (code === "EBUSY" || code === "EPERM")) return "contention";
+  return "fatal";
+}
+function unlinkWithRetry(path2, attempts = 5, delayMs = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      unlinkSync2(path2);
+      return;
+    } catch (err) {
+      const code = err.code;
+      if (code === "ENOENT") return;
+      if (i === attempts - 1) throw err;
+      sleepSync(delayMs * (i + 1));
+    }
+  }
+}
 function acquireLock(lockPath, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
@@ -9218,7 +9280,7 @@ function acquireLock(lockPath, options = {}) {
       }
       return token;
     } catch (err) {
-      if (err.code !== "EEXIST") {
+      if (classifyLockError(err.code) !== "contention") {
         return null;
       }
     }
@@ -9226,7 +9288,7 @@ function acquireLock(lockPath, options = {}) {
       const heldFor = Date.now() - statSync3(lockPath).mtimeMs;
       if (heldFor > staleMs) {
         try {
-          unlinkSync2(lockPath);
+          unlinkWithRetry(lockPath);
         } catch {
         }
         continue;
@@ -9246,7 +9308,7 @@ function releaseLock(lockPath, token) {
       const current = readFileSync7(lockPath, "utf-8");
       if (current !== token) return;
     }
-    unlinkSync2(lockPath);
+    unlinkWithRetry(lockPath);
   } catch {
   }
 }
@@ -9261,8 +9323,8 @@ function withFileLock(lockPath, fn, options = {}) {
 
 // ../core/src/enforce/audit.ts
 import { appendFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync9, readdirSync } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -9303,14 +9365,14 @@ import {
   randomUUID
 } from "node:crypto";
 import { existsSync as existsSync9, readFileSync as readFileSync10, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
-import { join as join6 } from "node:path";
-import { homedir as homedir6 } from "node:os";
+import { join as join7 } from "node:path";
+import { homedir as homedir7 } from "node:os";
 var signingKey = null;
 function keyPath() {
-  return join6(homedir6(), ".keel", "receipt-key.json");
+  return join7(homedir7(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join6(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join7(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
@@ -9348,7 +9410,7 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join6(homedir6(), ".keel");
+    const dir = join7(homedir7(), ".keel");
     if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
     writeFileSync6(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
@@ -9357,7 +9419,7 @@ function initReceiptKey() {
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join6(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join7(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
@@ -9394,9 +9456,9 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join6(process.cwd(), ".keel", "receipts");
+    const dir = join7(process.cwd(), ".keel", "receipts");
     if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
-    appendFileSync2(join6(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    appendFileSync2(join7(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
@@ -9404,10 +9466,10 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
 
 // ../core/src/file-verify.ts
 import { readFileSync as readFileSync11 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join7 } from "node:path";
+import { extname, basename as basename2, dirname, join as join8 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join7(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join8(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -9488,10 +9550,10 @@ function isVerifiableFile(filePath) {
 
 // ../core/src/enforce/state-manager.ts
 import { readFileSync as readFileSync12, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
-import { join as join8 } from "node:path";
-import { homedir as homedir7 } from "node:os";
+import { join as join9 } from "node:path";
+import { homedir as homedir8 } from "node:os";
 function stateDir() {
-  return process.env.KEEL_STATE_DIR || join8(homedir7(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join9(homedir8(), ".keel", "state");
 }
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
@@ -9516,7 +9578,7 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join8(this.dir, `${name}.json`);
+    return join9(this.dir, `${name}.json`);
   }
   lockPath(name) {
     return this.statePath(name) + ".lock";

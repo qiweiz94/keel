@@ -11,6 +11,7 @@ import type { ProtectionLevel, RuleContext } from '../../types.js'
 import { loadRuleHierarchy, parseRulesContent, parseRulesFile, validateRules } from '../rule-parser.js'
 import type { StateManager } from '../state-manager.js'
 import { FileRuleOverrideStore } from '../overrides.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 function sharedStateManager(): StateManager {
   const state = {
@@ -146,7 +147,7 @@ function tmpFile(name: string): string {
 
 describe('EnforcementPipeline', () => {
   afterAll(() => {
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+    if (tmpDir) rmSafe(tmpDir)
   })
 
   beforeAll(() => {
@@ -335,7 +336,7 @@ rules:
       // session's use never leaked a grant to it.
       expect((await pipeline.evaluate(input('Bash', { command: 'danger' }, 'ses_stranger'))).action).toBe('deny')
 
-      rmSync(home, { recursive: true, force: true })
+      rmSafe(home)
     })
 
     it('consumes an override before returning a cached deny', async () => {
@@ -523,7 +524,7 @@ rules:
       })
 
     afterAll(() => {
-      rmSync(sentinelDir, { recursive: true, force: true })
+      rmSafe(sentinelDir)
     })
 
     it('enforces rules normally when no sentinel file exists', async () => {

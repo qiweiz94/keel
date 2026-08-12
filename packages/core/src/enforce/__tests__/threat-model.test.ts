@@ -10,6 +10,7 @@ import { FlowTracker } from '../flow-tracker.js'
 import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
 import { parseRulesContent } from '../rule-parser.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Agentic threat model — a misbehaving coding agent tries the common failure
@@ -94,7 +95,7 @@ describe('agentic threat model (shipped defaults)', () => {
   })
 
   afterAll(() => {
-    rmSync(join(SENTINEL, '..'), { recursive: true, force: true })
+    rmSafe(join(SENTINEL, '..'))
   })
 
   describe('destructive commands (BUG 1 regression)', () => {

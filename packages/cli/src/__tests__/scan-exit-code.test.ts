@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `scan-risk.test.ts` had a case literally named "worstSeverity drives the
@@ -39,7 +40,7 @@ function fixture(mcp?: Record<string, unknown>) {
     mkdirSync(join(project, '.cursor'), { recursive: true })
     writeFileSync(join(project, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: mcp }), 'utf-8')
   }
-  return { home, project, cleanup: () => { rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true }) } }
+  return { home, project, cleanup: () => { rmSafe(home); rmSafe(project) } }
 }
 
 describe('keel scan --ci exit code', () => {

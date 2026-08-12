@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { writeFileSync, mkdirSync, chmodSync, mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, chmodSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Contract test for the Claude Code Stop hook
@@ -115,7 +116,7 @@ function claimFired(tempHome: string, sessionId: string): boolean {
 describePosixShim('Claude Code Stop hook (claim-to-evidence real reach)', () => {
   const dirsToClean: string[] = []
   afterAll(() => {
-    for (const d of dirsToClean) rmSync(d, { recursive: true, force: true })
+    for (const d of dirsToClean) rmSafe(d)
   })
 
   it('MUST-FIRE: an edit via PreToolUse, then Stop claims done — always exits 0, and the claim lands in the audit trace', () => {

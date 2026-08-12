@@ -1,5 +1,6 @@
 import type { KeelRule, EnforceInput } from '../types.js'
 import { commandString } from './arg-utils.js'
+import { normalizeForMatch } from './path-normalize.js'
 
 interface ActionRecord {
   input: EnforceInput
@@ -90,8 +91,12 @@ export class SequenceDetector {
     const { tool, args } = input
     if (step.tool.toLowerCase() !== tool.toLowerCase()) return false
     if (step.path) {
-      const argPath = String(args.path || args.filePath || args.file || args.dest || '')
-      if (!argPath.includes(step.path)) return false
+      // Windows: an argument path is `\`-separated, but a sequence step's
+      // `path` is a `/`-authored rule-config string (same convention as
+      // filesystem rules) — canonicalize both sides so the substring
+      // check still lines up.
+      const argPath = normalizeForMatch(String(args.path || args.filePath || args.file || args.dest || ''))
+      if (!argPath.includes(normalizeForMatch(step.path))) return false
     }
     if (step.pattern) {
       let regex: RegExp

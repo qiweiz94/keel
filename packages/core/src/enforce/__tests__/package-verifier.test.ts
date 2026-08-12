@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -12,6 +12,7 @@ import {
   defaultRegistryBaseUrl,
   type PackageCheckResult,
 } from '../package-verifier.js'
+import { rmSafe } from './helpers/fs-safe.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import type { PipelineConfig } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
@@ -215,7 +216,7 @@ function makeMockRegistry(behaviors: Record<string, 'not_found' | 'timeout' | 'n
 describe('checkPackages (mocked registry)', () => {
   let stateDir: string
   beforeEach(() => { stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-')) })
-  afterEach(() => { rmSync(stateDir, { recursive: true, force: true }) })
+  afterEach(() => { rmSafe(stateDir) })
 
   it('nonexistent unscoped package -> not_found, with a did-you-mean suggestion', async () => {
     const { fetchImpl, calls } = makeMockRegistry({ 'totally-fake-hallucinated-pkg-xyz': 'not_found' })
@@ -571,7 +572,7 @@ describe('pipeline: type "package" rule', () => {
 describe('checkPackagesCacheOnly + scheduleBackgroundVerification (v0.4 package-lookup budget fix)', () => {
   let stateDir: string
   beforeEach(() => { stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-cacheonly-')) })
-  afterEach(() => { rmSync(stateDir, { recursive: true, force: true }) })
+  afterEach(() => { rmSafe(stateDir) })
 
   it('a fresh cache entry is used as-is for deny/prompt/allow — zero I/O, no fetchImpl parameter to even call', () => {
     const cache = new PackageVerifierCache(stateDir)

@@ -1,4 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext, RuleMode } from '../types.js'
 
@@ -355,24 +357,42 @@ export function dialAction(rule: KeelRule, level: ProtectionLevel): EnforcementA
 }
 
 export function loadRuleHierarchy(projectDir: string): RuleHierarchy {
-  const home = process.env.HOME || '~'
+  // `process.env.HOME` is unset on Windows (the real user-home variable
+  // there is `USERPROFILE`, or `HOMEDRIVE`+`HOMEPATH`) — every caller of
+  // this function on Windows fell back to the literal string `'~'`, which
+  // is not a path `existsSync`/`readFileSync` ever resolves, so the
+  // global rule tier silently never loaded.
+  //
+  // `HOME` is honored FIRST, not dropped in favor of `homedir()` outright:
+  // several CLI tests sandbox this exact lookup by setting
+  // `process.env.HOME` to a scratch directory (fail-closed.test.ts,
+  // install.test.ts, and others) so a real developer/CI-runner home
+  // directory is never touched. `os.homedir()` alone ignores `HOME` on
+  // Windows (it reads `USERPROFILE`), which would silently un-sandbox
+  // those tests the moment they run on `windows-latest` — pointing
+  // `loadRuleHierarchy` at the real runner's home instead of the test's
+  // scratch one. Falling back to `homedir()` only when `HOME` is unset
+  // keeps POSIX byte-identical to the pre-existing behavior AND fixes the
+  // actual bug (Windows with no `HOME` override now resolves via
+  // `USERPROFILE` instead of the literal, never-existing string `'~'`).
+  const home = process.env.HOME || homedir()
 
   // Project-level: prefer .keel/rules.yaml, then AGENTS.md, then CLAUDE.md
   const projectRules =
-    parseRulesFile(`${projectDir}/.keel/rules.yaml`)
-    || parseRulesFile(`${projectDir}/AGENTS.md`)
-    || parseRulesFile(`${projectDir}/CLAUDE.md`)
+    parseRulesFile(join(projectDir, '.keel', 'rules.yaml'))
+    || parseRulesFile(join(projectDir, 'AGENTS.md'))
+    || parseRulesFile(join(projectDir, 'CLAUDE.md'))
 
   // Local overrides: prefer .keel.local.yaml, then AGENTS.local.md, then CLAUDE.local.md
   const localRules =
-    parseRulesFile(`${projectDir}/.keel.local.yaml`)
-    || parseRulesFile(`${projectDir}/AGENTS.local.md`)
-    || parseRulesFile(`${projectDir}/CLAUDE.local.md`)
+    parseRulesFile(join(projectDir, '.keel.local.yaml'))
+    || parseRulesFile(join(projectDir, 'AGENTS.local.md'))
+    || parseRulesFile(join(projectDir, 'CLAUDE.local.md'))
 
   return {
-    global: parseRulesFile(`${home}/.keel/rules.yaml`)
-      || parseRulesFile(`${home}/.config/keel/rules.yaml`),
-    user: parseRulesFile(`${home}/.config/keel/rules.yaml`)
+    global: parseRulesFile(join(home, '.keel', 'rules.yaml'))
+      || parseRulesFile(join(home, '.config', 'keel', 'rules.yaml')),
+    user: parseRulesFile(join(home, '.config', 'keel', 'rules.yaml'))
       || null,
     project: projectRules,
     local: localRules,

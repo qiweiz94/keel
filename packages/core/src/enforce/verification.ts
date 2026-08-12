@@ -1,6 +1,7 @@
 import type { EnforceInput, KeelRule, VerificationMatcher } from '../types.js'
 import type { StateManager } from './state-manager.js'
 import { stripContentArgs, mcpToolString, argPath, commandString } from './arg-utils.js'
+import { normalizeForMatch } from './path-normalize.js'
 
 // `type: claim` (enforce/claim.ts) reuses this tracker's trigger/satisfy/
 // pending state machine verbatim — same edit-arms / test-discharges shape,
@@ -42,8 +43,15 @@ export function matches(matcher: VerificationMatcher | undefined, input: Enforce
     ? [...matcher.paths, ...(matcher.path ? [matcher.path] : [])]
     : (matcher.path ? [matcher.path] : [])
   if (pathTargets.length) {
-    const value = argPath(args)
-    if (!pathTargets.some(target => value.includes(target))) return false
+    // Substring match, not a glob: `"src/"` deliberately keeps its
+    // trailing slash through normalizeForMatch (see path-normalize.ts's
+    // canonicalizePath header) so it still anchors to a real path-segment
+    // boundary and doesn't also match `"src-backup/"`. Separator/case
+    // normalization is what's new here — a real Windows argument path
+    // (`\`-separated) previously never matched a `/`-authored trigger
+    // path at all.
+    const value = normalizeForMatch(argPath(args))
+    if (!pathTargets.some(target => value.includes(normalizeForMatch(target)))) return false
   }
   if (matcher.pattern) {
     let re: RegExp

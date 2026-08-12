@@ -1,10 +1,11 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { evaluateToolCall, initEnforce } from '../commands/enforce.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 const CLI = fileURLToPath(new URL('../../dist/index.js', import.meta.url))
 
@@ -37,7 +38,7 @@ describe('public v1 behavior', () => {
     else process.env.HOME = previousHome
     if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = previousStateDir
-    rmSync(tempHome, { recursive: true, force: true })
+    rmSafe(tempHome)
   })
 
   it('learn mode observes a deny without blocking it', async () => {

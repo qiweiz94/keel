@@ -13,6 +13,7 @@ import type {
   CommandRule, FileRule, ContentRule, EnforcementAction, PatternDef,
 } from './types.js'
 import { createSignedEntry, initSigning } from './signing.js'
+import { normalizeForMatch } from './enforce/path-normalize.js'
 import { createReceipt } from './receipts.js'
 import { verifyFileSyntax } from './file-verify.js'
 
@@ -519,11 +520,18 @@ export class PolicyEngine {
   }
 
   private matchGlob(filePath: string, pattern: string): boolean {
+    // Canonicalize separators/case (Windows: `\` -> `/`, drive letter
+    // upper-cased, NTFS case-insensitivity applied) before the glob-to-
+    // regex conversion, so a rule authored as "**/.keel.yaml" (every
+    // pattern in DEFAULT_POLICY's file_rules is `/`-authored) still
+    // matches a real Windows argument path like `C:\proj\.keel.yaml`.
+    const normalizedPath = normalizeForMatch(filePath)
+    const normalizedPattern = normalizeForMatch(pattern)
     // A leading **/ must also match the bare name: **/.env matches .env.
-    const escaped = pattern.startsWith('**/')
-      ? `(^|.*/)${this.globToRegexBody(pattern.slice(3))}$`
-      : `^${this.globToRegexBody(pattern)}$`
-    return new RegExp(escaped).test(filePath)
+    const escaped = normalizedPattern.startsWith('**/')
+      ? `(^|.*/)${this.globToRegexBody(normalizedPattern.slice(3))}$`
+      : `^${this.globToRegexBody(normalizedPattern)}$`
+    return new RegExp(escaped).test(normalizedPath)
   }
 
   checkSecret(content: string): EnforcementResult | null {

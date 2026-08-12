@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startDaemon, daemonTokenPath, daemonStatePath, daemonCommand } from '../commands/daemon.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel daemon` — the local enforcement service.
@@ -43,7 +44,7 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
-  rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true })
+  rmSafe(home); rmSafe(project)
 })
 
 describe('keel daemon', () => {

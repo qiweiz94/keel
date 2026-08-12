@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,7 @@ import {
   parseRulesContent,
 } from '@get-keel/core'
 import type { EnforceInput, EnforceResult, KeelRule, PipelineConfig, ProtectionLevel, RuleContext, RuleHierarchy } from '@get-keel/core'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Reachability probe for `test-oracle-env-introspection`, run under the
@@ -125,8 +126,8 @@ beforeAll(() => {
 
 afterAll(() => {
   delete process.env.KEEL_STATE_DIR
-  rmSync(stateDir, { recursive: true, force: true })
-  rmSync(scratchRoot, { recursive: true, force: true })
+  rmSafe(stateDir)
+  rmSafe(scratchRoot)
 })
 
 describe('test-oracle-env-introspection: reachability under the full 45-rule default set', () => {

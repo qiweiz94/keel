@@ -1,8 +1,9 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { evaluateToolCall, initEnforce } from '../commands/enforce.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `pipeline.ts`'s `checkRuleVersion()` keeps enforcing on the last-known-
@@ -46,7 +47,7 @@ describe('onRulesError surfaced from the CLI pipeline', () => {
     else process.env.HOME = previousHome
     if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = previousStateDir
-    rmSync(tempHome, { recursive: true, force: true })
+    rmSafe(tempHome)
   })
 
   let errSpy: ReturnType<typeof vi.spyOn>

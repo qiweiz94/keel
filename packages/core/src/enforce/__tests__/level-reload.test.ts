@@ -3,12 +3,13 @@ import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadRuleHierarchy, parseRulesContent, dialAction } from '../rule-parser.js'
 import { StateManager } from '../state-manager.js'
 import type { KeelRule, ProtectionLevel } from '../../types.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 function hashRulesFile(p: string): string {
   if (!existsSync(p)) return ''
@@ -100,8 +101,8 @@ rules:
     else process.env.HOME = previousHome
     if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = previousStateDir
-    rmSync(home, { recursive: true, force: true })
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(home)
+    rmSafe(dir)
   })
   it('balanced → sprint → protect transitions evaluate at the new level immediately', () => {
     // The real assertions live in beforeAll (they need the live file
@@ -274,8 +275,8 @@ rules:
     else process.env.HOME = previousHome
     if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = previousStateDir
-    rmSync(home, { recursive: true, force: true })
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(home)
+    rmSafe(dir)
   })
 
   it('a fresh (non-expired) sprint keeps softening deny to warn on repeat', () => {
