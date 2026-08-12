@@ -1,5 +1,44 @@
 /**
- * Optional Rego/WASM policy evaluation engine.
+ * EXPERIMENTAL / UNSUPPORTED — Rego/WASM policy evaluation engine.
+ *
+ * This module is NOT part of keel's real-time enforcement path. It backs
+ * only the standalone `keel policy init|build|eval` CLI commands — nothing
+ * in `packages/core/src/enforce/pipeline.ts` (the engine every host
+ * integration actually calls: `keel hook`, the OpenCode plugin, `keel
+ * daemon`) ever constructs or references a `RegoEngine`. A `.rego` policy
+ * is not evaluated when an agent takes an action; only YAML `rules.yaml`
+ * is. SPEC.md's own roadmap table (P2, item 17) lists "wire existing
+ * rego-engine.ts" as an OPEN todo — that admission and this file's
+ * present-tense docs elsewhere in SPEC.md ("Evaluated in sandboxed WASM
+ * runtime...") describe two different states of the world; this file is
+ * the accurate one.
+ *
+ * It is also not packaged for a real user: `@open-policy-agent/opa-wasm`
+ * is a root-level devDependency of this monorepo, not a `dependencies`
+ * entry of `packages/cli`'s own `package.json` (whose `dependencies` are
+ * just `@get-keel/core`, `commander`, `chalk`, `yaml`) — so a real
+ * `npm install -g @get-keel/cli` never installs it. `evaluateWasm()`'s
+ * dynamic `import('@open-policy-agent/opa-wasm')` is wrapped in a
+ * try/catch specifically because it is EXPECTED to fail for every such
+ * user, returning a fail-closed `{ errors: ['... not installed'] }`
+ * result rather than crashing — that fallback is real and tested (see
+ * `packages/cli/src/__tests__/rego-engine.test.ts`), but it means
+ * `keel policy eval` is inert out of the box for anyone who did not
+ * separately `npm install @open-policy-agent/opa-wasm` themselves.
+ * `keel policy build` additionally requires the external `opa` CLI binary,
+ * checked for but never installed by keel.
+ *
+ * Decision (M5-security lane, 2026-08-12): keep this as a documented,
+ * experimental side path rather than remove it (it does work, on a machine
+ * with `opa` and `@open-policy-agent/opa-wasm` present, for someone who
+ * wants to hand-evaluate a `.rego` file against a JSON input) or silently
+ * promote it to a supported policy language (it is unwired from
+ * enforcement and untested until this lane). See docs/comparison.md and
+ * SPEC.md for the corresponding doc-level EXPERIMENTAL labels.
+ *
+ * Original design intent, preserved below (still accurate as a
+ * description of what THIS FILE does when invoked directly — just not of
+ * what keel enforces by default):
  *
  * Allows policies to be written in OPA Rego language and compiled to WebAssembly
  * for deterministic, sandboxed evaluation (zero token consumption, sub-millisecond).
@@ -13,8 +52,10 @@
  *   3. Evaluate:     keel policy eval --wasm policy.wasm
  *
  * Dependencies:
- *   - @open-policy-agent/opa-wasm (for WASM evaluation in Node.js)
- *   - opa CLI (for compiling .rego → .wasm, optional at runtime)
+ *   - @open-policy-agent/opa-wasm (for WASM evaluation in Node.js — NOT
+ *     bundled; install it yourself to use `keel policy eval`)
+ *   - opa CLI (for compiling .rego → .wasm — NOT bundled; install it
+ *     yourself to use `keel policy build`)
  */
 
 import { readFileSync, existsSync, writeFileSync } from 'node:fs'

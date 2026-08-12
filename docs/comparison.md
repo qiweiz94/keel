@@ -47,11 +47,22 @@ prompts help. It makes them insufficient *on their own*.
 
 | Project | Interception point | Policy language | Notable strength |
 |---|---|---|---|
-| **keel** | host hooks/plugins (8 hosts), MCP, generic stdin | YAML + optional Rego/WASM | breadth of hosts; approval gates; signed receipts |
+| **keel** | host hooks/plugins (8 hosts), MCP, generic stdin | YAML (enforced); Rego/WASM tooling exists but is experimental and NOT wired into enforcement — see below | breadth of hosts; approval gates; signed receipts |
 | [Cupcake](https://github.com/eqtylab/cupcake) | tool-call hooks | Rego compiled to WASM | deterministic policy evaluation |
 | [agentsh](https://github.com/canyonroad/agentsh) | OS kernel (seccomp, eBPF, Landlock) | Go config | strongest enforcement boundary — survives a compromised agent process |
 | [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit) | in-process SDK | YAML / OPA | formal specs, conformance test suite, OWASP Agentic Top 10 mapping |
 | [Snyk Agent Scan](https://github.com/snyk/agent-scan) (formerly Invariant MCP-Scan) | none — scanner | — | MCP config discovery and vulnerability scanning |
+
+**On the Rego/WASM cell specifically, since this table puts keel next to
+Cupcake (whose entire mechanism IS Rego/WASM):** keel ships
+`packages/cli/src/rego-engine.ts` and a standalone `keel policy
+init|build|eval` CLI command set for writing and hand-evaluating `.rego`
+policies compiled to WASM — but no `.rego`/`.wasm` policy is ever consulted
+when an agent actually takes an action. `keel hook`, the OpenCode plugin,
+and `keel daemon` all evaluate only YAML `rules.yaml`. Treat this as an
+experimental, unsupported side tool, not a second enforced policy language
+on par with Cupcake's — see `SPEC.md`'s "Rego/OPA Backend" section and
+`ROADMAP.md` for the honest version of this line.
 
 **Where keel is genuinely weaker:** `agentsh` enforces at the kernel. keel enforces
 in-process, which means a compromised agent process defeats it — stated plainly in

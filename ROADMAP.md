@@ -15,7 +15,11 @@ release and covered by tests; anything under **Planned** is not built yet.
 - Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
 - Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
 - Self-protection: agents cannot run keel's control commands or edit its rules
-- Rego/WASM policies (`keel policy`) alongside YAML rules
+- Standalone Rego/WASM policy tools (`keel policy init|build|eval`) — **EXPERIMENTAL,
+  unsupported, not part of real-time enforcement.** `.rego`/`.wasm` policies are never
+  consulted by `keel hook`, the OpenCode plugin, or `keel daemon` — only YAML `rules.yaml`
+  is. Requires the external `opa` CLI and `@open-policy-agent/opa-wasm` (neither
+  bundled). See `docs/comparison.md` and `SPEC.md`'s "Rego/OPA Backend" section.
 
 **Visibility**
 - `keel scan` — machine audit: unprotected hosts and risky MCP servers, ranked by severity
