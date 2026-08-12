@@ -112,6 +112,28 @@ export class PolicyEngine {
       return results
     }
 
+    // Fail-closed on a degenerate tool identity (v1 M1r-2 — locked product
+    // decision: degenerate input never silently allows). `ToolCallEvent`
+    // declares `tool_name: string` as required, but nothing enforces that
+    // at a caller's JSON/RPC boundary — an empty/missing/non-string
+    // tool_name matches NONE of the `event.tool_name === '...'` branches
+    // below, so `results` stayed `[]` and every caller reads an empty array
+    // as "allowed" (confirmed live: packages/mcp-server/src/index.ts's
+    // `blocks.length > 0` check returns "POLICY OK" for exactly this case).
+    // This is not the same class as "a real tool name that matches no
+    // rule" — that must keep allowing, or this becomes a default-deny
+    // firewall no project would install. It is specifically "there is no
+    // tool identity to evaluate a rule against at all."
+    if (typeof event.tool_name !== 'string' || event.tool_name.length === 0) {
+      results.push({
+        action: 'block', rule_name: 'fail-closed-degenerate-input',
+        message: 'No tool identity on this call — keel could not evaluate it, so it was blocked.',
+        timestamp: new Date().toISOString(),
+      })
+      if (this.policy.settings?.audit_log !== false) this.audit(results[0], event)
+      return results
+    }
+
     if (event.tool_name === 'bash' || event.tool_name === 'run_command') {
       const cmd = String(event.args.command || '')
       results.push(...this.evaluateCommand(cmd))

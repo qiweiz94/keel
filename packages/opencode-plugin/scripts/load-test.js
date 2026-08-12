@@ -238,6 +238,40 @@ try {
 }
 check('runtime hook failures fail closed', runtimeFailureClosed)
 
+// v1 M1r-2 — locked product decision: degenerate input fails closed, never
+// a silent allow. opencode types `input` as `any`; a missing/blank
+// `input.tool` used to fall back to the literal string 'unknown' and
+// evaluate anyway (toEnforceInput(input?.tool || 'unknown', ...)) — a call
+// that matches no real rule pattern in pipeline.ts (which has no
+// `tool === 'unknown'` special case) and passes through silently. This is
+// the same class of gap `keel hook <host>` had for the out-of-process
+// hosts (ParsedCall.degenerate, packages/cli/src/commands/hook.ts).
+let missingToolBlocked = false
+try {
+  await hooks['tool.execute.before']({ sessionID: 'degenerate-1' }, { args: { command: 'rm -rf /' } })
+} catch (e) {
+  missingToolBlocked = e.message.startsWith('[Keel] fail-closed-degenerate-input')
+}
+check('missing input.tool fails closed rather than evaluating as tool: unknown', missingToolBlocked)
+
+let blankToolBlocked = false
+try {
+  await hooks['tool.execute.before']({ tool: '', sessionID: 'degenerate-2' }, { args: { command: 'rm -rf /' } })
+} catch (e) {
+  blankToolBlocked = e.message.startsWith('[Keel] fail-closed-degenerate-input')
+}
+check('blank input.tool ("") fails closed the same way as missing', blankToolBlocked)
+
+// A real tool name that matches no rule must still allow — this is a
+// degenerate-input guard, not a new default-deny firewall.
+let realToolStillAllows = true
+try {
+  await hooks['tool.execute.before']({ tool: 'some_tool_no_rule_covers', sessionID: 'degenerate-3' }, { args: { anything: 1 } })
+} catch {
+  realToolStillAllows = false
+}
+check('a real (if unmatched) input.tool still allows', realToolStillAllows)
+
 await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'privacy' }, { args: { token: 'plugin-secret-value' } })
 const traceText = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
   .map(file => fs.readFileSync(join(tmpHome, '.keel', 'traces', file), 'utf8')).join('\n')

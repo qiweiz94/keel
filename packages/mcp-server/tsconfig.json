@@ -4,5 +4,7 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src"]
+  "include": ["src"],
+  "//": "package.json ships files:[dist]; keep test sources out of the published build.",
+  "exclude": ["src/__tests__/**", "src/**/__tests__/**"]
 }

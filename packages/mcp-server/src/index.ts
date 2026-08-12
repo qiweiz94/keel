@@ -167,6 +167,25 @@ function handleToolCallCommon(
   if (toolName === 'keel_check') {
     const action = String(args.action || '')
     const target = String(args.target || '')
+    // v1 M1r-2 — locked product decision: degenerate input fails closed,
+    // never a silent allow. `action` and `target` are both `required` in
+    // this tool's own inputSchema (getToolDefinitions below), but nothing
+    // enforced that before this handler ran. A missing `action` already
+    // fails closed one level down (PolicyEngine.evaluate()'s own
+    // degenerate-tool_name guard), but a missing `target` alone did not —
+    // `command: '', filePath: ''` matches no real command_rules/file_rules
+    // pattern, so a keel_check call that checked nothing at all still read
+    // back "POLICY OK" to the caller. Both are caught here, together, at
+    // this tool's own arg-contract boundary, before evaluate() runs.
+    if (!action || !target) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'POLICY BLOCKED: keel_check requires both "action" and "target" — keel could not evaluate this call, so it was blocked.',
+        }],
+        isError: true,
+      }
+    }
     const results = engine.evaluate({
       tool_name: action,
       args: { command: target, filePath: target },

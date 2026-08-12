@@ -247,20 +247,19 @@ rules:
     })
   })
 
-  describe('(a2) empty stdin — the highest-risk variant of (a): a MISCONFIGURED hook, not a garbled payload', () => {
+  describe('(a2) empty stdin — the highest-risk variant of (a): a MISCONFIGURED hook, not a garbled payload — FIXED in v1 M1r-2', () => {
     // A one-off malformed byte stream (above) is defensible degrade. A hook
     // wired to send NOTHING (empty stdin — e.g. a host integration bug that
-    // never writes the payload) hits the exact same `tool: 'unknown'`, empty-
-    // args path on every single call, forever, with no distinguishing signal
-    // from a genuine parse failure. The realistic version of this rule is a
-    // SPECIFIC dangerous-command match (real rules do not deny `.*` — a
-    // blanket matcher would block everything and get uninstalled) — with a
-    // specific pattern, an empty payload means the actual command text was
-    // never seen at all, so it cannot match, by construction of the parser
-    // degrade rather than any flaw in the matcher. Measured and flagged for
-    // the supervisor as a policy question (see EVIDENCE) — NOT changed here,
-    // since sibling lanes may depend on today's behavior for legitimate
-    // empty-body hosts.
+    // never writes the payload) used to hit the `tool: 'unknown'`, empty-
+    // args path on every single call, forever, evaluated as an ordinary
+    // (if unmatched) call — no rule written for a SPECIFIC dangerous
+    // command (real rules do not deny `.*`) can ever match a synthetic
+    // `unknown` tool, so the call sailed through silently. v1 M1r-2 locked
+    // the product decision that degenerate input (including this one) must
+    // fail closed: parsePayload now marks this shape `degenerate: true`,
+    // and hookVerdict renders it exactly like an internal keel failure
+    // (block/deny/exit 2 per host) BEFORE it ever reaches rule evaluation,
+    // rather than letting it match nothing.
     const home = newHome(`version: 1
 level: protect
 rules:
@@ -272,38 +271,36 @@ rules:
     message: "would have blocked a real rm -rf /, had the payload survived"
 `)
 
-    it('measures the actual exit code for empty stdin: allows, with zero signal that the payload was lost (recorded in EVIDENCE, not asserted as correct-by-construction)', () => {
+    it('empty stdin now fails CLOSED — exit 2, COULD_NOT_EVALUATE — instead of the silent allow this gap used to produce', () => {
       const r = runHook('claude-code', home, '')
-      // The specific `rm -rf /` pattern never matches the synthetic
-      // `unknown` tool / empty-args call this path produces — an empty
-      // stdin call is indistinguishable from a genuinely harmless one, so
-      // this documents today's real (silent-allow) behavior rather than
-      // asserting a policy this lane did not decide.
-      expect(r.status).toBe(0)
-      expect(r.stdout).toBe('')
-      expect(r.stderr).toBe('')
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('Keel could not evaluate')
     })
 
-    it('the SAME rule, same host, DOES block when the payload actually arrives — isolates the gap to "stdin was empty", not "the rule is broken"', () => {
+    it('the SAME rule, same host, still blocks the normal way when the payload actually arrives — proves the fix did not turn matching into the ONLY path to a block', () => {
       const r = runHook('claude-code', home, JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }))
       expect(r.status).toBe(2)
       expect(r.stderr).toContain('would have blocked a real rm -rf /')
     })
+
+    it('a non-empty, well-formed payload for an UNMATCHED command still allows — this is fail-closed on degenerate input, not fail-closed on everything', () => {
+      const r = runHook('claude-code', home, JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }))
+      expect(r.status).toBe(0)
+    })
   })
 
-  describe('(a3) truncated TOOL_INPUT env var — the same silent-payload-loss class as (a2), through the OTHER input door, and worse', () => {
+  describe('(a3) truncated TOOL_INPUT env var — the same silent-payload-loss class as (a2), through the OTHER input door — FIXED in v1 M1r-2', () => {
     // hookVerdict's env-var branch (claude-code/gemini with TOOL_NAME set —
     // the real contract `templates/claude-pretooluse.sh` uses, and the one
-    // `hook.test.ts`/`hook-contract.test.ts` already drive) does:
-    //   tool_input: safeJson(process.env.TOOL_INPUT)
-    // safeJson() returns `{}` on a parse failure, so a truncated
-    // TOOL_INPUT produces a payload that LOOKS well-formed: a real tool
-    // name, empty args. Unlike (a2)'s empty-stdin case — where the tool
-    // name itself degrades to the visibly-synthetic `unknown` — this looks
-    // exactly like a legitimate argument-less call, and nothing downstream
-    // can tell the args were dropped. Measured and flagged for the
-    // supervisor (see EVIDENCE flag #4) — NOT changed here, same policy
-    // question as (a2).
+    // `hook.test.ts`/`hook-contract.test.ts` already drive) calls
+    // safeJson(process.env.TOOL_INPUT). Truncated JSON used to silently
+    // become `{}` with no trace of the loss — a payload that LOOKS
+    // well-formed (a real tool name, empty args) is indistinguishable from
+    // a genuine zero-arg call. safeJson() now reports `corrupt: true` when
+    // TOOL_INPUT was PRESENT but failed to parse (an ABSENT TOOL_INPUT
+    // stays non-degenerate — many real tools take no arguments, see the
+    // next describe block), and hookVerdict marks the call degenerate on
+    // that signal alone, failing it closed before evaluation.
     const home = newHome(`version: 1
 level: protect
 rules:
@@ -315,14 +312,13 @@ rules:
     message: "would have blocked a real rm -rf /, had TOOL_INPUT survived"
 `)
 
-    it('measures the actual exit code for a truncated TOOL_INPUT: allows, with a payload that looks legitimate rather than degenerate', () => {
+    it('a truncated TOOL_INPUT now fails CLOSED — exit 2, COULD_NOT_EVALUATE — instead of a payload that silently looked legitimate', () => {
       const r = runHook('claude-code', home, '', {
         TOOL_NAME: 'Bash',
         TOOL_INPUT: '{"command":"rm -rf /"',   // truncated mid-string — invalid JSON
       })
-      expect(r.status).toBe(0)
-      expect(r.stdout).toBe('')
-      expect(r.stderr).toBe('')
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('Keel could not evaluate')
     })
 
     it('the SAME rule, same host, DOES block when TOOL_INPUT is complete — isolates the gap to "the value was truncated", not "the rule is broken"', () => {
@@ -330,6 +326,92 @@ rules:
         TOOL_NAME: 'Bash',
         TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
       })
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('would have blocked a real rm -rf /')
+    })
+  })
+
+  describe('(a4) TOOL_INPUT genuinely ABSENT (not truncated) — the deliberate line: missing args is legitimate, corrupt args is degenerate', () => {
+    // A zero-argument tool call is a normal shape — TOOL_INPUT simply never
+    // being set is not evidence of data loss the way a present-but-broken
+    // value is. This proves the (a3) fix did not overreach into blocking
+    // every call with no TOOL_INPUT.
+    const home = newHome(`version: 1
+level: protect
+rules:
+  - id: t-absent-tool-input
+    type: command
+    match: "rm -rf /"
+    action: deny
+    level: sprint
+    message: "should not fire — command text was never rm -rf / here"
+`)
+
+    it('TOOL_NAME set, TOOL_INPUT entirely absent still allows — an empty-args call is legitimate, not degenerate', () => {
+      const r = runHook('claude-code', home, '', { TOOL_NAME: 'Bash' })
+      expect(r.status).toBe(0)
+    })
+  })
+
+  describe('(a5) valid JSON, missing required tool-identity field — "unparseable" and "missing a required field" are different bugs and both must fail closed', () => {
+    // (a)/(a2) cover JSON that does not parse at all. This is the other
+    // half of the locked decision's list: the JSON parses FINE, but the one
+    // field every rule matches against — the tool identity — is absent, so
+    // there is nothing to evaluate. Exercised across every host's own
+    // identity field (tool_name / tool / command|tool_name) to prove the
+    // fix is uniform (toolField() in hook.ts), not a claude-code special
+    // case.
+    const home = newHome(`version: 1
+level: protect
+rules:
+  - id: t-missing-identity
+    type: command
+    match: "rm -rf /"
+    action: deny
+    level: sprint
+    message: "would have blocked a real rm -rf /, had the tool identity survived"
+`)
+
+    it('claude-code: tool_input present but tool_name absent — exit 2, COULD_NOT_EVALUATE', () => {
+      const r = runHook('claude-code', home, JSON.stringify({ tool_input: { command: 'rm -rf /' } }))
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('Keel could not evaluate')
+    })
+
+    it('claude-code: tool_name explicitly null — same as absent, still degenerate', () => {
+      const r = runHook('claude-code', home, JSON.stringify({ tool_name: null, tool_input: { command: 'rm -rf /' } }))
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('Keel could not evaluate')
+    })
+
+    it('generic: tool absent — exit 2, the same fail-closed floor as the exit-code hosts', () => {
+      const r = runHook('generic', home, JSON.stringify({ args: { command: 'rm -rf /' } }))
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('Keel could not evaluate')
+    })
+
+    it('cursor: neither `command` nor `tool_name` present — denies via the stdout envelope, not a silent allow', () => {
+      const r = runHook('cursor', home, JSON.stringify({ tool_input: { x: 1 } }))
+      const payload = JSON.parse(r.stdout)
+      expect(payload.permission).toBe('deny')
+      expect(payload.userMessage).toContain('Keel could not evaluate')
+    })
+
+    it('cursor: `command` present but BLANK — the literal "empty string" case from the locked decision\'s own list. Unlike every other host, command IS the identity here, not an optional argument alongside one — so a blank command is lost data, not a legitimate zero-arg call, and denies the same way', () => {
+      const r = runHook('cursor', home, JSON.stringify({ command: '' }))
+      const payload = JSON.parse(r.stdout)
+      expect(payload.permission).toBe('deny')
+      expect(payload.userMessage).toContain('Keel could not evaluate')
+    })
+
+    it('cline: preToolUse.toolName absent — cancels via the HOOK_CONTROL envelope', () => {
+      const r = runHook('cline', home, JSON.stringify({ preToolUse: { parameters: { command: 'rm -rf /' } } }))
+      const control = JSON.parse(r.stdout.replace(/^HOOK_CONTROL\t/, '').trim())
+      expect(control.cancel).toBe(true)
+    })
+
+    it('the SAME rule, same host, still blocks the normal way once the tool identity is present — proves this is a degenerate-input guard, not a new global deny', () => {
+      const r = runHook('claude-code', home, JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }))
       expect(r.status).toBe(2)
       expect(r.stderr).toContain('would have blocked a real rm -rf /')
     })

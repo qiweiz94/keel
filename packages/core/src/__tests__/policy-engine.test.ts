@@ -214,6 +214,40 @@ describe('PolicyEngine', () => {
     })
   })
 
+  describe('fail-closed on a degenerate tool identity (v1 M1r-2)', () => {
+    // Before this lane, an empty/missing tool_name matched none of the
+    // `event.tool_name === '...'` branches in evaluate() — command_rules,
+    // file_rules, env_rules all stayed silent — so `results` came back `[]`
+    // and every caller reads an empty array as "allowed". Confirmed live
+    // via packages/mcp-server/src/index.ts, which returned "POLICY OK" for
+    // exactly this shape. The locked product decision is that degenerate
+    // input never silently allows.
+    const engine = makeEngine()
+
+    it('an empty tool_name blocks, rather than matching no branch and returning []', () => {
+      const results = engine.evaluate({
+        tool_name: '', args: { command: 'rm -rf /' }, cwd: '/test', timestamp: new Date().toISOString(),
+      })
+      expect(results.length).toBeGreaterThan(0)
+      expect(results.some(r => r.action === 'block')).toBe(true)
+      expect(results.some(r => r.rule_name === 'fail-closed-degenerate-input')).toBe(true)
+    })
+
+    it('a non-string tool_name (the JSON-boundary case: null survives JSON.parse but violates the declared string type) also blocks', () => {
+      const results = engine.evaluate({
+        tool_name: null as unknown as string, args: {}, cwd: '/test', timestamp: new Date().toISOString(),
+      })
+      expect(results.some(r => r.action === 'block')).toBe(true)
+    })
+
+    it('a REAL tool_name that matches no rule still allows — this is fail-closed on degenerate input, not a default-deny firewall', () => {
+      const results = engine.evaluate({
+        tool_name: 'some_tool_no_rule_covers', args: { anything: 1 }, cwd: '/test', timestamp: new Date().toISOString(),
+      })
+      expect(results.filter(r => r.action === 'block').length).toBe(0)
+    })
+  })
+
   describe('audit log', () => {
     it('persists entries on evaluate', () => {
       const engine = makeEngine()
