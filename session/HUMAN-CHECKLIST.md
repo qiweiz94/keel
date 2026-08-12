@@ -1,3 +1,7 @@
+> **Authoritative index: `session/v1/HUMAN-CHECKLIST.md`.** That file is the
+> single consolidated v1.0.0 human checklist; this file is retained as its
+> detailed per-host live-verification appendix (referenced from §5 there).
+
 # HUMAN-CHECKLIST — manual live-verification steps
 
 Wave-1 tail lane (headless live verification) could not complete these steps under
