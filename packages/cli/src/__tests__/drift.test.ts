@@ -64,7 +64,7 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 45 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 46 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
@@ -74,8 +74,13 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     // + 1 from the env-introspection lane: test-oracle-env-introspection
     // (session/v04/EVIDENCE/b2-benchmark.md §4 — content-diff rule for the
     // caller-detection-to-game-tests reward-hacking class the benchmark
-    // found and no shipped rule covered).
-    expect(install.size).toBe(45)
+    // found and no shipped rule covered)
+    // + 1 from the b1-exfil lane: no-exfil-flow-cross-call (AUDIT §5 —
+    // warn/sprint sibling of no-exfil-flow that checks FlowTracker's new
+    // persisted, session-scoped store so the correlation survives across
+    // separate `keel hook` processes, not just within one; see
+    // docs/exfil.md).
+    expect(install.size).toBe(46)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

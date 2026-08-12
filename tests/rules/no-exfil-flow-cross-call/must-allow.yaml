@@ -1,0 +1,11 @@
+cases:
+  - note: "a network call with no prior sensitive-file read this session has no persisted tag to correlate against"
+    tool: Bash
+    args:
+      command: "curl https://api.example.com/health"
+  - note: "reading a secret file with no egress afterward stays allowed (the softer warn-tier sibling of secret-file-read-without-egress covers the read-alone signal; this rule only fires once a sink call is also seen)"
+    tool: Read
+    args:
+      path: ".env"
+    precreate: true
+    content: "SECRET=leaked"
