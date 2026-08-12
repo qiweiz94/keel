@@ -43,7 +43,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
 import { createIsolatedRoot, installKeelShim, seedWorkRepo, createAndPushRemote } from './lib/isolate.mjs'
-import { runOpenCode, extractObservables } from './lib/opencode-runner.mjs'
+import { runOpenCode, extractObservables, extractCost } from './lib/opencode-runner.mjs'
 import { loadTraceEntries, summarizeTraces } from './lib/trace-parser.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -58,8 +58,22 @@ const ARM_DEFAULT_MODELS = {
 }
 const DEFAULT_TIMEOUT_S = 180
 
+// Cost-cap gate (M2-B2, item 3): arm C exists to reference a STRONGER,
+// non-free model, so unlike A/B its default posture is "refuse to spend"
+// rather than "default to free". A model name is treated as free only if it
+// literally ends in `-free` (every free model this harness has used so far
+// — opencode/deepseek-v4-flash-free, opencode/ling-3.0-tiny-free,
+// opencode/mimo-v2.5-free, opencode/longcat-2.0-free,
+// opencode/nemotron-3.5-lightning-free — follows this convention; a
+// paid `opencode-go/*` model does not). A non-free arm-C model is refused
+// UNLESS the caller explicitly opts in via --allow-paid or
+// KEEL_BENCH_ALLOW_PAID=1 — no default, no silent spend.
+export function isFreeModel(model) {
+  return /-free$/i.test(String(model || ''))
+}
+
 function parseArgs(argv) {
-  const args = { timeout: DEFAULT_TIMEOUT_S, outDir: join(HARNESS_ROOT, 'results'), keelBin: DEFAULT_KEEL_BIN, keep: false }
+  const args = { timeout: DEFAULT_TIMEOUT_S, outDir: join(HARNESS_ROOT, 'results'), keelBin: DEFAULT_KEEL_BIN, keep: false, allowPaid: process.env.KEEL_BENCH_ALLOW_PAID === '1' }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--task') args.task = argv[++i]
@@ -70,16 +84,20 @@ function parseArgs(argv) {
     else if (a === '--keel-bin') args.keelBin = resolve(argv[++i])
     else if (a === '--keep') args.keep = true
     else if (a === '--force-negative-control') args.forceNegativeControl = true
+    else if (a === '--allow-paid') args.allowPaid = true
     else if (a === '--help' || a === '-h') args.help = true
   }
   return args
 }
 
 function usage() {
-  console.log(`Usage: node run.mjs --task <task-id> --arm <A|B|C> [--model <name>] [--timeout <seconds>] [--out-dir <dir>] [--keel-bin <path>] [--keep]
+  console.log(`Usage: node run.mjs --task <task-id> --arm <A|B|C> [--model <name>] [--timeout <seconds>] [--out-dir <dir>] [--keel-bin <path>] [--keep] [--allow-paid]
 
 Arms: A=cheap-unguarded  B=cheap-guarded(keel live)  C=frontier-reference(unguarded, --model required or it no-ops)
 Default model (A/B): ${ARM_DEFAULT_MODELS.A}
+Cost cap: Arm C with a model NOT ending in "-free" is REFUSED (no run, no spend) unless
+--allow-paid is passed or KEEL_BENCH_ALLOW_PAID=1 is set — record any resulting spend in
+session/v1/EVIDENCE/cost.md.
 Tasks live in scripts/thesis-eval/tasks/<task-id>/ (meta.json, prompt.txt, repo/, grade.mjs, optional setup.mjs / negative-control.mjs).
 `)
 }
@@ -128,6 +146,17 @@ async function main() {
     return
   }
 
+  // Cost cap (M2-B2, item 3): refuse a paid arm-C model BEFORE anything is
+  // spawned — no opencode invocation, no result file, no isolated root —
+  // unless the caller explicitly opted in. This is a hard stop, not a
+  // warning, so a battery run can never silently rack up spend.
+  if (args.arm === 'C' && !isFreeModel(model) && !args.allowPaid) {
+    console.error(`REFUSED: arm C model "${model}" does not end in "-free" (looks like a paid model) and --allow-paid / KEEL_BENCH_ALLOW_PAID=1 was not set.`)
+    console.error(`Nothing was spawned, no spend occurred. To proceed: node run.mjs --arm C --model ${model} --allow-paid ...`)
+    console.error(`Record any resulting spend in session/v1/EVIDENCE/cost.md.`)
+    process.exit(1)
+  }
+
   console.log(`== thesis-eval: task=${args.task} arm=${args.arm} model=${model} timeout=${args.timeout}s ==`)
 
   const iso = createIsolatedRoot({ label: runLabel })
@@ -164,6 +193,11 @@ async function main() {
 
     const runResult = await runOpenCode({ cwd: iso.work, prompt, model, timeoutMs: args.timeout * 1000, env: iso.env })
     const observables = extractObservables(runResult.events)
+    // Real spend for THIS run, read from opencode's own accounting — see
+    // lib/opencode-runner.mjs's extractCost doc comment. Cost cap (item 3)
+    // refuses a paid arm-C model before this point unless --allow-paid was
+    // passed, so a nonzero value here can only happen on an explicit opt-in.
+    const cost = extractCost(runResult.events)
 
     // Persist raw evidence BEFORE cleanup — transcript, events, and the
     // final repo/remote state (for post-hoc re-grading / audit).
@@ -197,6 +231,7 @@ async function main() {
     writeFileSync(join(rawRunDir, 'trace-summary.json'), JSON.stringify(traceSummary, null, 2))
 
     const gradeCtx = {
+      arm: args.arm,
       workDir: iso.work,
       remoteDir,
       fixture,
@@ -258,6 +293,8 @@ async function main() {
       timed_out: runResult.timedOut,
       exit_code: runResult.exitCode,
       duration_ms: runResult.durationMs,
+      cost_usd: cost.cost_usd,
+      tokens: cost.tokens,
       // Contract fields (spec §1): structured JSON every task's grader returns.
       task_passed: graded.task_passed,
       forbidden_action_executed: graded.forbidden_action_executed,
