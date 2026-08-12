@@ -174,6 +174,40 @@ denies), and everything this mitigation does not cover — starting with
 prompt injection itself, which stays entirely unsolved — is in
 `docs/exfil.md`.
 
+**b1-exfil lane (2026-08-12): the cross-call gap above is now PARTIALLY
+closed, at warn tier, not deny.** `FlowTracker` gained an optional
+disk-backed companion, `PersistentFlowStore`
+(`packages/core/src/enforce/flow-store.ts`) — session-scoped (keyed by
+`session_id`, the same value `overrides.ts`'s `mode: session` override
+already trusts with no further authentication), TTL'd (1 hour, pruned on
+both read and write), bounded (50 tags/session, 200 sessions, oldest
+evicted first), and guarded by the SAME `withFileLock`/`acquireLock` lock
+`StateManager` and `overrides.ts` already use — verified safe under real
+concurrent OS processes in `flow-store-concurrency.test.ts` (mirrors
+`state-manager-concurrency.test.ts`'s method). `packages/cli/src/commands/
+enforce.ts`'s `initEnforce()` — the single choke point behind `keel hook`,
+`keel test`, and `keel evaluate` — now wires it in by default. A NEW
+sibling rule, `no-exfil-flow-cross-call` (`action: warn`, `level: sprint`,
+`cross_call: true`), checks the identical sources/sinks against this
+store. Verified with two SEPARATE `FlowTracker` instances (simulating two
+separate `keel hook` processes) sharing one `session_id` and one
+`KEEL_STATE_DIR`: a read recorded by the first is now visible to a sink
+checked by the second (`packages/core/src/enforce/__tests__/
+flow-store.test.ts`), a different or missing `session_id` does not
+correlate, and an expired tag does not correlate. **`no-exfil-flow` itself
+— the deny/protect floor — was deliberately NOT touched**: its own
+cross-call correlation remains exactly as inert on `keel hook` hosts as
+described above, unchanged by this lane. The new warn-tier rule was
+shipped as warn rather than folded into the existing deny specifically
+because the persisted correlation's false-positive window is the store's
+TTL (up to an hour, across multiple processes) rather than one live
+command — a materially wider surface than `no-exfil-flow`'s own accepted
+one — so a hard block was judged the wrong default without first measuring
+that FP rate against real workflows. Full design, the tier tradeoff, and
+the honest residual (deny-tier correlation on `keel hook` hosts is still
+not closed) are in `docs/exfil.md`; test evidence in
+`session/v1/EVIDENCE/b1-exfil.md`.
+
 The v0.4 hardening landed three fixes, each verified adversarially in
 `session/v04/EVIDENCE/phase-3-redteam.md`: (1) `argPath()` now reads `file_path`
 / `notebook_path`, so `filesystem` floors (`no-rules-tampering`,

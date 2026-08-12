@@ -9,6 +9,7 @@ import {
   ContentTracker,
   EnforcementPipeline,
   FlowTracker,
+  PersistentFlowStore,
   SequenceDetector,
   StuckTracker,
   ResearchTracker,
@@ -197,7 +198,16 @@ function buildPipeline(rules: KeelRule[]): EnforcementPipeline {
     cache: new ActionCache({ maxSize: 100 }),
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
-    flowTracker: new FlowTracker(),
+    // PersistentFlowStore's default constructor arg re-reads
+    // KEEL_STATE_DIR at call time (state-manager.ts's stateDir()) — this
+    // resolves to `stateDir` below (set in beforeAll), the same isolated
+    // tmp dir every other piece of state in this file already uses. Wiring
+    // it here (rather than only for the one cross_call rule) is what lets
+    // `no-exfil-flow-cross-call`'s must-block fixture actually exercise
+    // FlowTracker.checkPersisted(); every other rule ignores it (only a
+    // `cross_call: true` rule ever calls checkPersisted()), so this has no
+    // effect on the other 45 rules' fixtures.
+    flowTracker: new FlowTracker(new PersistentFlowStore()),
     ruleHierarchy: buildHierarchy(rules),
     ruleVersion: 1,
     allowedFixTransforms: true,

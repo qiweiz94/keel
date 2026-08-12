@@ -2,6 +2,7 @@ import type { KeelRule, EnforceInput } from '../types.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolveMaybeRelative, canonicalizePath } from './path-normalize.js'
 import { argPath } from './arg-utils.js'
+import type { PersistentFlowStore } from './flow-store.js'
 
 interface DataTag {
   source: string     // matched source path or source tool
@@ -20,11 +21,36 @@ interface DataTag {
  * later receives tagged data, a rule violation is triggered.
  *
  * This is a lightweight version of Microsoft Fides.
+ *
+ * IN-MEMORY BY DEFAULT: `taggedValues`/`tagOrigins` live only in this
+ * instance, constructed once per pipeline — that's fine for a long-lived
+ * host (the OpenCode plugin, `keel daemon`) that holds one FlowTracker open
+ * for a whole session, but means `check()` (below) can only ever see a read
+ * and a sink that both happened inside the SAME live process. For
+ * `keel hook <host>` — a fresh process, and a fresh, empty FlowTracker, per
+ * tool call — that makes cross-call correlation inert beyond a single
+ * command that itself pipes a read into a sink. See docs/exfil.md's
+ * "Coverage depends on which host integration you use".
+ *
+ * The OPTIONAL `persistentStore` constructor argument closes that gap
+ * additively, without changing `check()`'s existing in-memory-only
+ * behavior at all: when supplied, `record()` ALSO writes matching tags to
+ * `PersistentFlowStore` (flow-store.ts) — a disk-backed, session-scoped,
+ * TTL'd, file-locked store a LATER process's FlowTracker instance (same
+ * `persistentStore` directory, same session_id) can read back via the new
+ * `checkPersisted()` method. `check()` itself is untouched on purpose: it
+ * backs the existing `level: protect` `no-exfil-flow` deny, which must not
+ * silently grow a materially wider (cross-process, TTL-wide) false-positive
+ * surface. `checkPersisted()` backs a separate, warn/observe-tier sibling
+ * rule instead — see install.ts's `no-exfil-flow-cross-call` and
+ * docs/exfil.md.
  */
 export class FlowTracker {
   private taggedValues: Map<string, DataTag[]> = new Map()
   // tag_key → tool name that created the tag
   private tagOrigins: Map<string, string> = new Map()
+
+  constructor(private readonly persistentStore?: PersistentFlowStore) {}
 
   /**
    * Track a tool call — check if it reads sensitive data
@@ -66,6 +92,24 @@ export class FlowTracker {
         existing.push(tag)
         this.taggedValues.set(key, existing)
         this.tagOrigins.set(key, input.tool)
+
+        // Cross-process persistence — see the class doc comment above and
+        // flow-store.ts. Gated on `typeof rule === 'object'` (a real,
+        // specific configured flow rule, not the generic per-call sweep at
+        // pipeline.ts's `record(input, '')`, nor the post-violation
+        // bookkeeping calls that pass `rule.id` — a plain string — at
+        // pipeline.ts's `violation()`/`warn()`). Those other call sites
+        // already run on every action for unrelated reasons; persisting
+        // from all of them too would write 2-3x redundant copies of the
+        // same real read event to disk.
+        if (this.persistentStore && typeof rule === 'object') {
+          this.persistentStore.recordTag(input.session_id, {
+            source: matchedRule,
+            timestamp: tag.timestamp,
+            originTool: input.tool,
+            path,
+          })
+        }
       }
     }
 
@@ -85,15 +129,26 @@ export class FlowTracker {
       if (commandSource) {
         const key = `flow:${input.session_id}:${input.turn_number}`
         const existing = this.taggedValues.get(key) || []
+        const commandTimestamp = Date.now()
         existing.push({
           source: commandSource,
           value: `<redacted: command read of sensitive path>`,
-          timestamp: Date.now(),
+          timestamp: commandTimestamp,
           sessionId: input.session_id,
           originTool: input.tool,
         })
         this.taggedValues.set(key, existing)
         this.tagOrigins.set(key, input.tool)
+
+        // Cross-process persistence — same gate and rationale as the
+        // path-based branch above.
+        if (this.persistentStore && typeof rule === 'object') {
+          this.persistentStore.recordTag(input.session_id, {
+            source: commandSource,
+            timestamp: commandTimestamp,
+            originTool: input.tool,
+          })
+        }
       }
     }
 
@@ -141,6 +196,53 @@ export class FlowTracker {
     }
 
     return null
+  }
+
+  /**
+   * Cross-call correlation for hook-invoked hosts (`keel hook <host>` —
+   * Claude Code, Gemini CLI, Cursor, Codex, cline, generic): a fresh
+   * process per tool call means `check()`'s in-memory `taggedValues` is
+   * always empty at the start of a later call, so it can never see a read
+   * an EARLIER, already-exited process recorded. This method answers the
+   * identical question — "did a source get tagged this session, and is
+   * this call a sink" — against the persisted, session-scoped, TTL'd store
+   * (flow-store.ts) instead, so that earlier process's tag is still
+   * visible here.
+   *
+   * Deliberately NOT folded into `check()`: `check()` backs the existing
+   * `level: protect` `no-exfil-flow` deny, a hard, undialable floor (see
+   * docs/exfil.md's "Design choice" section for why that stays a hard
+   * deny). Cross-process correlation has a materially wider
+   * false-positive shape — it survives an hour (FLOW_TAG_TTL_MS), not one
+   * live process/command — and is deliberately shipped at a softer tier
+   * instead: see install.ts's `no-exfil-flow-cross-call` (action: warn,
+   * level: sprint, cross_call: true). Returns null when no persistent
+   * store was supplied to the constructor (every `new FlowTracker()` call
+   * site that predates this — the default stays pure in-memory) exactly
+   * like `check()` returns null when `rule.sources`/`rule.sinks` are
+   * missing.
+   */
+  checkPersisted(input: EnforceInput, rule: KeelRule): string | null {
+    if (!this.persistentStore || !rule.sources || !rule.sinks) return null
+
+    const args = input.args as Record<string, unknown>
+    const tool = input.tool
+
+    const isSink = rule.sinks.some(sink => this.matchesSink(sink, tool, args))
+    if (!isSink) return null
+
+    const tags = this.persistentStore.getTags(input.session_id)
+    const hasSourceData = tags.some(tag => rule.sources!.some(source =>
+      tag.originTool.toLowerCase().includes(source.toLowerCase())
+      || (!!tag.path && this.pathMatches(tag.path, source))
+      || (!!tag.source && this.sourceMatches(source, tag.source))
+    ))
+
+    if (!hasSourceData) return null
+
+    const sources = rule.sources.join(', ')
+    const sinks = rule.sinks.join(', ')
+    return `Cross-call data flow correlation (this session, an earlier hook process): data from ${sources} flowing to ${sinks} (rule: ${rule.id})`
   }
 
   /** Does a read command reference a configured source pattern? */

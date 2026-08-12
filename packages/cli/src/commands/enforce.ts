@@ -8,6 +8,7 @@ import {
   AuditLog,
   SequenceDetector,
   FlowTracker,
+  PersistentFlowStore,
   loadRuleHierarchy,
   parseRulesFile,
   hashRulesFile,
@@ -124,7 +125,21 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   // Initialize components
   const contentTracker = new ContentTracker()
   const sequenceDetector = new SequenceDetector()
-  const flowTracker = new FlowTracker()
+  // `initEnforce()` is the single choke point for every `keel hook <host>`
+  // (Claude Code, Gemini CLI, Cursor, Codex, cline, generic), `keel test`,
+  // and `keel evaluate` invocation — each a fresh process per call, unlike
+  // the OpenCode plugin and `keel daemon`, which construct their own
+  // long-lived `FlowTracker` directly (opencode-plugin/src/plugin.ts,
+  // daemon.ts) and don't need this: their FlowTracker already correlates
+  // across the whole session in memory. Passing a `PersistentFlowStore`
+  // here is what makes the cross-call correlation (flow-store.ts,
+  // FlowTracker.checkPersisted, install.ts's no-exfil-flow-cross-call)
+  // "on by default" for exit-code hosts specifically — the property this
+  // lane was asked to close (AUDIT §5). Uses the same `stateDir()`/
+  // `KEEL_STATE_DIR` resolution as `StateManager` a few lines below, so
+  // tests isolate it the same way and it never touches a real ~/.keel
+  // unless that env var is unset.
+  const flowTracker = new FlowTracker(new PersistentFlowStore())
   const cm = new ContextManager(level)
 
   // Initialize pipeline

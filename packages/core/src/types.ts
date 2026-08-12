@@ -195,6 +195,24 @@ export interface KeelRule {
   // ── Flow / IFC rules ──
   sources?: string[]
   sinks?: string[]
+  /**
+   * When true, a `type: flow` rule is checked against FlowTracker's
+   * PERSISTED, session-scoped, TTL'd store (flow-store.ts) instead of its
+   * in-memory taggedValues Map — see flow-tracker.ts's checkPersisted().
+   * This is what lets `sources`/`sinks` correlate across SEPARATE
+   * `keel hook <host>` processes within one session (docs/exfil.md's
+   * "Coverage depends on which host integration you use"), not just within
+   * one live process the way the default (unset/false) in-memory check()
+   * does. Deliberately a distinct rule (see install.ts's
+   * no-exfil-flow-cross-call) rather than a flag flipped on the existing
+   * no-exfil-flow floor: cross-process correlation has a materially wider
+   * false-positive window (the TTL, not one command) and ships at
+   * warn/observe, never as a `level: protect` deny. A `cross_call` rule
+   * still calls FlowTracker.record() itself (pipeline.ts's flow branch),
+   * so it is self-sufficient even in a custom ruleset that ships it
+   * without its non-cross_call sibling.
+   */
+  cross_call?: boolean
 
   // ── MCP rules ──
   mcp_check?: 'tool_descriptions' | 'tool_results' | 'server_changes'

@@ -1013,10 +1013,29 @@ export class EnforcementPipeline {
       // Check flow/IFC rules (Tier 6)
       if (deepChecks && rule.type === 'flow' && rule.sources && rule.sinks) {
         // Record successful reads before evaluating a later sink action.
+        // Runs for EVERY type:flow rule, including `cross_call` ones — a
+        // cross_call rule is self-sufficient on purpose, so a custom
+        // rules.yaml that ships it WITHOUT its non-cross_call sibling (a
+        // user who wants only the soft warn, not the no-exfil-flow hard
+        // deny) still persists its own matching reads. When both
+        // no-exfil-flow and no-exfil-flow-cross-call are active together
+        // (the shipped default), a single real read event is recorded/
+        // persisted once per rule sharing its sources — a small, bounded
+        // storage cost (flow-store.ts's MAX_TAGS_PER_SESSION caps it), not
+        // a correctness issue.
         this.config.flowTracker.record(input, rule)
-        const flowResult = this.config.flowTracker.check(input, rule)
-        if (flowResult) {
-          return this.violation(input, rule, flowResult, start, 6)
+        if (rule.cross_call) {
+          // Cross-call (persisted-store) correlation — see flow-tracker.ts's
+          // checkPersisted() and docs/exfil.md.
+          const flowResult = this.config.flowTracker.checkPersisted(input, rule)
+          if (flowResult) {
+            return this.violation(input, rule, flowResult, start, 6)
+          }
+        } else {
+          const flowResult = this.config.flowTracker.check(input, rule)
+          if (flowResult) {
+            return this.violation(input, rule, flowResult, start, 6)
+          }
         }
       }
 
