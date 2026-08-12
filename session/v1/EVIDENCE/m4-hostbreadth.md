@@ -97,7 +97,14 @@ timestamp=2026-08-12T18:03:25.329Z level=WARN run=ba0a3e38 message="[Keel] no-ve
 ```
 
 Committed transcript: `session/transcripts/opencode-warn-no-verify-bypass.txt`
-(the child's own captured JSON stream + the `opencode.log` line appended).
+(the child's own captured JSON stream + the `opencode.log` line appended). The
+script overwrites this file on every run; it was run twice this lane (once here,
+once again after the §3 verdict-logic fix below, to confirm that fix didn't affect
+OpenCode's own codepath) and both passed. The quote above is from the FIRST run
+(`ses_008db5c4...`, 18:03) — the committed file on disk is the SECOND, later run
+(`ses_008cccf95...`, 18:19), with different shas/timestamps but the identical
+PASS/PASS/PASS shape. Not a discrepancy to chase — both are genuine — just noting
+which one a reader cross-checking shas against the committed file will find.
 
 Model: `opencode/deepseek-v4-flash-free` — no-auth, free tier, matching the
 existing block script's pin. No real-money cost.

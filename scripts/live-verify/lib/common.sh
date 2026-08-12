@@ -209,7 +209,14 @@ lv_verify_block() {
 # child's own captured stdout for hosts with no independent log), and the
 # child did not time out (a timed-out child never got far enough to
 # produce a genuine marker either way). Sets LV_VERIFY_VERDICT to
-# pass/fail/timeout, same convention as lv_verify_block.
+# pass/fail/timeout, same convention as lv_verify_block. NOTE: this is a
+# different string than lv_verify_warn_exitcode_host below sets for its
+# own analogous not-a-real-failure state ("could-not-test", not
+# "timeout") — the two functions are never mixed in the same script today
+# (OpenCode uses this one; Claude/Gemini/Codex use the other), but a
+# future script pairing the wrong function with the wrong branch check
+# would silently mis-verdict. Check which function you called before
+# branching on the string.
 lv_verify_warn() {
   marker_source="$1"
   marker="$2"
