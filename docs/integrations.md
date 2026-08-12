@@ -51,6 +51,81 @@ Capabilities differ, and keel does not pretend otherwise:
 
 ---
 
+## Claim-to-evidence: verification obligations, off OpenCode (v1 M2-B1)
+
+`markVerificationSatisfied` (a `type: verification`/`type: claim` obligation —
+armed by an edit, discharged by a real passing test run) and `detectClaim` (an
+agent's own "done"/"passing" text, checked against that pending obligation)
+used to fire only inside OpenCode's long-lived plugin process: every
+exit-code host (`keel hook <host>`) is a FRESH short-lived process per call,
+and `hookCommand` calls `process.exit()` right after rendering the verdict —
+which used to kill any obligation-arming state before a later PostToolUse
+call could ever discharge it, because no exit-code host had a PostToolUse-
+shaped event wired to anything at all.
+
+**The fix was smaller than it sounds.** `VerificationTracker` already
+persists every armed obligation to `KEEL_STATE_DIR/verification.json` under a
+file lock (`state-manager.ts`), and `keel hook`'s PreToolUse path already
+armed obligations correctly (it calls `pipeline.evaluate()`, which arms
+`type: verification`/`type: claim` triggers on every call) — a fresh process
+reading that state on its NEXT invocation already saw what an earlier one
+armed. The actual gap was one missing call: nothing on the exit-code path
+ever invoked `pipeline.markVerificationSatisfied()` (the discharge) because
+there was no post-action event class at all. `hook.ts` now recognizes a
+`PostToolUse`-shaped payload, and `enforce.ts`'s new `recordPostAction()`
+calls the SAME `markVerificationSatisfied`/`recordAttemptOutcome` pair the
+opencode plugin's `tool.execute.after` handler already used — no new
+discharge logic, no rebuilt claim grammar, no daemon, no new persistence
+layer.
+
+**The exit-code honesty gap.** `markVerificationSatisfied` must only fire on
+a CONFIRMED passing run — never on "the command ran" alone, which would
+discharge on a FAILING test too (the same "control that lies" class
+`VerificationTracker.isFakeSatisfy` already guards against on the trigger
+side). Claude Code's own published hook docs describe `PostToolUse`'s
+`tool_response` as "JSON of the tool output" without pinning an exact
+per-tool schema, and this environment's own sandbox refuses to run a nested
+`claude` CLI invocation at all (attempted twice — a hard restriction, not an
+auth failure), so the real field carrying a Bash exit code could not be
+captured live. `postToolUseExitCode()` (`hook.ts`) tries several plausible
+field names and returns `null` (unknown → never discharges) rather than
+guessing 0 on anything it doesn't recognize.
+
+| Host | Arms (PreToolUse) | Discharges (PostToolUse-equiv.) | Claim channel (Stop-equiv.) | Keel-side mechanism | Host payload shape |
+|---|---|---|---|---|---|
+| OpenCode | `tool.execute.before` | `tool.execute.after` (pre-existing, unchanged this lane) | `experimental.text.complete` (pre-existing) | verified — `plugin.test.ts`'s "successful/failed test clears/does not clear obligation" cases | **live** (claim-fires case: `session/transcripts/opencode-claim-rule-live-e2e.txt`; the discharge branch itself predates this lane and was not re-run live here) |
+| Claude Code | `PreToolUse` (**live**, pre-existing — `session/transcripts/claude-code-force-push.txt`) | `PostToolUse` — NEW this lane (`claude-posttooluse-verify.sh`, a second hook entry alongside `keel-reinject`) | `Stop` (pre-existing, unchanged) | verified — `claude-posttooluse-verify-hook.test.ts`: real built CLI + real shell script, MUST-discharge (confirmed pass) and MUST-NOT-discharge (confirmed fail / unconfirmed outcome / non-matching command) all pass | **docs** — the `tool_response` exit-code field name is UNCONFIRMED (see above); this environment's sandbox blocks a nested `claude` CLI invocation, so no live PostToolUse payload was captured this lane |
+| Codex | `PreToolUse` (**docs**, pre-existing — installer already flags "Codex CLI has no blocking hooks" / hook-trust caveats) | `PostToolUse` — NEW this lane (`codex-posttooluse.sh`) | `Stop` — NEW this lane (`codex-stop.sh`; hook.ts's own prior comment had flagged this as "documented but deliberately unwired" — this is that follow-up) | same test suite covers the parse branch (`hook-command.test.ts`) | **docs** — codex CLI is not installed in this environment; nothing beyond the pre-existing "converged on the same hookSpecificOutput-shaped contract" citation |
+| Gemini | `PreToolUse` (**types** — `gemini hooks migrate --from-claude` confirmed to exist on this machine) | `PostToolUse` — NEW this lane (`gemini-posttooluse.sh`) | `Stop` — NEW this lane (`gemini-stop.sh`) | same test suite covers the parse branch | **types** for the general Claude-Code-compatibility claim (same basis as PreToolUse); the SPECIFIC PostToolUse/Stop field shape was not live-confirmable — `gemini -p` on this machine returns `IneligibleTierError` (this account's free tier was deprecated in favor of Antigravity), an auth/tier block, not a code defect |
+| Cursor | `beforeShellExecution`/`beforeMCPExecution` (**docs**, pre-existing) | **NO CHANNEL CONFIRMED** | **NO CHANNEL CONFIRMED** | not implemented | cursor CLI is not installed here and this repo carries no prior citation for a post-action/stop-shaped Cursor hook event; not fabricated against an unconfirmed schema |
+| Cline | `PreToolUse` (**types**, pre-existing — read from installed `@cline/core`) | **NO CHANNEL CONFIRMED** | **NO CHANNEL CONFIRMED** | not implemented | cline CLI is installed here but its post-action/stop hook shape was not investigated this lane (out of time budget, not ruled out) — left honestly unexplored rather than guessed |
+| Hermes / OpenClaw | plugin-based (`pre_tool_call`/`before_tool_call`), not exit-code hosts | out of scope — these are long-lived plugin processes with the same obligation-persistence properties OpenCode already has | out of scope | not touched this lane | unchanged |
+
+**Slopsquatting deny-on-retry (same root cause).** `type: package` rule
+cache misses fire `scheduleBackgroundVerification` with `void` — never
+awaited on the pipeline's hot path, by design (a live registry round trip
+cannot sit on the <50ms budget). In a long-lived host that promise settles
+on its own and warms the on-disk `PackageVerifierCache` for the next
+attempt; `keel hook`'s `process.exit()` used to kill it before it got a
+turn, so a hallucinated package name prompted on every single retry instead
+of ever converging to a deterministic deny. `enforce.ts`'s
+`flushBackgroundWork()` — fed by the pipeline's existing (pre-built,
+test-only) `packageVerifierOnBackgroundStart` hook — now awaits every
+promise captured during one `keel hook` call, bounded to 2500ms, before
+`hookVerdict` returns. Proven in `hook-package-background-flush.test.ts`
+(a MUST-catch-the-regression check: the assertion was confirmed to fail
+when the `flushBackgroundWork()` call was deliberately removed and the
+fetch mock given a real macrotask delay — see that file's own comment on
+why an instant mock silently proved nothing on the first attempt).
+
+**Known gap, not fixed here (documented for the next lane):**
+`VerificationTracker.markSatisfied` clears an obligation with no generation
+check — an edit landing between a test's PreToolUse and its PostToolUse can
+be discharged by a run that started before that edit and never actually
+covered it. Narrow, pre-existing (not introduced by this lane), real.
+
+---
+
 ## Universal paths — no adapter needed
 
 **MCP server** (`keel serve`) exposes 7 tools — `keel_check`, `keel_audit`,

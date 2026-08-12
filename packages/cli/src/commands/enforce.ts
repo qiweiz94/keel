@@ -38,6 +38,53 @@ let actionOverride: EnforcementAction | undefined
 let depthOverride: EnforcementDepth | undefined
 
 /**
+ * Settlement promises from `type: package` rules' background registry
+ * lookup (pipeline.ts's `packageVerifierOnBackgroundStart` — see its own
+ * comment there for the full design). `scheduleBackgroundVerification`
+ * fires with `void`, never awaited by the pipeline itself, on purpose:
+ * awaiting it inline would put a live 2s network round trip back on the
+ * <50ms hot-path budget the two-stage cache-first design exists to
+ * protect (session/v04/EVIDENCE/a4-perf.md §5.3).
+ *
+ * That is fine for a long-lived host process (the opencode plugin, the
+ * MCP daemon): the promise settles on Node's own event loop sometime
+ * after this call returns, fills `PackageVerifierCache` on disk, and the
+ * NEXT install attempt of the same package gets the deterministic
+ * `not_found -> deny` instead of `unverified -> prompt` forever. It is
+ * NOT fine for `keel hook <host>` (packages/cli/src/commands/hook.ts):
+ * that command calls `process.exit()` right after rendering the verdict,
+ * which tears down the event loop immediately — the background promise
+ * captured here never gets a turn to run, the cache never warms, and a
+ * hallucinated package name prompts on every single retry instead of
+ * converging to a deny. pipeline.ts's own comment on the `package`-type
+ * branch documents this exact gap and explicitly leaves it to this file.
+ *
+ * `flushBackgroundWork` (below) is the fix: `hookVerdict` awaits it,
+ * bounded, before returning — giving every promise captured during this
+ * one evaluation an actual chance to settle before the caller's
+ * `process.exit()` runs.
+ */
+let pendingBackgroundWork: Promise<void>[] = []
+
+/**
+ * Await every background-verification promise captured since the last
+ * `initEnforce()` call, bounded so a hung fetch can never make `keel hook`
+ * itself hang. `scheduleBackgroundVerification`'s own budget is 2000ms
+ * (pipeline.ts passes `totalTimeoutMs: 2000`); this timeout is
+ * deliberately a little longer so the fetch's own internal deadline is
+ * what actually cuts it off in the common case, not this race.
+ */
+export async function flushBackgroundWork(timeoutMs = 2500): Promise<void> {
+  const work = pendingBackgroundWork
+  pendingBackgroundWork = []
+  if (work.length === 0) return
+  await Promise.race([
+    Promise.allSettled(work),
+    new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+  ])
+}
+
+/**
  * Initialize the enforcement system.
  */
 export function initEnforce(projectDir?: string, options?: EnforceOptions): {
@@ -53,6 +100,10 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   learnMode = options?.learn === true
   actionOverride = options?.action
   depthOverride = options?.depth
+  // A fresh pipeline means any promise captured under the PREVIOUS one is
+  // for a rule hierarchy this process no longer holds a reference to —
+  // drop it rather than let flushBackgroundWork await stale work forever.
+  pendingBackgroundWork = []
 
   // Generate session ID
   currentSessionId = `ses_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -103,6 +154,11 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     onRulesError: (errors) => {
       console.error(`[keel] rules reload failed — keeping last-known-good rules: ${errors.join('; ')}`)
     },
+    // See `pendingBackgroundWork`'s own comment above: this is what lets
+    // `flushBackgroundWork` give a package-rule's background registry
+    // lookup an actual chance to settle before `keel hook`'s caller calls
+    // `process.exit()`.
+    packageVerifierOnBackgroundStart: (settled) => { pendingBackgroundWork.push(settled) },
     ruleFingerprint: () => [
       join(dir, '.keel', 'rules.yaml'), join(dir, 'AGENTS.md'), join(dir, 'CLAUDE.md'),
       join(dir, '.keel.local.yaml'), join(dir, 'AGENTS.local.md'), join(dir, 'CLAUDE.local.md'),
@@ -250,6 +306,55 @@ export async function evaluateClaimText(
     reasoning: input.reasoning,
   })
   return result
+}
+
+/**
+ * Discharge a verification/claim obligation from a completed tool call's
+ * OWN outcome, OUTSIDE the before-call evaluation (v1 M2-B1: give
+ * claim-to-evidence real reach on the exit-code hosts, not just OpenCode).
+ *
+ * This is the exit-code-host equivalent of the opencode plugin's
+ * `tool.execute.after` handler (packages/opencode-plugin/src/plugin.ts):
+ * `if (exit === 0) pipeline.markVerificationSatisfied(action)` +
+ * `pipeline.recordAttemptOutcome(action, exit)`, called on the SAME
+ * `EnforceInput` shape (tool + args) the completed call used, so
+ * `VerificationTracker.markSatisfied`'s `matches(rule.satisfy, input)`
+ * check sees the actual command that just ran (e.g. `npm test`) rather
+ * than a synthetic one. Reuses both pipeline methods verbatim — no new
+ * discharge logic, no rebuilt claim grammar.
+ *
+ * `exitCode` MUST be a confirmed 0 for `markVerificationSatisfied` to
+ * fire — passing a guessed/unknown exit code as 0 would clear an
+ * obligation on a run that never actually passed (the same "control that
+ * lies" failure `VerificationTracker.isFakeSatisfy` already guards on the
+ * trigger side). `null` (genuinely unknown) always skips the discharge
+ * but still feeds `recordAttemptOutcome` — that call's stuck-loop/oracle
+ * bookkeeping tolerates `exitCode: null` already (see its own JSDoc).
+ */
+export async function recordPostAction(
+  tool: string,
+  args: Record<string, unknown>,
+  exitCode: number | null,
+  extra?: { cwd?: string; agent?: string; sessionId?: string },
+): Promise<void> {
+  if (!pipeline) {
+    throw new Error('Enforcement not initialized. Call initEnforce() first.')
+  }
+  const sessionId = extra?.sessionId || currentSessionId
+  const input: EnforceInput = {
+    tool,
+    args,
+    cwd: extra?.cwd || process.cwd(),
+    session_id: sessionId,
+    turn_number: 0,
+    context_tokens: 0,
+    level: currentLevel,
+    context: 'local',
+    agent: extra?.agent || 'unknown',
+    subagent_of: null,
+  }
+  if (exitCode === 0) pipeline.markVerificationSatisfied(input)
+  pipeline.recordAttemptOutcome(input, exitCode)
 }
 
 /**

@@ -1,4 +1,4 @@
-import { initEnforce, evaluateToolCall, evaluateClaimText } from './enforce.js'
+import { initEnforce, evaluateToolCall, evaluateClaimText, recordPostAction, flushBackgroundWork } from './enforce.js'
 import { BLOCKING_ACTIONS } from './evaluate.js'
 import type { EnforceResult, ProtectionLevel } from '../core/types.js'
 
@@ -62,6 +62,39 @@ export interface ParsedCall {
    */
   reasoning?: string
   /**
+   * Set when this payload is a POST-action event — the call already ran,
+   * with a known (or unknown) outcome — rather than a pre-tool-call one
+   * (v1 M2-B1: give claim-to-evidence real reach on the exit-code hosts,
+   * matching the opencode plugin's `tool.execute.after` handler). Today set
+   * only for a Claude Code `PostToolUse` payload (`hook_event_name ===
+   * 'PostToolUse'`, carrying `tool_name`/`tool_input`/`tool_response` —
+   * confirmed field NAMES via claude-posttooluse.sh's own installed
+   * contract comment, "docs" confidence overall — this repo has not been
+   * able to capture a real payload live, see session/v1/EVIDENCE/
+   * m2-b1-verify.md), and — by the SAME Claude-Code-shaped-hook citation
+   * `parsePayload`'s codex/gemini branch already relies on for PreToolUse —
+   * for codex and gemini too.
+   *
+   * `exitCode` is best-effort and DELIBERATELY conservative: Claude Code's
+   * published hook docs describe `tool_response` as "JSON of the tool
+   * output" without pinning an exact per-tool schema, and this lane could
+   * not verify empirically (this environment's own sandbox refuses to run
+   * a nested `claude` CLI invocation — see the evidence file) whether a
+   * numeric exit code is even present for the Bash tool. `postToolUseExitCode`
+   * below tries several plausible field names and returns `null` (unknown)
+   * rather than guessing 0 when none matches — a wrong guess of 0 would
+   * discharge a verification obligation on a run that never actually
+   * passed, the exact "control that lies" failure class
+   * `VerificationTracker.isFakeSatisfy` exists to prevent on the trigger
+   * side. `hookVerdict` only calls `markVerificationSatisfied` when
+   * `exitCode === 0` is a confirmed value from this payload, never on `null`.
+   *
+   * Like the Stop-shaped claim-reach path above, this is structurally
+   * observe-only: `hookVerdict` NEVER blocks on a PostToolUse-shaped
+   * payload, always returns exit 0, even if evaluation throws internally.
+   */
+  postAction?: { tool: string; args: Record<string, unknown>; exitCode: number | null }
+  /**
    * Set when the payload could not supply the ONE field every rule needs to
    * match against: a real tool identity (or, for the env-var TOOL_INPUT
    * path, real argument data — present-but-corrupt is data LOSS, distinct
@@ -105,6 +138,26 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/**
+ * Best-effort exit-code extraction from a PostToolUse `tool_response`
+ * payload. See ParsedCall.postAction's comment for why this is
+ * deliberately conservative: it tries several plausible field names and
+ * falls back to `null` (unknown, never discharges) rather than guessing —
+ * a wrong guess of 0 would clear a verification obligation on a run that
+ * never actually passed.
+ */
+function postToolUseExitCode(toolResponse: unknown): number | null {
+  const response = asRecord(toolResponse)
+  for (const key of ['exit_code', 'exitCode', 'exitStatus']) {
+    const value = response[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  if (typeof response.success === 'boolean') return response.success ? 0 : 1
+  if (typeof response.is_error === 'boolean') return response.is_error ? 1 : 0
+  if (response.interrupted === true) return 1
+  return null
 }
 
 /**
@@ -191,6 +244,24 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
           reasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : '',
         }
       }
+      // PostToolUse-shaped payload (v1 M2-B1): the call already ran.
+      // Gated on hook_event_name alone, mirroring the Stop gate above —
+      // not on the presence/absence of tool_response, so a malformed
+      // PreToolUse payload is never misread as a completed call. See
+      // ParsedCall.postAction's comment for the exit-code honesty caveat.
+      if (body.hook_event_name === 'PostToolUse') {
+        const identity = toolField(body.tool_name)
+        return {
+          tool: 'post-action',
+          args: {},
+          sessionId: stringField(body.session_id),
+          postAction: {
+            tool: identity.tool,
+            args: asRecord(body.tool_input),
+            exitCode: postToolUseExitCode(body.tool_response),
+          },
+        }
+      }
       const identity = toolField(body.tool_name)
       return { ...identity, args: asRecord(body.tool_input), sessionId: stringField(body.session_id) }
     }
@@ -201,9 +272,39 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       // reads the same payload rather than a guessed one of its own.
       // `session_id` is on the base PreToolUse schema for both Claude Code
       // (code.claude.com/docs/en/hooks) and Codex (which converged on the
-      // same hookSpecificOutput-shaped hook contract). Neither host's Stop
-      // shape is wired here (see ParsedCall.reasoning's comment) — this
-      // branch stays PreToolUse-only for both.
+      // same hookSpecificOutput-shaped hook contract).
+      //
+      // v1 M2-B1: Stop and PostToolUse are now wired here too, on the SAME
+      // citation tier as the PreToolUse branch above (hook.ts's own prior
+      // comment flagged Codex's identical Stop/last_assistant_message shape
+      // as "documented ... but deliberately NOT wired here this phase" —
+      // this is that follow-up). Confidence stays "docs" for both hosts:
+      // neither has been exercised against a live session in this repo
+      // (gemini is auth-blocked in this lane's environment; codex's own
+      // installer already carries an "UNVERIFIED against a live Codex CLI"
+      // note for PreToolUse, which applies here too) — see docs/
+      // integrations.md and session/v1/EVIDENCE/m2-b1-verify.md.
+      if (body.hook_event_name === 'Stop') {
+        return {
+          tool: 'assistant-message',
+          args: {},
+          sessionId: stringField(body.session_id),
+          reasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : '',
+        }
+      }
+      if (body.hook_event_name === 'PostToolUse') {
+        const identity = toolField(body.tool_name)
+        return {
+          tool: 'post-action',
+          args: {},
+          sessionId: stringField(body.session_id),
+          postAction: {
+            tool: identity.tool,
+            args: asRecord(body.tool_input),
+            exitCode: postToolUseExitCode(body.tool_response),
+          },
+        }
+      }
       const identity = toolField(body.tool_name)
       return { ...identity, args: asRecord(body.tool_input), sessionId: stringField(body.session_id) }
     }
@@ -492,6 +593,25 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
       return { blocked: false, exitCode: 0, stdout: '', stderr: '' }
     }
 
+    // Post-action event (v1 M2-B1 — see ParsedCall.postAction's comment).
+    // The call already ran; this discharges a pending verification/claim
+    // obligation on CONFIRMED success and always records the outcome,
+    // mirroring the opencode plugin's `tool.execute.after` handler. Same
+    // structurally-can't-block shape as the claim-reach branch above: a
+    // completed tool call cannot be un-run, so this path ALWAYS reports
+    // exit 0, even if evaluation throws.
+    if (call.postAction) {
+      try {
+        const cwd = options.cwd || process.cwd()
+        const level = (options.level as ProtectionLevel | undefined)
+        initEnforce(cwd, level ? { level } : undefined)
+        await recordPostAction(call.postAction.tool, call.postAction.args, call.postAction.exitCode, { cwd, agent: host, sessionId: call.sessionId })
+      } catch {
+        // Fail open, on purpose — see the comment above.
+      }
+      return { blocked: false, exitCode: 0, stdout: '', stderr: '' }
+    }
+
     // Degenerate payload (empty stdin, unparseable JSON, a missing/blank
     // tool identity, or truncated TOOL_INPUT data) — the input needed to
     // evaluate this call was lost, so it must never reach `evaluateToolCall`
@@ -522,6 +642,20 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
     } catch {
       result = null      // fail closed — renderVerdict blocks on null
     }
+
+    // Slopsquatting deny-on-retry fix (v1 M2-B1, same root cause as the
+    // discharge gap above): a `type: package` rule cache miss fires
+    // `scheduleBackgroundVerification` with `void` inside `evaluateToolCall`
+    // (pipeline.ts), never awaited on the hot path. In a long-lived host
+    // that promise settles on its own and warms `PackageVerifierCache` for
+    // the next call; here, `hookCommand` calls `process.exit()` right after
+    // this function returns, which would otherwise tear down the event
+    // loop before the lookup ever got a turn — so a hallucinated package
+    // name would prompt on every single retry instead of converging to a
+    // deterministic deny. Bounded (2500ms) so a hung fetch cannot make this
+    // hook itself hang; a no-op (returns immediately) on every call that
+    // never touched a package rule.
+    await flushBackgroundWork()
 
     return renderVerdict(host, result)
   } catch {
