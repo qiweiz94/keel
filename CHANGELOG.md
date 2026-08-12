@@ -1,5 +1,144 @@
 # Changelog
 
+## 1.0.0
+
+`@get-keel/cli` 1.0.0 · `@get-keel/core` 1.0.0 · `@get-keel/opencode-plugin` 1.0.0
+
+The v1 release. Four correctness/hardening lanes landed on top of 0.4.0's default
+ruleset and thesis experiment: a fail-closed sweep across every enforcement entry
+point, a `KEEL_HOME` fix that closes the install/read split-brain on both sides,
+verification-obligation discharge on three more hosts, Windows support, and a wider
+host-breadth pass with one real user-facing fix (Cursor's warn-message casing). The
+default ruleset grew from 43 to 45 rules along the way (13 protect-floor, 22
+balanced, 10 observe) — `docs/tiers.md` and the README are reconciled to the current
+count, verified live via `keel status`. Evidence for every item below:
+`session/v1/EVIDENCE/*.md`.
+
+### Fixed
+
+- **`root-cause-before-refactor`'s match pattern no longer over-matches safe
+  commands.** An audit reported `git checkout -- <file>` tripping this rule; that
+  specific report didn't reproduce (the rule ships `mode: observe`, so it was never
+  actually interrupting anything), but the underlying pattern was genuinely too
+  broad — it matched `git checkout -- ` generically (missing bare `git checkout .`,
+  a real whole-tree discard, entirely) and matched `migrate`/`refactor` inside
+  unrelated path segments like `src/migrations/x.ts`. Now scoped to whole-tree-discard
+  forms only (`git checkout -- .`, `git checkout .`, `git checkout -- :/`) with
+  `migrate`/`refactor` anchored so they stop matching inside path segments. 29 new
+  regression cases in `packages/cli/src/__tests__/floor-fp.test.ts`; a stale test
+  fixture that had baked the false positive in as expected behavior was corrected
+  alongside it. See `session/v1/EVIDENCE/m1r-1-fp.md`.
+- **Degenerate input now fails closed at every enforcement entry point, not just
+  most of them.** Malformed JSON, a non-object payload, or a missing/blank
+  tool-identity field previously degraded silently to a synthetic `tool: 'unknown'`
+  call that matched no rule and returned `allow` — a fail-open path on exactly the
+  input an attacker or a broken host integration would produce. Closed in four
+  places: `hook.ts` (new `ParsedCall.degenerate` flag, carefully carved out for
+  Claude Code's `Stop` hook, whose legitimate payload has no `tool_name`),
+  `PolicyEngine.evaluate()` (returns `fail-closed-degenerate-input` instead of a
+  silent allow), the MCP server's `keel_check` tool (a missing `target` previously
+  read back `"POLICY OK"`), and the OpenCode plugin's `tool.execute.before`. See
+  `session/v1/EVIDENCE/m1r-2-failclosed.md`.
+- **`--level` no longer hangs a bare `keel enforce`.** `enforce.ts`'s `--level`
+  option carried a hardcoded default of `'balanced'`, so `keel enforce` with *no*
+  flags at all always printed `"--level=balanced has no effect without --persist"`
+  and exited 1 — the basic status view was unreachable. `--level` is now `undefined`
+  unless typed explicitly; `--level=X` without `--persist` previews that dial for
+  the current invocation only; `--persist` without `--level` is now an explicit
+  error instead of silently persisting `balanced`. (`keel-control-gate` already
+  denies an agent from running any form of this command on your behalf, before and
+  after this fix.) See `session/v1/EVIDENCE/m1r-4-mask.md`.
+- **Cursor's warn message now reaches Cursor's real API shape.** `hook.ts`'s
+  `renderVerdict` sent only camelCase `userMessage`/`agentMessage` on Cursor's
+  non-blocking path; Cursor's documented API (re-fetched live this lane) uses
+  snake_case `user_message`/`agent_message`. Fixed additively — both spellings are
+  sent, so the change can't itself break the hook on an unrecognized field. The
+  identical casing question on Cursor's *block* path was left alone (block already
+  gates correctly via `permission` alone regardless of message casing; no live
+  Cursor CLI available to confirm which spelling that path reads). See
+  `session/v1/EVIDENCE/m4-hostbreadth.md`.
+- **Windows: the global rule tier no longer silently fails to load.**
+  `loadRuleHierarchy()` resolved the home directory as `process.env.HOME || '~'` —
+  `HOME` is unset on Windows by default, so `~/.keel/rules.yaml` never loaded there.
+  Now falls back to `os.homedir()`. A separate latent bug was also closed: a mixed
+  `paths` list like `["**/*.ts", "!**/node_modules/**"]` OR'd its positive and
+  negated entries together in one check, inverting the negation into matching
+  almost everything; no shipped rule used this shape, so this was unreachable in
+  practice, but is now correct (positives OR, negated entries AND-exclude) for any
+  rule that does. See `session/v1/EVIDENCE/m3-windows.md`.
+- **A Windows file-lock crash (`EBUSY`/`EPERM`) no longer strands a lockfile for
+  the full 8-second stale-lock window.** `classifyLockError()` now treats these as
+  retryable contention (previously only `EEXIST` was), and lock release retries the
+  unlink. See `session/v1/EVIDENCE/m3-windows.md`.
+
+### Added
+
+- **`KEEL_HOME` closes the install/read split-brain, on both the write and the
+  read side.** Previously only the CLI's own `homedir()` calls existed to redirect;
+  now `resolveHome()` (`KEEL_HOME` → `HOME` → `os.homedir()`, exported from
+  `packages/core/src/home.ts` and generated into every consuming package) is used
+  by all 10 global-target installer writers *and* the 25 reader call sites across
+  `packages/cli` and `packages/core` that used to resolve a bare `homedir()`
+  independently — daemon token/state, rules.yaml, audit traces, signing/receipt
+  keys, override state, the kill-switch sentinel, and more. Two bonus fixes found
+  during the sweep: `rule-parser.ts`'s `loadRuleHierarchy()` (the single most
+  load-bearing reader in the system) never consulted `KEEL_HOME` at all before this,
+  and `disable.ts` fell back to the literal non-existent path `'~'` when `HOME` was
+  unset — worse than a bare `homedir()`, and the writer of the exact kill-switch
+  file every reader above now trusts. A new install→read consistency test drives
+  the real built CLI as separate processes with two distinct `HOME`/`KEEL_HOME`
+  temp dirs to prove nothing leaks across the boundary in either direction. See
+  `session/v1/EVIDENCE/m1r-3-install.md` and `session/v1/EVIDENCE/reader-home.md`.
+- **Verification-obligation discharge now works on Claude Code, Codex, and Gemini,
+  not only OpenCode.** There was previously exactly one call site in the whole
+  codebase (OpenCode's `tool.execute.after`) that could mark a `verification` rule's
+  obligation satisfied or record an attempt outcome — every other host's
+  `test-before-commit`/`source-change-requires-test`-style rule could never clear.
+  New `recordPostAction()` reuses the same pipeline calls from a new `PostToolUse`
+  branch in `hook.ts`, wired for claude-code/codex/gemini via five new hook
+  templates, plus the `Stop` branch extended from claude-code-only to codex and
+  gemini. Also closes a real race: `flushBackgroundWork()` now awaits the
+  slopsquatting deny-on-retry background check (bounded 2500ms) before the hook
+  returns, instead of `process.exit()` potentially killing it mid-flight. Honestly
+  scoped: these three hosts' exit-code discharge paths are marked `docs`, not
+  `live`, in `docs/integrations.md` — this environment couldn't exercise a real
+  Claude Code/Codex/Gemini session to confirm the exit-code field shape live. See
+  `session/v1/EVIDENCE/m2-b1-verify.md`.
+- **Windows support**, CI-verified via a full-suite `windows-latest` job (previously
+  lint-only): flavor-aware path normalization (`packages/core/src/enforce/path-normalize.ts`)
+  wired into every path/glob matcher in the pipeline. Explicitly caveated: no
+  Windows machine was available in this lane, so every claim is macOS-verified via
+  explicit `flavor: 'win32'` parameters — CI-wired but Windows-*runtime* unverified
+  pending a real green `windows-latest` run. See `session/v1/EVIDENCE/m3-windows.md`.
+- **Live warn-path verification tooling and OpenCode's headless warn channel
+  confirmed for the first time.** `client.app.log({level:'warn', ...})` does not
+  appear in `opencode run --format json`'s stdout but does land in
+  `$XDG_DATA_HOME/opencode/log/opencode.log` — the first confirmation of the
+  headless case specifically, not just the interactive one. `docs/integrations.md`
+  now carries separate Block-Verified and Warn-Verified columns per host instead of
+  one conflated column (M4 lane; that page's matrix is authoritative — this entry
+  only records that the split happened). See `session/v1/EVIDENCE/m4-hostbreadth.md`.
+
+### Changed
+
+- **The `mask` action is removed.** It was already unreachable — `validateRules()`
+  rejected every rule that used it, and the pipeline had no dispatch branch for it —
+  and three different parts of the codebase disagreed on what it should even mean
+  (invisible-allow in one host adapter, advisory no-op distinct from `fix` in
+  another). `audit-redaction.ts` already gives unconditional secret redaction
+  regardless, so the decision was to remove rather than finish implementing a
+  three-way-disputed action. See `session/v1/EVIDENCE/m1r-4-mask.md`.
+
+### Internal
+
+- Benchmark-harness hardening for keel's own thesis-experiment tooling — a cost
+  cap on the paid-model benchmark arm (refuses non-`-free` models without an
+  explicit opt-in), real token/cost capture per run, and a reusable
+  `attributeKeelBlock()` check that reproduces the earlier manual
+  attribution-reaudit finding across 22/22 historical run files. No product code
+  under `packages/` changed; zero paid API spend incurred. See
+  `session/v1/EVIDENCE/m2-b2-bench.md` and `session/v1/EVIDENCE/cost.md`.
+
 ## 0.4.0
 
 `@get-keel/cli` 0.4.0 · `@get-keel/core` 0.4.0 · `@get-keel/opencode-plugin` 0.4.0

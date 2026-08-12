@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -36,7 +36,16 @@ if (process.env.KEEL_SKIP_INSTALL_VERIFY === '1') {
 }
 
 const install = mkdtempSync(join(tmpdir(), 'keel-published-'))
-execFileSync('npm', ['init', '-y', '--prefix', install], { cwd: root, stdio: 'ignore' })
+// Do NOT use `npm init --prefix <dir>` here — on npm 11.x it ignores
+// --prefix entirely (regardless of whether the directory already exists)
+// and writes into the nearest ancestor package.json reachable from cwd
+// instead, which with cwd: root inside this workspaces repo means this
+// repo's OWN root package.json gets overwritten with npm-init defaults.
+// Confirmed by reproduction on the identical pattern in check-tarballs.mjs
+// — see session/v1/EVIDENCE/m5-release.md. Writing a trivial package.json
+// directly sidesteps `npm init`; `npm install --prefix` alone respects
+// --prefix correctly once a package.json already exists there.
+writeFileSync(join(install, 'package.json'), JSON.stringify({ name: 'keel-published-install-sandbox', version: '1.0.0', private: true }) + '\n')
 execFileSync('npm', ['install', '--prefix', install, ...packages.map(pkg => `${pkg.name}@${pkg.version}`)], { cwd: root, stdio: 'ignore' })
 
 const cli = execFileSync('node', [join(install, 'node_modules/@get-keel/cli/dist/index.js'), '--version'], { encoding: 'utf8' }).trim()

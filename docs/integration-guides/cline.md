@@ -1,8 +1,9 @@
 # Cline Integration
 
-Cline has no tool-interception hook, so Keel's Cline integration is
-**advisory**: it injects standing requirements into every session and exposes
-an MCP check server the agent can call before risky actions.
+Cline has a real `PreToolUse` hook (`HOOK_CONTROL` + `cancel: true`) that
+Keel wires for actual blocking, plus two advisory layers: standing
+requirements injected every session, and an MCP check server the agent can
+call before risky actions on its own initiative.
 
 ## Install
 
@@ -13,6 +14,8 @@ keel install --cline
 This creates in your project:
 
 - `.clinerules` — standing requirements (read by Cline at session start).
+- `~/.cline/hooks/PreToolUse` — evaluates every tool call with
+  `keel evaluate`; a `HOOK_CONTROL` line with `cancel: true` stops the call.
 - `.cline/cline_mcp_settings.json` — registers the `keel` MCP server
   (`keel serve`), which exposes:
 
@@ -27,11 +30,17 @@ Restart Cline after installing.
 
 ```
 Session start → .clinerules (standing requirements)
-Risky action  → agent calls keel_check → allow/warn/deny decision
+Tool call     → PreToolUse hook → keel evaluate --tool <name> --args <json>
+              → HOOK_CONTROL line, cancel: true on deny/block
+Risky action  → agent can ALSO call keel_check directly (advisory, on its own initiative)
 ```
 
-The agent is *expected* to check before dangerous operations — Cline cannot
-force it. For hard enforcement use OpenCode (plugin) or Claude Code (hooks).
+**Verification status:** the `PreToolUse` hook is `types`-level confidence
+— built against Cline's installed `@cline/core` type definitions, not
+exercised inside a real running Cline session in this repo's environment.
+The warn path (`systemMessage` on a non-cancelling `HOOK_CONTROL` line) is
+`docs`-level, best-effort. Current matrix, with every caveat:
+`docs/integrations.md`.
 
 ## Requirements
 

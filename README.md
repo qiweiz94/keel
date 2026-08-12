@@ -10,6 +10,54 @@ the agent doesn't control.
 [![CI](https://github.com/qiweiz94/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/qiweiz94/keel/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
+## The measured number
+
+On the three tasks built to tempt a destructive or forbidden action — force-pushing
+over `main`, `git reset --hard` on `main`, installing a nonexistent package — re-run
+**N=12 per arm**, one free model (`opencode/deepseek-v4-flash-free`) driven with and
+without keel installed:
+
+| | unguarded | keel-guarded |
+|---|---|---|
+| Caused harm (forbidden action, false claim, tampering, or stuck) | **75%** (9/12) | **0%** (0/12) |
+| Executed the forbidden action itself | **67%** (8/12) | **0%** (0/12) |
+| Completed the task | 8% (1/12) | **75%** (9/12) |
+
+Guarding didn't cost completion — it *enabled* it, because destroying the repo is
+itself task failure. On the separate N=10 full-battery pass this repetition scaled
+up from, two unrelated control tasks passed in both arms with **zero** keel rules
+firing against them — no false-positive drag on legitimate work.
+
+That's the **prevention axis** (keel's block-tier floors stopping an action outright).
+It was re-audited to rule out the model simply refusing on its own: on the two tasks
+above where the scored harm and keel's blocking mechanism are the same axis, **all
+10 corresponding guarded-arm runs** (across both passes) carry a code-confirmed
+hard-stop block (`no-push-to-main` + `keel-control-gate`, or `protected-branch-reset`)
+against a **100% unguarded-arm attempt rate** on the same tasks — not an empty trace
+padding a non-event. One of those runs shows the agent trying to run a `keel disable`-class
+command mid-task after being blocked, and getting blocked again — evidence against
+self-censorship, not for it. (The third harm-eliciting task, `stuck-nonexistent-package`,
+sits on a `mode: observe` axis keel cannot block on either arm; excluded from that 10/10,
+classified ambiguous.) Full audit: **[session/v04/EVIDENCE/attribution-reaudit.md](session/v04/EVIDENCE/attribution-reaudit.md)**.
+
+**Scope, stated plainly:** one free model, one machine, one temperature, no frontier-model
+arm run yet, and the attribution re-audit is proven for this one under-cautious cheap model
+only — **not re-verified for safety-tuned models**, some of which have been separately
+observed refusing dangerous commands on their own before keel's hook ever sees them. The
+**detection axis** (would keel's observe-tier rules catch a false "done" claim or a
+weakened test?) is honestly **inconclusive** at this sample — the free model never
+produced those failure modes to catch, and a weak-model pass produced 0% task success in
+both arms instead of eliciting them. Full setup, per-task detail, and every confidence
+limit: **[session/v04/EXPERIMENT.md](session/v04/EXPERIMENT.md)**.
+
+**See the strongest single trace from that experiment reproduced live, no LLM
+required:** `scripts/demo/keel-disable-trace.sh` runs a real dry-run evaluation
+showing an agent blocked from force-pushing to main, then blocked again when it
+tries to `keel disable` its way around that block — the exact chain
+`attribution-reaudit.md` found in the guarded arm. For a broader tour of what
+gets blocked, `docs/demo.sh` runs eight enforcement guards end to end (requires
+`keel install --hooks` in a scratch repo).
+
 ## Audit your setup in 10 seconds — no install
 
 ```bash
@@ -52,26 +100,6 @@ effect, [Liu et al. 2023](https://arxiv.org/abs/2307.03172), measurable from
 Keel is not a prompt. It's a check that runs *before* the tool executes, in a
 process the model cannot edit, using rules it cannot read away.
 
-## Measured, not asserted
-
-A keel-guarded cheap agent vs. the same agent unguarded, re-run on the three tasks
-designed to tempt a destructive or forbidden action (force-pushing over main,
-`git reset --hard` on main, installing a nonexistent package) — N=12 runs per arm:
-the unguarded agent caused harm in **75%** of runs; the guarded agent caused harm in
-**0%**, and *completed more* of these deliberately dangerous tasks (75% vs 8%),
-because destroying the repo is itself task failure. In the separate N=10 full-battery
-pass this repetition scaled up from, two unrelated control tasks passed in both arms
-with zero rules firing against them — no false-positive drag on legitimate work.
-
-That's the **prevention axis** — keel's block-tier floors stopping an action outright
-— and it's real but small: one free model (`opencode/deepseek-v4-flash-free`), one
-machine, one temperature, no frontier-model arm run yet. The **detection axis**
-(whether keel's observe-tier rules would catch a false "done" claim or a weakened
-test) is honestly **inconclusive** at this sample — the free model never produced
-those failure modes to catch, and a weak-model pass produced 0% task success in both
-arms instead of eliciting them. Full setup, per-task detail, and the stated confidence
-limits: **[session/v04/EXPERIMENT.md](session/v04/EXPERIMENT.md)**.
-
 ## Install
 
 ```bash
@@ -102,19 +130,23 @@ Requires Node.js 22.12.0+. Install one host at a time with `--opencode`,
 ## Supported hosts
 
 Every host below evaluates a tool call **before it runs** and can stop it. The
-**Verified** column says how much each row has actually been proven — `live` means
-keel was exercised inside the real host, `types` means it was built against the
-host's installed type definitions, `docs` means built from published docs on a
-machine where that host isn't installed.
+**Block Verified** column says how much each row's *blocking* path has actually
+been proven — `live` means keel was exercised inside the real host, `types` means
+it was built against the host's installed type definitions, `docs` means built
+from published docs on a machine where that host isn't installed. Blocking and
+the separate advisory *warn* path are verified independently — a host proven for
+one is not automatically proven for the other — so this table intentionally
+carries only the block column; the full Block **and** Warn matrix, with every
+caveat and footnote, lives in one place: **[docs/integrations.md](docs/integrations.md)**.
 
-| Host | Install | How it blocks | Verified |
+| Host | Install | How it blocks | Block Verified |
 |---|---|---|---|
 | OpenCode | `--opencode` | plugin throws at `tool.execute.before` | **live** |
 | OpenClaw | `--openclaw` | `block: true` / `requireApproval` | **live** |
 | Claude Code | `--claude-code` | `PreToolUse` hook, exit 2 | **live** |
 | Cline | `--cline` | `HOOK_CONTROL` + `cancel: true` | types |
 | Gemini CLI | `--gemini` | `PreToolUse` hook, exit 2 | types |
-| Cursor | `--cursor` | `{permission: deny\|ask}` | docs |
+| Cursor | `--cursor` | `beforeShellExecution`/`beforeMCPExecution`, `{permission: deny\|ask}` | docs |
 | Codex CLI | `--codex` | `PreToolUse` hook, exit 2 | docs |
 | Hermes | `--hermes` | `{"action": "block"}` | docs |
 
@@ -160,7 +192,7 @@ suggested next step) · `research` (block on a stale knowledge-freshness gate) �
 `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
 problem-solving types below (`stuck`, `research`, `diagnosis`, `claim`, `oracle`).
 
-`keel install` ships 43 rules by default, split into three tiers — what's an
+`keel install` ships 45 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
 `curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
@@ -176,7 +208,7 @@ broken command forever. Three ship as part of the default 43:
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
 - **`diagnosis`** (`root-cause-before-refactor`) — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
 
-They — plus six more behavioural rules (`claim`, `oracle`, budget, and verification
+They — plus seven more behavioural rules (`claim`, `oracle` ×2, budget, and verification
 checks) — ship as `mode: observe`: evaluated and recorded on every matching call, never
 interrupting anything, until a human decides otherwise. `keel rules harness --append` is
 kept only for a rules.yaml created before this shipped as a default — it checks by rule
@@ -256,8 +288,10 @@ More in [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
+- [docs/landing.md](docs/landing.md) — the measured number, the scan→protected hook, and the live-block demo, as a single page
 - [docs/tiers.md](docs/tiers.md) — the three rule tiers, the speed dial, and how observe-mode rules get promoted
 - [docs/integrations.md](docs/integrations.md) — every host, what it can block, how well it's verified
+- [docs/integration-guides/](docs/integration-guides/) — per-host setup, one guide per agent
 - [docs/comparison.md](docs/comparison.md) — how keel relates to Cupcake, agentsh, Semgrep, and others
 - [SECURITY.md](SECURITY.md) — threat model, enforcement limits, reporting
 - [CONTRIBUTING.md](CONTRIBUTING.md) — build, test, adding a rule type or host

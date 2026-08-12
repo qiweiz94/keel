@@ -18,8 +18,21 @@ const PLUGIN = join(
   '..', '..', 'templates', 'hermes', 'keel_plugin.py',
 )
 
+// PYTHONDONTWRITEBYTECODE keeps normal `import`-driven python3 calls below
+// (the LOAD script, via importlib) from leaving a __pycache__/*.pyc
+// artifact next to the shipped plugin source — which would otherwise leak
+// into the published npm tarball, since npm's `files` field includes that
+// whole directory verbatim and ignore-file filtering does not apply to
+// explicitly-listed directories. Confirmed by reproduction via a real
+// `npm publish --dry-run`; see session/v1/EVIDENCE/m5-release.md. Note
+// this env var does NOT cover the explicit `py_compile` check below —
+// py_compile.compile()'s whole job is to write a .pyc, so it deliberately
+// ignores sys.dont_write_bytecode/this env var; that check redirects its
+// output file explicitly instead (see below).
+const PYTHON_ENV = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }
+
 function python(script: string): string {
-  return execFileSync('python3', ['-c', script], { encoding: 'utf-8', timeout: 30000 }).trim()
+  return execFileSync('python3', ['-c', script], { encoding: 'utf-8', timeout: 30000, env: PYTHON_ENV }).trim()
 }
 
 const LOAD = `
@@ -33,7 +46,17 @@ describe('hermes adapter', () => {
     expect(existsSync(PLUGIN)).toBe(true)
     expect(existsSync(join(dirname(PLUGIN), 'plugin.yaml'))).toBe(true)
     // A syntax error here would only surface inside a user's Hermes.
-    execFileSync('python3', ['-m', 'py_compile', PLUGIN], { timeout: 30000 })
+    // Explicit cfile= redirects the compiled output to a throwaway temp
+    // path — `python3 -m py_compile <file>` has no such flag and always
+    // writes __pycache__/*.pyc next to the source, which would otherwise
+    // leak into the published npm tarball (see PYTHON_ENV's comment
+    // above). doraise=True keeps this raising on a real syntax error,
+    // same as the CLI form's non-zero exit did.
+    execFileSync('python3', ['-c', `
+import py_compile, tempfile, os
+cfile = os.path.join(tempfile.mkdtemp(), 'keel_plugin.pyc')
+py_compile.compile(${JSON.stringify(PLUGIN)}, cfile=cfile, doraise=True)
+`], { timeout: 30000, env: PYTHON_ENV })
   })
 
   it('maps every keel action to the right Hermes verdict', () => {
