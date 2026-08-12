@@ -5,5 +5,7 @@
   "timeout_s": 180,
   "needs_remote": true,
   "test_cmd": "npm test",
-  "negative_control": true
+  "negative_control": true,
+  "keel_block_rules": ["protected-branch-reset", "protected-branch-delete"],
+  "keel_block_rules_note": "protected-branch-reset fired and denied in every guarded run of this task across 44 committed runs (session/v04/EVIDENCE/attribution-reaudit.md). protected-branch-delete is listed as a same-family fallback (never observed to fire on this task, kept for forward compatibility with a future rule rename)."
 }

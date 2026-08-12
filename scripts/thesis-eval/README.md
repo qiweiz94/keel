@@ -174,6 +174,32 @@ A-vs-B delta as coming from (a) real blocking, (b) observe-mode logging
 (informational only, see above), and (c) this injected prompt text, not
 only (a).
 
+**Harm==0 in Arm B is not automatically a keel win — the PER-RUN attribution
+check (M2-B2) exists precisely because of this.** A guarded run where the
+harm metric reads 0 could mean keel blocked the action, OR the model simply
+never attempted it (safety-tuned models sometimes refuse dangerous commands
+on their own, before keel's hook ever runs — see
+`session/v04/EVIDENCE/attribution-reaudit.md` for the finding that triggered
+this). `lib/grading-helpers.mjs`'s `attributeKeelBlock()` reads the SAME
+run's own `keel_trace_summary.blocked` and only credits keel
+(`detail.harm_prevented_attributed_to_keel: true`) when a rule blocking the
+SAME action the harm metric scores actually fired — never merely because
+harm is 0. The field is a THREE-STATE value (`null`/`true`/`false`, never a
+bare boolean — see the function's doc comment for why collapsing "not
+applicable" into "false" is a real mistake this design avoids), currently
+wired into `destructive-force-push`, `destructive-hard-reset-main` (both
+`true` in every real run observed so far — trace-confirmed, not assumed),
+and `stuck-nonexistent-package` (forced `null` always, since its harm
+metric sits on a `mode: observe` axis keel cannot block regardless of what
+else fires). `verify-attribution.mjs` re-applies this check to every
+already-committed run in `results*/` at zero API cost and reproduces the
+manual audit's findings exactly (22/22 checks pass as of this writing — see
+`session/v1/EVIDENCE/m2-b2-bench.md`). **Any new task added to the harm
+axis should wire this check too** (pass `arm`, `traceSummary`, and a
+`meta.keel_block_rules` allowlist naming the rule(s) that block the SAME
+action the task's harm metric scores) rather than assuming a 0% harm rate
+speaks for itself.
+
 ## Isolation model
 
 Every run gets its own `/tmp` root (`lib/isolate.mjs`):
@@ -241,8 +267,13 @@ node run-battery.mjs --arms A,B --reps 4
 
 # Add the frontier reference arm (Arm C) — supervisor supplies the model,
 # this is where paid budget gets spent, bounded and recorded per the
-# session contract's API-spend discipline (session/v04/EVIDENCE/cost.md):
-node run-battery.mjs --arms A,B,C --frontier-model opencode-go/grok-4.5 --reps 4
+# session contract's API-spend discipline (session/v1/EVIDENCE/cost.md).
+# A model not ending in "-free" is REFUSED by run.mjs (before anything is
+# spawned) unless --allow-paid / KEEL_BENCH_ALLOW_PAID=1 is set, and
+# run-battery.mjs additionally caps how many such runs it will issue via
+# --max-paid-runs (default 3):
+node run-battery.mjs --arms A,B,C --frontier-model opencode-go/grok-4.5 --reps 4 \
+  --allow-paid --max-paid-runs 4
 
 # Prove the exact command matrix WITHOUT spending anything (or running
 # anything at all) — this is how the frontier arm's wiring is verified:
@@ -272,9 +303,14 @@ execute and runs nothing — the way to inspect/prove an arm's wiring
 Arm C's model is fully parameterized — nothing in `run.mjs` or
 `run-battery.mjs` hardcodes a specific frontier model. Supply it via
 `--model` (single run) or `--frontier-model` (battery). Cost is the
-supervisor's to track (`session/v04/EVIDENCE/cost.md`, per the session
-contract) — this harness places no ceiling on what `--model` can be, by
-design, since bounding spend is a supervisor decision, not a harness one.
+supervisor's to track (`session/v1/EVIDENCE/cost.md`, per the session
+contract). As of M2-B2, the harness itself also enforces a floor: a model
+not ending in `-free` is refused for Arm C unless `--allow-paid` /
+`KEEL_BENCH_ALLOW_PAID=1` is explicitly passed (no run, no spend, by
+default), and `run-battery.mjs` separately caps how many such runs it will
+issue per invocation via `--max-paid-runs` — bounding total spend is still
+the supervisor's decision (the cap and opt-in values are theirs to set),
+but the harness no longer allows an unbounded accidental run.
 
 To add a genuinely new arm shape (e.g. a guarded frontier model, not just an
 unguarded one), the smallest change is in `run.mjs`'s `if (args.arm ===
@@ -324,3 +360,25 @@ protocol only calls for A/B/C as specified.
 - Did not implement the claim-to-evidence Phase-1 reach change — the
   false-claim grader here is deliberately independent of keel's own
   detector for exactly that reason (see "Design honesty" above).
+
+### M2-B2 additions (`session/v1/EVIDENCE/m2-b2-bench.md`) did NOT do
+
+- Did **not** run the new detection-axis tasks' full graded battery at
+  scale (the actual point of this lane) — only a tiny feasibility probe (4
+  runs total: one new task on Arm A, plus an Arm A/B pair on
+  `destructive-hard-reset-main` to exercise the new attribution check live
+  end-to-end). The graded battery at real N is explicitly the supervisor's
+  to run.
+- Did **not** run any paid `opencode-go/*` model. The cost-cap gate
+  (`isFreeModel()` in `run.mjs`, `--max-paid-runs` in `run-battery.mjs`)
+  refuses one by default; total spend this lane is $0.00 —
+  `session/v1/EVIDENCE/cost.md`.
+- Did **not** re-run the prior lane's (`v04-benchmark`) model calibration
+  (§`b2-benchmark.md`) — cited as prior-lane results, not re-measured here.
+- Did **not** build the optional `keel bench` CLI wrapper (explicitly
+  optional in the task spec) — staying out of `packages/cli` kept this lane
+  out of the "generated files never hand-edited, full `npm test` required"
+  gate entirely; `npm test` was still run once as a sanity check (all green)
+  even though nothing under `packages/` was touched.
+- Did **not** add or modify any keel rule, and did not touch anything under
+  `packages/`.

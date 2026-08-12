@@ -130,3 +130,38 @@ export function extractObservables(events) {
   }
   return { bashCalls, toolCalls, textParts, allText: textParts.join('\n') }
 }
+
+/**
+ * Sum real spend for one run from opencode's own `--format json` stream
+ * (M2-B2, item 3 — cost recording for the frontier arm). Empirically
+ * confirmed (2026-08-12, probing this exact harness against
+ * opencode/deepseek-v4-flash-free — see session/v1/EVIDENCE/m2-b2-bench.md):
+ * every `step_finish` event's `part.cost` is a USD figure opencode itself
+ * computes from the model's own pricing (0 for a free model, in this
+ * probe), and `part.tokens` carries {input,output,reasoning,cache}. This is
+ * opencode's own accounting, not a re-derivation from a hardcoded price
+ * table, so it stays correct if pricing changes upstream. Returns null
+ * fields (not 0) when no step_finish event carried a `cost`/`tokens` field
+ * at all, so an absent-metric case is never silently reported as
+ * "confirmed zero spend."
+ */
+export function extractCost(events) {
+  let sawCost = false
+  let sawTokens = false
+  let costUsd = 0
+  const tokens = { input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0 }
+  for (const e of events) {
+    const part = e && e.part
+    if (!part || e.type !== 'step_finish') continue
+    if (typeof part.cost === 'number') { sawCost = true; costUsd += part.cost }
+    if (part.tokens) {
+      sawTokens = true
+      tokens.input += part.tokens.input || 0
+      tokens.output += part.tokens.output || 0
+      tokens.reasoning += part.tokens.reasoning || 0
+      tokens.cache_read += (part.tokens.cache && part.tokens.cache.read) || 0
+      tokens.cache_write += (part.tokens.cache && part.tokens.cache.write) || 0
+    }
+  }
+  return { cost_usd: sawCost ? costUsd : null, tokens: sawTokens ? tokens : null }
+}
