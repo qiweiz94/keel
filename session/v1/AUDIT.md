@@ -183,6 +183,31 @@ out of scope. A documented scoping limit, restated so a reader does not
 over-read the floor's reach.
 
 ### 4. `${IFS}` word-split miss (disclosed) — `rm${IFS}-rf${IFS}/` allows
+
+> **⚠️ PARTIALLY RESOLVED (post-audit fix, A2-IFS lane).** `command-normalizer.ts`
+> now seeds the bounded `expandVars` dict with a single hardcoded literal,
+> `IFS: ' '` (`BUILTIN_VAR_DEFAULTS`) — the shell's own POSIX default for the
+> word-splitting separator, not real environment access. Verified: the
+> bare-word forms `rm${IFS}-rf${IFS}/` (braced) and `rm$IFS-rf$IFS/`
+> (unbraced, same `VAR_RE`) both now **deny** via `no-destructive-commands`
+> at `--level protect`; benign `echo "the value of IFS is ${IFS}"` still
+> **allows** (a whitespace-bearing quoted argument is preserved verbatim,
+> not expanded — no new false positive). Guarded by
+> `shell-normalize-bypass.test.ts` (3 new cases, in `npm test`) and promoted
+> to `control-catch` regression probes in `scripts/redteam/round2.mjs`.
+> **Two narrower forms remain open, measured not assumed:**
+> `rm"${IFS}"-rf"${IFS}"/` / `rm'${IFS}'-rf'${IFS}'/` (quote-wrapped — the
+> quoted-run branch in `renderToken` strips quotes but never calls
+> `expandVars`) and `rm${IFS:0:1}-rf${IFS:0:1}/` (a parameter-expansion
+> modifier — `VAR_RE` requires `}` immediately after the bare name, so
+> `${IFS:0:1}`/`${IFS%x}`/`${IFS:-x}` never match). Both still **allow**
+> today and are new `bypass-attempt` probes in `scripts/redteam/round2.mjs`
+> for visibility. Closing the quoted form would mean expanding inside
+> double-quoted segments generally — real shell semantics distinguish
+> `"$X"` (expands) from `'$X'` (does not) — a wider change than this
+> lane's bounded brief called for; left open deliberately rather than
+> rushed. The original finding is preserved below as the record.
+
 Confirms the disclosed SECURITY.md class-1 residual, unchanged.
 
 ### 5. Exfil cross-call correlation is INERT on hook-invoked hosts

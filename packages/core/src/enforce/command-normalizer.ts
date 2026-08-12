@@ -52,7 +52,16 @@
  *    (`$(...)`), backticks, arithmetic expansion, or a variable assigned
  *    in a PRIOR shell call this module never saw. `T=/; rm -rf $T` is
  *    exactly the shape this closes and exactly the limit of what it
- *    closes.
+ *    closes. One exception: the dict is seeded with a single hardcoded
+ *    literal, `IFS: ' '` (`BUILTIN_VAR_DEFAULTS` below) — IFS is a shell
+ *    BUILT-IN that controls word-splitting itself (POSIX default: space,
+ *    tab, newline; a single space is the correct normalization for
+ *    re-joining split tokens), never something the command being
+ *    evaluated assigns before using it, so `rm${IFS}-rf${IFS}/` is a
+ *    real evasion this module can and should close without becoming real
+ *    environment access. It is still just a dict entry: an explicit
+ *    in-command `IFS=x; ...` overrides it exactly like any other
+ *    `NAME=value` assignment.
  *
  * 4. Interpreter bodies: `python(2/3)? -c`, `node -e`/`--eval`,
  *    `perl -e/-E/-p`, and `sh|bash|dash|zsh|ksh -c` have their quoted
@@ -240,6 +249,17 @@ function tokenize(text: string): Token[] {
   return tokens
 }
 
+/**
+ * Known-default seed for `expandVars`'s dict — NOT real env access (see
+ * module doc §3). IFS is the one shell built-in whose value this module
+ * needs to know without ever seeing a prior assignment: it governs
+ * word-splitting itself, so `${IFS}`/`$IFS` is used purely to re-join a
+ * command's own tokens (`rm${IFS}-rf${IFS}/`), not to read anything about
+ * the agent's environment. A single space is the shell's own POSIX
+ * default for IFS and is sufficient for this purpose.
+ */
+const BUILTIN_VAR_DEFAULTS: Record<string, string> = { IFS: ' ' }
+
 const VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g
 
 /** Bounded expansion: literal dict lookup only, unresolved names left as-is (documented — no real env access). */
@@ -413,7 +433,7 @@ export function normalizeCommand(raw: string, depth = 0): NormalizedCommand {
   try {
     const parts = splitTopLevel(raw)
     const truncated = parts.length >= MAX_SUBCOMMANDS
-    const dict: Record<string, string> = {}
+    const dict: Record<string, string> = { ...BUILTIN_VAR_DEFAULTS }
     const subcommands = parts
       .filter(p => p.text.trim().length > 0)
       .map(p => normalizeSubcommand(p.text, dict, depth))

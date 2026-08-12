@@ -7109,6 +7109,7 @@ function tokenize2(text) {
   if (tokens.length > MAX_TOKENS_PER_SUBCOMMAND) tokens.length = MAX_TOKENS_PER_SUBCOMMAND;
   return tokens;
 }
+var BUILTIN_VAR_DEFAULTS = { IFS: " " };
 var VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 function expandVars(text, dict) {
   return text.replace(VAR_RE, (whole, braced, bare) => {
@@ -7245,7 +7246,7 @@ function normalizeCommand(raw, depth = 0) {
   try {
     const parts = splitTopLevel(raw);
     const truncated = parts.length >= MAX_SUBCOMMANDS;
-    const dict = {};
+    const dict = { ...BUILTIN_VAR_DEFAULTS };
     const subcommands = parts.filter((p) => p.text.trim().length > 0).map((p) => normalizeSubcommand(p.text, dict, depth));
     let normalizedFull = "";
     let si = 0;

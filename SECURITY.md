@@ -128,8 +128,28 @@ Results (full detail and exact inputs in `session/v1/AUDIT.md`):
   is deliberately scoped to a literal `/` or `~` target only (mirroring
   `no-destructive-commands`); a non-root sensitive path like `/etc/passwd` is
   out of that scope. A scoping limit, already documented, restated here.
-- **`rm${IFS}-rf${IFS}/` allows** — confirms the disclosed class-1 `${IFS}`
-  word-split miss, unchanged.
+- **`rm${IFS}-rf${IFS}/` allows — FOUND then PARTIALLY FIXED (A2-IFS lane,
+  post-audit).** Confirmed the disclosed class-1 `${IFS}` word-split miss
+  at audit time. ✅ **Bare-word form now closed:** `command-normalizer.ts`
+  seeds the bounded `expandVars` dict with `IFS: ' '`
+  (`BUILTIN_VAR_DEFAULTS`, the shell's own POSIX default — not real
+  environment access). Verified: unquoted `rm${IFS}-rf${IFS}/` (braced) and
+  `rm$IFS-rf$IFS/` (unbraced) both deny via `no-destructive-commands`; a
+  literal `${IFS}` inside a quoted argument (e.g. `echo "... ${IFS}"`)
+  still allows, no new false positive. Guarded by
+  `shell-normalize-bypass.test.ts` and promoted to `control-catch` probes
+  in `scripts/redteam/round2.mjs`. ⚠️ **Two narrower forms remain open,
+  measured not assumed:** `rm"${IFS}"-rf"${IFS}"/` / `rm'${IFS}'-rf'${IFS}'/`
+  (quote-wrapped — `renderToken`'s whitespace-free-quoted branch strips
+  quotes but never calls `expandVars`, unlike the unquoted branch) and
+  `rm${IFS:0:1}-rf${IFS:0:1}/` (a parameter-expansion modifier —
+  `VAR_RE` requires `}` immediately after the bare name, so `${IFS:0:1}`,
+  `${IFS%x}`, `${IFS:-x}` never match). Both allow today; both are new
+  `bypass-attempt` probes in `scripts/redteam/round2.mjs` for visibility.
+  Closing the quoted form would mean expanding inside double-quoted
+  segments generally (real shell semantics: `"$X"` expands, `'$X'` does
+  not) — a wider, more invasive change than this lane's brief, deliberately
+  left open rather than rushed.
 
 **M5 lane (2026-08-12): two `FlowTracker` fixes for `no-exfil-flow`, table
 cell above left as the historical record of the dated sweep it came from,
@@ -388,10 +408,20 @@ before this landed can stop matching):
    run that *does* contain whitespace is a real data argument in shell
    semantics and is preserved verbatim, quotes included — this is also what
    keeps a quoted argument to `echo` from being treated as a command (see
-   the note on `echo "rm -rf /"` below). Residual: `${IFS}`-based
-   word-splitting tricks, backslash-heavy multi-layer nesting beyond the
+   the note on `echo "rm -rf /"` below). Bare-word `${IFS}`/`$IFS`
+   word-splitting (`rm${IFS}-rf${IFS}/`, `rm$IFS-rf$IFS/`) is now CLOSED
+   (A2-IFS lane, post-audit): the bounded `expandVars` dict is seeded with
+   the shell's own POSIX-default `IFS: ' '` (`BUILTIN_VAR_DEFAULTS` in
+   `command-normalizer.ts`, not real environment access) — see the M6
+   audit section below for verification detail. Residual: quote-wrapped
+   `${IFS}` (`rm"${IFS}"-rf"${IFS}"/`, single- or double-quoted — the
+   quoted-run branch strips quotes but never expands) and a parameter
+   modifier on IFS (`${IFS:0:1}`, `${IFS%x}` — `VAR_RE` requires `}`
+   immediately after the bare name) are NOT closed by this lane, still
+   allow, and are new `bypass-attempt` probes in `scripts/redteam/round2.mjs`.
+   Also unchanged: backslash-heavy multi-layer nesting beyond the
    tokenizer's single-pass model, and non-shell obfuscation (base64, hex
-   escapes) are not decoded.
+   escapes), are not decoded.
 2. **Variable indirection — PARTIALLY closed.** `T=/; rm -rf $T` now
    normalizes (a single left-to-right pass resolves the inline `T=/`
    assignment and substitutes `$T`/`${T}`) and is denied. This is
