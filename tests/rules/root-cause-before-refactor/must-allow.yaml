@@ -12,3 +12,10 @@ cases:
     tool: Bash
     args:
       command: "migrate the database schema"
+  - note: "M1r-1 rules-tuning fix: an active failing problem, then a single-file git checkout -- restore is NOT matched (only a whole-tree discard is) — session/v04/AUDIT.md's documented false positive"
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "git checkout -- src/broken.ts" }

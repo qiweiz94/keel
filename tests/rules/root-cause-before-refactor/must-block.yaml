@@ -1,9 +1,15 @@
 cases:
-  - note: "an active failing problem, then a refactor with no hypothesis or diagnosis evidence recorded (mode: observe — action stays allow, observed_action carries the redirect)"
+  # M1r-1 rules-tuning fix (session/v04/AUDIT.md, session/v1/EVIDENCE/m1r-1-fp.md):
+  # this case used to be "git checkout -- src/broken.ts" — a SINGLE-FILE
+  # checkout/restore, which is the documented false positive this lane
+  # fixed. The pattern is now scoped to whole-tree discards only
+  # (git checkout -- ., git checkout ., git checkout -- :/); the single-file
+  # form moved to must-allow.yaml.
+  - note: "an active failing problem, then a whole-tree discard (git checkout -- .) with no hypothesis or diagnosis evidence recorded (mode: observe — action stays allow, observed_action carries the redirect)"
     observed_action: redirect
     steps:
       - tool: Bash
         args: { command: "npm test" }
         exit_code: 1
       - tool: Bash
-        args: { command: "git checkout -- src/broken.ts" }
+        args: { command: "git checkout -- ." }
