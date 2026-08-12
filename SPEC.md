@@ -561,9 +561,22 @@ Instead of blocking, modify tool arguments to make them safe:
 
 Returns the mutated command to the agent. Agent executes the safe version.
 
-### Rego/OPA Backend (Optional)
+### Rego/OPA Backend — EXPERIMENTAL, unsupported, NOT wired into enforcement
 
-For complex rules beyond YAML frontmatter capabilities. The codebase already has `packages/cli/src/rego-engine.ts`.
+`packages/cli/src/rego-engine.ts` exists, and the standalone `keel policy
+init|build|eval` commands work if you separately install the `opa` CLI and
+`@open-policy-agent/opa-wasm` yourself (neither ships with keel — the
+latter is a monorepo-root devDependency only, not a `packages/cli`
+dependency). But **no `.rego`/`.wasm` policy is ever consulted by real-time
+enforcement** — `keel hook`, the OpenCode plugin, and `keel daemon` all
+evaluate only YAML `rules.yaml` through `packages/core/src/enforce/pipeline.ts`,
+which has no reference to `RegoEngine` anywhere. This table's own P2 item
+17 below ("wire existing rego-engine.ts") says the same thing this section
+used to contradict: the wiring is a TODO, not shipped. Decided and dated in
+`docs/exfil.md`'s sibling investigation, `session/v1/EVIDENCE/m5-security.md`
+(M5-security lane, 2026-08-12) — kept as a documented experimental side
+path rather than removed or silently promoted to a supported policy
+language.
 
 ```rego
 package keel
@@ -575,7 +588,10 @@ allow := false if {
 }
 ```
 
-Compiled to WASM via `keel policy build`. Evaluated in sandboxed WASM runtime (~0.01ms overhead).
+`keel policy build` compiles this to WASM (requires the external `opa`
+CLI); `keel policy eval` evaluates it against a JSON input file, standalone
+— useful for experimenting with Rego syntax, not for protecting anything a
+real agent does today.
 
 ---
 
@@ -908,7 +924,7 @@ $ keel validate
 | `packages/core/src/policy-engine.ts` | 835 | Core policy evaluation (extend for agent-aware pipeline) |
 | `packages/core/src/signing.ts` | 284 | Ed25519 signing (exported audit reports) |
 | `packages/core/src/receipts.ts` | 216 | Action receipts (compliance exports) |
-| `packages/cli/src/rego-engine.ts` | 231 | Rego/WASM policy evaluation (backdoor for complex rules) |
+| `packages/cli/src/rego-engine.ts` | 231 | Rego/WASM policy evaluation — EXPERIMENTAL, not wired into the enforcement pipeline (see the "Rego/OPA Backend" section above) |
 | `packages/cli/src/anomaly.ts` | — | Anomaly detection patterns (adapt for behavior) |
 | `packages/cli/src/reasoning.ts` | — | Reasoning trace analysis (adapt for reasoning tier) |
 | `packages/cli/src/commands/check.ts` | 199 | Existing check command (adapt for enforce) |

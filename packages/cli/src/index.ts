@@ -122,23 +122,23 @@ program
   .option('--port <number>', 'HTTP port for gateway dashboard', '3100')
   .action(gatewayCommand)
 
-const policy = program.command('policy').description('Manage Rego/WASM policies')
+const policy = program.command('policy').description('[EXPERIMENTAL, unsupported] Stand-alone Rego/WASM policy tools — NOT wired into keel enforce/hook/daemon; see docs/comparison.md')
 
 policy
   .command('init')
-  .description('Create a sample .rego policy file')
+  .description('[EXPERIMENTAL] Create a sample .rego policy file')
   .action(policyInitCommand)
 
 policy
   .command('build')
-  .description('Compile a .rego file to .wasm (requires opa CLI)')
+  .description('[EXPERIMENTAL] Compile a .rego file to .wasm (requires the opa CLI, not bundled)')
   .argument('<file>', 'Path to .rego file')
   .option('--output <dir>', 'Output directory')
   .action(policyBuildCommand)
 
 policy
   .command('eval')
-  .description('Evaluate a WASM policy against input')
+  .description('[EXPERIMENTAL] Evaluate a WASM policy against input, standalone — not part of real-time enforcement (requires @open-policy-agent/opa-wasm, not bundled)')
   .argument('<wasm>', 'Path to .wasm file')
   .option('--input <file>', 'JSON input file')
   .action(policyEvalCommand)

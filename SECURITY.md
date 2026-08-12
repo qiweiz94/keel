@@ -71,6 +71,49 @@ denominator includes one borderline probe, `npm uninstall -g`, which removes the
 global CLI rather than disarming the project enforcer — excluding it reads
 9/11 = 82%.)
 
+**M5 lane (2026-08-12): two `FlowTracker` fixes for `no-exfil-flow`, table
+cell above left as the historical record of the dated sweep it came from,
+and a materially more important coverage finding surfaced while verifying
+them.** The v0.4 sweep's miss list for this row was `curl -d @.env` (single
+combined command), `scp`, and `rsync` — neither `scp` nor `rsync` was in
+`FlowTracker`'s monitored sink-verb list; both now are
+(`packages/core/src/enforce/flow-tracker.ts`'s `matchesSink`). Separately,
+`record()`'s source-tagging never recognized `file_path` — the key Claude
+Code's and Gemini CLI's *native* `Read` tool call actually sends, same key
+`argPath()` was already fixed to read for `no-rules-tampering` and its
+siblings — so a native read of `.env` on those hosts could never tag a
+source, on any host, regardless of the sink-verb fix. Fixed by routing
+`record()` through `argPath()`. Both verified through the real
+`EnforcementPipeline` and the built CLI, failing before and passing after
+(`session/v1/EVIDENCE/m5-security.md`).
+
+**The bigger finding: `no-exfil-flow`'s cross-tool-call correlation only
+works inside a long-lived process, and `keel hook` — the integration for
+Claude Code, Gemini CLI, Cursor, Codex, cline, and the generic host — is
+NOT one.** `keel hook <host>` calls `initEnforce()` fresh per invocation,
+which constructs a brand-new, empty `FlowTracker`; unlike `denyFirstTime`,
+`circuitBreaker`, `rateCounts`, `verification`, and `oracleFailures`,
+`FlowTracker`'s tagged-source state is not one of `StateManager`'s
+disk-persisted slices. Verified empirically, not inferred: two separate
+`keel hook claude-code` processes sharing one `session_id` — a `Read` of
+`.env`, then a `Bash rsync` of it — both exit 0 (allowed), before AND
+after the `file_path` fix above. The SAME two-step sequence run in-process
+(the architecture the OpenCode plugin and `keel daemon`, used by OpenClaw
+and Hermes, actually hold open for a whole session) correctly denies. For
+`keel hook` hosts, `no-exfil-flow` today only catches a single command
+that itself pipes a read verb into a sink (`cat .env | curl ...`), not the
+two-separate-tool-call pattern this rule's own rationale describes. This is
+a pre-existing property of `keel hook`'s per-call process model, not
+something this lane introduced or was asked to fix — disk-backed flow
+state needs locking, TTL, and session-scoping design, which is
+architectural follow-up work, not an additive hardening pass. Full threat
+model, this coverage gap, the false-positive surface this rule separately
+carries (no payload correlation — an unrelated `rsync` of build output
+after an unrelated earlier secret read in the same live process still
+denies), and everything this mitigation does not cover — starting with
+prompt injection itself, which stays entirely unsolved — is in
+`docs/exfil.md`.
+
 The v0.4 hardening landed three fixes, each verified adversarially in
 `session/v04/EVIDENCE/phase-3-redteam.md`: (1) `argPath()` now reads `file_path`
 / `notebook_path`, so `filesystem` floors (`no-rules-tampering`,
