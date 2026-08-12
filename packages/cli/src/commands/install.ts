@@ -1462,20 +1462,34 @@ async function installProjectPlugin() {
   mkdirSync(keelDir, { recursive: true })
   const rulesFile = join(keelDir, 'rules.yaml')
   if (!existsSync(rulesFile)) {
-    // `rules:` followed only by comment lines (no list items) YAML-parses
-    // to `rules: null`, which parseRulesContent rejects as "Rules must be
-    // an array" — and initEnforce throws on that, breaking `keel evaluate`
-    // and `keel hook <host>` on EVERY tool call from a fresh --project
-    // install (only OpenCode's own fallback masked it). `rules: []` is
-    // valid and parses to an empty, harmless rule set.
-    writeFileSync(rulesFile, `# Project-specific Keel rules
-# Enforced alongside global rules in ~/.keel/rules.yaml.
-# Project rules override global rules for the same rule id.
-# Add project-specific rules here — see ~/.keel/rules.yaml for examples.
-version: 1
-rules: []
-`, 'utf-8')
+    // Used to write `rules: []` here — an intentionally empty stub, on the
+    // theory that global (~/.keel/rules.yaml) already enforces and project
+    // rules only need to ADD or override specific ids (mergeRules in
+    // rule-parser.ts: project scope wins over global for the same rule id,
+    // both tiers merge into one evaluation — layering, not replacement).
+    // That's true on THIS machine right after `keel install --opencode`,
+    // but `.keel/rules.yaml` is exactly the kind of file a project commits
+    // to git so every clone enforces the same baseline — and a teammate
+    // who clones the repo, or CI, or any host that loads project rules
+    // without ever having run a *global* keel install on that machine, got
+    // an empty, non-enforcing file. A project install should be
+    // self-sufficient, not a silent dependency on some other install
+    // having happened first. So this now writes the same DEFAULT_RULES_YAML
+    // content the global tier gets (below), unmodified — real enforcing
+    // defaults, still yours to edit, still layered under mergeRules'
+    // project-overrides-global-by-id rule (identical ids in both tiers
+    // simply agree; edit either copy to diverge them intentionally).
+    //
+    // (Historical note: an earlier version of this stub wrote `rules:`
+    // followed only by comment lines with no list items, which YAML-parses
+    // to `rules: null` — parseRulesContent rejects that as "Rules must be
+    // an array" and initEnforce throws on it, breaking `keel evaluate` and
+    // `keel hook <host>` on EVERY tool call from a fresh --project install.
+    // DEFAULT_RULES_YAML's `rules:` key always has real list items under
+    // it, so that failure mode does not apply here.)
+    writeFileSync(rulesFile, DEFAULT_RULES_YAML, 'utf-8')
     console.log(chalk.green(`  ✓ Created ${rulesFile}`))
+    console.log(chalk.dim('    Same defaults as ~/.keel/rules.yaml — edit either; project wins on shared rule ids.'))
   } else {
     console.log(chalk.dim(`  ${rulesFile} already exists (skipping)`))
   }
@@ -1802,7 +1816,9 @@ Full requirements: ~/.keel/requirements.md
     console.log(chalk.yellow(`  ! ${cursorHooks} exists — add the keel hook to beforeShellExecution yourself`))
   }
   console.log(chalk.green(`  ✓ Created ${rulePath}`))
-  console.log(chalk.dim('  Note: Cursor has no blocking hooks — these are advisory rules.'))
+  console.log(chalk.dim('  Note: the hook above is BLOCKING (failClosed) once wired into .cursor/hooks.json — not advisory.'))
+  console.log(chalk.dim('    Contract taken from Cursor\'s docs, UNVERIFIED against a live Cursor install.'))
+  console.log(chalk.dim('    keel.mdc above is a separate, always-active advisory layer alongside it.'))
 }
 
 // ── Codex CLI (advisory: AGENTS.md section) ──
@@ -1857,5 +1873,9 @@ Full requirements: ~/.keel/requirements.md
   } else {
     console.log(chalk.dim(`  ${agentsPath} already has Keel requirements (skipping)`))
   }
-  console.log(chalk.dim('  Note: Codex CLI has no blocking hooks — these are advisory instructions.'))
+  console.log(chalk.dim('  Note: the keel-enforce.sh/keel-verify.sh/keel-claim.sh hooks above are BLOCKING'))
+  console.log(chalk.dim('    (exit 2 stops the call — same contract as Claude Code/Gemini), but Codex'))
+  console.log(chalk.dim('    only runs a hook once you register it yourself in ~/.codex/hooks.json'))
+  console.log(chalk.dim('    (PreToolUse/PostToolUse/Stop — see the UNVERIFIED note per hook above);'))
+  console.log(chalk.dim('    until then, this AGENTS.md section is the only layer actually active.'))
 }

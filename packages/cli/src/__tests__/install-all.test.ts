@@ -85,7 +85,10 @@ describe('keel install --all', () => {
   // rejects that as "Rules must be an array", and initEnforce throws on any
   // rule-source error. That broke `keel evaluate` and `keel hook <host>` on
   // EVERY tool call after a fresh `install --project` (only OpenCode's own
-  // fallback masked it). Fixed to `rules: []`, a valid empty list.
+  // fallback masked it). Since fixed to write the real DEFAULT_RULES_YAML
+  // (a non-empty, always-valid array) — see install-project-rules.test.ts
+  // for the fuller regression coverage of THAT fix (A3: an empty `rules: []`
+  // stub parsed fine but enforced nothing on its own).
   it('writes a project rules.yaml that actually parses (not `rules: null`)', () => {
     const content = readFileSync(projFile('.keel', 'rules.yaml'), 'utf-8')
     const parsed = parseRulesContent(content, projFile('.keel', 'rules.yaml'))
