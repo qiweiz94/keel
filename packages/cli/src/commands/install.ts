@@ -19,6 +19,23 @@ import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detect
  * the canonical source shared with the @get-keel/opencode-plugin npm package.
  */
 
+/**
+ * Resolves the base directory for every GLOBAL (non-project-scoped) install
+ * target — ~/.keel, ~/.opencode, ~/.gemini, ~/.cline, ~/.codex, ~/.hermes,
+ * ~/.openclaw, ~/.config/opencode, etc. Honors KEEL_HOME so a redirected or
+ * test install never touches the real home directory.
+ *
+ * NOTE: readers (daemon.ts, rules.ts, status.ts, mcp/server.ts,
+ * state-manager.ts, the opencode plugin, ...) do NOT currently consult
+ * KEEL_HOME — they resolve a bare homedir() independently. An install run
+ * with KEEL_HOME set writes only to the redirected location; readers will
+ * still look under the real home directory. See session/v1/EVIDENCE/m1r-3-install.md
+ * for the full reader audit and follow-up.
+ */
+function resolveHome(): string {
+  return process.env.KEEL_HOME || homedir()
+}
+
 export async function findTemplateSource(name: string): Promise<string | null> {
   const candidates = [
     join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates', name),
@@ -1176,7 +1193,7 @@ export async function installCommand(options: {
   mcp?: boolean
   all?: boolean
 }) {
-  const keelDir = join(homedir(), '.keel')
+  const keelDir = join(resolveHome(), '.keel')
   const rulesPath = join(keelDir, 'rules.yaml')
 
   // Rules are the base layer: EVERY install mode ensures ~/.keel/rules.yaml
@@ -1262,7 +1279,7 @@ export async function installCommand(options: {
 
 async function installOpenCodePlugin() {
   // Global install — auto-loaded from ~/.opencode/plugins/ in every project.
-  const ocDir = join(homedir(), '.opencode', 'plugins')
+  const ocDir = join(resolveHome(), '.opencode', 'plugins')
   const pluginPath = join(ocDir, 'keel-enforce.js')
 
   mkdirSync(ocDir, { recursive: true })
@@ -1288,7 +1305,7 @@ async function installOpenCodePlugin() {
  * ~/.hermes/plugins/keel/ and the daemon does the enforcing.
  */
 async function installHermes() {
-  const dir = join(homedir(), '.hermes', 'plugins', 'keel')
+  const dir = join(resolveHome(), '.hermes', 'plugins', 'keel')
   mkdirSync(dir, { recursive: true })
 
   const plugin = await findTemplateSource(join('hermes', 'keel_plugin.py'))
@@ -1322,7 +1339,7 @@ async function installHermes() {
  * effectively identity, so the entry object is built as a literal.
  */
 async function installOpenClaw() {
-  const dir = join(homedir(), '.openclaw', 'plugins', 'keel')
+  const dir = join(resolveHome(), '.openclaw', 'plugins', 'keel')
   mkdirSync(dir, { recursive: true })
 
   const files = ['index.mjs', 'openclaw.plugin.json', 'package.json']
@@ -1385,7 +1402,7 @@ async function installGemini() {
   await installHostHook({
     label: 'Gemini CLI',
     template: 'gemini-pretooluse.sh',
-    target: join(homedir(), '.gemini', 'hooks', 'PreToolUse'),
+    target: join(resolveHome(), '.gemini', 'hooks', 'PreToolUse'),
     note: 'Claude-Code-compatible by construction. If Gemini\'s format has drifted, run `gemini hooks migrate --from-claude`.',
   })
   console.log(chalk.dim('    Gemini also has its own Policy Engine (--policy/--admin-policy);'))
@@ -1438,7 +1455,7 @@ rules: []
 }
 
 function upgradePluginConfig() {
-  const configDir = join(homedir(), '.config', 'opencode')
+  const configDir = join(resolveHome(), '.config', 'opencode')
   const configPath = join(configDir, 'opencode.json')
 
   // Note: plugins in .opencode/plugins/ are auto-loaded.
@@ -1466,12 +1483,12 @@ function upgradePluginConfig() {
 }
 
 function createRequirementsFile() {
-  const reqPath = join(homedir(), '.keel', 'requirements.md')
+  const reqPath = join(resolveHome(), '.keel', 'requirements.md')
   if (existsSync(reqPath)) {
     console.log(chalk.dim('  .keel/requirements.md already exists (skipping)'))
     return
   }
-  mkdirSync(join(homedir(), '.keel'), { recursive: true })
+  mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
   writeDraftRequirements(reqPath)
 }
 
@@ -1652,7 +1669,7 @@ Project requirements: .keel/requirements.md (if present)
   await installHostHook({
     label: 'Cline',
     template: 'cline-pretooluse.sh',
-    target: join(homedir(), '.cline', 'hooks', 'PreToolUse'),
+    target: join(resolveHome(), '.cline', 'hooks', 'PreToolUse'),
   })
 
   // MCP server — gives Cline an enforcement check tool.
@@ -1744,7 +1761,7 @@ async function installCodex() {
   await installHostHook({
     label: 'Codex CLI',
     template: 'codex-pretooluse.sh',
-    target: join(homedir(), '.codex', 'hooks', 'keel-enforce.sh'),
+    target: join(resolveHome(), '.codex', 'hooks', 'keel-enforce.sh'),
     note: 'UNVERIFIED against a live Codex CLI — register it in ~/.codex/hooks.json as a PreToolUse hook. Codex requires the hook file hash to be trusted before it runs.',
   })
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, chmodSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, chmodSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,13 +20,23 @@ const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 let dir: string
 let shim: string
 
-function run(args: string, opts: { cwd?: string; path?: string; home?: string } = {}) {
+function run(args: string, opts: { cwd?: string; path?: string; home?: string; keelHome?: string } = {}) {
   try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: opts.home ?? process.env.HOME,
+      PATH: opts.path ?? `${shim}:${process.env.PATH}`,
+    }
+    if (opts.keelHome) {
+      env.KEEL_HOME = opts.keelHome
+    } else {
+      delete env.KEEL_HOME
+    }
     const stdout = execSync(`node "${CLI}" ${args}`, {
       encoding: 'utf-8',
       cwd: opts.cwd ?? dir,
       timeout: 10000,
-      env: { ...process.env, HOME: opts.home ?? process.env.HOME, PATH: opts.path ?? `${shim}:${process.env.PATH}` },
+      env,
     })
     return { stdout, code: 0 }
   } catch (err: any) {
@@ -184,5 +194,88 @@ describe('install --opencode creates the global rules', () => {
     const out = run('install --opencode', { home })
     expect(out.stdout).toContain('already exists (skipping)')
     expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).toBe('# custom\nversion: 1\n')
+  })
+})
+
+describe('install honors KEEL_HOME over HOME', () => {
+  // Two DISTINCT tmp dirs. os.homedir() on POSIX reads $HOME, so a test that
+  // only overrides HOME (or only checks KEEL_HOME's contents) could pass by
+  // accident even if install.ts still called bare homedir(). Using separate
+  // dirs for HOME and KEEL_HOME, and asserting the HOME side stays empty,
+  // is what makes this test actually exercise the KEEL_HOME override.
+  let sysHome: string
+  let keelHome: string
+
+  beforeEach(() => {
+    sysHome = mkdtempSync(join(tmpdir(), 'keel-test-syshome-'))
+    keelHome = mkdtempSync(join(tmpdir(), 'keel-test-keelhome-'))
+  })
+
+  afterEach(() => {
+    rmSync(sysHome, { recursive: true, force: true })
+    rmSync(keelHome, { recursive: true, force: true })
+  })
+
+  it('writes global install targets under KEEL_HOME, never under HOME', () => {
+    const out = run('install --opencode', { home: sysHome, keelHome })
+    expect(out.stdout).toContain('Created ~/.keel/rules.yaml')
+
+    // KEEL_HOME received the writes.
+    expect(existsSync(join(keelHome, '.keel', 'rules.yaml'))).toBe(true)
+    expect(existsSync(join(keelHome, '.opencode', 'plugins', 'keel-enforce.js'))).toBe(true)
+
+    // The real/system HOME must be untouched.
+    expect(existsSync(join(sysHome, '.keel'))).toBe(false)
+    expect(existsSync(join(sysHome, '.opencode'))).toBe(false)
+  })
+
+  it('falls back to HOME when KEEL_HOME is unset', () => {
+    const out = run('install --opencode', { home: sysHome })
+    expect(out.stdout).toContain('Created ~/.keel/rules.yaml')
+    expect(existsSync(join(sysHome, '.keel', 'rules.yaml'))).toBe(true)
+  })
+
+  // `install --opencode` alone only exercises 4 of the 10 resolveHome() call
+  // sites (~/.keel, ~/.opencode, ~/.keel/requirements.md; upgradePluginConfig
+  // is an upgrade path that no-ops unless ~/.config/opencode/opencode.json
+  // already exists, so it's seeded below). `--all` additionally reaches the
+  // Cline, Codex, Hermes, OpenClaw, and Gemini host installers, covering
+  // every global target install.ts writes. Everything else `--all` touches
+  // (project plugin, Claude Code hooks, Cursor) is cwd-scoped, so it cannot
+  // leak into sysHome by a different route.
+  it('install --all writes every global target under KEEL_HOME, nothing under HOME', () => {
+    // upgradePluginConfig() only rewrites an EXISTING opencode.json — seed
+    // one under keelHome (never under sysHome) so this run actually
+    // exercises that resolveHome() call site instead of silently no-op'ing.
+    const ocConfigDir = join(keelHome, '.config', 'opencode')
+    mkdirSync(ocConfigDir, { recursive: true })
+    const ocConfigPath = join(ocConfigDir, 'opencode.json')
+    writeFileSync(ocConfigPath, JSON.stringify({ plugin: ['old/keel-enforce.js'] }), 'utf-8')
+
+    run('install --all', { home: sysHome, keelHome })
+
+    for (const p of [
+      join(keelHome, '.keel', 'rules.yaml'),
+      join(keelHome, '.opencode', 'plugins', 'keel-enforce.js'),
+      join(keelHome, '.keel', 'requirements.md'),
+      join(keelHome, '.cline', 'hooks', 'PreToolUse'),
+      join(keelHome, '.codex', 'hooks', 'keel-enforce.sh'),
+      join(keelHome, '.hermes', 'plugins', 'keel', 'keel_plugin.py'),
+      join(keelHome, '.openclaw', 'plugins', 'keel', 'index.mjs'),
+      join(keelHome, '.gemini', 'hooks', 'PreToolUse'),
+    ]) {
+      expect(existsSync(p)).toBe(true)
+    }
+
+    // The seeded opencode.json was rewritten in place (old keel-enforce
+    // entry filtered out) — proves upgradePluginConfig() resolved keelHome,
+    // not a bare homedir().
+    const rewritten = JSON.parse(readFileSync(ocConfigPath, 'utf-8'))
+    expect(rewritten.plugin).toEqual([])
+
+    // sysHome must stay completely empty — nothing install.ts writes should
+    // route to homedir() when KEEL_HOME is set.
+    expect(existsSync(sysHome)).toBe(true) // the tmp dir itself still exists
+    expect(readdirSync(sysHome)).toEqual([])
   })
 })
