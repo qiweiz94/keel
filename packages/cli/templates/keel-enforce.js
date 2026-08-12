@@ -10462,12 +10462,15 @@ rules:
     severity: medium
     confidence: medium
     priority: -10
-    match: "(rm -rf|git checkout -- |git reset --hard|migrate|refactor)"
+    match: "(rm -rf|git[ 	]+checkout[ 	]+(--[ 	]+)?([.]|:/)([ 	]|$)|git reset --hard|(?<![A-Za-z])migrate(?![A-Za-z])|(?<![A-Za-z])refactor(?![A-Za-z]))"
     require_hypothesis: true
     fallback_pattern: "git (log|blame|bisect|diff)"
     action: redirect
     rationale: "Complex or destructive fixes should follow an investigation, not precede one. Discharged by a recorded hypothesis OR by real investigation evidence (git log/blame/bisect/diff), so it never demands ceremony from someone who already did the work."
     remediation: "Run git log/blame/bisect, or record a hypothesis with keel_hypothesis."
+    false_positives:
+      - "git checkout -- file.ts (a single-file checkout/restore) is NOT matched \u2014 only a whole-tree discard (git checkout -- ., git checkout ., git checkout -- :/) trips this; M1r-1 rules-tuning fix for the documented single-file FP (session/v04/AUDIT.md)."
+      - "A write to src/migrations/001_init.ts or src/migrateUsers.ts is NOT matched \u2014 migrate/refactor are anchored to stand-alone words, not path or filename substrings."
     message: "Destructive or structural change without a recorded root cause. Investigate first."
 
   # \u2500\u2500 Wave-2 verification proposals (observe burn-in; supervisor paste at gate-2) \u2500\u2500
