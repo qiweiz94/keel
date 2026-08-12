@@ -1,10 +1,10 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
 import type { AuditEntry, ProjectInsights, Suggestion, KeelRule } from '../core/types.js'
 import { commandFingerprint } from '../core/enforce/command-fingerprint.js'
 import { VERDICTS } from './retrospective.js'
+import { resolveHome } from '../core/home.js'
 
 interface ExtractedLesson {
   pattern: string
@@ -30,7 +30,7 @@ export async function lessonsCommand(options: {
   apply?: string   // lesson ID to apply (auto-generate rule)
   list?: boolean
 }) {
-  const lessonsDir = join(homedir(), '.keel')
+  const lessonsDir = join(resolveHome(), '.keel')
   const lessonsPath = join(lessonsDir, 'lessons.json')
 
   if (options.apply) {
@@ -39,7 +39,7 @@ export async function lessonsCommand(options: {
   }
 
   // Load audit traces
-  const auditDir = join(homedir(), '.keel', 'traces')
+  const auditDir = join(resolveHome(), '.keel', 'traces')
   if (!existsSync(auditDir)) {
     console.log(chalk.yellow('\n  No audit data found. Run some sessions with Keel enabled first.\n'))
     return

@@ -1,8 +1,8 @@
 import { createServer } from 'node:http'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
+import { resolveHome } from '../core/home.js'
 import chalk from 'chalk'
 import { EnforcementPipeline } from '../core/enforce/pipeline.js'
 import { ActionCache, ContentTracker } from '../core/enforce/cache.js'
@@ -42,11 +42,11 @@ import type { EnforceInput, ProtectionLevel } from '../core/types.js'
 export const DAEMON_PORT = 31990
 
 export function daemonTokenPath(): string {
-  return join(homedir(), '.keel', 'daemon-token')
+  return join(resolveHome(), '.keel', 'daemon-token')
 }
 
 export function daemonStatePath(): string {
-  return join(homedir(), '.keel', 'daemon.json')
+  return join(resolveHome(), '.keel', 'daemon.json')
 }
 
 export function loadOrCreateDaemonToken(): string {
@@ -58,7 +58,7 @@ export function loadOrCreateDaemonToken(): string {
   // Atomic exclusive create: concurrent starters must never mint two
   // tokens for one file (the loser reads the winner's).
   const token = randomBytes(24).toString('hex')
-  mkdirSync(join(homedir(), '.keel'), { recursive: true })
+  mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
   try {
     writeFileSync(path, token + '\n', { flag: 'wx', mode: 0o600 })
   } catch { /* a concurrent starter won — use its token */ }
@@ -120,8 +120,8 @@ function ruleFingerprint(cwd: string): string {
     join(cwd, '.keel.local.yaml'),
     join(cwd, 'AGENTS.local.md'),
     join(cwd, 'CLAUDE.local.md'),
-    join(homedir(), '.keel', 'rules.yaml'),
-    join(homedir(), '.config', 'keel', 'rules.yaml'),
+    join(resolveHome(), '.keel', 'rules.yaml'),
+    join(resolveHome(), '.config', 'keel', 'rules.yaml'),
   ]
   const hash = createHash('sha256')
   for (const source of sources) {
@@ -168,7 +168,7 @@ function pipelineFor(cwd: string): EnforcementPipeline {
 }
 
 function requirementsContent(cwd: string): string {
-  for (const file of [join(homedir(), '.keel', 'requirements.md'), join(cwd, '.keel', 'requirements.md')]) {
+  for (const file of [join(resolveHome(), '.keel', 'requirements.md'), join(cwd, '.keel', 'requirements.md')]) {
     if (existsSync(file)) return readFileSync(file, 'utf-8')
   }
   return ''
@@ -405,7 +405,7 @@ export async function daemonCommand(options: { port?: number } = {}): Promise<Da
   const port = options.port ?? (Number(process.env.KEEL_DAEMON_PORT) || DAEMON_PORT)
   const handle = await startDaemon({ port, token })
 
-  mkdirSync(join(homedir(), '.keel'), { recursive: true })
+  mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
   writeFileSync(daemonStatePath(), JSON.stringify({ port: handle.port, pid: process.pid }, null, 2) + '\n', { mode: 0o600 })
 
   console.log(chalk.bold.cyan('\n  ⚓ keel daemon'))

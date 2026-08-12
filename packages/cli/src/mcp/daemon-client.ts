@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { spawn } from 'node:child_process'
+import { resolveHome } from '../core/home.js'
 import { loadDaemonState, daemonTokenPath } from '../commands/daemon.js'
 import type { EnforceInput, EnforceResult } from '../core/types.js'
 
@@ -73,7 +73,7 @@ async function doEnsureDaemon(): Promise<{ port: number; token: string }> {
     // through to read the winner's token (never two tokens for one file).
     const { mkdirSync, writeFileSync } = await import('node:fs')
     const { randomBytes } = await import('node:crypto')
-    mkdirSync(join(homedir(), '.keel'), { recursive: true })
+    mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
     try {
       writeFileSync(tokenPath, randomBytes(24).toString('hex') + '\n', { flag: 'wx', mode: 0o600 })
     } catch { /* already created by a concurrent caller — read it below */ }

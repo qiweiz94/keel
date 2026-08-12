@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
 import { writeRulesLevel } from './level.js'
 import { isInteractive } from './interactive.js'
+import { resolveHome } from '../core/home.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -161,7 +161,7 @@ function renderPanel(state: DashboardState, target: 'global' | 'project'): strin
 }
 
 export function switchLevel(target: 'global' | 'project', level: ProtectionLevel): { ok: boolean; message: string } {
-  const home = homedir()
+  const home = resolveHome()
   const path = target === 'global' ? join(home, '.keel', 'rules.yaml') : join(process.cwd(), '.keel', 'rules.yaml')
   if (!existsSync(path)) {
     return { ok: false, message: target === 'global' ? 'No global rules file — run `keel install` first.' : 'No project rules file in this directory.' }
@@ -175,7 +175,7 @@ export function switchLevel(target: 'global' | 'project', level: ProtectionLevel
 }
 
 export async function dashboardCommand(options: { once?: boolean; json?: boolean } = {}) {
-  const home = homedir()
+  const home = resolveHome()
   const dir = process.cwd()
 
   if (options.json) {

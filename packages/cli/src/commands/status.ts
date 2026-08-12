@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, validateRules, winningLevelConfig, resolvedLevel, sprintExpiryStatus } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
@@ -8,6 +7,7 @@ import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detect
 import { loadTraceEntries, TRACKED_AGENTS } from './retrospective.js'
 import { telemetryHealth, type HealthState } from './health.js'
 import { findTemplateSource } from './install.js'
+import { resolveHome } from '../core/home.js'
 
 const STATE_MARK: Record<HealthState, string> = {
   green: '✓', amber: '!', red: '✗', unknown: '?',
@@ -60,7 +60,7 @@ function paintState(state: HealthState, text: string): string {
  * because the loaded plugin wrote no exit codes, and nothing said so.
  */
 export async function statusCommand() {
-  const home = homedir()
+  const home = resolveHome()
   const dir = process.cwd()
   const today = new Date().toISOString().slice(0, 10)
 

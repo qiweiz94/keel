@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { resolveMaybeRelative, normalizeForMatch } from './path-normalize.js'
+import { resolveHome } from '../home.js'
 import type {
   KeelRule, EnforceInput, EnforceResult, EnforcementAction,
   ProtectionLevel, RuleContext, CacheEntry, AuditEntry, ResearchDirective, RedirectDirective,
@@ -357,7 +357,7 @@ export class EnforcementPipeline {
     const reasoningChecks = depth === 'deep'
 
     // Check global kill switch (sentinel file)
-    const sentinelPath = this.config.disableFile || join(homedir(), '.keel', 'DISABLED')
+    const sentinelPath = this.config.disableFile || join(resolveHome(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) {
       try {
         const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))

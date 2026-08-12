@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel schedule` — automated self-improvement.
@@ -25,7 +26,12 @@ function keelBinary(): string {
 }
 
 function logDir(): string {
-  return join(homedir(), '.keel', 'logs')
+  // keel-owned (.keel/logs), so this honors KEEL_HOME like every other
+  // reader — unlike plistPath() below, which MUST stay pinned to the real
+  // homedir(): launchd only ever reads the real ~/Library/LaunchAgents, so
+  // redirecting it under KEEL_HOME would silently break `keel schedule`
+  // (launchd would never see the installed plist).
+  return join(resolveHome(), '.keel', 'logs')
 }
 
 // A pure path computation — no filesystem write. `keel schedule` with no

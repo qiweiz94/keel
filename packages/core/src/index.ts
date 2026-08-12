@@ -9,6 +9,8 @@
  * suite — the only tests in the repo — exercised code that nothing shipped.
  * Converging them means those tests now cover the engine users actually run.
  */
+export { resolveHome } from './home.js'
+
 export {
   PolicyEngine,
   DEFAULT_POLICY,

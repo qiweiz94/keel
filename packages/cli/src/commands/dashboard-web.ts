@@ -1,9 +1,9 @@
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import chalk from 'chalk'
 import { collectState, switchLevel } from './dashboard.js'
 import { isInteractive } from './interactive.js'
+import { resolveHome } from '../core/home.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -238,7 +238,7 @@ setInterval(refresh, 2000)
 }
 
 export async function dashboardWebCommand(options: { port?: number } = {}) {
-  const home = homedir()
+  const home = resolveHome()
   const dir = process.cwd()
 
   // Human-only by construction: starting the web server requires a TTY (an

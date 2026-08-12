@@ -280,3 +280,85 @@ describe('install honors KEEL_HOME over HOME', () => {
     expect(readdirSync(sysHome)).toEqual([])
   })
 })
+
+describe('install → read consistency under KEEL_HOME (M1r-3b)', () => {
+  // The block above (M1r-3) proved install.ts itself honors KEEL_HOME. That
+  // was necessary but not sufficient: every READER (daemon.ts, rules.ts,
+  // status.ts, mcp/server.ts, state-manager.ts, the opencode plugin, ...)
+  // used to resolve a bare homedir() independently, so an install under
+  // KEEL_HOME wrote to the redirected location while a reader kept looking
+  // under the real home directory — a split-brain. M1r-3b closed it by
+  // routing every reader through the SAME resolveHome() install.ts uses.
+  //
+  // These tests drive the full install → write → read path through the
+  // REAL built CLI (separate `node dist/index.js ...` processes per step,
+  // not in-process unit calls), so a regression in any layer — install, a
+  // writer command, or a reader command — is caught here. Two distinct tmp
+  // dirs (sysHome / keelHome) throughout, same as the block above, so a
+  // reader/writer that silently fell back to homedir() (which resolves
+  // sysHome via $HOME on POSIX) would fail these assertions rather than
+  // passing by coincidence.
+  let sysHome: string
+  let keelHome: string
+
+  beforeEach(() => {
+    sysHome = mkdtempSync(join(tmpdir(), 'keel-test-syshome-'))
+    keelHome = mkdtempSync(join(tmpdir(), 'keel-test-keelhome-'))
+  })
+
+  afterEach(() => {
+    rmSafe(sysHome)
+    rmSafe(keelHome)
+  })
+
+  it('`keel status` (reader) sees the kill switch armed by `keel disable` (writer) under the SAME KEEL_HOME install used', () => {
+    const installOut = run('install --opencode', { home: sysHome, keelHome })
+    expect(installOut.stdout).toContain('Created ~/.keel/rules.yaml')
+
+    // Arm the kill switch. disable.ts used to resolve `process.env.HOME ||
+    // '~'` directly — never KEEL_HOME, and not even a homedir() fallback.
+    const disableOut = run('disable --reason "M1r-3b consistency test"', { home: sysHome, keelHome })
+    expect(disableOut.stdout).toContain('Keel DISABLED')
+
+    // The sentinel must land under KEEL_HOME, never under HOME.
+    expect(existsSync(join(keelHome, '.keel', 'DISABLED'))).toBe(true)
+    expect(existsSync(join(sysHome, '.keel', 'DISABLED'))).toBe(false)
+
+    // Read it back with `keel status` — a DIFFERENT command, same env. If
+    // status.ts (or pipeline.ts's own kill-switch check) still resolved a
+    // bare homedir(), this would report "enabled" — it would be looking at
+    // sysHome (empty) instead of keelHome (where the sentinel actually is).
+    const statusOut = run('status', { home: sysHome, keelHome })
+    expect(statusOut.stdout).toContain('DISABLED')
+    expect(statusOut.stdout).not.toContain('enabled (enforcement active)')
+
+    // `keel enable` (writer) then `keel status` (reader) again — both must
+    // keep agreeing under the same KEEL_HOME.
+    const enableOut = run('enable', { home: sysHome, keelHome })
+    expect(enableOut.stdout.toLowerCase()).toContain('re-enabled')
+    expect(existsSync(join(keelHome, '.keel', 'DISABLED'))).toBe(false)
+    const statusOut2 = run('status', { home: sysHome, keelHome })
+    expect(statusOut2.stdout).toContain('enabled (enforcement active)')
+  })
+
+  it('`keel status` (reader) sees an override armed by `keel allow` (writer) under KEEL_HOME, with KEEL_OVERRIDES_DIR unset — proving the *_DIR family unifies under KEEL_HOME rather than a coincidental match', () => {
+    run('install --opencode', { home: sysHome, keelHome })
+
+    // Arm an override on a rule id that actually ships in DEFAULT_RULES_YAML
+    // (see install.ts). allow.ts's overridesDirectory() falls back through
+    // KEEL_OVERRIDES_DIR (deliberately UNSET here) to resolveHome() — the
+    // same base FileRuleOverrideStore's own default construction uses — so
+    // this only passes if both ends agree on KEEL_HOME, not by KEEL_OVERRIDES_DIR
+    // coincidentally pointing both writer and reader at the same place.
+    const allowOut = run('allow no-verify-bypass --once', { home: sysHome, keelHome })
+    expect(allowOut.stdout).toContain('overridden for')
+
+    expect(existsSync(join(keelHome, '.keel', 'overrides.json'))).toBe(true)
+    expect(existsSync(join(sysHome, '.keel', 'overrides.json'))).toBe(false)
+
+    const statusOut = run('status', { home: sysHome, keelHome })
+    expect(statusOut.stdout).toContain('1')
+    expect(statusOut.stdout).toContain('armed')
+    expect(statusOut.stdout).toContain('no-verify-bypass')
+  })
+})

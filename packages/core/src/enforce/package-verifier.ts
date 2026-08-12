@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolveHome } from '../home.js'
 
 /**
  * Slopsquatting install gate.
@@ -371,7 +371,7 @@ export const CACHE_TTL_MS: Record<PackageVerdict, number> = {
 }
 
 export function packageVerifierStateDir(): string {
-  return process.env.KEEL_STATE_DIR || join(homedir(), '.keel', 'state')
+  return process.env.KEEL_STATE_DIR || join(resolveHome(), '.keel', 'state')
 }
 
 export class PackageVerifierCache {

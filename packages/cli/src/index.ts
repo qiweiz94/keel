@@ -346,7 +346,7 @@ program.parse(process.argv)
 async function createEnforceInit() {
   const { existsSync, mkdirSync, writeFileSync: writeRulesFile } = await import('node:fs')
   const { join } = await import('node:path')
-  const { homedir } = await import('node:os')
+  const { resolveHome } = await import('./core/home.js')
   const rulesPath = join(process.cwd(), '.keel', 'rules.yaml')
   if (existsSync(rulesPath)) {
     console.log('.keel/rules.yaml already exists.')
@@ -357,7 +357,7 @@ async function createEnforceInit() {
   // who already ran `keel install` and picked a level there (e.g. protect)
   // would have that dial silently overridden the moment this writes a full
   // project ruleset that starts at level: balanced. Warn rather than guess.
-  if (existsSync(join(homedir(), '.keel', 'rules.yaml'))) {
+  if (existsSync(join(resolveHome(), '.keel', 'rules.yaml'))) {
     console.log(
       'Note: a global ruleset exists at ~/.keel/rules.yaml. This project file will ' +
         'take priority for any rule id it shares with the global set, including the ' +

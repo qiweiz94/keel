@@ -1,12 +1,16 @@
 // src/plugin.ts
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+// ../core/src/home.ts
+import { homedir } from "node:os";
+function resolveHome() {
+  return process.env.KEEL_HOME || process.env.HOME || homedir();
+}
+
 // ../core/src/enforce/pipeline.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4, rmSync, statSync as statSync2 } from "node:fs";
-import { homedir as homedir4 } from "node:os";
 import { join as join4 } from "node:path";
 
 // ../core/src/enforce/path-normalize.ts
@@ -45,7 +49,6 @@ function normalizeForMatch(p, flavor = currentFlavor()) {
 
 // ../core/src/enforce/rule-parser.ts
 import { readFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 // ../../node_modules/yaml/browser/dist/nodes/identity.js
@@ -6552,7 +6555,7 @@ function dialAction(rule, level) {
   return rule.action;
 }
 function loadRuleHierarchy(projectDir) {
-  const home = process.env.HOME || homedir();
+  const home = resolveHome();
   const projectRules = parseRulesFile(join(projectDir, ".keel", "rules.yaml")) || parseRulesFile(join(projectDir, "AGENTS.md")) || parseRulesFile(join(projectDir, "CLAUDE.md"));
   const localRules = parseRulesFile(join(projectDir, ".keel.local.yaml")) || parseRulesFile(join(projectDir, "AGENTS.local.md")) || parseRulesFile(join(projectDir, "CLAUDE.local.md"));
   return {
@@ -6671,7 +6674,6 @@ function hashRulesFile(filePath) {
 // ../core/src/enforce/package-verifier.ts
 import { readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2, mkdirSync, renameSync } from "node:fs";
 import { join as join2 } from "node:path";
-import { homedir as homedir2 } from "node:os";
 var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun"]);
 var ADD_SUBCOMMANDS = {
   npm: /* @__PURE__ */ new Set(["install", "i"]),
@@ -6841,7 +6843,7 @@ var CACHE_TTL_MS = {
   unverified: 5 * 60 * 1e3
 };
 function packageVerifierStateDir() {
-  return process.env.KEEL_STATE_DIR || join2(homedir2(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join2(resolveHome(), ".keel", "state");
 }
 var PackageVerifierCache = class {
   constructor(stateDir2 = packageVerifierStateDir()) {
@@ -7664,13 +7666,12 @@ function matchesAnyTestGlob(value, patterns) {
 
 // ../core/src/enforce/overrides.ts
 import { closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
 import { join as join3 } from "node:path";
 var FileRuleOverrideStore = class {
   directory;
   file;
   lock;
-  constructor(home = homedir3()) {
+  constructor(home = resolveHome()) {
     this.directory = process.env.KEEL_OVERRIDES_DIR || join3(home, ".keel");
     this.file = join3(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
@@ -8014,7 +8015,7 @@ var EnforcementPipeline = class {
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const protectFloor = (rules2) => rules2.some((rule) => rule.level === "protect" && (rule.type === "content" || rule.type === "sequence" || rule.type === "flow"));
     const reasoningChecks = depth === "deep";
-    const sentinelPath = this.config.disableFile || join4(homedir4(), ".keel", "DISABLED");
+    const sentinelPath = this.config.disableFile || join4(resolveHome(), ".keel", "DISABLED");
     if (existsSync4(sentinelPath)) {
       try {
         const sentinel = JSON.parse(readFileSync4(sentinelPath, "utf-8"));
@@ -9222,7 +9223,6 @@ var ResearchTracker = class {
 // ../core/src/enforce/problem-ledger.ts
 import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync4, renameSync as renameSync3, statSync as statSync4 } from "node:fs";
 import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // ../core/src/enforce/file-lock.ts
@@ -9324,7 +9324,6 @@ function withFileLock(lockPath, fn, options = {}) {
 // ../core/src/enforce/audit.ts
 import { appendFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync9, readdirSync } from "node:fs";
 import { join as join6 } from "node:path";
-import { homedir as homedir6 } from "node:os";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -9366,10 +9365,9 @@ import {
 } from "node:crypto";
 import { existsSync as existsSync9, readFileSync as readFileSync10, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
 import { join as join7 } from "node:path";
-import { homedir as homedir7 } from "node:os";
 var signingKey = null;
 function keyPath() {
-  return join7(homedir7(), ".keel", "receipt-key.json");
+  return join7(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
   return join7(process.cwd(), ".keel", "receipts", "receipt-key.json");
@@ -9410,7 +9408,7 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join7(homedir7(), ".keel");
+    const dir = join7(resolveHome(), ".keel");
     if (!existsSync9(dir)) mkdirSync6(dir, { recursive: true });
     writeFileSync6(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
@@ -9551,9 +9549,8 @@ function isVerifiableFile(filePath) {
 // ../core/src/enforce/state-manager.ts
 import { readFileSync as readFileSync12, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
 import { join as join9 } from "node:path";
-import { homedir as homedir8 } from "node:os";
 function stateDir() {
-  return process.env.KEEL_STATE_DIR || join9(homedir8(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join9(resolveHome(), ".keel", "state");
 }
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
@@ -9745,7 +9742,8 @@ var StateManager = class {
 
 // src/plugin.ts
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["write", "edit", "apply_patch", "writefile", "write_file", "multiedit"]);
-var KEEL_DIR = path.join(os.homedir(), ".keel");
+var HOME_DIR = resolveHome();
+var KEEL_DIR = path.join(HOME_DIR, ".keel");
 var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
 var DISABLED_PATH = path.join(KEEL_DIR, "DISABLED");
@@ -11007,7 +11005,7 @@ var plugin_default = {
         path.join(directory, "AGENTS.local.md"),
         path.join(directory, "CLAUDE.local.md"),
         RULES_PATH,
-        path.join(os.homedir(), ".config", "keel", "rules.yaml")
+        path.join(HOME_DIR, ".config", "keel", "rules.yaml")
       ].map((source) => hashRulesFile(source)).join(":"),
       onRulesReload: refreshVerificationMetadata,
       onRulesError: (errors) => {

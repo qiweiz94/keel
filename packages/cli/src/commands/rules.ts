@@ -1,10 +1,10 @@
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import chalk from 'chalk'
-import { homedir } from 'node:os'
 import { HARNESS_RULES_YAML, HARNESS_RULE_IDS } from './harness-rules.js'
 import { isInteractive } from './interactive.js'
 import { parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
+import { resolveHome } from '../core/home.js'
 
 type DetectionLane = 'enforce' | 'alert' | 'hunt'
 
@@ -69,7 +69,7 @@ async function printHarnessRules() {
   // Evidence first: what does the existing history actually look like?
   try {
     const { loadTraceEntries, buildReport } = await import('./retrospective.js')
-    const report = buildReport(loadTraceEntries(join(homedir(), '.keel', 'traces')))
+    const report = buildReport(loadTraceEntries(join(resolveHome(), '.keel', 'traces')))
     const stuck = report.sessions.filter(s => s.stuck_loops > 0)
     if (report.sessions.length) {
       console.log(chalk.dim(`  In your last ${report.sessions.length} sessions:`))
@@ -180,7 +180,7 @@ export async function rulesCommand(
       return
     }
 
-    const rulesPath = join(homedir(), '.keel', 'rules.yaml')
+    const rulesPath = join(resolveHome(), '.keel', 'rules.yaml')
     const result = appendHarnessRules(rulesPath)
     console.log()
     switch (result.status) {

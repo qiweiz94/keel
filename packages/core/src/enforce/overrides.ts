@@ -1,6 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { resolveHome } from '../home.js'
 
 export type OverrideMode = 'once' | 'window' | 'session'
 
@@ -47,7 +47,7 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
   private readonly file: string
   private readonly lock: string
 
-  constructor(home = homedir()) {
+  constructor(home = resolveHome()) {
     // KEEL_OVERRIDES_DIR isolates the DEFAULT construction site
     // (pipeline.ts: `new FileRuleOverrideStore()`, used whenever a caller
     // does not supply its own overrideStore) from the real ~/.keel —
@@ -60,7 +60,10 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
     // override the pipeline's default store would never see (reader and
     // writer on different files). This constructor's explicit `home`
     // parameter (used by existing callers/tests) still takes precedence,
-    // exactly as before.
+    // exactly as before. The default itself is now resolveHome() (KEEL_HOME
+    // > HOME > homedir()) rather than a bare homedir(), so a caller that
+    // relies on the default (no explicit `home` and no KEEL_OVERRIDES_DIR)
+    // still agrees with `keel install` under KEEL_HOME.
     this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, '.keel')
     this.file = join(this.directory, 'overrides.json')
     this.lock = `${this.file}.lock`

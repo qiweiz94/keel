@@ -1,9 +1,9 @@
 import { mkdirSync, existsSync, writeFileSync, copyFileSync, readFileSync, chmodSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import chalk from 'chalk'
 import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detector.js'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel install` — set up Keel enforcement in the environment.
@@ -19,22 +19,20 @@ import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detect
  * the canonical source shared with the @get-keel/opencode-plugin npm package.
  */
 
-/**
- * Resolves the base directory for every GLOBAL (non-project-scoped) install
- * target — ~/.keel, ~/.opencode, ~/.gemini, ~/.cline, ~/.codex, ~/.hermes,
- * ~/.openclaw, ~/.config/opencode, etc. Honors KEEL_HOME so a redirected or
- * test install never touches the real home directory.
- *
- * NOTE: readers (daemon.ts, rules.ts, status.ts, mcp/server.ts,
- * state-manager.ts, the opencode plugin, ...) do NOT currently consult
- * KEEL_HOME — they resolve a bare homedir() independently. An install run
- * with KEEL_HOME set writes only to the redirected location; readers will
- * still look under the real home directory. See session/v1/EVIDENCE/m1r-3-install.md
- * for the full reader audit and follow-up.
- */
-function resolveHome(): string {
-  return process.env.KEEL_HOME || homedir()
-}
+// resolveHome() (imported above from '../core/home.js', a copy of
+// packages/core/src/home.ts generated at build time) resolves the base
+// directory for every GLOBAL (non-project-scoped) install target — ~/.keel,
+// ~/.opencode, ~/.gemini, ~/.cline, ~/.codex, ~/.hermes, ~/.openclaw,
+// ~/.config/opencode, etc. Honors KEEL_HOME so a redirected or test install
+// never touches the real home directory.
+//
+// M1r-3b closed the install/read split-brain this file used to document
+// here: every reader (daemon.ts, rules.ts, status.ts, mcp/server.ts,
+// state-manager.ts, the opencode plugin, ...) now imports this SAME
+// resolveHome() rather than resolving a bare homedir() independently, so an
+// install run with KEEL_HOME set and a subsequent reader agree on where
+// keel's state lives. See session/v1/EVIDENCE/reader-home.md for the full
+// migrated reader list.
 
 export async function findTemplateSource(name: string): Promise<string | null> {
   const candidates = [

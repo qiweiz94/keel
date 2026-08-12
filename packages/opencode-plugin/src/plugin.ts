@@ -1,5 +1,4 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
@@ -19,12 +18,20 @@ import {
   createReceipt,
   verifyFileSyntax,
   isVerifiableFile,
+  resolveHome,
 } from '../../core/src/keel-core.js'
 
 /** Tools whose completion means a file on disk just changed. */
 const EDIT_TOOLS = new Set(['write', 'edit', 'apply_patch', 'writefile', 'write_file', 'multiedit'])
 
-const KEEL_DIR = path.join(os.homedir(), '.keel')
+// resolveHome() (KEEL_HOME > HOME > homedir()) so this plugin agrees with
+// `keel install` and every other reader under KEEL_HOME. Computed once at
+// plugin-module-load time, same as before (this file has always frozen its
+// .keel-relative constants at import time — scripts/load-test.js already
+// documents that HOME/KEEL_HOME must be set BEFORE the plugin module is
+// imported for exactly this reason).
+const HOME_DIR = resolveHome()
+const KEEL_DIR = path.join(HOME_DIR, '.keel')
 const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
 const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
@@ -1284,7 +1291,7 @@ export default {
       ruleFingerprint: () => [
         path.join(directory, '.keel', 'rules.yaml'), path.join(directory, 'AGENTS.md'), path.join(directory, 'CLAUDE.md'),
         path.join(directory, '.keel.local.yaml'), path.join(directory, 'AGENTS.local.md'), path.join(directory, 'CLAUDE.local.md'),
-        RULES_PATH, path.join(os.homedir(), '.config', 'keel', 'rules.yaml'),
+        RULES_PATH, path.join(HOME_DIR, '.config', 'keel', 'rules.yaml'),
       ].map(source => hashRulesFile(source)).join(':'),
       onRulesReload: refreshVerificationMetadata,
       onRulesError: (errors) => {
