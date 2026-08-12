@@ -26,6 +26,14 @@ import { rmSafe } from './helpers/fs-safe.js'
  *     synthetic fixture set the lane mandate calls for.
  */
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. An in-memory
+// stub keeps this suite's deny scenarios off the real filesystem (see
+// match-surface.test.ts's `noopOverrideStore`, same fix, same root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 // ── Layer 1: oracle-signatures.ts (pure) ──
 
 describe('oracle-signatures: detectWeakening (pure content-diff heuristics)', () => {
@@ -258,6 +266,7 @@ function buildOraclePipeline(rule: KeelRule): { pipeline: EnforcementPipeline; s
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     ruleHierarchy: { global: null, user: null, project: { config: { version: 1, level: 'balanced', rules: [rule] }, rules: [rule], sourcePath: '/oracle-fixture/nonexistent.yaml', version: 1, markdown: '' }, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
@@ -520,6 +529,7 @@ describe('session/proposals/tests-read-only.yaml (opt-in, never a default)', () 
         contentTracker: new ContentTracker(),
         sequenceDetector: new SequenceDetector(),
         flowTracker: new FlowTracker(),
+        overrideStore: noopOverrideStore,
         ruleHierarchy: { global: null, user: null, project: { config: { version: 1, level: 'balanced', rules: [rule] }, rules: [rule], sourcePath: '/tro-fixture/nonexistent.yaml', version: 1, markdown: '' }, local: null },
         ruleVersion: 1,
         allowedFixTransforms: true,

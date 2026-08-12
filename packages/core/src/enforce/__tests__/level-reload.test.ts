@@ -11,6 +11,18 @@ import { StateManager } from '../state-manager.js'
 import type { KeelRule, ProtectionLevel } from '../../types.js'
 import { rmSafe } from './helpers/fs-safe.js'
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. The describe
+// blocks below that redirect process.env.HOME to a per-block tmp dir in
+// beforeAll are already isolated by that redirect, but the "minimum-dial
+// filter" block's `dialPipeline()` does not touch HOME at all and would
+// otherwise hit the real ambient HOME (see match-surface.test.ts's
+// `noopOverrideStore`, same fix, same root cause) — applied to every
+// construction site here for defense in depth.
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 function hashRulesFile(p: string): string {
   if (!existsSync(p)) return ''
   const c = readFileSync(p, 'utf-8')
@@ -54,7 +66,8 @@ rules:
     const pipeline = new EnforcementPipeline({
       level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 1000 }),
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
-      flowTracker: new FlowTracker(), ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
+      ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
       allowedFixTransforms: true, stateManager: new StateManager(),
       disableFile: join(home, '.keel', 'DISABLED'),
       reloadRules: () => loadRuleHierarchy(dir),
@@ -150,7 +163,7 @@ rules:
     return new EnforcementPipeline({
       level: dial, context: 'local', cache: new ActionCache({ maxSize: 100 }),
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
-      flowTracker: new FlowTracker(),
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
       ruleHierarchy: { global: rules, user: null, project: null, local: null },
       ruleVersion: 1, allowedFixTransforms: true,
     })
@@ -244,7 +257,8 @@ rules:
     const pipeline = new EnforcementPipeline({
       level: 'sprint', context: 'local', cache: new ActionCache({ maxSize: 1000 }),
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
-      flowTracker: new FlowTracker(), ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
+      ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
       allowedFixTransforms: true, stateManager: new StateManager(),
       disableFile: join(home, '.keel', 'DISABLED'),
       reloadRules: () => loadRuleHierarchy(dir),

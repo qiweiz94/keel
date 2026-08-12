@@ -27,6 +27,15 @@ rules:
     message: "Test command loop"
 `
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. An in-memory
+// stub keeps this suite's deny/redirect scenarios off the real filesystem
+// (see match-surface.test.ts's `noopOverrideStore`, same fix, same root
+// cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 function makePipeline(yaml: string, level: 'sprint' | 'balanced' | 'protect' = 'balanced'): { pipeline: EnforcementPipeline; tracker: StuckTracker } {
   const tracker = new StuckTracker()
   const rules = parseRulesContent(yaml, '/tmp/stuck-rules.yaml')
@@ -37,6 +46,7 @@ function makePipeline(yaml: string, level: 'sprint' | 'balanced' | 'protect' = '
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     stuckTracker: tracker,
     ruleHierarchy: { global: rules, user: null, project: null, local: null },
     ruleVersion: 1,

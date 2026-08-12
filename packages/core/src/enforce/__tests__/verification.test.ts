@@ -16,6 +16,14 @@ import { rmSafe } from './helpers/fs-safe.js'
 // trigger must fire on them (F1), satisfy through `bash` (F1), and derive the
 // target path from apply_patch body markers (F3).
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. An in-memory
+// stub keeps this suite's deny scenarios off the real filesystem (see
+// match-surface.test.ts's `noopOverrideStore`, same fix, same root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 const VERIFY_RULES = `version: 1
 rules:
   - id: %ID%
@@ -48,6 +56,7 @@ function makeVerifyPipeline(id: string): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     ruleHierarchy: { global: null, user: null, project: rules, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
@@ -161,6 +170,7 @@ rules:
       contentTracker: new ContentTracker(),
       sequenceDetector: new SequenceDetector(),
       flowTracker: new FlowTracker(),
+      overrideStore: noopOverrideStore,
       ruleHierarchy: { global: null, user: null, project: rules, local: null },
       ruleVersion: 1,
       allowedFixTransforms: true,

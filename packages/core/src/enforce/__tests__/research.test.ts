@@ -22,6 +22,16 @@ import type { EnforceInput } from '../../types.js'
  *     once fresh evidence exists
  */
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/
+// warn/redirect verdict calls `overrideStore.consume()` — which touches
+// real ~/.keel (mkdir + lock file) even when no override is ever armed.
+// This suite doesn't currently exercise a deny/warn path, but an in-memory
+// stub keeps it off the real filesystem regardless of what future cases
+// add (see match-surface.test.ts's `noopOverrideStore`, same fix, same
+// root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 function makePipeline(yaml: string, cache: ResearchCache): EnforcementPipeline {
   const rules = parseRulesContent(yaml, '/tmp/research-rules.yaml')
   return new EnforcementPipeline({
@@ -31,6 +41,7 @@ function makePipeline(yaml: string, cache: ResearchCache): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     researchCache: cache,
     researchTracker: new ResearchTracker(cache),
     ruleHierarchy: { global: rules, user: null, project: null, local: null },
