@@ -2,7 +2,18 @@
 > human decisions in this note (publish, CHANGELOG skim, the two stale console
 > messages, demo GIF) are folded into that consolidated file.
 
-# Merge note — v1-m5-release → main (not performed)
+# Merge note — v0.4-thesis → main (not performed)
+
+> **UPDATE (post-Phase-2 close-all-gaps):** the real integration branch is now
+> **`v0.4-thesis` @ `9e469ac`**, NOT `v1-m5-release` — `v0.4-thesis` carries the
+> full M5 release prep AND every Phase-2 fix on top (bash-lc bypass, `${IFS}`,
+> exfil warn-tier, `install --project`, override isolation, nanoid). Current
+> facts that supersede the note below: **rule count 46** (not 45 — B1 added the
+> warn-tier `no-exfil-flow-cross-call`); suite **core 622 / cli 840 / mcp 6 /
+> plugin all-pass**; the two stale console messages and the nanoid audit are
+> **already FIXED** (§7/§8 of HUMAN-CHECKLIST). `npm publish --dry-run` re-run
+> clean at 1.0.0. The rest of the note (the two release-pipeline bug fixes, the
+> publish-is-human-only scope) still holds.
 
 This branch (`v1-m5-release`, based on `v0.4-thesis` with all v1 correctness/
 Windows/verification/host-breadth lanes already merged in) is release-ready for

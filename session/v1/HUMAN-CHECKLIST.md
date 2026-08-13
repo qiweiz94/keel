@@ -76,12 +76,16 @@ the exact tarball contents confirmed (see §9). To actually publish:
 - [ ] Confirm the Security Advisory intake URL in `SECURITY.md`
       (`/security/advisories/new`) resolves once public.
 
-## 3. Merge `v1-m6-audit` / the release branch to `main`
+## 3. Merge the integration branch `v0.4-thesis` to `main`
 
-- [ ] This audit lane never merges or pushes. Fast-forward or merge the
-      audited branch to `main` yourself. Confirm `packages/cli/templates/
-      keel-enforce.js` is committed and in sync (`release.yml` runs
-      `git diff --exit-code` on it).
+- [ ] **The integration branch is `v0.4-thesis` @ `9e469ac`** (NOT `v1-m6-audit`
+      or `v1-m5-release` — those were lane branches that predate the Phase-2
+      close-all-gaps work). `v0.4-thesis` carries every v1 lane AND the Phase-2
+      fixes (bash-lc bypass, ${IFS}, exfil warn-tier, install --project, override
+      isolation, nanoid). Merge/fast-forward it to `main` yourself. Confirm
+      `packages/cli/templates/keel-enforce.js` is committed and in sync
+      (`release.yml` runs `git diff --exit-code` on it — it is clean as of the
+      last build).
 
 ## 4. Real-machine dogfood / burn-in
 
@@ -131,21 +135,20 @@ human with credentials:
       (`.github/workflows/ci.yml`), but no Windows host or green runner exists
       yet — all M3 Windows work is macOS-unit-verified only. Confirm the job
       actually passes on a real runner.
-- [ ] A pre-existing `nanoid <3.3.17` `npm audit` finding may fail that job's
-      audit step independently of any path-matcher correctness — decide
-      whether to bump the dependency before or after release so a red job
-      isn't misread. Details: `session/v1/EVIDENCE/m3-windows.md`.
+- [x] ~~`nanoid <3.3.17` audit finding may fail the audit step~~ **FIXED**
+      (Phase-2 A6): root `overrides` pins `nanoid ^3.3.17` (resolved 3.3.18);
+      `npm audit` now reports 0 vulnerabilities, so the audit step is clean.
+      Exact push-to-verify steps: `session/v1/runbooks/windows.md`.
 
 ## 8. Release-content decisions (from MERGE-NOTE)
 
 - [ ] **Skim the CHANGELOG's v1.0.0 entry with fresh eyes** against
       `session/v1/EVIDENCE/*.md` — a version-bump lane is exactly the kind of
       change that gets rubber-stamped.
-- [ ] **Two stale CLI console messages** — Cursor's and Codex CLI's
-      install-time "no blocking hooks — advisory only" log lines are
-      contradicted by the real hooks those install paths wire (see
-      `docs/integration-guides/README.md`). Decide whether to fix before or
-      after release.
+- [x] ~~Two stale CLI console messages (Cursor/Codex "no blocking hooks —
+      advisory only")~~ **FIXED** (Phase-2 A4): corrected to match the real hook
+      wiring (Cursor auto-writes a `failClosed: true` blocking hook; Codex
+      installs blocking scripts that are inert until manually registered).
 
 ## 9. Clean-checkout validation was run this lane — but re-confirm before publish
 
