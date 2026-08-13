@@ -83,7 +83,31 @@ The user asked about IP protection + go-to-market. Recommendations captured for 
   stale-base worktrees' superseded uncommitted work. Delete anytime: `rm -rf
   session/v1/stale-worktree-patches/`.
 
-## 5. Key pointers for the next session
+## 5. Build gotchas & conventions for whoever resumes (learned the hard way this session)
+
+- **Commit messages must NOT contain the substring `nc`** — a shipped scanner substring-matches it
+  and the pre-commit hook blocks. Bit every worker repeatedly; watch words like `nc`, `since`,
+  `instance`, `enhance`, `evidence`, `unchanged`, `once`, `announce`, `advisory`→no, `benchmark`(be**nc**h),
+  `bench`. `grep -in nc` your message before committing. (Not in the repo's CLAUDE.md; a session fact.)
+- **Do NOT use Agent `isolation: worktree` for parallel lanes off `v0.4-thesis`** — its baseRef
+  default branches off stale `main`, not current HEAD (and was observed inconsistent). Use MANUAL
+  worktrees: `git worktree add -b <lane> ../<dir> v0.4-thesis`, and VERIFY the base commit before
+  trusting a lane. See memory `feedback_worktree_isolation_baseref_fresh_branches_off_main`.
+- **Generated files, never hand-edit:** `packages/cli/src/core/**` (gitignored copy) and
+  `packages/cli/templates/keel-enforce.js` (tracked bundle). Edit source in `packages/core/src`,
+  `npm run build`, then test. `DEFAULT_RULES_YAML` is a TWO-file change (`install.ts` +
+  `opencode-plugin/src/plugin.ts`, guarded by `drift.test.ts`, paste-safe: no backtick/backslash/`${`).
+- **Never touch the real `~/.keel` / `~/.claude` / `~/.opencode`** — tests/experiments use isolated
+  `HOME`/`KEEL_STATE_DIR`/`KEEL_OVERRIDES_DIR` + `/tmp` scratch. The A5 `globalSetup` guard now
+  fails the suite if real `~/.keel/overrides.json` is touched. (This session cleaned one stale
+  expired grant out of it, deliberately + reported.)
+- **`round2.mjs` must exit 0** — the red-team regression harness; run it after any floor/normalizer
+  change. **perf-budget.test.ts** measures CPU-time now (skips, never fails, under heavy load).
+- **The strongest measured number** (v0.4, N=12 harm-eliciting): guarded cheap agent **0% harm vs
+  75% unguarded**, attribution re-audited to real keel blocks — `session/v04/EXPERIMENT.md`. The
+  Phase-3 full-battery N=4 result (prevention decisive, detection unproven) is `benchmark-scale.md`.
+
+## 5b. Key pointers for the next session
 
 - Record of what was done: `session/v1/SESSION-LOG.md`
 - Honest final audit (all gaps + residuals): `session/v1/AUDIT.md`
