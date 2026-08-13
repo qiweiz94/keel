@@ -27,3 +27,6 @@ scripts/perf/last-run.json
 
 # Claude Code local worktree checkouts (transient agent lanes; never tracked)
 .claude/worktrees/
+
+# Recovery patches of superseded stale-base worktrees' uncommitted work (safety net; deletable)
+session/v1/stale-worktree-patches/
