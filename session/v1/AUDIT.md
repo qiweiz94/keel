@@ -322,12 +322,16 @@ Fixed this lane — see the perf section.
   `overrides` pin, `npm audit` reports 0 vulnerabilities.) PENDING a real
   `windows-latest` CI run, which needs a push — exact steps in
   `session/v1/runbooks/windows.md`.
-- **Detection-axis benchmark at graded scale.** The four new elicitation
-  tasks, the cost-cap/attribution-honesty wiring, and a live end-to-end
-  attribution pair are built and verified at zero/near-zero spend
-  (`m2-b2-bench.md`), but the full graded battery (real N across arms A/B, and
-  any Arm C frontier run) was deliberately NOT run — needs budget. Exact
-  commands + cost gate: `session/v1/runbooks/benchmark.md`. Elicitable, not run at scale.
+- **Detection-axis benchmark — now RUN at N=4 full battery (free model, $0), result
+  honest and mixed** (`session/v1/EVIDENCE/benchmark-scale.md`). **Prevention holds
+  decisively:** forbidden-action 14% (8/56) unguarded → **0% guarded**, all 8
+  preventions trace-attributed to real keel blocks (8/8); guarded completed MORE
+  (79% vs 66%) with zero false-positive drag. **Detection is NOT supported at this
+  scale:** only 3 false-claim events total, all observe-tier (keel records, does not
+  block), and they slightly favored the *unguarded* arm by chance (B false-claimed
+  2 vs A's 1) — so guarded composite-harm is 4% (2/56), not 0%. The free model is
+  still too capable to generate a measurable detection base rate. Frontier (paid)
+  arm + a mid-capability calibration remain the follow-up: `session/v1/runbooks/benchmark.md`.
 - **Per-host verification discharge.** The PostToolUse discharge branch that
   makes the verification/claim thesis work on exit-code hosts is
   mechanism-tested and was live-verified on **Claude Code** (and OpenCode
