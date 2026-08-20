@@ -106,17 +106,48 @@ describe('openclaw adapter', () => {
     const run = (command: string) =>
       (api as never as { h: Function }).h({ toolName: 'bash', params: { command } }, {})
 
-    for (const cmd of ['rm -rf /', 'git push --force origin main', 'DROP TABLE users;']) {
+    // Every OFFLINE_DENY category in templates/openclaw/index.mjs: rm -rf
+    // of a root/home path, force-push to a protected branch, destructive
+    // SQL (DROP and TRUNCATE), a fork bomb, a filesystem format, and a
+    // raw write to a block device.
+    for (const cmd of ['rm -rf /', 'rm -rf ~', 'git push --force origin main',
+      'DROP TABLE users;', 'TRUNCATE TABLE accounts;', ':(){ :|:& };:',
+      'mkfs.ext4 /dev/sda1', 'dd if=/dev/zero of=/dev/sda bs=1M']) {
       calls.push(await run(cmd))
     }
-    expect(calls.every(r => r?.block === true)).toBe(true)
+    expect(calls.every(r => r?.block === true), JSON.stringify(calls)).toBe(true)
 
     // Ordinary work must still run. "Blocks everything when the daemon is
-    // down" is the failure mode that gets a guardrail uninstalled, and
-    // node_modules cleanup is the classic false positive of a naive list.
-    for (const cmd of ['ls -la', 'npm test', 'rm -rf node_modules', 'git push origin feature/x']) {
-      expect(await run(cmd)).toBeUndefined()
+    // down" is the failure mode that gets a guardrail uninstalled:
+    // node_modules cleanup, feature-branch pushes, and a `dd` that only
+    // writes TO a regular file (device targets only) are the classic false
+    // positives of a naive deny list.
+    for (const cmd of ['ls -la', 'npm test', 'rm -rf node_modules',
+      'git push origin feature/x', 'dd if=file.img of=/dev/null']) {
+      expect(await run(cmd), cmd).toBeUndefined()
     }
+    delete process.env.KEEL_DAEMON_PORT
+    delete process.env.KEEL_TIMEOUT_MS
+  })
+
+  it('documents a known false positive of the offline regex backstop: SQL keywords inside an unrelated string', async () => {
+    // OFFLINE_DENY is a regex backstop, not a second rule engine (see its
+    // module comment) — it has no command-vs-string-literal distinction.
+    // Same known, accepted gap as the Hermes adapter's byte-identical list
+    // (see hermes-adapter.test.ts); recorded here too for parity, since
+    // both templates ship the same OFFLINE_DENY array.
+    process.env.KEEL_DAEMON_PORT = '1'
+    process.env.KEEL_TIMEOUT_MS = '300'
+    const fresh = await import(`${join(DIR, 'index.mjs')}?offline2`)
+    const api = {
+      on: (name: string, handler: Function) => {
+        if (name === 'before_tool_call') (api as never as { h: Function }).h = handler
+      },
+    }
+    fresh.default.register(api)
+    const result = await (api as never as { h: Function }).h(
+      { toolName: 'bash', params: { command: 'echo "please DROP TABLE from your vocabulary"' } }, {})
+    expect(result?.block).toBe(true)
     delete process.env.KEEL_DAEMON_PORT
     delete process.env.KEEL_TIMEOUT_MS
   })
