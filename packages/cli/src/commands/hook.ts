@@ -62,6 +62,27 @@ export interface ParsedCall {
    */
   reasoning?: string
   /**
+   * Speculative, defensive extraction of `body.last_assistant_message` on
+   * an ORDINARY pre-tool-call payload (claude-code/codex/gemini), NOT the
+   * Stop-shaped claim-reach event `reasoning` (above) covers — deliberately
+   * a SEPARATE field, not a reuse of `reasoning`, because `hookCommand`
+   * below routes on `call.reasoning !== undefined` alone to decide "this is
+   * a Stop event, evaluate it as a claim and never touch `evaluateToolCall`
+   * at all"; if this were folded into `reasoning` instead, a PreToolUse
+   * payload that ever DID carry `last_assistant_message` would get
+   * silently misrouted into the claim-only branch and its tool call would
+   * never be evaluated. Neither Claude Code's nor Codex's/Gemini's
+   * documented PreToolUse schema is confirmed to carry this field (see
+   * `reasoning`'s own citations above, which are Stop-specific) — this is
+   * the same "wire it defensively even though today's surveyed hosts don't
+   * send it" posture as opencode-plugin's `hookInput?.reasoning` spread in
+   * its own `toEnforceInput()`. Threaded into `EnforceInput.reasoning` at
+   * the `evaluateToolCall()` call site below (renamed back at that
+   * boundary — `EnforceInput` has no reason to know about this
+   * routing-safety distinction).
+   */
+  preToolReasoning?: string
+  /**
    * Set when this payload is a POST-action event — the call already ran,
    * with a known (or unknown) outcome — rather than a pre-tool-call one
    * (v1 M2-B1: give claim-to-evidence real reach on the exit-code hosts,
@@ -303,7 +324,19 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
         }
       }
       const identity = toolField(body.tool_name)
-      return { ...identity, args: asRecord(body.tool_input), sessionId: stringField(body.session_id) }
+      return {
+        ...identity,
+        args: asRecord(body.tool_input),
+        sessionId: stringField(body.session_id),
+        // See ParsedCall.preToolReasoning's own comment for why this is a
+        // separate field from `reasoning` above, and for the actual defect
+        // this closes: EVERY prior call site reaching `evaluateToolCall()`
+        // (Claude Code, Codex, Gemini, Cursor, Cline) left `reasoning`
+        // unset entirely, so `unless_reasoning` and the `level: protect`
+        // deceptive-reasoning floor detector (pipeline.ts) had zero reach
+        // outside the OpenCode plugin.
+        preToolReasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : undefined,
+      }
     }
     case 'codex':
     case 'gemini': {
@@ -347,7 +380,14 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
         }
       }
       const identity = toolField(body.tool_name)
-      return { ...identity, args: asRecord(body.tool_input), sessionId: stringField(body.session_id) }
+      return {
+        ...identity,
+        args: asRecord(body.tool_input),
+        sessionId: stringField(body.session_id),
+        // See ParsedCall.preToolReasoning's comment — same field, same
+        // reasoning, same citation tier for these two hosts.
+        preToolReasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : undefined,
+      }
     }
     case 'generic':
     default: {
@@ -741,6 +781,19 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
         agent: host,
         subagentOf: null,
         sessionId: call.sessionId,
+        // See ParsedCall.preToolReasoning's comment and the claude-code/
+        // codex/gemini parsePayload branches above: this is the PreToolUse
+        // call site every real invocation from those hosts goes through,
+        // and it used to leave `reasoning` unset entirely regardless of
+        // what the payload carried — `unless_reasoning` and the `level:
+        // protect` deceptive-reasoning floor detector (pipeline.ts) had no
+        // reach here at all. `evaluateToolCall`'s `extra.reasoning` already
+        // threads straight into `EnforceInput.reasoning`; this was simply
+        // never wired to it. NOT `call.reasoning` — that field is the
+        // Stop-shaped claim-reach event's text, which never coexists with
+        // a real tool call in the same payload (see preToolReasoning's
+        // comment for why the two must stay separate fields).
+        reasoning: call.preToolReasoning,
       })
     } catch {
       result = null      // fail closed — renderVerdict blocks on null
