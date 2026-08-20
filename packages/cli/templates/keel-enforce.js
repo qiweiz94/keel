@@ -10,7 +10,7 @@ function resolveHome() {
 }
 
 // ../core/src/enforce/pipeline.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4, rmSync, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5, rmSync, statSync as statSync2 } from "node:fs";
 import { join as join4 } from "node:path";
 
 // ../core/src/enforce/path-normalize.ts
@@ -7768,58 +7768,190 @@ function matchesAnyTestGlob(value, patterns) {
 }
 
 // ../core/src/enforce/overrides.ts
-import { closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join3 } from "node:path";
+
+// ../core/src/enforce/file-lock.ts
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync as readFileSync3 } from "node:fs";
+var DEFAULT_TIMEOUT_MS = 5e3;
+var DEFAULT_STALE_MS = 8e3;
+var INITIAL_BACKOFF_MS = 4;
+var MAX_BACKOFF_MS = 60;
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+    }
+  }
+}
+var tokenCounter = 0;
+function makeToken() {
+  tokenCounter += 1;
+  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`;
+}
+function classifyLockError(code, flavor = currentFlavor()) {
+  if (code === "EEXIST") return "contention";
+  if (flavor === "win32" && (code === "EBUSY" || code === "EPERM")) return "contention";
+  return "fatal";
+}
+function unlinkWithRetry(path2, attempts = 5, delayMs = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      unlinkSync(path2);
+      return;
+    } catch (err) {
+      const code = err.code;
+      if (code === "ENOENT") return;
+      if (i === attempts - 1) throw err;
+      sleepSync(delayMs * (i + 1));
+    }
+  }
+}
+function acquireLock(lockPath, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
+  const deadline = Date.now() + timeoutMs;
+  let backoff = INITIAL_BACKOFF_MS;
+  for (; ; ) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      const token = makeToken();
+      try {
+        writeSync(fd, token);
+      } finally {
+        closeSync(fd);
+      }
+      return token;
+    } catch (err) {
+      if (classifyLockError(err.code) !== "contention") {
+        return null;
+      }
+    }
+    try {
+      const heldFor = Date.now() - statSync(lockPath).mtimeMs;
+      if (heldFor > staleMs) {
+        try {
+          unlinkWithRetry(lockPath);
+        } catch {
+        }
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (Date.now() >= deadline) return null;
+    const jittered = Math.random() * backoff;
+    sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())));
+    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+  }
+}
+function releaseLock(lockPath, token) {
+  try {
+    if (token !== void 0) {
+      const current = readFileSync3(lockPath, "utf-8");
+      if (current !== token) return;
+    }
+    unlinkWithRetry(lockPath);
+  } catch {
+  }
+}
+function withFileLock(lockPath, fn, options = {}) {
+  const token = acquireLock(lockPath, options);
+  try {
+    return fn();
+  } finally {
+    if (token !== null) releaseLock(lockPath, token);
+  }
+}
+
+// ../core/src/enforce/overrides.ts
 var FileRuleOverrideStore = class {
   directory;
   file;
   lock;
-  constructor(home = resolveHome()) {
+  lockOptions;
+  /**
+   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
+   * bounds — same purpose as the matching parameter on StateManager and
+   * ProblemLedger's constructors: production code never needs this, but
+   * a test deliberately creating heavy artificial contention (or one that
+   * wants a SHORT bound so an intentionally-held lock fails fast instead
+   * of eating the 5s production default) needs a value the production
+   * default doesn't have to grow to accommodate.
+   */
+  constructor(home = resolveHome(), lockOptions = {}) {
     this.directory = process.env.KEEL_OVERRIDES_DIR || join3(home, ".keel");
     this.file = join3(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
+    this.lockOptions = lockOptions;
   }
-  consume(ruleId, sessionId) {
-    let descriptor;
-    let acquired = false;
+  /**
+   * `consume`/`grant` share ONE lock (`overrides.json.lock`) via the
+   * shared `withFileLock`/`acquireLock` primitive from file-lock.ts —
+   * NOT a hand-rolled `openSync(path, 'wx')` + unconditional `unlinkSync`
+   * in `finally`, which this class used to do. That hand-rolled version
+   * reproduced the exact stale-lock reclaim-cascade file-lock.ts's own
+   * header comment warns against: no ownership token written into the
+   * lockfile, so a holder that stalls past the 60s staleness check, gets
+   * reclaimed by a waiter, then wakes up and reaches its own `finally`,
+   * unconditionally unlinks — deleting the RECLAIMER's live lock, not its
+   * own, letting a third writer in while the reclaimer still believes it
+   * holds it. `withFileLock`/`acquireLock` close this with a per-acquire
+   * token: release only unlinks when the lockfile still contains the
+   * exact token this call wrote (see file-lock.ts's header for the full
+   * mechanism). Same fail-safe contract as StateManager/ProblemLedger: on
+   * a timed-out acquire, the callback still runs UNLOCKED rather than the
+   * write being silently skipped or the caller hanging — losing an
+   * override write is worse than a rare unlocked window.
+   */
+  ensureDir() {
     try {
       mkdirSync2(this.directory, { recursive: true });
-      try {
-        descriptor = openSync(this.lock, "wx");
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-        try {
-          if (Date.now() - statSync(this.lock).mtimeMs > 6e4) unlinkSync(this.lock);
-        } catch {
+    } catch {
+    }
+  }
+  consume(ruleId, sessionId) {
+    try {
+      this.ensureDir();
+      return withFileLock(this.lock, () => {
+        const overrides = this.read();
+        const override = overrides[ruleId];
+        if (!override || override.expires_at <= Date.now()) {
+          if (override) delete overrides[ruleId];
+          this.write(overrides);
+          return false;
         }
-        descriptor = openSync(this.lock, "wx");
-      }
-      acquired = true;
-      const overrides = this.read();
-      const override = overrides[ruleId];
-      if (!override || override.expires_at <= Date.now()) {
-        if (override) delete overrides[ruleId];
+        if (override.mode === "session") {
+          return sessionId !== void 0 && override.session_id === sessionId;
+        }
+        if (override.mode === "window") return true;
+        delete overrides[ruleId];
         this.write(overrides);
-        return false;
-      }
-      if (override.mode === "session") {
-        return sessionId !== void 0 && override.session_id === sessionId;
-      }
-      if (override.mode === "window") return true;
-      delete overrides[ruleId];
-      this.write(overrides);
-      return true;
+        return true;
+      }, this.lockOptions);
     } catch {
       return false;
-    } finally {
-      if (descriptor !== void 0) closeSync(descriptor);
-      if (acquired) {
-        try {
-          unlinkSync(this.lock);
-        } catch {
-        }
-      }
     }
+  }
+  /**
+   * Persist a new/updated override for `ruleId` — the only production
+   * WRITER of new entries (`keel allow`, packages/cli/src/commands/
+   * allow.ts). Locked exactly like `consume()`, against the same file:
+   * without this, a concurrent `keel allow` call (two terminals) or a
+   * `consume()` mid-violation on another process is a real lost-update
+   * race against this read-modify-write, same hazard class as
+   * StateManager/ProblemLedger were fixed for.
+   */
+  grant(ruleId, override) {
+    this.ensureDir();
+    withFileLock(this.lock, () => {
+      const overrides = this.read();
+      overrides[ruleId] = override;
+      this.write(overrides);
+    }, this.lockOptions);
   }
   peek(ruleId) {
     try {
@@ -7840,8 +7972,11 @@ var FileRuleOverrideStore = class {
   read() {
     if (!existsSync3(this.file)) return {};
     try {
-      const parsed = JSON.parse(readFileSync3(this.file, "utf8"));
-      return parsed && typeof parsed === "object" ? parsed : {};
+      const parsed = JSON.parse(readFileSync4(this.file, "utf8"));
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+      return {};
     } catch {
       return {};
     }
@@ -8216,7 +8351,7 @@ var EnforcementPipeline = class {
     const sentinelPath = this.config.disableFile || join4(resolveHome(), ".keel", "DISABLED");
     if (existsSync4(sentinelPath)) {
       try {
-        const sentinel = JSON.parse(readFileSync4(sentinelPath, "utf-8"));
+        const sentinel = JSON.parse(readFileSync5(sentinelPath, "utf-8"));
         if (sentinel.expires_at && new Date(sentinel.expires_at) < /* @__PURE__ */ new Date()) {
           rmSync(sentinelPath);
         } else {
@@ -8520,7 +8655,7 @@ var EnforcementPipeline = class {
           const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
           if (inlineContent || diskChanged) {
             for (const pattern of rule.patterns) {
-              const content = inlineContent || (isFile ? readFileSync4(resolvedPath, "utf-8") : "");
+              const content = inlineContent || (isFile ? readFileSync5(resolvedPath, "utf-8") : "");
               if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
                 return this.violation(input, rule, rule.message, start, 5);
               }
@@ -8549,7 +8684,7 @@ var EnforcementPipeline = class {
               const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? "");
               const explicitOld = typeof args.oldString === "string" ? args.oldString : void 0;
               const isFile = explicitOld === void 0 && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
-              const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync4(resolvedPath, "utf-8") : "";
+              const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync5(resolvedPath, "utf-8") : "";
               if (newText || oldText) {
                 const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
                 if (signals.length) {
@@ -8880,7 +9015,7 @@ var EnforcementPipeline = class {
 };
 
 // ../core/src/enforce/cache.ts
-import { readFileSync as readFileSync5, existsSync as existsSync5, writeFileSync as writeFileSync3, mkdirSync as mkdirSync3 } from "node:fs";
+import { readFileSync as readFileSync6, existsSync as existsSync5, writeFileSync as writeFileSync3, mkdirSync as mkdirSync3 } from "node:fs";
 import { createHash } from "node:crypto";
 var ActionCache = class {
   session = /* @__PURE__ */ new Map();
@@ -8893,7 +9028,7 @@ var ActionCache = class {
     this.persistentPath = opts?.persistentPath || null;
     if (this.persistentPath && existsSync5(this.persistentPath)) {
       try {
-        const data = JSON.parse(readFileSync5(this.persistentPath, "utf-8"));
+        const data = JSON.parse(readFileSync6(this.persistentPath, "utf-8"));
         if (typeof data === "object") {
           for (const [k, v] of Object.entries(data)) {
             this.persistent.set(k, v);
@@ -8987,7 +9122,7 @@ var ContentTracker = class {
   hashes = /* @__PURE__ */ new Map();
   hasChanged(filePath) {
     if (!existsSync5(filePath)) return true;
-    const content = readFileSync5(filePath, "utf-8");
+    const content = readFileSync6(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
       h = (h << 5) - h + content.charCodeAt(i);
@@ -9000,7 +9135,7 @@ var ContentTracker = class {
   }
   markUnchanged(filePath) {
     if (!existsSync5(filePath)) return;
-    const content = readFileSync5(filePath, "utf-8");
+    const content = readFileSync6(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
       h = (h << 5) - h + content.charCodeAt(i);
@@ -9302,102 +9437,6 @@ var FlowTracker = class {
 import { readFileSync as readFileSync9, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync4 } from "node:fs";
 import { join as join6 } from "node:path";
 
-// ../core/src/enforce/file-lock.ts
-import { openSync as openSync2, writeSync, closeSync as closeSync2, unlinkSync as unlinkSync2, statSync as statSync3, readFileSync as readFileSync7 } from "node:fs";
-var DEFAULT_TIMEOUT_MS = 5e3;
-var DEFAULT_STALE_MS = 8e3;
-var INITIAL_BACKOFF_MS = 4;
-var MAX_BACKOFF_MS = 60;
-function sleepSync(ms) {
-  if (ms <= 0) return;
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-    }
-  }
-}
-var tokenCounter = 0;
-function makeToken() {
-  tokenCounter += 1;
-  return `${process.pid}:${Date.now()}:${tokenCounter}:${Math.random().toString(36).slice(2)}`;
-}
-function classifyLockError(code, flavor = currentFlavor()) {
-  if (code === "EEXIST") return "contention";
-  if (flavor === "win32" && (code === "EBUSY" || code === "EPERM")) return "contention";
-  return "fatal";
-}
-function unlinkWithRetry(path2, attempts = 5, delayMs = 5) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      unlinkSync2(path2);
-      return;
-    } catch (err) {
-      const code = err.code;
-      if (code === "ENOENT") return;
-      if (i === attempts - 1) throw err;
-      sleepSync(delayMs * (i + 1));
-    }
-  }
-}
-function acquireLock(lockPath, options = {}) {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
-  const deadline = Date.now() + timeoutMs;
-  let backoff = INITIAL_BACKOFF_MS;
-  for (; ; ) {
-    try {
-      const fd = openSync2(lockPath, "wx");
-      const token = makeToken();
-      try {
-        writeSync(fd, token);
-      } finally {
-        closeSync2(fd);
-      }
-      return token;
-    } catch (err) {
-      if (classifyLockError(err.code) !== "contention") {
-        return null;
-      }
-    }
-    try {
-      const heldFor = Date.now() - statSync3(lockPath).mtimeMs;
-      if (heldFor > staleMs) {
-        try {
-          unlinkWithRetry(lockPath);
-        } catch {
-        }
-        continue;
-      }
-    } catch {
-      continue;
-    }
-    if (Date.now() >= deadline) return null;
-    const jittered = Math.random() * backoff;
-    sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())));
-    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-  }
-}
-function releaseLock(lockPath, token) {
-  try {
-    if (token !== void 0) {
-      const current = readFileSync7(lockPath, "utf-8");
-      if (current !== token) return;
-    }
-    unlinkWithRetry(lockPath);
-  } catch {
-  }
-}
-function withFileLock(lockPath, fn, options = {}) {
-  const token = acquireLock(lockPath, options);
-  try {
-    return fn();
-  } finally {
-    if (token !== null) releaseLock(lockPath, token);
-  }
-}
-
 // ../core/src/enforce/state-manager.ts
 import { readFileSync as readFileSync8, writeFileSync as writeFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync4, renameSync as renameSync3 } from "node:fs";
 import { join as join5 } from "node:path";
@@ -9443,11 +9482,25 @@ var StateManager = class {
     this.ensureDir();
     return withFileLock(this.lockPath(name), fn, this.lockOptions);
   }
+  /**
+   * Parses `<name>.json` and returns it only when it is a genuine
+   * dictionary — every `load*` caller immediately does `Object.entries()`
+   * on the result, OUTSIDE any try/catch of its own, so a legally-parsing
+   * but non-object JSON value (bare `null`, a number, a string, an array)
+   * must be caught HERE or it throws an uncaught `TypeError` straight out
+   * of the constructor. A syntax error is already caught below by the
+   * JSON.parse try/catch; `null`/arrays/primitives parse fine and need
+   * their own check. Centralized once so all five state files share the
+   * same guard instead of every `load*` method re-deriving it.
+   */
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
       if (existsSync7(p)) {
-        return JSON.parse(readFileSync8(p, "utf-8"));
+        const parsed = JSON.parse(readFileSync8(p, "utf-8"));
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed;
+        }
       }
     } catch {
     }
@@ -9782,9 +9835,10 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync6, renameSync as renameSync5, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync6, renameSync as renameSync5, statSync as statSync3 } from "node:fs";
 import { join as join7 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
+var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
 import { appendFileSync, existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync11, readdirSync } from "node:fs";

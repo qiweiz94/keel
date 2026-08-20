@@ -78,6 +78,7 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
     this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, '.keel')
     this.file = join(this.directory, 'overrides.json')
     this.lock = `${this.file}.lock`
+    this.lockOptions = lockOptions
   }
 
   /**
