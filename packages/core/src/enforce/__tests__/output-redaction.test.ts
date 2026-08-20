@@ -272,6 +272,13 @@ rules:
     const r = await p.evaluateOutput(outputInput(text))
     expect(r.action).toBe('allow')
     expect(r.message.toLowerCase()).toContain('scanned')
+    // Regression: `message` saying so is only readable by a human. Before
+    // `scan_truncated` existed, a caller that branches on the verdict
+    // programmatically (a dashboard, an alerting rule, a test asserting "no
+    // secret leaked") had NO field to check — a clean `allow` on a
+    // truncated scan looked byte-identical to a clean `allow` on a FULLY
+    // scanned output. `scan_truncated: true` is the honest signal.
+    expect(r.scan_truncated).toBe(true)
   })
 
   it('a secret WITHIN the scan bound in an otherwise-long output is still caught', async () => {
@@ -281,6 +288,32 @@ rules:
     const r = await p.evaluateOutput(outputInput(text))
     expect(r.action).toBe('redact')
     expect(r.redacted_output).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    // This output is long but NOT past MAX_OUTPUT_SCAN_CHARS — the scan was
+    // complete, so the honest-truncation signal must be absent (not just
+    // falsy-by-omission in a way that could be confused with `false`).
+    expect(r.scan_truncated).toBeUndefined()
+  })
+
+  it('a redact verdict on TRUNCATED output ALSO carries scan_truncated: true — the unscanned tail is not silently implied clean by a successful redact elsewhere', async () => {
+    const p = makePipeline()
+    const filler = 'x'.repeat(300 * 1024)
+    // The secret sits in the SCANNED prefix (before the filler that pushes
+    // total length past MAX_OUTPUT_SCAN_CHARS), so it IS caught — but the
+    // verdict must still flag that content past the bound went unlooked-at,
+    // exercising the `evaluateOutput()` branch `scan_truncated` is set on
+    // OTHER than the plain-allow one covered above.
+    const text = `AKIAABCDEFGHIJKLMNOP${filler}`
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.redacted_output).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(r.scan_truncated).toBe(true)
+  })
+
+  it('an UNTRUNCATED clean scan carries no scan_truncated field at all', async () => {
+    const p = makePipeline()
+    const r = await p.evaluateOutput(outputInput('build succeeded, 0 errors'))
+    expect(r.action).toBe('allow')
+    expect(r.scan_truncated).toBeUndefined()
   })
 
   it('does NOT contaminate sequence/flow tracker state — spies on both trackers directly, same shape as evaluateClaim()\'s own no-contamination test', async () => {
