@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
 import {
   EnforcementPipeline,
   ActionCache,
@@ -178,7 +179,7 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     ruleFingerprint: () => [
       join(dir, '.keel', 'rules.yaml'), join(dir, 'AGENTS.md'), join(dir, 'CLAUDE.md'),
       join(dir, '.keel.local.yaml'), join(dir, 'AGENTS.local.md'), join(dir, 'CLAUDE.local.md'),
-      join(process.env.HOME || '~', '.keel', 'rules.yaml'), join(process.env.HOME || '~', '.config', 'keel', 'rules.yaml'),
+      join(resolveHome(), '.keel', 'rules.yaml'), join(resolveHome(), '.config', 'keel', 'rules.yaml'),
     ].map(hashRulesFile).join(':'),
   })
 

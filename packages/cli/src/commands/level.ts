@@ -6,6 +6,7 @@ import {
   parseRulesFile, validateRules, loadRuleHierarchy, mergeRules, dialAction,
   sprintExpiryStatus, effectiveHierarchyLevel, DEFAULT_SPRINT_EXPIRY_HOURS,
 } from '../core/enforce/rule-parser.js'
+import { resolveHome } from '../core/home.js'
 import type { ProtectionLevel, KeelRule } from '../core/types.js'
 
 const VALID_LEVELS: ProtectionLevel[] = ['sprint', 'balanced', 'protect']
