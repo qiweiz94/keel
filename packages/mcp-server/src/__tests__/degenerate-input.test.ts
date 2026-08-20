@@ -8,46 +8,34 @@ import { fileURLToPath } from 'node:url'
 /**
  * v1 M1r-2 — the degenerate-input fail-closed sweep, mcp-server's slice.
  *
- * `@get-keel/mcp-server` is a live enforcement entry path — the "mcp" host
- * adapter — distinct from `keel hook <host>` (packages/cli/src/commands/
- * hook.ts, covered by fail-closed.test.ts). An agent calls its `keel_check`
- * tool, or any external tool name, over JSON-RPC on stdio; `handleToolCallCommon`
- * (src/index.ts) evaluates the call through the SAME `PolicyEngine` used by
- * `keel check` (.keel.yaml, not .keel/rules.yaml).
+ * HISTORY: this file originally proved that `@get-keel/mcp-server`'s
+ * `handleToolCallCommon` (src/index.ts) failed closed on degenerate
+ * `keel_check` input (missing `action`/`target`, a `tools/call` with no
+ * tool name at all) instead of silently reading back "POLICY OK". Two real
+ * gaps were fixed and proven end-to-end through the real built binary
+ * (dist/index.js) over its real JSON-RPC/stdio transport.
  *
- * Two independent gaps existed here, both silent-allow on degenerate input:
+ * SPRINT 2 UPDATE: `@get-keel/mcp-server` is deprecated (package.json,
+ * AGENTS.md) and superseded by `keel serve` (packages/cli/src/mcp/server.ts).
+ * Rather than keep patching bugs in a package that is going away, the entry
+ * point (src/index.ts) now refuses to run at all — it writes a deprecation
+ * message to stderr and calls `process.exit(1)` as the first thing that
+ * executes, before `loadPolicy()`, before `startStdioServer()`, before
+ * `handleToolCallCommon` is ever reachable. That fail-closed logic proven
+ * below is now unreachable dead code, kept (not deleted) only so it survives
+ * if this package is ever revived — see the comment block in src/index.ts.
  *
- *   1. `PolicyEngine.evaluate()` matched every check
- *      (`event.tool_name === 'bash'`, `... === 'write_file'`, ...) by exact
- *      string equality. An empty/missing tool_name (a malformed `tools/call`
- *      with no `name`, or `keel_check` called with no `action`) matched
- *      NONE of them, so `results` stayed `[]` — read by every caller as
- *      "allowed". Fixed in packages/core/src/policy-engine.ts's evaluate()
- *      with a degenerate-tool_name guard (see policy-engine.test.ts for the
- *      in-process proof).
- *   2. `keel_check`'s own arg contract requires BOTH `action` and `target`
- *      (see getToolDefinitions' inputSchema below), but nothing enforced
- *      that before this lane — a missing `target` alone slipped past #1
- *      (action was still a real, non-empty tool_name) and produced
- *      `command: '', filePath: ''`, which matches no real rule pattern:
- *      a check that checked nothing read back "POLICY OK". Fixed with an
- *      MCP-specific guard in src/index.ts, ahead of `engine.evaluate()`.
- *
- * These are proven here end-to-end, through the REAL built binary
- * (dist/index.js) over its real JSON-RPC/stdio transport — not by importing
- * index.ts directly, which would trigger its top-level `startStdioServer()`
- * side effect (a live `process.stdin.on('data', ...)` listener) outside a
- * real subprocess boundary.
- *
- * Isolation: HOME and cwd are BOTH pinned to a unique mkdtemp dir per case.
- * `PolicyEngine.audit()` writes a signed receipt/audit trail through
- * `createReceipt()` (packages/core/src/receipts.ts) on every blocked call —
- * every case here blocks — and that write lands under `homedir()` AND
- * `process.cwd()`. Without pinning both, a first pass of this file wrote
- * real receipts/audit logs into this repo's own `packages/mcp-server/.keel/`
- * (gitignored, so not a commit risk, but real state pollution outside
- * /tmp scratch all the same — caught in review and fixed here). Never the
- * real ~/.keel.
+ * This file is NOT deleted, because it still proves something real: the
+ * refusal is unconditional and fires BEFORE any of these previously
+ * distinguishing input shapes are read or parsed — a degenerate `keel_check`
+ * call, a complete `keel_check` call that would have blocked, a complete
+ * call that would have allowed, and unparseable JSON-RPC all now produce
+ * the IDENTICAL outcome (refusal, no stdout, exit 1), because the guard
+ * fires ahead of `stdin` even being consumed. That "same outcome regardless
+ * of payload" property is exactly what would break if a future edit moved
+ * the guard below any per-request branching. A dedicated,
+ * input-shape-agnostic version of this same assertion lives in
+ * deprecation-guard.test.ts.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -67,11 +55,17 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true })
 })
 
-/** Sends one JSON-RPC request over stdin and reads the one response line back. */
+/**
+ * Spawns the real built binary, writes one JSON-RPC request to its stdin,
+ * and captures stdout/stderr/exit code. Since the deprecation guard exits
+ * before ever reading stdin, the request body no longer changes the
+ * outcome — it is still sent (rather than trimmed to an empty spawn) so
+ * these tests keep proving that fact, not assuming it.
+ */
 function callServer(
   home: { dir: string; policyPath: string },
   request: Record<string, unknown>,
-): Promise<{ raw: string; parsed: any }> {
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SERVER], {
       cwd: home.dir,
@@ -82,18 +76,13 @@ function callServer(
     let stderr = ''
     const timer = setTimeout(() => {
       child.kill()
-      reject(new Error(`mcp-server did not respond within 10s. stderr: ${stderr}`))
+      reject(new Error(`mcp-server did not exit within 10s. stderr: ${stderr}`))
     }, 10_000)
     child.stdout.on('data', (c) => { stdout += c.toString() })
     child.stderr.on('data', (c) => { stderr += c.toString() })
-    child.on('close', () => {
+    child.on('close', (code) => {
       clearTimeout(timer)
-      const line = stdout.trim().split('\n').find(Boolean) || ''
-      try {
-        resolve({ raw: stdout, parsed: JSON.parse(line) })
-      } catch (err) {
-        reject(new Error(`mcp-server produced non-JSON stdout: ${stdout} (stderr: ${stderr})`))
-      }
+      resolve({ stdout, stderr, code })
     })
     child.on('error', reject)
     child.stdin.write(JSON.stringify(request) + '\n')
@@ -110,79 +99,86 @@ command_rules:
     message: "blocked rm -rf /"
 `
 
-describe('mcp-server: degenerate input fails closed (v1 M1r-2)', () => {
-  it('keel_check with NEITHER action nor target: POLICY BLOCKED, not POLICY OK', async () => {
+describe('mcp-server: deprecation guard fires before degenerate-input handling (was: v1 M1r-2)', () => {
+  it('keel_check with NEITHER action nor target: refuses to run, no POLICY OK/BLOCKED response is produced at all', async () => {
     const home = policyHome(POLICY_YAML)
-    const { parsed } = await callServer(home, {
+    const { stdout, stderr, code } = await callServer(home, {
       jsonrpc: '2.0', id: 1, method: 'tools/call',
       params: { name: 'keel_check', arguments: {} },
     })
-    expect(parsed.result.isError).toBe(true)
-    expect(parsed.result.content[0].text).toContain('POLICY BLOCKED')
-    expect(parsed.result.content[0].text).toContain('requires both "action" and "target"')
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('deprecated')
+    expect(stderr).toContain('keel serve')
   })
 
-  it('keel_check with action present but target MISSING: still POLICY BLOCKED — isolates the gap to the missing field, not a broken action', async () => {
+  it('keel_check with action present but target MISSING: still refuses to run — the guard does not depend on which arg is missing', async () => {
     const home = policyHome(POLICY_YAML)
-    const { parsed } = await callServer(home, {
+    const { stdout, stderr, code } = await callServer(home, {
       jsonrpc: '2.0', id: 2, method: 'tools/call',
       params: { name: 'keel_check', arguments: { action: 'bash' } },
     })
-    expect(parsed.result.isError).toBe(true)
-    expect(parsed.result.content[0].text).toContain('POLICY BLOCKED')
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('deprecated')
   })
 
-  it('a tools/call with NO tool name at all (malformed params): POLICY BLOCKED via PolicyEngine\'s own degenerate-tool_name guard', async () => {
+  it('a tools/call with NO tool name at all (malformed params): still refuses to run — PolicyEngine\'s degenerate-tool_name guard is never reached', async () => {
     const home = policyHome(POLICY_YAML)
-    const { parsed } = await callServer(home, {
+    const { stdout, stderr, code } = await callServer(home, {
       jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { arguments: { command: 'rm -rf /' } },
     })
-    expect(parsed.result.isError).toBe(true)
-    expect(parsed.result.content[0].text).toContain('POLICY BLOCKED')
-    expect(parsed.result.content[0].text).toContain('No tool identity')
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('deprecated')
   })
 
-  it('the SAME rule set, a COMPLETE keel_check call, still blocks the normal way — proves this is a degenerate-input guard, not a new global deny', async () => {
+  it('a COMPLETE keel_check call that would have BLOCKED under the old policy engine: still just refuses to run, same as any other input', async () => {
     const home = policyHome(POLICY_YAML)
-    const { parsed } = await callServer(home, {
+    const { stdout, stderr, code } = await callServer(home, {
       jsonrpc: '2.0', id: 4, method: 'tools/call',
       params: { name: 'keel_check', arguments: { action: 'bash', target: 'rm -rf /' } },
     })
-    expect(parsed.result.isError).toBe(true)
-    expect(parsed.result.content[0].text).toContain('blocked rm -rf /')
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('deprecated')
   })
 
-  it('a COMPLETE keel_check call for a SAFE command still allows — this does not turn every check into a block', async () => {
+  it('a COMPLETE keel_check call that would have ALLOWED under the old policy engine: still just refuses to run — this is not a new global deny, it is a refusal to serve at all', async () => {
     const home = policyHome(POLICY_YAML)
-    const { parsed } = await callServer(home, {
+    const { stdout, stderr, code } = await callServer(home, {
       jsonrpc: '2.0', id: 5, method: 'tools/call',
       params: { name: 'keel_check', arguments: { action: 'bash', target: 'ls -la' } },
     })
-    expect(parsed.result.isError).toBeUndefined()
-    expect(parsed.result.content[0].text).toContain('POLICY OK')
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('deprecated')
   })
 
-  it('malformed JSON-RPC (unparseable line) gets a JSON-RPC parse error, not a silently-allowed tool call', async () => {
+  it('malformed JSON-RPC (unparseable line): still refuses to run — the guard fires before stdin is even read, so it is never reached as a parse error', async () => {
     const home = policyHome(POLICY_YAML)
-    const result = await new Promise<any>((resolve, reject) => {
+    const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
       const child = spawn(process.execPath, [SERVER], {
         cwd: home.dir,
         env: { ...process.env, HOME: home.dir, KEEL_POLICY: home.policyPath },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       let stdout = ''
+      let stderr = ''
       const timer = setTimeout(() => { child.kill(); reject(new Error('timeout')) }, 10_000)
       child.stdout.on('data', (c) => { stdout += c.toString() })
-      child.on('close', () => {
+      child.stderr.on('data', (c) => { stderr += c.toString() })
+      child.on('close', (code) => {
         clearTimeout(timer)
-        resolve(JSON.parse(stdout.trim().split('\n').find(Boolean) || '{}'))
+        resolve({ stdout, stderr, code })
       })
       child.on('error', reject)
       child.stdin.write('not json at all {{{\n')
       child.stdin.end()
     })
-    expect(result.error).toBeDefined()
-    expect(result.error.code).toBe(-32700)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain('deprecated')
   })
 })
