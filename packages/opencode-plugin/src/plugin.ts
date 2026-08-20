@@ -1400,8 +1400,17 @@ export default {
      * Ships observe-first: it warns, it never blocks. Promotion to a
      * harder action is earned by a measured false-positive rate, not
      * assumed.
+     *
+     * Keyed by sessionID: this used to be one shared array, which meant
+     * the NEXT before() to fire (potentially a DIFFERENT concurrent
+     * session in the same project directory) would drain and deliver the
+     * ENTIRE queue tagged with its own, wrong, sessionID — session A's
+     * edit finding misdelivered to session B's next tool call. A
+     * Map<sessionID, findings[]> keeps each session's own queue isolated,
+     * so before() only ever drains and delivers findings that belong to
+     * its OWN session.
      */
-    const pendingSyntaxFindings: string[] = []
+    const pendingSyntaxFindings = new Map<string, string[]>()
 
     const verifyEdit = async (tool: string | undefined, args: Record<string, unknown>, sessionID: string | undefined, turn: number) => {
       if (!EDIT_TOOLS.has(String(tool).toLowerCase())) return
@@ -1412,11 +1421,14 @@ export default {
       const detail = await verifyFileSyntax(target)
       if (!detail) return          // clean, or no verifier available
       const message = `${path.basename(target)} has a syntax error after your edit: ${detail}`
-      // Queue only. Delivery happens on the agent's next tool call, on the
-      // model-visible channel — surfacing here as well would double-report
-      // and, worse, consume the once-per-session budget so the deferred
-      // copy went missing.
-      pendingSyntaxFindings.push(message)
+      // Queue only, under this session's own key. Delivery happens on the
+      // agent's next tool call, on the model-visible channel — surfacing
+      // here as well would double-report and, worse, consume the
+      // once-per-session budget so the deferred copy went missing.
+      const key = sessionID || 'unknown'
+      const queue = pendingSyntaxFindings.get(key)
+      if (queue) queue.push(message)
+      else pendingSyntaxFindings.set(key, [message])
       record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: 'post-edit-syntax', action: 'warn', message, hook: 'tool.execute.after', cwd: directory })
     }
 
@@ -1455,16 +1467,28 @@ export default {
      * or array is not covered; this was a deliberate scope decision (no
      * other tool's metadata shape has been observed), not an oversight.
      */
-    // Scan-only — deliberately does NOT record to the trace. Recording
-    // "redacted before delivery" has to happen strictly AFTER the caller
-    // has actually written `redacted_output` back onto the host object,
-    // never before: on the batched (title+metadata) path below, the
-    // split-count guard can bail out and leave the fields unmutated, and a
-    // trace entry claiming a redaction that was never applied is exactly
-    // the "control that lies" shape this codebase's own audit discipline
-    // exists to prevent. See `recordRedaction` below, the only place that
-    // writes the trace entry, always called right after the matching
-    // write-back.
+    // Scan-only on a CLEAN result — deliberately does NOT record to the
+    // trace when nothing was found. Recording "redacted before delivery"
+    // has to happen strictly AFTER the caller has actually written
+    // `redacted_output` back onto the host object, never before: on the
+    // batched (title+metadata) path below, the split-count guard can bail
+    // out and leave the fields unmutated, and a trace entry claiming a
+    // redaction that was never applied is exactly the "control that lies"
+    // shape this codebase's own audit discipline exists to prevent. See
+    // `recordRedaction` below, the only place that writes the "redact"
+    // trace entry, always called right after the matching write-back.
+    //
+    // A THROWN scan (as opposed to a clean "nothing found") is a different
+    // case entirely and is NOT silent: redactToolOutput's caller wraps this
+    // in a bare catch so a scan failure degrades to "output left as-is"
+    // rather than crashing tool.execute.after (fail-open is deliberate —
+    // shipping unredacted output beats losing the outcome/verification
+    // record below it), but a scan that throws for a real reason (a
+    // mid-session rules-file race, an unexpected output shape) must still
+    // leave a trace: `recordRedactionScanFailure` below writes a
+    // `redaction-scan-failed` entry, distinct from both a clean allow and a
+    // real `redact`, so the failure is discoverable via `keel report`/`keel
+    // audit` after the fact instead of vanishing with zero trace.
     const scanForRedaction = async (text: string, sessionID: string | undefined, tool: string | undefined) => {
       if (!text) return null
       const scanInput = toEnforceInput(tool || 'unknown', {}, { sessionID }, level, directory)
@@ -1477,6 +1501,14 @@ export default {
         session_id: sessionID, turn_number: turn, tool, args: {},
         rule_id: result.rule_id, action: 'redact', message: result.message,
         redacted_rule_ids: result.redacted_rule_ids, hook: 'tool.execute.after', cwd: directory,
+      })
+    }
+    const recordRedactionScanFailure = (error: unknown, sessionID: string | undefined, turn: number, tool: string | undefined) => {
+      record({
+        session_id: sessionID, turn_number: turn, tool, args: {},
+        rule_id: 'redaction-scan-failed', action: 'redaction-scan-failed',
+        message: `Output redaction scan threw and was skipped — output shipped unredacted (fail-open): ${error instanceof Error ? error.message : String(error)}`,
+        hook: 'tool.execute.after', cwd: directory,
       })
     }
 
@@ -1497,6 +1529,16 @@ export default {
     // MAX_OUTPUT_SCAN_CHARS, and batching it with small fields would make
     // an ordinary truncation corrupt the split for every field, not just
     // the large one.
+    //
+    // The delimiter text is bounded by two literal NUL bytes (\x00), not
+    // spaces or any other visible character -- confirmed intentional, not
+    // a copy-paste/encoding artifact: NUL bytes essentially never appear
+    // in real tool output/title/metadata text, so they collide with
+    // genuine content far less often than any printable separator would.
+    // Note for future readers: NUL bytes render as blank/invisible in a
+    // terminal, a `cat`/`grep` pass, or most line-numbered file viewers --
+    // the source around this constant looks like it uses plain spaces
+    // unless you inspect the raw bytes (e.g. `od -c`).
     const FIELD_SEP = ' KEEL-FIELD-SEP '
 
     const redactToolOutput = async (input: any, output: any, turn: number): Promise<void> => {
@@ -1548,16 +1590,29 @@ export default {
       }
       // The dial is user-owned; surface once per session what it actually
       // means at sprint so "fewer checks" is a visible choice, not a silent
-      // weakening (content/sequence/flow checks are skipped at sprint).
-      if (level === 'sprint') surfaceWarn('dial-sprint', 'Sprint dial is active: deny rules warn only, and content, sequence, and flow checks are skipped.', input?.sessionID)
+      // weakening. NOTE: pipeline.ts's evaluateTiers() computes `deepChecks
+      // = depth !== 'fast' || protectFloor(rules)` — protectFloor(rules) is
+      // true whenever any `level: protect` content/sequence/flow rule is
+      // active, and the shipped default rules always include one
+      // (no-exfil-flow, type: flow, level: protect). So with default rules,
+      // content/sequence/flow checks are NEVER actually skipped at sprint —
+      // only a customized rule set with no protect-floor rule of those
+      // types would see them relax. The message below reflects that: it no
+      // longer claims those checks are skipped, since that overstates what
+      // sprint mode does with the rules most installs actually run.
+      if (level === 'sprint') surfaceWarn('dial-sprint', 'Sprint dial is active: deny rules warn only. Protect-floor content/sequence/flow checks (e.g. no-exfil-flow) stay fully active regardless of the dial — only non-floor checks are relaxed.', input?.sessionID)
       await refreshExternalChanges()
       // Deliver any post-edit finding here, on the model-visible channel,
       // before evaluating this call. Non-blocking by design: the agent is
       // told the file it just wrote is broken and can fix it, which is the
       // whole point — interrupting the edit itself would be too late.
-      if (pendingSyntaxFindings.length) {
-        const findings = pendingSyntaxFindings.splice(0, pendingSyntaxFindings.length)
-        surfaceWarn('post-edit-syntax', findings.join(' · '), input?.sessionID, false)
+      // Only drains THIS session's own queue — see pendingSyntaxFindings'
+      // header comment for why a shared, unkeyed queue was wrong.
+      const syntaxKey = input?.sessionID || 'unknown'
+      const syntaxFindings = pendingSyntaxFindings.get(syntaxKey)
+      if (syntaxFindings && syntaxFindings.length) {
+        pendingSyntaxFindings.delete(syntaxKey)
+        surfaceWarn('post-edit-syntax', syntaxFindings.join(' · '), input?.sessionID, false)
       }
       const args = output?.args || {}
       // v1 M1r-2 — locked product decision: degenerate input fails closed,
@@ -1596,7 +1651,13 @@ export default {
       if (result.action === 'warn' && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID)
       if (result.action === 'fix') applyFix(args, result)
       if (result.action === 'warn' && result.rule_id && verificationIds.has(result.rule_id)) {
-        const key = `${result.rule_id}:${directory}`
+        // Session-scoped, matching turnCounters/surfacedWarnings above: two
+        // concurrent sessions in the same project directory must not share
+        // one warn-once grace — session A's legitimate first warn must
+        // never "use up" session B's own, genuinely-first, occurrence of
+        // the same rule and wrongly hard-block session B on what is
+        // actually its first offense.
+        const key = `${result.rule_id}:${directory}:${input?.sessionID || 'unknown'}`
         if (verificationWarnings.has(key)) {
           throw new Error(`[Keel] ${result.rule_id}: ${result.message}`)
         }
@@ -1635,8 +1696,15 @@ export default {
           // Real output redaction runs FIRST — see redactToolOutput's own
           // header comment. Never allowed to fail this hook closed: a
           // redaction-scan error must degrade to "output left as-is," not
-          // to a lost verification/outcome record below.
-          try { await redactToolOutput(input, output, action.turn_number) } catch {}
+          // to a lost verification/outcome record below. The BEHAVIOR here
+          // is unchanged (output still ships unredacted on a scan failure,
+          // never crashes the hook) — but the failure itself is no longer
+          // silent: recordRedactionScanFailure leaves a distinct trace
+          // entry so it's discoverable after the fact, instead of shipping
+          // a possibly-secret-bearing output with zero record anywhere.
+          try { await redactToolOutput(input, output, action.turn_number) } catch (error) {
+            recordRedactionScanFailure(error, input?.sessionID, action.turn_number, input?.tool)
+          }
           const exit = output?.metadata?.exit === undefined ? null : Number(output?.metadata?.exit)
           if (exit === 0) pipeline.markVerificationSatisfied(action)
           // Outcome telemetry: exit codes feed the stuck-loop detector and
