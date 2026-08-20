@@ -158,6 +158,60 @@ describe('stuck tracker', () => {
     // at threshold 3. After the window passes, the bucket resets.
     expect(tracker.check(agedRule, input('npm test'))).toBeNull()
   })
+
+  it('bucket contamination: checking a command that has NEVER itself failed must not inherit an unrelated escalated bucket', () => {
+    // Regression test for bucketOf()'s fix. STUCK_RULE's match pattern
+    // covers several distinct commands under ONE rule id ("no-test-loops")
+    // — `npm test` and `vitest` fingerprint completely differently
+    // (commandFingerprint does not normalize distinct literal command
+    // names), so they must land in separate buckets.
+    //
+    // The bug: bucketOf() fell back to a "near-identical" scan whenever no
+    // EXACT fingerprint bucket existed yet for the command being CHECKED,
+    // calling `nearIdentical(cmd, fp)` where `fp` was the checked command's
+    // OWN fingerprint — comparing it against itself, never against any
+    // existing bucket's actual stored command. Since commandFingerprint is
+    // idempotent, that self-comparison was true for nearly any input, so
+    // the scan returned the FIRST existing bucket for the rule+cwd in Map
+    // iteration order, regardless of whether it had anything to do with
+    // the command being checked. A prior test in this file already covers
+    // "record 3, then check the SAME command" — that path always hits the
+    // exact-match branch first and never reached the buggy fallback at
+    // all, which is why the bug shipped undetected. The reproducing shape
+    // is specifically: an unrelated bucket already exists, and the
+    // CHECKED command has never itself been recorded even once.
+    const tracker = new StuckTracker()
+    const rules = parseRulesContent(STUCK_RULE, '/tmp/contamination.yaml')
+    const rule = rules.rules[0]
+
+    // Drive `vitest` to a full escalation first — its bucket exists in the
+    // tracker's Map, count 3, already redirecting.
+    tracker.recordOutcome(rule, input('vitest'), 1)
+    tracker.recordOutcome(rule, input('vitest'), 1)
+    tracker.recordOutcome(rule, input('vitest'), 1)
+    const vitestEscalation = tracker.check(rule, input('vitest'))
+    expect(vitestEscalation?.action).toBe('redirect')
+    expect(vitestEscalation?.attempts).toBe(3)
+
+    // `npm test` has NEVER been recorded — this is its very first check,
+    // with no bucket of its own yet. Under the old bug this returned
+    // vitest's redirect (the first bucket found scanning the same
+    // rule+cwd namespace); correct behavior is `null` (allow).
+    expect(
+      tracker.check(rule, input('npm test')),
+      'a command that has never itself failed must not inherit an unrelated bucket\'s escalation',
+    ).toBeNull()
+
+    // It still needs its OWN three failures to escalate, same ladder,
+    // unaffected by vitest's state.
+    tracker.recordOutcome(rule, input('npm test'), 1)
+    tracker.recordOutcome(rule, input('npm test'), 1)
+    expect(tracker.check(rule, input('npm test'))).toBeNull() // count 2, under threshold
+    tracker.recordOutcome(rule, input('npm test'), 1)
+    const npmTestEscalation = tracker.check(rule, input('npm test'))
+    expect(npmTestEscalation?.action).toBe('redirect')
+    expect(npmTestEscalation?.attempts).toBe(3)
+  })
 })
 
 describe('stuck rules at the dials', () => {

@@ -9679,25 +9679,14 @@ function commandFingerprint(command) {
   if (s.length > 160) s = s.slice(0, 160);
   return s;
 }
-function nearIdentical(a, b) {
-  const fa = commandFingerprint(a);
-  const fb = commandFingerprint(b);
-  if (fa === fb) return true;
-  if (fa.length < 40 || fb.length < 40) return false;
-  const stopwords = /* @__PURE__ */ new Set(["the", "and", "for", "with", "from", "into", "then", "this", "that", "&&", "|", "||", ";", "2>&1"]);
-  const tokens = (s) => new Set(s.split(/\s+/).filter((t) => t.length >= 3 && !stopwords.has(t)));
-  const ta = tokens(fa);
-  const tb = tokens(fb);
-  if (ta.size === 0 || tb.size === 0) return false;
-  let inter = 0;
-  for (const t of ta) if (tb.has(t)) inter++;
-  const union = ta.size + tb.size - inter;
-  return union > 0 && inter / union >= 0.8;
-}
 
 // ../core/src/enforce/stuck-tracker.ts
 var DEFAULT_WINDOW_MS = 15 * 60 * 1e3;
 var StuckTracker = class {
+  constructor(persistentStore) {
+    this.persistentStore = persistentStore;
+  }
+  persistentStore;
   counts = /* @__PURE__ */ new Map();
   key(ruleId, cwd, fingerprint) {
     return `stuck:${ruleId}:${cwd}:${fingerprint}`;
@@ -9712,12 +9701,18 @@ var StuckTracker = class {
     const fp = this.fingerprintOf(rule, input);
     const key = this.key(rule.id, input.cwd, fp);
     const windowMs = (rule.window_seconds || 60) * 1e3;
-    const now = Date.now();
     if (exitCode === 0) {
       this.counts.delete(key);
+      if (this.persistentStore) this.persistentStore.delete(key);
       return;
     }
     if (rule.require_failure === true && exitCode === null) return;
+    if (this.persistentStore) {
+      const persisted = this.persistentStore.bump(key, windowMs, exitCode);
+      this.counts.set(key, { count: persisted.count, windowStart: persisted.windowStart, lastAttemptAt: persisted.lastAttemptAt, lastExit: persisted.lastExit });
+      return;
+    }
+    const now = Date.now();
     const existing = this.counts.get(key);
     if (!existing || now - existing.windowStart > windowMs) {
       this.counts.set(key, { count: 1, windowStart: now, lastAttemptAt: now, lastExit: exitCode });
@@ -9727,27 +9722,46 @@ var StuckTracker = class {
     existing.lastAttemptAt = now;
     existing.lastExit = exitCode;
   }
-  /** Near-identical matches share the same counter bucket (loops mutate args). */
-  bucketOf(rule, input, cmd) {
+  /**
+   * Resolve the bucket key for `input` — EXACT fingerprint match only.
+   *
+   * This used to also scan for a "near-identical" bucket when no exact
+   * match existed, using `nearIdentical(cmd, fp)` — comparing the incoming
+   * command's OWN fingerprint against itself, not against any existing
+   * bucket's stored command. `commandFingerprint` is idempotent (fingerprinting
+   * a fingerprint reproduces it), so that comparison was true for almost
+   * any input, and the loop then returned the FIRST existing bucket for the
+   * same rule+cwd in Map iteration order — attributing a brand-new,
+   * unrelated command to whatever fail-streak happened to exist already.
+   * `recordOutcome` above only ever writes under the exact-fingerprint key,
+   * so a fuzzy read-side match here could never correspond to a real
+   * shared write anyway. Fingerprinting already normalizes the retries this
+   * was meant to catch (varying commit messages, flag values, temp paths,
+   * hex ids, numeric literals — see command-fingerprint.ts), so two really
+   * "near-identical" retries already collapse to the same exact fingerprint
+   * without this.
+   */
+  bucketOf(rule, input) {
     const fp = this.fingerprintOf(rule, input);
-    const exact = this.counts.get(this.key(rule.id, input.cwd, fp));
-    if (exact) return { key: this.key(rule.id, input.cwd, fp), fp };
-    for (const [key, state] of this.counts) {
-      if (!key.startsWith(`stuck:${rule.id}:${input.cwd}:`)) continue;
-      const existing = this.counts.get(key);
-      if (existing && nearIdentical(cmd, fp)) return { key, fp };
-    }
     return { key: this.key(rule.id, input.cwd, fp), fp };
   }
   check(rule, input) {
     const cmd = commandString(input);
     if (!cmd) return null;
-    const { key, fp } = this.bucketOf(rule, input, cmd);
-    const state = this.counts.get(key);
-    if (!state) return null;
+    const { key, fp } = this.bucketOf(rule, input);
+    let state = this.counts.get(key);
     const windowMs = (rule.window_seconds || 60) * 1e3;
+    if (this.persistentStore) {
+      const persisted = this.persistentStore.get(key);
+      if (persisted && (!state || persisted.count > state.count)) {
+        state = { count: persisted.count, windowStart: persisted.windowStart, lastAttemptAt: persisted.lastAttemptAt, lastExit: persisted.lastExit };
+        this.counts.set(key, state);
+      }
+    }
+    if (!state) return null;
     if (Date.now() - state.windowStart > windowMs) {
       this.counts.delete(key);
+      if (this.persistentStore) this.persistentStore.delete(key);
       return null;
     }
     const ladder = rule.escalation?.length ? [...rule.escalation].sort((a, b) => b.at - a.at) : [
@@ -9767,8 +9781,10 @@ var StuckTracker = class {
       for (const [key] of this.counts) {
         if (key.includes(`:${sessionCwd}:`)) this.counts.delete(key);
       }
+      if (this.persistentStore) this.persistentStore.deleteByCwd(sessionCwd);
     } else {
       this.counts.clear();
+      if (this.persistentStore) this.persistentStore.clearAll();
     }
   }
 };
@@ -9778,6 +9794,11 @@ function defaultMessage(ruleId, fingerprint, attempts, action) {
   }
   return `${attempts} identical failures of "${fingerprint}" \u2014 retrying without research is blocked. Record a hypothesis (keel_hypothesis) or ask the user.`;
 }
+
+// ../core/src/enforce/stuck-store.ts
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync5 } from "node:fs";
+import { join as join7 } from "node:path";
+var STUCK_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/research-tracker.ts
 var ResearchTracker = class {
@@ -9860,14 +9881,14 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync6, renameSync as renameSync5, statSync as statSync3 } from "node:fs";
-import { join as join7 } from "node:path";
+import { existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync11, writeFileSync as writeFileSync7, renameSync as renameSync6, statSync as statSync3 } from "node:fs";
+import { join as join8 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync11, readdirSync } from "node:fs";
-import { join as join8 } from "node:path";
+import { appendFileSync, existsSync as existsSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync12, readdirSync } from "node:fs";
+import { join as join9 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -9907,18 +9928,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync11, readFileSync as readFileSync12, writeFileSync as writeFileSync8, mkdirSync as mkdirSync8, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync6 } from "node:fs";
-import { join as join9 } from "node:path";
+import { existsSync as existsSync12, readFileSync as readFileSync13, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync7 } from "node:fs";
+import { join as join10 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join9(resolveHome(), ".keel", "receipt-key.json");
+  return join10(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join9(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join10(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync12(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync13(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -9952,20 +9973,20 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join9(resolveHome(), ".keel");
-    if (!existsSync11(dir)) mkdirSync8(dir, { recursive: true });
-    writeFileSync8(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join10(resolveHome(), ".keel");
+    if (!existsSync12(dir)) mkdirSync9(dir, { recursive: true });
+    writeFileSync9(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join9(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join10(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync12(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync13(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -9998,20 +10019,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join9(process.cwd(), ".keel", "receipts");
-    if (!existsSync11(dir)) mkdirSync8(dir, { recursive: true });
-    appendFileSync2(join9(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join10(process.cwd(), ".keel", "receipts");
+    if (!existsSync12(dir)) mkdirSync9(dir, { recursive: true });
+    appendFileSync2(join10(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync13 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join10 } from "node:path";
+import { readFileSync as readFileSync14 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join11 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join10(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join11(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -10045,7 +10066,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync13(filePath, "utf-8");
+        const source = readFileSync14(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -10055,11 +10076,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync13(filePath, "utf-8"));
+        JSON.parse(readFileSync14(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync13(filePath, "utf-8"));
+        parse(readFileSync14(filePath, "utf-8"));
         break;
       default:
         return null;
