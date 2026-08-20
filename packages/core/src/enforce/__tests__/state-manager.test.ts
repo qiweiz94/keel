@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { StateManager } from '../state-manager.js'
@@ -72,5 +72,67 @@ describe('StateManager — KEEL_STATE_DIR read per construction', () => {
     sm.markFirstTime('rule-c')
     expect(existsSync(join(explicitDir, 'deny-first-time.json'))).toBe(true)
     expect(existsSync(join(envDir, 'deny-first-time.json'))).toBe(false)
+  })
+})
+
+/**
+ * Reproduces the null-JSON constructor crash directly: `JSON.parse('null')`
+ * parses successfully (it is legal JSON), so a plain try/catch around
+ * JSON.parse does NOT catch it — every `load*` method immediately does
+ * `Object.entries(raw)` on the result, OUTSIDE its own try/catch, so an
+ * unguarded `loadFile()` throws a `TypeError` straight out of `load()`,
+ * which the constructor calls unconditionally. Since `load()` calls all
+ * five `load*` methods sequentially, corruption in ANY ONE of the five
+ * files takes down the whole constructor — and daemon.ts's lazy
+ * singleton means every subsequent call re-throws forever without a
+ * process restart. `loadFile()` must treat a non-object parse result
+ * (null, an array, a number, a string) the same as a parse failure: fall
+ * back to the safe default instead of returning it.
+ */
+describe('StateManager — survives a literal `null` JSON state file', () => {
+  const STATE_FILES = [
+    'deny-first-time',
+    'circuit-breaker',
+    'rate-counts',
+    'verification',
+    'oracle-failures',
+  ]
+
+  it.each(STATE_FILES)('does not throw when %s.json contains the literal 4 bytes "null"', (name) => {
+    const dir = freshDir()
+    writeFileSync(join(dir, `${name}.json`), 'null')
+    expect(() => new StateManager(dir)).not.toThrow()
+    // Falls back to the safe empty default, not `null` itself — a caller
+    // reading e.g. `sm.circuitBreaker[key]` must never dereference into a
+    // null state slice.
+    const sm = new StateManager(dir)
+    expect(sm.denyFirstTime).toEqual({})
+    expect(sm.circuitBreaker).toEqual({})
+    expect(sm.rateCounts).toEqual({})
+    expect(sm.verification).toEqual({})
+    expect(sm.oracleFailures).toEqual({})
+  })
+
+  it('also survives an array or a bare primitive in place of a dictionary', () => {
+    const dir = freshDir()
+    writeFileSync(join(dir, 'deny-first-time.json'), '[]')
+    writeFileSync(join(dir, 'circuit-breaker.json'), '42')
+    writeFileSync(join(dir, 'rate-counts.json'), '"corrupt"')
+    expect(() => new StateManager(dir)).not.toThrow()
+    const sm = new StateManager(dir)
+    expect(sm.denyFirstTime).toEqual({})
+    expect(sm.circuitBreaker).toEqual({})
+    expect(sm.rateCounts).toEqual({})
+  })
+
+  it('the state manager remains USABLE after recovering from a null state file (not just non-throwing)', () => {
+    const dir = freshDir()
+    writeFileSync(join(dir, 'circuit-breaker.json'), 'null')
+    const sm = new StateManager(dir)
+    // Fails closed correctly on the very next real call, rather than
+    // being left in some half-initialized state.
+    expect(sm.recordCircuitBreaker('rule-x', 'Bash')).toBe(false)
+    expect(sm.recordCircuitBreaker('rule-x', 'Bash')).toBe(false)
+    expect(sm.recordCircuitBreaker('rule-x', 'Bash')).toBe(true)
   })
 })

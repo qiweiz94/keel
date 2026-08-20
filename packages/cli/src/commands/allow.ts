@@ -1,32 +1,38 @@
-import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import chalk from 'chalk'
 import { loadRuleHierarchy, parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
-import { FileRuleOverrideStore, type RuleOverride } from '../core/enforce/overrides.js'
+import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
 import { AuditLog } from '../core/enforce/audit.js'
-import { resolveHome } from '../core/home.js'
 
-// Read per-call, not as a module-level const: a module-level const is
-// fixed at first import, which is exactly the class of bug this repo has
-// already hit and fixed elsewhere (KEEL_TRACES_DIR/KEEL_OVERRIDES_DIR in
-// audit.ts and overrides.ts's own construction site — see their comments)
-// — a test or isolated run that sets KEEL_OVERRIDES_DIR AFTER this module
-// is first imported would otherwise still see the stale real path.
+// A fresh FileRuleOverrideStore per call, not a module-level singleton: a
+// module-level const is fixed at first import, which is exactly the class
+// of bug this repo has already hit and fixed elsewhere (KEEL_TRACES_DIR/
+// KEEL_OVERRIDES_DIR in audit.ts and overrides.ts's own construction site
+// — see their comments) — a test or isolated run that sets
+// KEEL_OVERRIDES_DIR AFTER this module is first imported would otherwise
+// still see the stale real path. FileRuleOverrideStore's own constructor
+// already re-reads KEEL_OVERRIDES_DIR (falling back to resolveHome()) on
+// every `new`, so constructing fresh here is enough — no separate
+// directory-resolution helper needed.
 //
-// This also closes a real reader/writer split that predates this lane:
-// FileRuleOverrideStore (the enforcement pipeline's default overrideStore,
-// consulted by `keel hook <host>` and friends) already honors
-// KEEL_OVERRIDES_DIR, but `keel allow` — the only thing that ever WRITES
-// overrides.json — did not, so an isolated/test environment with
-// KEEL_OVERRIDES_DIR set would arm an override the pipeline could never
-// see. Same file, same env var, both ends now.
-function overridesDirectory(): string {
-  return process.env.KEEL_OVERRIDES_DIR || join(resolveHome(), '.keel')
-}
-
-function overrideFilePath(): string {
-  return join(overridesDirectory(), 'overrides.json')
-}
+// Routing through FileRuleOverrideStore (rather than allowCommand/
+// isRuleOverridden hand-rolling their own read-modify-write of
+// overrides.json) closes two things at once: this was previously the
+// ONLY writer of overrides.json that did NOT go through the shared
+// locked store, a real lost-update race against FileRuleOverrideStore.
+// consume() (the enforcement pipeline's reader/consumer, running
+// concurrently in a hook invocation) or a second `keel allow` call; and
+// it crashed outright on a valid-but-wrong-shaped overrides.json (bare
+// `null`, same class of bug as StateManager.loadFile — FileRuleOverride
+// Store.read() already guards against that, allowCommand's own inline
+// `JSON.parse` + assignment did not).
+//
+// This also keeps the reader/writer split closed: FileRuleOverrideStore
+// (the enforcement pipeline's default overrideStore, consulted by `keel
+// hook <host>` and friends) already honors KEEL_OVERRIDES_DIR, and now
+// `keel allow` — the only thing that ever WRITES overrides.json — goes
+// through the exact same construction path, so an isolated/test
+// environment with KEEL_OVERRIDES_DIR set can never arm an override the
+// pipeline's store fails to see (or vice versa).
 
 // Same ceiling as the `--once`-less "window" form: a session override is
 // bounded by session_id matching (see resolveCurrentSessionId below), but a
@@ -100,30 +106,16 @@ export async function allowCommand(ruleId: string, options: { once?: boolean; se
     }
   }
 
-  const overridesDir = overridesDirectory()
-  const overrideFile = overrideFilePath()
-  if (!existsSync(overridesDir)) {
-    mkdirSync(overridesDir, { recursive: true })
-  }
-
-  let overrides: Record<string, RuleOverride> = {}
-  if (existsSync(overrideFile)) {
-    try {
-      overrides = JSON.parse(readFileSync(overrideFile, 'utf-8'))
-    } catch { /* ignore corrupt file */ }
-  }
-
   const expiresAt = options.once
     ? Date.now() + 300000  // 5 minutes for --once
     : options.session
       ? Date.now() + SESSION_TTL_MS
       : Date.now() + 86400000  // 24 hours for the window form
 
-  overrides[ruleId] = {
+  new FileRuleOverrideStore().grant(ruleId, {
     expires_at: expiresAt,
     ...(options.once ? { mode: 'once' as const } : options.session ? { mode: 'session' as const, session_id: sessionId } : { mode: 'window' as const }),
-  }
-  writeFileSync(overrideFile, JSON.stringify(overrides, null, 2))
+  })
 
   if (options.session) {
     console.log(chalk.green(`\n  ✓ Rule "${ruleId}" overridden for the current session (${sessionId})\n`))
@@ -189,25 +181,17 @@ async function knownRuleIds(): Promise<string[]> {
 }
 
 /**
- * Check if a rule is overridden (used by `keel status`).
+ * Check if a rule is overridden (used by `keel status`). A fresh store
+ * per call for the same per-call-env-read reason as the constructor
+ * comment above. Routed through `peek()` (non-destructive) rather than
+ * hand-rolling its own read: an expired entry is simply reported as "not
+ * overridden" here and left for the next real `consume()` (or `keel
+ * allow`) to clean up from disk — this function is a read-only status
+ * check, not a writer, so it no longer needs its own locked
+ * read-modify-write to prune it eagerly.
  */
 export function isRuleOverridden(ruleId: string): boolean {
-  const overrideFile = overrideFilePath()
-  if (!existsSync(overrideFile)) return false
-  try {
-    const overrides = JSON.parse(readFileSync(overrideFile, 'utf-8'))
-    const override = overrides[ruleId]
-    if (!override) return false
-    if (override.expires_at < Date.now()) {
-      // Expired — clean up
-      delete overrides[ruleId]
-      writeFileSync(overrideFile, JSON.stringify(overrides, null, 2))
-      return false
-    }
-    return true
-  } catch {
-    return false
-  }
+  return new FileRuleOverrideStore().peek(ruleId) !== null
 }
 
 export const overrideStoreForStatus = new FileRuleOverrideStore()
