@@ -253,7 +253,12 @@ describe('keel daemon — pipeline cache is bounded', () => {
           body: JSON.stringify({ tool: 'Bash', args: { command: 'echo hi' }, cwd: `/nonexistent/keel-cache-test-${i}`, session_id: 'cache-test' }),
         })
       }
-      expect(pipelineCacheSize()).toBeLessThanOrEqual(PIPELINE_CACHE_MAX)
+      // Every request above used a distinct cwd, so the cache saw
+      // PIPELINE_CACHE_MAX + 10 unique inserts; eviction runs on every
+      // insert past the cap, so the size must land exactly at the cap —
+      // not merely "at or under" it (which a broken/never-hit code path
+      // would also satisfy).
+      expect(pipelineCacheSize()).toBe(PIPELINE_CACHE_MAX)
     } finally {
       await handle.close()
     }
