@@ -1,9 +1,25 @@
 # Keel v1.0.0 — PENDING / handoff for a new session
 
-**State at handoff:** branch `v0.4-thesis` @ `79ca29c`, version **1.0.0**, **213 commits ahead of
-`main`**, suite green (core 622 / cli 840 / mcp 6 / plugin all-pass), `npm publish --dry-run` clean.
-**NOTHING has been pushed, published, or merged.** Full record: `session/v1/SESSION-LOG.md`. Honest
-audit: `session/v1/AUDIT.md`. Everything below is what's LEFT.
+**State at handoff (updated 2026-08-19/20):** branch `v0.4-thesis`, version **1.0.0**, suite green
+(core 665 / cli 863 / mcp 6 / plugin all-pass), `round2.mjs` exit 0. **NOTHING has been pushed,
+published, or merged.** Full record of the original v1.0 build: `session/v1/SESSION-LOG.md`.
+Full record of the 2026-08-19/20 research + overnight sprint:
+`session/v1/SESSION-LOG-2026-08-19-governance-sprint.md`. Honest audit: `session/v1/AUDIT.md`.
+Everything below is what's LEFT.
+
+**Since the original handoff, a research + build sprint closed several more items**: OpenSSF
+Scorecard workflow added, `docs/tiers.md` rule count fixed, evidence axes published together,
+Cursor block-path bug fixed, `no-repeat-loops` promoted to enforcing (budget rules deliberately
+held back — no evidence), a new `simple_rules:` custom-rule format shipped (Rego/WASM formally
+abandoned per that decision), offline host-test coverage strengthened for all 6 non-live hosts,
+an OWASP Agentic AI Top 10 mapping doc added, and PostToolUse secret-output redaction shipped for
+OpenCode (live-verified) with an honest reduced ceiling for Claude Code/Codex/Gemini. See the new
+session log for full detail. **New, real, unfixed bug found during that sprint:**
+`packages/cli/src/commands/level.ts:53` reads `process.env.HOME` directly instead of the shared
+`resolveHome()` helper, so `KEEL_HOME` does not sandbox it — this actually wrote to the real
+`~/.keel/rules.yaml` on the build machine during the sprint (caught, independently re-verified,
+and the file confirmed intact — see the session log's "An incident, disclosed in full" section).
+Fix this before running any more live `keel level`/similar commands against a sandboxed HOME.
 
 Every code-closable AUDIT gap is CLOSED. What remains is either human-gated (needs credentials /
 budget / an outward action) or a deliberately-accepted limit or optional follow-up.
@@ -76,9 +92,11 @@ The user asked about IP protection + go-to-market. Recommendations captured for 
 
 - **`v04-liveverify` branch/worktree** — genuinely-unmerged v0.4 D1 live-verify work (kept
   deliberately). Decide: merge its useful bits or drop it. `../keel-v04-liveverify` on disk.
-- **37 lane branch refs still exist** (`v1-*`, `v1p2-*`, `worktree-agent-*`). Harmless; deletable
-  with `git branch -D <name>` once you're confident nothing in them is wanted. All their merged work
-  is in `v0.4-thesis`.
+- **~55+ stale local branch refs exist** (`v1-*`, `v1p2-*`, `worktree-agent-*`, plus 7 more from the
+  2026-08-19/20 sprint: `sprint/lane-{h,g,r1,c1,c2,n2,s2}`, all merged). Harmless; deletable with
+  `git branch -D <name>` once confident nothing in them is wanted. All merged work is in
+  `v0.4-thesis`. The 7 sprint worktree DIRECTORIES were already removed (branch refs kept) — only
+  the older ~55 refs from before the sprint are still fully untouched.
 - **Recovery patches** at `session/v1/stale-worktree-patches/` (gitignored) — safety net for the 4
   stale-base worktrees' superseded uncommitted work. Delete anytime: `rm -rf
   session/v1/stale-worktree-patches/`.
