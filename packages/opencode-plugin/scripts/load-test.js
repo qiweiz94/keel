@@ -600,6 +600,33 @@ try {
 } catch { malformedOutputSurvived = false }
 check('a null/malformed output object does not crash tool.execute.after', malformedOutputSurvived)
 
+// A redaction scan that actually THROWS (as opposed to a clean "nothing
+// found") must not vanish with zero trace record. redactToolOutput's caller
+// wraps the whole call in try/catch so the hook still degrades to "output
+// left as-is" and never crashes — that fail-open BEHAVIOR is asserted
+// first — but the failure itself must be independently discoverable via a
+// distinct `redaction-scan-failed` trace entry (recordRedactionScanFailure
+// in plugin.ts), not indistinguishable from a clean scan that found
+// nothing to redact.
+const throwingOutput = { title: 'cat scan-fail.env', metadata: { exit: 0 } }
+Object.defineProperty(throwingOutput, 'output', { get() { throw new Error('synthetic redaction-scan failure') } })
+let scanFailureSurvived = true
+try {
+  await redactHooks['tool.execute.after'](
+    { tool: 'bash', sessionID: 'redact-scan-fail', callID: 'c-scan-fail', args: { command: 'cat scan-fail.env' } },
+    throwingOutput,
+  )
+} catch { scanFailureSurvived = false }
+check('a thrown redaction scan degrades to fail-open without crashing the hook', scanFailureSurvived)
+const scanFailureTrace = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+  .map(line => { try { return JSON.parse(line) } catch { return null } })
+  .filter(Boolean)
+check(
+  'MUST-RECORD: a thrown redaction scan leaves a distinct redaction-scan-failed trace entry, not zero trace',
+  scanFailureTrace.some(e => e.session_id === 'redact-scan-fail' && e.action === 'redaction-scan-failed' && e.rule_id === 'redaction-scan-failed' && e.hook === 'tool.execute.after'),
+)
+
 // Requirements injection with a requirements file present.
 fs.mkdirSync(join(tmpHome, '.keel'), { recursive: true })
 fs.writeFileSync(join(tmpHome, '.keel', 'requirements.md'), '## Test\n- must run tests\n')
@@ -780,6 +807,114 @@ await hooks['tool.execute.after'](
 const afterRead = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
   .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
 check('post-edit check only runs on edits', beforeRead === afterRead)
+
+// ── concurrent sessions: pendingSyntaxFindings must not cross-deliver ──────
+// Regression for the unkeyed-shared-queue bug: pendingSyntaxFindings used to
+// be one plain array, so whichever session's before() fired NEXT drained and
+// received the WHOLE queue tagged with its own sessionID — session A's
+// post-edit finding misdelivered to session B's next tool call. Two
+// concurrent sessions in the same project directory, each editing their OWN
+// broken file, must each receive only their own finding.
+const concurSyntaxDir = join(tmpHome, 'concurrent-syntax-project')
+fs.mkdirSync(concurSyntaxDir, { recursive: true })
+const concurSyntaxSurfaced = []
+const concurSyntaxClient = { app: { log: (entry) => concurSyntaxSurfaced.push(entry?.body || {}) } }
+const concurSyntaxHooks = await plugin.server({ directory: concurSyntaxDir, client: concurSyntaxClient })
+
+fs.writeFileSync(join(concurSyntaxDir, 'session-a.ts'), 'const a: number = ;')
+fs.writeFileSync(join(concurSyntaxDir, 'session-b.ts'), 'const b: number = ;')
+// Session A edits first, queuing its finding under key 'concur-syntax-a'.
+await concurSyntaxHooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'concur-syntax-a', args: { filePath: 'session-a.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+// Session B edits second, queuing its OWN finding under key 'concur-syntax-b'.
+await concurSyntaxHooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'concur-syntax-b', args: { filePath: 'session-b.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+// Session B's next tool call fires FIRST (the adversarial ordering the bug
+// depended on) — it must surface only session-b.ts, never session-a.ts.
+await concurSyntaxHooks['tool.execute.before']({ tool: 'read', sessionID: 'concur-syntax-b' }, { args: { filePath: 'session-b.ts' } })
+const bMessages = concurSyntaxSurfaced.filter(e => e?.extra?.session_id === 'concur-syntax-b').map(e => e.message || '')
+check('concurrent sessions: session B receives its own post-edit finding', bMessages.some(m => m.includes('session-b.ts')))
+check('concurrent sessions: session B never receives session A\'s finding', !bMessages.some(m => m.includes('session-a.ts')))
+
+// Session A's next tool call must still deliver ITS OWN finding — proving it
+// was not lost, silently consumed, or misdelivered to B above.
+await concurSyntaxHooks['tool.execute.before']({ tool: 'read', sessionID: 'concur-syntax-a' }, { args: { filePath: 'session-a.ts' } })
+const aMessages = concurSyntaxSurfaced.filter(e => e?.extra?.session_id === 'concur-syntax-a').map(e => e.message || '')
+check('concurrent sessions: session A still receives its own post-edit finding afterward', aMessages.some(m => m.includes('session-a.ts')))
+check('concurrent sessions: session A never receives session B\'s finding', !aMessages.some(m => m.includes('session-b.ts')))
+
+// ── concurrent sessions: verification warn-once escalation must not cross ──
+// Regression for the missing-sessionID escalation key: verificationWarnings
+// used to be keyed `${rule_id}:${directory}` only, so session A's genuinely-
+// first warn "used up" the shared budget and wrongly hard-blocked session
+// B's OWN genuinely-first occurrence of the same rule. The pending
+// obligation itself is keyed by (rule, cwd) — not session — in
+// verification.ts, so one session's edit arms the obligation for the whole
+// project, exactly the shape a real two-agent-in-one-repo session looks
+// like; what must stay session-scoped is the warn-then-deny ESCALATION.
+const concurVerifyDir = join(tmpHome, 'concurrent-verify-project')
+fs.mkdirSync(join(concurVerifyDir, 'src'), { recursive: true })
+fs.mkdirSync(join(concurVerifyDir, '.keel'), { recursive: true })
+// The boundary token deliberately avoids "git commit" — this project also
+// inherits the shared global rules.yaml written at the top of this file
+// (hierarchy is global+project+local, additive), which includes a
+// `must-sign-commits` type:fix rule matching "git commit(?!.*--signoff)".
+// A literal "git commit" command here would race that unrelated fix rule
+// for the same call and make this test's outcome depend on rule-priority
+// ordering instead of on the thing actually under test.
+fs.writeFileSync(join(concurVerifyDir, '.keel', 'rules.yaml'), `version: 1
+rules:
+  - id: concur-verify
+    type: verification
+    trigger:
+      tools: [write, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    boundaries:
+      commit:
+        pattern: "commit-concur-verify-boundary"
+        action: warn
+    verification_window_seconds: 300
+    action: deny
+    message: "Test required before commit."
+`)
+const concurVerifyHooks = await plugin.server({ directory: concurVerifyDir })
+// One edit arms the shared (rule, cwd) obligation for the whole project.
+await concurVerifyHooks['tool.execute.before']({ tool: 'write', sessionID: 'concur-verify-a' }, { args: { filePath: 'src/shared.ts', content: 'x' } })
+
+let aFirstCommitThrew = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-a' }, { args: { command: 'commit-concur-verify-boundary a1' } })
+} catch { aFirstCommitThrew = true }
+check('concurrent verification: session A\'s genuinely-first warn does not throw', !aFirstCommitThrew)
+
+// Session B's FIRST commit against the same shared obligation must ALSO
+// just warn — it is B's own first offense, even though A already warned.
+let bFirstCommitThrew = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-b' }, { args: { command: 'commit-concur-verify-boundary b1' } })
+} catch { bFirstCommitThrew = true }
+check('concurrent verification: session B\'s genuinely-first warn is NOT cross-escalated by session A\'s prior warn', !bFirstCommitThrew)
+
+// Each session's OWN repeat still escalates to a hard block, independently.
+let aSecondCommitDenied = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-a' }, { args: { command: 'commit-concur-verify-boundary a2' } })
+} catch (e) { aSecondCommitDenied = e.message.startsWith('[Keel]') }
+check('concurrent verification: session A\'s own repeat still escalates to a hard block', aSecondCommitDenied)
+
+let bSecondCommitDenied = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-b' }, { args: { command: 'commit-concur-verify-boundary b2' } })
+} catch (e) { bSecondCommitDenied = e.message.startsWith('[Keel]') }
+check('concurrent verification: session B\'s own repeat also escalates to a hard block, independently of A', bSecondCommitDenied)
 
 // ── claim-to-evidence real reach: experimental.text.complete (v0.4 Phase 1) ──
 //
