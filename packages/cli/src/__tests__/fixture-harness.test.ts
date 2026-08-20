@@ -142,9 +142,12 @@ interface CaseDef {
   fake_time?: { hour: number; minute: number }
   skip?: boolean
   reason?: string
-  /** mode: observe must-block cases only: overrides the default (rule.action)
-   *  expectation for `result.observed_action` — needed for escalation ladders
-   *  (no-repeat-loops) where the observed action depends on attempt count. */
+  /** For a mode: observe rule's must-block cases: overrides the default
+   *  (rule.action) expectation for `result.observed_action`. For a
+   *  promoted (non-observe) escalation-ladder `stuck` rule (no-repeat-loops),
+   *  this SAME field instead names the real outer `result.action` for the
+   *  case, since a flat per-rule `action` can't express "redirect at 3
+   *  attempts, deny at 5" — see expectedActionFor(). */
   observed_action?: string
 }
 interface FixtureFile {
@@ -314,8 +317,15 @@ async function evaluateCase(rules: KeelRule[], c: CaseDef, primaryRuleId?: strin
  * WOULD have done is asserted separately via `observedActionFor` against
  * `result.observed_action`.
  */
-function expectedActionFor(rule: KeelRule): EnforceResult['action'] {
+function expectedActionFor(rule: KeelRule, c?: CaseDef): EnforceResult['action'] {
   if (rule.mode === 'observe') return 'allow'
+  // Escalation-ladder rules (stuck type — e.g. no-repeat-loops once
+  // promoted out of observe) resolve to a DIFFERENT outer action per case
+  // depending on attempt count (redirect at 3, deny at 5), not the rule's
+  // flat `action` field. The case's own `observed_action` already declares
+  // which escalation tier it's exercising, so it doubles as the real outer
+  // action once the rule actually enforces instead of just observing.
+  if (rule.type === 'stuck' && rule.escalation && c?.observed_action) return c.observed_action as EnforceResult['action']
   if (rule.action === 'redirect') return 'redirect'
   if (rule.action === 'fix') return 'fix'
   if (rule.action === 'prompt') return 'prompt'
@@ -367,9 +377,9 @@ for (const rule of DEFAULT_RULES) {
   describe(`rule: ${rule.id} (action: ${rule.action})`, () => {
     const blockCases = loadFixtures(rule.id, 'must-block.yaml')
     const allowCases = loadFixtures(rule.id, 'must-allow.yaml')
-    const expected = expectedActionFor(rule)
 
     for (const c of blockCases) {
+      const expected = expectedActionFor(rule, c)
       const run = c.skip ? it.skip : it
       run(`must-block (${expected}): ${c.note ?? '(no note)'}`, async () => {
         const result = await evaluateCase([rule], c, rule.id)

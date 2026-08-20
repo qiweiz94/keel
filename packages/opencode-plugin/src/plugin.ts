@@ -785,7 +785,6 @@ rules:
   - id: no-repeat-loops
     type: stuck
     match: "(npm|pnpm|yarn|bun)( run)? (test|build)|vitest|jest|pytest|go test|tsc|keel allow|git (commit|push)"
-    mode: observe
     category: workflow
     severity: medium
     confidence: high
@@ -803,7 +802,7 @@ rules:
         action: deny
         message: "5 identical failures. Retrying without new information is blocked — record a hypothesis or ask the user."
     action: warn
-    rationale: "Identical retries against the same failure are the single clearest signal of a stuck agent, and the one thing a rule engine can see that the model cannot: it runs outside the context window, where circling actually lives. Now shipped as a DEFAULT rather than an opt-in paste (previously 'keel rules harness --append') — on this project's own traces that inertia cost 41 distinct repeat loops across 20 sessions."
+    rationale: "PROMOTED from mode: observe: this project's own traces cite 41 distinct repeat loops across 20 sessions (one command retried 39 times) from before this machinery existed — real hit-rate evidence for the underlying failure mode, and no over-triggering or false-positive has ever been recorded against this rule (see docs/tiers.md, session/PROMOTION-REPORT.md). Identical retries against the same failure are the single clearest signal of a stuck agent, and the one thing a rule engine can see that the model cannot: it runs outside the context window, where circling actually lives. Shipped as a DEFAULT rather than an opt-in paste (previously 'keel rules harness --append')."
     remediation: "Search the exact error, state a hypothesis, or ask the user."
     false_positives:
       - "Polling a long-running job by re-running the same status command"

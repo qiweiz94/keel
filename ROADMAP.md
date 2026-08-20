@@ -34,11 +34,15 @@ release and covered by tests; anything under **Planned** is not built yet.
 - `keel schedule` — periodic analysis via launchd/cron
 
 **Problem-solving rules** (`stuck`, `research`, `diagnosis`, plus `claim`, `oracle`,
-budget, and verification checks — 9 rules total) ship inside the default install as
-Tier 3, `mode: observe`: evaluated and recorded on every matching call without ever
-interrupting, so they accumulate a real hit record (`docs/tiers.md`) before anyone
-raises them to `warn` or `block`. `keel rules harness` / `--append` now exist only to
-backfill a rules.yaml created before this shipped as a default.
+budget, and verification checks — 9 rules total, plus one promoted) ship inside the
+default install as Tier 3, `mode: observe`: evaluated and recorded on every matching
+call without ever interrupting, so they accumulate a real hit record (`docs/tiers.md`)
+before anyone raises them to `warn` or `block`. `no-repeat-loops` (`stuck`) has already
+made that jump — its own real hit-rate evidence (41 repeat loops across 20 sessions,
+no recorded false-triggering) cleared the bar; the two `runaway-budget-*` rules were
+checked against the same bar and held back pending real data (`docs/tiers.md`). `keel
+rules harness` / `--append` now exist only to backfill a rules.yaml created before
+these shipped as defaults.
 
 ## Planned
 

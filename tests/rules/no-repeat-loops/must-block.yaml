@@ -1,5 +1,5 @@
 cases:
-  - note: "identical failing command 3 times in the window — escalates to redirect on the 4th attempt (mode: observe — action stays allow, observed_action carries the escalation)"
+  - note: "identical failing command 3 times in the window — escalates to redirect on the 4th attempt"
     observed_action: redirect
     steps:
       - tool: Bash

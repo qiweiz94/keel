@@ -208,11 +208,17 @@ broken command forever. Three ship as part of the default 43:
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
 - **`diagnosis`** (`root-cause-before-refactor`) — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
 
-They — plus seven more behavioural rules (`claim`, `oracle` ×2, budget, and verification
-checks) — ship as `mode: observe`: evaluated and recorded on every matching call, never
-interrupting anything, until a human decides otherwise. `keel rules harness --append` is
-kept only for a rules.yaml created before this shipped as a default — it checks by rule
-id, so it's a no-op if you already have them.
+`research-before-fix` and `root-cause-before-refactor` — plus seven more behavioural
+rules (`claim`, `oracle` ×2, budget, and verification checks) — ship as `mode: observe`:
+evaluated and recorded on every matching call, never interrupting anything, until a
+human decides otherwise. `no-repeat-loops` has since been PROMOTED out of observe: this
+project's own traces cite 41 distinct repeat loops across 20 sessions as real evidence
+of the failure mode, and no over-triggering has ever been recorded against it (the two
+`runaway-budget-*` rules were checked against the same evidence bar and held back — see
+[docs/tiers.md](docs/tiers.md)) — it now actually redirects at 3 identical failures and
+denies at 5. `keel rules harness --append` is kept only for a rules.yaml created before
+these shipped as defaults — it checks by rule id, so it's a no-op if you already have
+them.
 
 ```bash
 keel rules harness            # print the legacy standalone set, with what they'd have caught in your history
