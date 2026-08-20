@@ -321,7 +321,7 @@ rules:
 
   - id: prod-db-destruction
     type: command
-    match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP[ \t\\n]+(TABLE|DATABASE|SCHEMA)|TRUNCATE(?![A-Za-z])))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"
+    match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP[ \t\\n]+(TABLE|DATABASE|SCHEMA)|TRUNCATE(?![A-Za-z])|DELETE[ \t]+FROM))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"
     action: deny
     level: protect
     priority: 86
@@ -451,7 +451,7 @@ rules:
     type: command
     match: "(?<![A-Za-z])terraform +(apply|destroy)(?![A-Za-z])|(?<![A-Za-z])kubectl +[^|;&]*(apply|delete|exec|drain|cordon|rollout +restart)(?![A-Za-z])"
     unless:
-      - regex: "--context[= ](docker-desktop|minikube|kind-[a-z0-9-]+|local|orbstack|rancher-desktop|k3d-[a-z0-9-]+)(?![A-Za-z])"
+      - regex: "--context[= ](?:(docker-desktop|minikube|local|orbstack|rancher-desktop)(?![A-Za-z0-9-])|(kind-[a-z0-9-]+|k3d-[a-z0-9-]+)(?![A-Za-z]))"
     action: prompt
     level: sprint
     priority: 65
@@ -484,7 +484,7 @@ rules:
 
   - id: broad-privilege-escalation
     type: command
-    match: "(?<![A-Za-z])sudo(?![A-Za-z])(?!.*(?<![A-Za-z])(apt-get|apt|yum|dnf|brew)(?![A-Za-z]))|(?<![A-Za-z])chmod +-R +[0-7]{3,4}(?![A-Za-z0-9])|(?<![A-Za-z])chown +-R(?![A-Za-z])"
+    match: "(?<![A-Za-z])sudo(?![A-Za-z])(?![^;&|\\n]*(?<![A-Za-z])(apt-get|apt|yum|dnf|brew)(?![A-Za-z]))|(?<![A-Za-z])chmod +-R +[0-7]{3,4}(?![A-Za-z0-9])|(?<![A-Za-z])chown +-R(?![A-Za-z])"
     action: warn
     level: sprint
     priority: -5
@@ -518,7 +518,7 @@ rules:
   # ── TIER 2: kept as-is (already correctly tiered) ──────────────────
   - id: no-remote-exec
     type: command
-    match: "(npx|bunx|npm exec|pipx)( |$)|(pnpm|yarn) dlx( |$)"
+    match: "(?<![A-Za-z0-9-])(npx|bunx|npm exec|pipx)( |$)|(?<![A-Za-z0-9-])(pnpm|yarn) dlx( |$)"
     action: prompt
     level: sprint
     priority: 80
@@ -608,7 +608,7 @@ rules:
         redact_span: true
       - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
         redact_span: true
-      - regex: "sk-[A-Za-z0-9_-]{24,}"
+      - regex: "sk-[A-Za-z0-9_]{24,}"
         redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
       - regex: "-----BEGIN PRIVATE KEY-----"
@@ -683,18 +683,18 @@ rules:
 
   - id: must-sign-commits
     type: command
-    match: "git commit(?!.*--signoff)"
+    match: "git commit(?!.*(--signoff(?![A-Za-z-])|(?<![A-Za-z0-9-])-[a-z]*s[a-z]*(?![A-Za-z0-9-])))"
     action: fix
     fix:
       - pattern: "git commit"
         replace: "git commit --signoff"
     level: sprint
-    priority: 60
+    priority: 90
     category: workflow
     severity: low
     confidence: high
     mode: block
-    rationale: "Auto-adding --signoff is a pure convenience fix, not a security control — no incident citation applies; this is a standing repo convention."
+    rationale: "Auto-adding --signoff is a pure convenience fix, not a security control — no incident citation applies; this is a standing repo convention. Priority raised above git-history-rewrite (80), no-verify-bypass (70), and commit-to-main (60/file-order) so the auto-fix isn't shadowed on --amend/--no-verify/main-branch commits, all of which this rule's own match pattern also covers."
     remediation: "N/A — this rule fixes the command in place automatically."
     false_positives:
       - "git commit --amend --no-edit already has other flags but no --signoff — still auto-fixed, which is the intended behavior."
