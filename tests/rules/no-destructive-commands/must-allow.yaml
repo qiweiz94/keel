@@ -39,3 +39,15 @@ cases:
     tool: Bash
     args:
       command: 'printf "rm -rf /"'
+  - note: "the new generic redirect-to-block-device guard must not fire on the same safe /dev targets the dd branch already exempts"
+    tool: Bash
+    args:
+      command: "cat /dev/zero > /dev/null"
+  - note: "redirecting to the current terminal is not a disk wipe"
+    tool: Bash
+    args:
+      command: "echo hi > /dev/tty"
+  - note: "a scoped, non-broadening chmod -R (750) is not matched by the widened 777/000/a+rwx guard"
+    tool: Bash
+    args:
+      command: "chmod -R 750 ./dist"

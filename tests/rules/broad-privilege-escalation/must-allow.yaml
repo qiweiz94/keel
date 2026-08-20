@@ -11,3 +11,7 @@ cases:
     tool: Bash
     args:
       command: "cat /etc/sudoers.d/readme.txt"
+  - note: "sudo with flags before the package manager token is still exempted — the anchor scopes the scan to the same command segment, not just the very next token"
+    tool: Bash
+    args:
+      command: "sudo -H apt-get install curl"

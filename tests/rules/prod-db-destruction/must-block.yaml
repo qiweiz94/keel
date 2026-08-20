@@ -23,3 +23,7 @@ cases:
     tool: Bash
     args:
       command: "psql -h prod-db.example.com -c 'DROP SCHEMA public CASCADE'"
+  - note: "DELETE FROM against a production-tagged connection — the sibling no-db-destructive rule already covers this verb, this rule's lookahead was missing it"
+    tool: Bash
+    args:
+      command: "psql $PROD_DATABASE_URL -c \"DELETE FROM users\""

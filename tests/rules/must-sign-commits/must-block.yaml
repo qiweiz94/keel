@@ -5,3 +5,15 @@ cases:
     tool: Bash
     args:
       command: 'git commit -m "test"'
+  - note: "an --amend commit without --signoff still matches this rule's own pattern in isolation — under the full ruleset git-history-rewrite (higher priority, a real approval gate) wins instead; see fixture-harness.test.ts's ordering probe for that full-ruleset proof"
+    tool: Bash
+    args:
+      command: 'git commit --amend --no-edit'
+  - note: "a --no-verify commit without --signoff still matches this rule's own pattern in isolation — under the full ruleset no-verify-bypass (higher priority, a real hook-bypass warning) wins instead; see fixture-harness.test.ts's ordering probe for that full-ruleset proof"
+    tool: Bash
+    args:
+      command: 'git commit -m "x" --no-verify'
+  - note: "a bare main-branch commit without --signoff — under the full ruleset this rule now correctly wins over commit-to-main (same-severity workflow tie), closing the priority bug; see fixture-harness.test.ts's ordering probe for that full-ruleset proof"
+    tool: Bash
+    args:
+      command: 'git checkout main && git commit -m "fix"'
