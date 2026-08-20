@@ -64,21 +64,22 @@ const DEFAULT_SIMPLE_RULE_LEVEL: ProtectionLevel = 'sprint'
 const DEFAULT_SIMPLE_RULE_CONTEXT: RuleContext[] = ['both']
 
 // Default `priority` for every expanded SimpleRule: comfortably LOWER
-// than the lowest priority used by any shipped default rule (currently -5,
-// e.g. `secret-file-read-without-egress` and `broad-privilege-escalation`
-// in install.ts — both deliberately negative so they sort LAST and never
-// shadow a more specific rule ahead of them). SimpleRule has no `priority`
-// field (see its doc comment in types.ts), so without an explicit default
-// here every simple-form rule would fall through to priority 0 in
-// mergeRules' final sort — HIGHER than those deliberately-deferred
-// defaults. Since pipeline.ts's tier-2/3 loop is first-match-wins over the
-// full priority-sorted rule list, a broad `simple_rules:` command rule
-// (e.g. matching `cat |less |head |tail `) would then silently out-rank
-// and shadow a curated, narrower, negative-priority default like
+// than the lowest priority used by any shipped default rule (currently -10,
+// on `no-repeat-loops`/`research-before-fix`/`root-cause-before-refactor`;
+// `secret-file-read-without-egress`/`broad-privilege-escalation` sit at -5
+// — all in install.ts, all deliberately negative so they sort LAST and
+// never shadow a more specific rule ahead of them). SimpleRule has no
+// `priority` field (see its doc comment in types.ts), so without an
+// explicit default here every simple-form rule would fall through to
+// priority 0 in mergeRules' final sort — HIGHER than those deliberately-
+// deferred defaults. Since pipeline.ts's tier-2/3 loop is first-match-wins
+// over the full priority-sorted rule list, a broad `simple_rules:` command
+// rule (e.g. matching `cat |less |head |tail `) would then silently
+// out-rank and shadow a curated, narrower, negative-priority default like
 // `secret-file-read-without-egress` for every command matching both — with
 // the simple-rule author having no way to know or avoid it, since the
 // minimal form doesn't expose a `priority` field to set even if they
-// wanted to defer. -100 sits well below -5 with headroom for any future
+// wanted to defer. -100 sits well below -10 with headroom for any future
 // shipped default: simple-form rules defer to the curated catalog by
 // design, unless a future version of the format adds an explicit way to
 // opt into a higher priority. See docs/custom-rules.md's "What you get for

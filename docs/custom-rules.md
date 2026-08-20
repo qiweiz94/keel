@@ -22,7 +22,7 @@ rule gets; see `docs/tiers.md`) and `context: [both]` (fires locally and in CI).
 never write those unless you outgrow the minimal form.
 
 `priority` is filled in too, at **-100** — deliberately, and lower than any of keel's
-own shipped default rules (the lowest of which sits at -5). Rules with no declared
+own shipped default rules (the lowest of which sits at -10). Rules with no declared
 priority sort at 0 by default, so without this a broad `simple_rules:` entry could
 silently out-rank and shadow a more specific shipped default that matches the same
 command — e.g. a `simple_rules:` rule allowing `cat`/`less`/`head`/`tail` broadly would
