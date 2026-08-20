@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveHome } from '../core/home.js'
 import { ensureDaemon, daemonCheck, daemonRequirements, daemonResearch, daemonResearchCache, daemonHypothesis } from './daemon-client.js'
+import { secureEqual } from '../commands/daemon.js'
 import type { EnforceResult } from '../core/types.js'
 import type { ResearchEntry } from '../core/enforce/research/research-cache.js'
 
@@ -267,13 +268,13 @@ export function startStdioServer(): void {
 
 // ==================== HTTP transport (streamable-http) ====================
 
-export function startHttpServer(port = 3100): void {
+export function startHttpServer(port = 3100): ReturnType<typeof createServer> {
   const tokenFile = join(resolveHome(), '.keel', 'daemon-token')
   const token = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf-8').trim() : ''
 
   const server = createServer((req, res) => {
     const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '') || ''
-    const authed = token.length > 0 && (bearer === token || String(req.headers['x-keel-token'] || '') === token)
+    const authed = token.length > 0 && (secureEqual(bearer, token) || secureEqual(String(req.headers['x-keel-token'] || ''), token))
 
     if (req.method === 'GET') {
       // SSE stream for server-initiated events (none today — held open with
@@ -323,7 +324,8 @@ export function startHttpServer(port = 3100): void {
     })
   })
 
-  server.listen(port, () => {
-    console.error(`keel MCP server listening on port ${port} (streamable-http, token from ~/.keel/daemon-token)`)
+  server.listen(port, '127.0.0.1', () => {
+    console.error(`keel MCP server listening on 127.0.0.1:${port} (streamable-http, token from ~/.keel/daemon-token)`)
   })
+  return server
 }

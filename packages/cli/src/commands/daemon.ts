@@ -9,7 +9,7 @@ import { ActionCache, ContentTracker } from '../core/enforce/cache.js'
 import { SequenceDetector } from '../core/enforce/sequencer.js'
 import { FlowTracker } from '../core/enforce/flow-tracker.js'
 import { StateManager } from '../core/enforce/state-manager.js'
-import { loadRuleHierarchy, parseRulesContent } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
 import { ProblemLedger } from '../core/enforce/problem-ledger.js'
 import { StuckTracker } from '../core/enforce/stuck-tracker.js'
 import { ResearchTracker } from '../core/enforce/research-tracker.js'
@@ -76,7 +76,7 @@ export function loadDaemonState(): { port: number; pid: number } | null {
   }
 }
 
-function secureEqual(a: string, b: string): boolean {
+export function secureEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a)
   const bb = Buffer.from(b)
   if (ab.length !== bb.length) return false
@@ -86,7 +86,18 @@ function secureEqual(a: string, b: string): boolean {
 // One pipeline per project directory: rules load per cwd, but the shared
 // StateManager keeps escalation and rate state across every project and
 // every platform client.
+//
+// cwd is caller-controlled (any local process can POST a different `cwd` on
+// every /v1/check), so this map is bounded LRU rather than unbounded: a Map
+// preserves insertion order, a hit is re-inserted to mark it most-recently-
+// used, and a fresh entry past PIPELINE_CACHE_MAX evicts the oldest (first)
+// key — the one nobody has touched in the longest time.
+export const PIPELINE_CACHE_MAX = 100
 const pipelineCache = new Map<string, EnforcementPipeline>()
+
+export function pipelineCacheSize(): number {
+  return pipelineCache.size
+}
 
 // StateManager/ProblemLedger/ResearchCache each default-construct from an
 // env var read at CALL time (KEEL_STATE_DIR / KEEL_RESEARCH_CACHE_DIR —
@@ -133,13 +144,37 @@ function ruleFingerprint(cwd: string): string {
 
 function pipelineFor(cwd: string): EnforcementPipeline {
   const existing = pipelineCache.get(cwd)
-  if (existing) return existing
+  if (existing) {
+    // Re-insert to mark most-recently-used (Map iteration order is
+    // insertion order, so this pushes `cwd` to the end / away from eviction).
+    pipelineCache.delete(cwd)
+    pipelineCache.set(cwd, existing)
+    return existing
+  }
   let hierarchy = loadRuleHierarchy(cwd)
-  // Same fallback as the plugin: when no rules exist anywhere, enforce the
-  // built-in defaults so a bare project is still protected.
-  const scopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
-  if (!scopes.some((s) => s && s.rules.length > 0)) {
+  // Last known good: an invalid rules file must not silently disable the
+  // guardrails, and it must not silently merge broken rules either. Mirrors
+  // the opencode plugin's fallback (packages/opencode-plugin/src/plugin.ts):
+  // any source with errors is replaced by the built-in defaults and the
+  // error is logged loudly; KEEL_STRICT=1 restores throw-on-invalid, same as
+  // `keel enforce`.
+  const errorScopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+  const ruleErrors = errorScopes.flatMap((source) =>
+    source ? [...(source.errors || []), ...validateRules(source.rules)] : []
+  )
+  if (ruleErrors.length) {
+    if (process.env.KEEL_STRICT === '1') {
+      throw new Error(`[keel daemon] Invalid Keel rules (KEEL_STRICT=1) for ${cwd}: ${ruleErrors.join('; ')}`)
+    }
+    console.error(`[keel daemon] invalid rules for ${cwd}, falling back to defaults: ${ruleErrors.join('; ')}`)
     hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, 'keel:defaults'), user: null, project: null, local: null }
+  } else {
+    // Same fallback as the plugin: when no rules exist anywhere, enforce the
+    // built-in defaults so a bare project is still protected.
+    const scopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+    if (!scopes.some((s) => s && s.rules.length > 0)) {
+      hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, 'keel:defaults'), user: null, project: null, local: null }
+    }
   }
   const level = (hierarchy.project?.config?.level || hierarchy.global?.config?.level || 'balanced') as ProtectionLevel
   const pipeline = new EnforcementPipeline({
@@ -164,6 +199,10 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     },
   })
   pipelineCache.set(cwd, pipeline)
+  if (pipelineCache.size > PIPELINE_CACHE_MAX) {
+    const oldest = pipelineCache.keys().next().value
+    if (oldest !== undefined) pipelineCache.delete(oldest)
+  }
   return pipeline
 }
 
@@ -202,6 +241,18 @@ export interface DaemonHandle {
   port: number
   token: string
   close: () => Promise<void>
+}
+
+/** Thrown by {@link startDaemon} when the requested port is already bound
+ * (EADDRINUSE) — the common case being a second `keel daemon` invocation
+ * while one is already running. Callers (like `daemonCommand`) catch this
+ * to print a clean message instead of letting the raw Node stack trace
+ * through. */
+export class DaemonPortInUseError extends Error {
+  constructor(public readonly port: number) {
+    super(`Port ${port} is already in use`)
+    this.name = 'DaemonPortInUseError'
+  }
 }
 
 export function startDaemon(options: { port?: number; token?: string; idleTimeoutMs?: number } = {}): Promise<DaemonHandle> {
@@ -376,8 +427,23 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
     return send(404, { error: 'not found' })
   })
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let started = false
+    // Without this handler, EADDRINUSE (a second `keel daemon` on the same
+    // port) is an unhandled 'error' event on the server — Node re-throws it,
+    // crashing the process with a raw stack trace. Reject the startup
+    // promise instead so callers (daemonCommand) can print a clean message.
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (started) return
+      started = true
+      if (err.code === 'EADDRINUSE') {
+        reject(new DaemonPortInUseError(options.port || 0))
+      } else {
+        reject(err)
+      }
+    })
     server.listen(options.port || 0, '127.0.0.1', () => {
+      started = true
       const port = (server.address() as { port: number }).port
       // Idle exit: a daemon with no requests for the idle window shuts
       // itself down (clients auto-spawn it again on demand), so abandoned
@@ -403,7 +469,14 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
 export async function daemonCommand(options: { port?: number } = {}): Promise<DaemonHandle> {
   const token = loadOrCreateDaemonToken()
   const port = options.port ?? (Number(process.env.KEEL_DAEMON_PORT) || DAEMON_PORT)
-  const handle = await startDaemon({ port, token })
+  const handle = await startDaemon({ port, token }).catch((err) => {
+    if (err instanceof DaemonPortInUseError) {
+      console.error(chalk.red(`\n  A keel daemon appears to already be running on port ${port}.`))
+      console.error(chalk.dim('  Check ~/.keel/daemon.json for its pid, or pass --port (or set KEEL_DAEMON_PORT) to use a different one.'))
+      process.exit(1)
+    }
+    throw err
+  })
 
   mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
   writeFileSync(daemonStatePath(), JSON.stringify({ port: handle.port, pid: process.pid }, null, 2) + '\n', { mode: 0o600 })
