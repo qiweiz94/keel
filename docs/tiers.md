@@ -3,9 +3,10 @@
 `keel install` writes 46 default rules into `~/.keel/rules.yaml`, split into three
 tiers: 13 rules in Tier 1 carry a hard `level: protect` floor, plus one more Tier-1-
 positioned sibling rule that doesn't (see the note under Tier 1 below); 22 rules sit in
-Tier 2 (balanced); 10 rules sit in Tier 3 (observe). This page explains what each tier
-does, how the "speed dial" (`keel level`) interacts with them, and how a rule moves
-from silently watching to actually blocking.
+Tier 2 (balanced); 9 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
+has since been promoted out of Tier 3 into active enforcement (see below). This page
+explains what each tier does, how the "speed dial" (`keel level`) interacts with them,
+and how a rule moves from silently watching to actually blocking.
 
 Two different things are both called "level" here, and it's worth pulling apart once:
 

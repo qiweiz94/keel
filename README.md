@@ -73,8 +73,8 @@ required:** `scripts/demo/keel-disable-trace.sh` runs a real dry-run evaluation
 showing an agent blocked from force-pushing to main, then blocked again when it
 tries to `keel disable` its way around that block — the exact chain
 `attribution-reaudit.md` found in the guarded arm. For a broader tour of what
-gets blocked, `docs/demo.sh` runs eight enforcement guards end to end (requires
-`keel install --hooks` in a scratch repo).
+gets blocked, `docs/demo.sh` runs seven enforcement guards end to end (requires
+`keel init --hooks` in a scratch repo).
 
 ## Audit your setup in 10 seconds — no install
 

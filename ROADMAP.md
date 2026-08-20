@@ -11,7 +11,7 @@ release and covered by tests; anything under **Planned** is not built yet.
 - One enforcement entry point (`keel hook <host>`), plus a `generic` stdin/exit-code
   contract for hosts with no bespoke adapter
 - MCP server (`keel serve`, 7 tools) and a local daemon (`keel daemon`) for thin clients
-- 21 rule types; 10 actions (9 usable — `mask` is declared but rejected by the parser), including `prompt` approval gates and `fix` command rewriting
+- 21 rule types; 10 actions (9 rule-authorable — the 10th, `redact`, is system-only, applied by keel's own output-redaction pipeline rather than written into a rule's `action:` field; `mask` was renamed to `redact` — see [docs/exfil.md](docs/exfil.md)), including `prompt` approval gates and `fix` command rewriting
 - Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
 - Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
 - Self-protection: agents cannot run keel's control commands or edit its rules

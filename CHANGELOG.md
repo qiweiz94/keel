@@ -19,9 +19,16 @@ caller-detection pattern used to fake two contradictory tests passing) were both
 added in post-0.4.0 "ruleset follow-up" commits (`v04/M1`, `v04/M2` — before the
 v1 lanes existed, after the 0.4.0 release notes were already written), bringing
 the shipped default ruleset to 45 rules
-(13 protect-floor, 22 balanced, 10 observe) while the README/`docs/tiers.md`/
-CHANGELOG kept citing the 43-rule count that was accurate only at the moment
-0.4.0 shipped. Found by direct count against `DEFAULT_RULES_YAML` while
+(13 protect-floor, 22 balanced, 10 observe) at that point, while the README/
+`docs/tiers.md`/CHANGELOG kept citing the 43-rule count that was accurate only
+at the moment 0.4.0 shipped. Two more changes in this same release moved the
+count again: the B1 exfil lane's new warn-tier sibling rule
+`no-exfil-flow-cross-call` took the ruleset from 45 to 46, and `no-repeat-loops`
+was promoted out of `mode: observe` into active enforcement (real hit-rate
+evidence, no false positives — see `docs/tiers.md`), which doesn't change the
+total but does move it out of the observe tier. Current state: 46 rules (13
+protect-floor, 1 further Tier-1-positioned sibling, 22 balanced, 9 observe, 1
+promoted). Found by direct count against `DEFAULT_RULES_YAML` while
 preparing this release and reconciled everywhere, verified live via
 `keel status`. Evidence for every v1-lane item below: `session/v1/EVIDENCE/*.md`;
 the rule-count correction: `session/v1/EVIDENCE/m5-release.md`.
