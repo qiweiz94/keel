@@ -26,6 +26,21 @@ export interface KeelConfig {
   version: number
   level?: ProtectionLevel
   rules?: KeelRule[]
+  /**
+   * Minimal/beginner-friendly rule entries — the "bring your own rule"
+   * on-ramp that replaced an earlier Rego/WASM policy-engine idea (the
+   * team decided a simple YAML shorthand was the better story than asking
+   * users to learn Rego). Each entry is a `SimpleRule`: id + type + one
+   * match-condition field appropriate to `type` + action + message, with
+   * everything else defaulted. Translated into full `KeelRule` objects by
+   * `expandSimpleRule()` (enforce/rule-parser.ts) inside
+   * `parseRulesContent()`, BEFORE `validateRules()` ever runs — by the
+   * time any other code sees a rule, it came from `rules`, whether or not
+   * it was authored there. This field is purely additive: `rules` keeps
+   * working exactly as before, and a rules file needs neither field to be
+   * valid.
+   */
+  simple_rules?: SimpleRule[]
   cache?: CacheConfig
   re_injection?: ReInjectionConfig
   /**
@@ -235,6 +250,35 @@ export interface KeelRule {
 
   // ── Meta rules ──
   condition?: string                // e.g. "3 denials in 60 seconds"
+}
+
+// ── Minimal / beginner-friendly rule format ──────────────────────────
+//
+// `KeelRule` mirrors keel's own shipped catalog — id, type, level, scope,
+// context, action, message, priority, plus ~20 type-specific optional
+// fields depending on `type`. That is the right shape for the rules keel
+// ships, but it is not a reasonable first thing to hand a user who just
+// wants to block one footgun command. `SimpleRule` is that on-ramp: the
+// five fields below, with one match-condition field chosen by `type`, and
+// nothing else. `expandSimpleRule()` (enforce/rule-parser.ts) is the only
+// place a SimpleRule is ever interpreted — it translates each one into a
+// full KeelRule before validateRules() or the enforcement pipeline ever
+// see it, so there is exactly one rule shape at evaluation time, not two
+// parallel formats to keep in sync.
+export type SimpleRuleType = 'command' | 'filesystem' | 'content' | 'env' | 'network'
+
+export interface SimpleRule {
+  id: string
+  type: SimpleRuleType
+  action: EnforcementAction
+  message: string
+
+  // ── exactly one of these is required, chosen by `type` ──
+  match?: string          // type: command | network — regex or literal
+  match_regex?: string    // type: command — alternative to `match`
+  paths?: string[]        // type: filesystem — glob(s) to watch
+  patterns?: string[]     // type: content — plain regex strings (no {regex,prefix} wrapper)
+  vars?: string[]         // type: env — environment variable names
 }
 
 export interface SequenceStep {

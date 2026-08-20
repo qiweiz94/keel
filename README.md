@@ -158,7 +158,9 @@ including hosts with no interception point at all: **[docs/integrations.md](docs
 ## Rules
 
 Rules live in `~/.keel/rules.yaml` (global) or `.keel/rules.yaml` (per project;
-project wins for the same id).
+project wins for the same id). New to writing rules? **[docs/custom-rules.md](docs/custom-rules.md)**
+covers a minimal five-field `simple_rules:` form (id, type, one match condition,
+action, message) that skips the full shape below entirely, with worked examples.
 
 ```yaml
 version: 1
@@ -289,6 +291,7 @@ More in [SECURITY.md](SECURITY.md).
 ## Documentation
 
 - [docs/landing.md](docs/landing.md) — the measured number, the scan→protected hook, and the live-block demo, as a single page
+- [docs/custom-rules.md](docs/custom-rules.md) — write your first custom rule with the minimal `simple_rules:` form, three worked examples
 - [docs/tiers.md](docs/tiers.md) — the three rule tiers, the speed dial, and how observe-mode rules get promoted
 - [docs/integrations.md](docs/integrations.md) — every host, what it can block, how well it's verified
 - [docs/integration-guides/](docs/integration-guides/) — per-host setup, one guide per agent
