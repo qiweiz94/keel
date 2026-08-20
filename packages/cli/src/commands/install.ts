@@ -154,7 +154,7 @@ rules:
     message: "Writing to keel's own files, the agent's trust/approval config, or git hooks through a shell command is blocked -- these are user-owned."
   - id: agent-env-hijack
     type: command
-    match: "(?<![A-Za-z])export +(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile|[.]env)(?![A-Za-z])|(?<![A-Za-z])(echo|printf)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile|[.]env|[.]mcp[.]json)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(?<![A-Za-z])tee +-a? *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)[^;&]*[|][ \t]*(sudo[ \t]+)?tee[ \t]+(-a[ \t]*)?[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]bash_profile|[.]profile)(?![A-Za-z])"
+    match: "(?<![A-Za-z])export +(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]zprofile|[.]zlogin|[.]bash_profile|[.]profile|[.]env)(?![A-Za-z])|(?<![A-Za-z])(echo|printf)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*) *=.*(>>|>) *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]zprofile|[.]zlogin|[.]bash_profile|[.]profile|[.]env|[.]mcp[.]json)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(?<![A-Za-z])tee +-a? *[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]zprofile|[.]zlogin|[.]bash_profile|[.]profile)(?![A-Za-z])[^|;&]*(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)(?![A-Za-z])|(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|KEEL_[A-Za-z_]*)[^;&]*[|][ \t]*(sudo[ \t]+)?tee[ \t]+(-a[ \t]*)?[^ ]*([.]bashrc|[.]zshrc|[.]zshenv|[.]zprofile|[.]zlogin|[.]bash_profile|[.]profile)(?![A-Za-z])"
     action: deny
     level: protect
     priority: 88
@@ -170,7 +170,7 @@ rules:
 
   - id: no-destructive-commands
     type: command
-    match: '(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+/(?!tmp|var/tmp)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+(~|[$][{]?HOME[}]?/?([ \t]|$))|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.]([ \t]|$)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.][.]([ \t]|/|$)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.][/](([*])?([ \t]|$))|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[*]([ \t]|$)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+/tmp/[^ ]*[.][.]([/ \t]|$)|chmod[ \t]+-R[ \t]+777[ \t]+([/~][^ ]*|[.])([ \t]|$)|mkfs[.0-9a-zA-Z_]*([ \t]|$)|mke2fs([ \t]|$)|newfs_[a-z0-9]+([ \t]|$)|diskutil[ \t]+(eraseDisk|eraseVolume|zeroDisk|reformat|partitionDisk)(?![A-Za-z])|(?<!["''])rm[^|;&]*--no-preserve-root|shred([ \t]|$)|wipefs([ \t]|$)|blkdiscard([ \t]|$)|dd[ \t][^|;&]*of=/dev/(?!null([ \t]|$)|zero([ \t]|$)|stdout|stderr|tty)[^ ]+|[; ][:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&|^[:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&'
+    match: '(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+/(?!tmp|var/tmp)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+(~|[$][{]?HOME[}]?/?([ \t]|$))|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.]([ \t]|$)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.][.]([ \t]|/|$)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[.][/](([*])?([ \t]|$))|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+[*]([ \t]|$)|(?<!["''])rm[ \t]+-(rf|fr|r[ \t]+-f|-recursive[ \t]+--force|-force[ \t]+--recursive)[ \t]+/tmp/[^ ]*[.][.]([/ \t]|$)|chmod[ \t]+-R[ \t]+(777|000|a[+=]rwx)[ \t]+([/~][^ ]*|[.])([ \t]|$)|mkfs[.0-9a-zA-Z_]*([ \t]|$)|mke2fs([ \t]|$)|newfs_[a-z0-9]+([ \t]|$)|diskutil[ \t]+(eraseDisk|eraseVolume|zeroDisk|reformat|partitionDisk)(?![A-Za-z])|(?<!["''])rm[^|;&]*--no-preserve-root|shred([ \t]|$)|wipefs([ \t]|$)|blkdiscard([ \t]|$)|dd[ \t][^|;&]*of=/dev/(?!null([ \t]|$)|zero([ \t]|$)|stdout|stderr|tty)[^ ]+|>[ \t]*/dev/(disk[0-9]+|rdisk[0-9]+|sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|nvme[0-9]+n[0-9]+|xvd[a-z]+[0-9]*|mmcblk[0-9]+)([ \t]|$)|[; ][:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&|^[:][ \t]*[()][ \t]*[()][ \t]*[{][ \t]*[:][ \t]*[|]:&'
     action: deny
     level: protect
     priority: 88
@@ -251,7 +251,7 @@ rules:
 
   - id: pipe-to-shell
     type: command
-    match: "(curl|wget)[^;&]*[|][ \t]*(sudo[ \t]+)*(ba|z|k|da|a)?sh([ \t]|$)|(ba|z|k|da|a)?sh <[(](curl|wget)|(?<![A-Za-z])(ba|z|k|da|a)?sh(?![A-Za-z])[ \t]+-c[ \t]+.*[$][(][^)]*(curl|wget)|(?<![A-Za-z])eval(?![A-Za-z])[ \t]+.*[$][(][^)]*(curl|wget)"
+    match: "(?<![A-Za-z])(curl|wget|ncat|socat|nc)(?![A-Za-z])[^;&]*[|][ \t]*(sudo[ \t]+)*(ba|z|k|da|a)?sh([ \t]|$)|(ba|z|k|da|a)?sh <[(](?<![A-Za-z])(curl|wget|ncat|socat|nc)(?![A-Za-z])|(?<![A-Za-z])(ba|z|k|da|a)?sh(?![A-Za-z])[ \t]+-c[ \t]+.*[$][(][^)]*(?<![A-Za-z])(curl|wget|ncat|socat|nc)(?![A-Za-z])|(?<![A-Za-z])eval(?![A-Za-z])[ \t]+.*[$][(][^)]*(?<![A-Za-z])(curl|wget|ncat|socat|nc)(?![A-Za-z])"
     action: deny
     level: protect
     priority: 88
@@ -321,7 +321,7 @@ rules:
 
   - id: prod-db-destruction
     type: command
-    match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP[ \t\\n]+(TABLE|DATABASE|SCHEMA)|TRUNCATE(?![A-Za-z])))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"
+    match: "(?=.*(?<![A-Za-z])(prod|production|live)(?![A-Za-z]))(?=.*(psql|mysql|sqlite3|mariadb|pg_restore|cockroach)(?![A-Za-z]))(?=.*(DROP[ \t\\n]+(TABLE|DATABASE|SCHEMA)|TRUNCATE(?![A-Za-z])|DELETE[ \t]+FROM))(psql|mysql|sqlite3|mariadb|pg_restore|cockroach|.)"
     action: deny
     level: protect
     priority: 86
@@ -451,7 +451,7 @@ rules:
     type: command
     match: "(?<![A-Za-z])terraform +(apply|destroy)(?![A-Za-z])|(?<![A-Za-z])kubectl +[^|;&]*(apply|delete|exec|drain|cordon|rollout +restart)(?![A-Za-z])"
     unless:
-      - regex: "--context[= ](docker-desktop|minikube|kind-[a-z0-9-]+|local|orbstack|rancher-desktop|k3d-[a-z0-9-]+)(?![A-Za-z])"
+      - regex: "--context[= ](?:(docker-desktop|minikube|local|orbstack|rancher-desktop)(?![A-Za-z0-9-])|(kind-[a-z0-9-]+|k3d-[a-z0-9-]+)(?![A-Za-z]))"
     action: prompt
     level: sprint
     priority: 65
@@ -484,7 +484,7 @@ rules:
 
   - id: broad-privilege-escalation
     type: command
-    match: "(?<![A-Za-z])sudo(?![A-Za-z])(?!.*(?<![A-Za-z])(apt-get|apt|yum|dnf|brew)(?![A-Za-z]))|(?<![A-Za-z])chmod +-R +[0-7]{3,4}(?![A-Za-z0-9])|(?<![A-Za-z])chown +-R(?![A-Za-z])"
+    match: "(?<![A-Za-z])sudo(?![A-Za-z])(?![^;&|\\n]*(?<![A-Za-z])(apt-get|apt|yum|dnf|brew)(?![A-Za-z]))|(?<![A-Za-z])chmod +-R +[0-7]{3,4}(?![A-Za-z0-9])|(?<![A-Za-z])chown +-R(?![A-Za-z])"
     action: warn
     level: sprint
     priority: -5
@@ -518,7 +518,7 @@ rules:
   # ── TIER 2: kept as-is (already correctly tiered) ──────────────────
   - id: no-remote-exec
     type: command
-    match: "(npx|bunx|npm exec|pipx)( |$)|(pnpm|yarn) dlx( |$)"
+    match: "(?<![A-Za-z0-9-])(npx|bunx|npm exec|pipx)( |$)|(?<![A-Za-z0-9-])(pnpm|yarn) dlx( |$)"
     action: prompt
     level: sprint
     priority: 80
@@ -608,7 +608,7 @@ rules:
         redact_span: true
       - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
         redact_span: true
-      - regex: "sk-[A-Za-z0-9_-]{24,}"
+      - regex: "sk-[A-Za-z0-9_]{24,}"
         redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
       - regex: "-----BEGIN PRIVATE KEY-----"
@@ -683,21 +683,21 @@ rules:
 
   - id: must-sign-commits
     type: command
-    match: "git commit(?!.*--signoff)"
+    match: "git commit(?!.*(--signoff(?![A-Za-z-])|(?<![A-Za-z0-9-])-[a-z]*s[a-z]*(?![A-Za-z0-9-])))"
     action: fix
     fix:
       - pattern: "git commit"
         replace: "git commit --signoff"
     level: sprint
-    priority: 60
+    priority: 65
     category: workflow
     severity: low
     confidence: high
     mode: block
-    rationale: "Auto-adding --signoff is a pure convenience fix, not a security control — no incident citation applies; this is a standing repo convention."
+    rationale: "Auto-adding --signoff is a pure convenience fix, not a security control — no incident citation applies; this is a standing repo convention. Priority raised from 60 to 65 — above commit-to-main (60/file-order), a same-severity workflow rule this one was previously losing ties to, so the auto-fix now actually fires on a bare main-branch commit missing --signoff. Deliberately kept BELOW no-verify-bypass (70) and git-history-rewrite (80): both are real security-relevant approval/awareness gates (per this codebase's own ACTION_STRENGTH scale, prompt=3 and warn=1 both rank as intentional, non-cosmetic interventions), and letting this rule's cosmetic action: fix silently pre-empt either one would swallow the approval prompt on a --amend or erase the only warning on a --no-verify bypass — confirmed by two pre-existing full-ruleset assertions in agentic-eval.test.ts that would otherwise regress."
     remediation: "N/A — this rule fixes the command in place automatically."
     false_positives:
-      - "git commit --amend --no-edit already has other flags but no --signoff — still auto-fixed, which is the intended behavior."
+      - "git commit --amend --no-edit or git commit --no-verify: NOT auto-fixed — git-history-rewrite/no-verify-bypass (both higher priority) intentionally win on these, so no signoff is added on that call; approve/heed that rule's verdict first, then re-run without those flags to get the signoff fix."
     message: "Auto-adding --signoff to commits."
 
   - id: git-history-rewrite
@@ -985,7 +985,7 @@ rules:
 # trajectory. Not something this rule's own YAML can resolve.
   - id: test-oracle-tampering
     type: oracle
-    level: balanced
+    level: sprint
     mode: observe
     action: warn
     category: verification
@@ -1031,7 +1031,7 @@ rules:
 
   - id: test-oracle-env-introspection
     type: content
-    level: balanced
+    level: sprint
     mode: observe
     action: warn
     category: verification

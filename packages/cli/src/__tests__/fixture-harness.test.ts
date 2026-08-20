@@ -15,6 +15,7 @@ import {
   ResearchTracker,
   ProblemLedger,
   parseRulesContent,
+  mergeRules,
 } from '@get-keel/core'
 import { rmSafe } from './helpers/fs-safe.js'
 import type {
@@ -557,5 +558,86 @@ describe('priority/ordering probe: protect-floor rules must not be shadowed by a
     const escalated = await evaluateCase(rules, { ...c, repeat: 2 })
     expect(escalated.rule_id).toBe('no-force-push')
     expect(escalated.action).toBe('deny')
+  })
+})
+
+// ── MUST-SIGN-COMMITS PRIORITY PROBE ──
+//
+// must-sign-commits (action: fix, priority 60) tied with commit-to-main
+// (action: warn, priority 60/file-order) and lost every tie, so a bare
+// main-branch commit missing --signoff never got the auto-fix — silently
+// swallowed by commit-to-main's warn instead, despite this rule's own
+// false_positives note implying the fix always applies. Raised to
+// priority 65 (above commit-to-main's 60) to close that gap.
+//
+// Deliberately NOT raised above no-verify-bypass (70) or git-history-
+// rewrite (80): both are real security-relevant approval/awareness gates
+// (see agentic-eval.test.ts's pre-existing 'prompt-gates history rewrites
+// at every dial' and 'warns (does not deny) --no-verify commits'
+// assertions, which regressed when this was first tried at priority 90+),
+// and letting this rule's cosmetic action: fix silently pre-empt either
+// one would swallow the git-history-rewrite approval prompt on a --amend
+// or erase the only warning on a --no-verify bypass. This probe runs the
+// FULL default ruleset together so the actual cross-rule ordering is
+// exercised, not just each rule's own isolated match.
+describe('priority probe: must-sign-commits wins its own tier, but not over a real security gate', () => {
+  it('a bare main-branch commit missing --signoff now hits must-sign-commits (fix), not commit-to-main (warn)', async () => {
+    const result = await evaluateCase(DEFAULT_RULES, { tool: 'Bash', args: { command: 'git checkout main && git commit -m "fix"' } })
+    expect(result.rule_id, `message: ${result.message}`).toBe('must-sign-commits')
+    expect(result.action).toBe('fix')
+  })
+
+  it('an --amend commit missing --signoff still hits git-history-rewrite (prompt) — the approval gate is not silently swallowed by the signoff auto-fix', async () => {
+    const result = await evaluateCase(DEFAULT_RULES, { tool: 'Bash', args: { command: 'git commit --amend --no-edit' } })
+    expect(result.rule_id, `message: ${result.message}`).toBe('git-history-rewrite')
+    expect(result.action).toBe('prompt')
+  })
+
+  it('a --no-verify commit missing --signoff still hits no-verify-bypass (warn) — the hook-bypass warning is not silently swallowed by the signoff auto-fix', async () => {
+    const result = await evaluateCase(DEFAULT_RULES, { tool: 'Bash', args: { command: 'git commit -m "x" --no-verify' } })
+    expect(result.rule_id, `message: ${result.message}`).toBe('no-verify-bypass')
+    expect(result.action).toBe('warn')
+  })
+})
+
+// ── SPRINT-DIAL INCLUSION PROBE ──
+//
+// mergeRules() drops any rule whose `level` ranks ABOVE the currently
+// active dial (rule-parser.ts: `rule.level !== undefined &&
+// (dialRank[rule.level] ?? 0) > currentRank`) — a rule with no `level`
+// field at all, or an explicit `level: sprint` (dialRank 0), is never
+// dropped by this filter at any dial. Every other `mode: observe` rule in
+// DEFAULT_RULES_YAML ships with no `level` field (always included);
+// test-oracle-tampering and test-oracle-env-introspection were the only
+// two shipping `level: balanced` (dialRank 1) — so mergeRules silently
+// DROPPED them entirely (not softened, not downgraded — absent from the
+// evaluated rule set) the moment the active dial was 'sprint', exactly
+// when an agent under sprint pressure most needs evidence-gathering to
+// keep running. Fixed by setting both to `level: sprint`, matching every
+// other observe-tier rule's effective (unset) behavior.
+//
+// This probe calls mergeRules() directly (not through evaluateCase, whose
+// buildPipeline() always constructs the pipeline at level: 'balanced' —
+// see PipelineConfig.level there) so the sprint-dial filter is actually
+// exercised against the shipped rule set.
+describe('sprint-dial probe: observe-tier oracle rules must survive the sprint dial', () => {
+  const hierarchy = buildHierarchy(DEFAULT_RULES)
+
+  it('test-oracle-tampering is present in the merged rule set at the sprint dial', () => {
+    const merged = mergeRules(hierarchy, 'sprint', 'local')
+    expect(merged.some(r => r.id === 'test-oracle-tampering')).toBe(true)
+  })
+
+  it('test-oracle-env-introspection is present in the merged rule set at the sprint dial', () => {
+    const merged = mergeRules(hierarchy, 'sprint', 'local')
+    expect(merged.some(r => r.id === 'test-oracle-env-introspection')).toBe(true)
+  })
+
+  it('both are still present at balanced and protect (never dial-dropped)', () => {
+    for (const level of ['balanced', 'protect'] as const) {
+      const merged = mergeRules(hierarchy, level, 'local')
+      expect(merged.some(r => r.id === 'test-oracle-tampering'), `at ${level}`).toBe(true)
+      expect(merged.some(r => r.id === 'test-oracle-env-introspection'), `at ${level}`).toBe(true)
+    }
   })
 })

@@ -63,3 +63,19 @@ cases:
     tool: Bash
     args:
       command: 'sh -c "rm -rf /"'
+  - note: "CRITICAL gap: cat /dev/zero redirected straight onto a raw disk device wipes the disk exactly like dd, but the old disk-wipe guard only matched the 'dd' command name — unrecoverable hardware destruction, independent of source command"
+    tool: Bash
+    args:
+      command: "cat /dev/zero > /dev/disk2"
+  - note: "same generic redirect-to-block-device gap via a different source command, appended (>>) instead of overwritten (>), on a Linux SCSI/SATA device name"
+    tool: Bash
+    args:
+      command: "cat /dev/urandom >> /dev/sda"
+  - note: "chmod -R with symbolic a+rwx notation is functionally identical to 777 but was not recognized — only the literal digits 777 were matched"
+    tool: Bash
+    args:
+      command: "chmod -R a+rwx /srv/app"
+  - note: "chmod -R 000 recursively strips all permissions — equally a broad, blast-radius destructive permission change, and was not recognized alongside 777"
+    tool: Bash
+    args:
+      command: "chmod -R 000 /srv/app"
