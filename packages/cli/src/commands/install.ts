@@ -587,12 +587,29 @@ rules:
 
   - id: no-secrets-in-code
     type: content
+    # redact_span: true (sprint/lane-c2) marks a pattern whose match span
+    # fully covers the secret bytes themselves, safe for
+    # EnforcementPipeline.evaluateOutput() (output redaction, a DIFFERENT
+    # consumer than the deny-on-write check below — this field has no
+    # effect on that check) to replace in place. The last three patterns
+    # here deliberately do NOT set it: they match only a LABEL or HEADER
+    # (aws_secret_access_key=, a PEM BEGIN line) — the real secret sits
+    # AFTER the match, uncovered by it. Redacting just the label would
+    # strip the label and leave the actual key/PEM body sitting right next
+    # to a "[redacted]" marker — a false-confidence signal worse than no
+    # redaction at all. See types.ts's redact_span doc comment and
+    # docs/exfil.md's "Output redaction" section.
     patterns:
       - regex: "AKIA[0-9A-Z]{16}"
+        redact_span: true
       - regex: "ghp_[A-Za-z0-9]{36}"
+        redact_span: true
       - regex: "github_pat_[A-Za-z0-9_]{22,}"
+        redact_span: true
       - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
+        redact_span: true
       - regex: "sk-[A-Za-z0-9_-]{24,}"
+        redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
       - regex: "-----BEGIN PRIVATE KEY-----"
       - regex: "aws_secret_access_key[\t ]*[:=]"

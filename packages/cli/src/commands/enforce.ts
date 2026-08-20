@@ -374,6 +374,64 @@ export async function recordPostAction(
 }
 
 /**
+ * Scan a completed tool call's OWN output text for secret-shaped content
+ * (sprint/lane-c2: real output capture + redaction). Thin wrapper around
+ * `pipeline.evaluateOutput()` + `auditLog.record()`, the same shape as
+ * `evaluateClaimText()` above.
+ *
+ * Unlike the OpenCode plugin's wiring of the same pipeline method
+ * (packages/opencode-plugin/src/plugin.ts), NO caller of this function can
+ * actually apply `redacted_output` back onto what the model already
+ * received: every exit-code host's PostToolUse-equivalent fires AFTER the
+ * tool result already reached the model's context (hook.ts's own
+ * `ParsedCall.postAction` comment — "the call already ran"), and none of
+ * these hosts expose a rewrite channel for a call that already completed —
+ * only Claude Code's `additionalContext` (a context-injection warning, not
+ * a rewrite) is even confirmed to exist. So the verdict this returns is
+ * used for exactly that: a warning the caller can inject as context (see
+ * hook.ts's `call.postAction` branch) and an audit record, never a live
+ * mutation. See docs/exfil.md's "Output redaction" section for the full
+ * per-host honesty table.
+ */
+export async function evaluateOutputText(
+  tool: string,
+  args: Record<string, unknown>,
+  text: string,
+  extra?: { cwd?: string; agent?: string; sessionId?: string },
+): Promise<EnforceResult> {
+  if (!pipeline || !auditLog) {
+    throw new Error('Enforcement not initialized. Call initEnforce() first.')
+  }
+  const sessionId = extra?.sessionId || currentSessionId
+  const input: EnforceInput = {
+    tool,
+    args,
+    cwd: extra?.cwd || process.cwd(),
+    session_id: sessionId,
+    turn_number: 0,
+    context_tokens: 0,
+    level: currentLevel,
+    context: 'local',
+    agent: extra?.agent || 'unknown',
+    subagent_of: null,
+    tool_output: text,
+  }
+  const result = await pipeline.evaluateOutput(input)
+  auditLog.record(result, {
+    session_id: sessionId,
+    turn_number: input.turn_number,
+    tool: input.tool,
+    args: input.args,
+    level: input.level,
+    context: input.context,
+    agent: input.agent,
+    subagent_of: input.subagent_of,
+    context_tokens: input.context_tokens,
+  })
+  return result
+}
+
+/**
  * CLI handler for `keel enforce`.
  */
 export async function enforceCommand(options: {

@@ -323,6 +323,156 @@ that a floor-level failure mode is a much more expensive mistake than a
 warn-level one. Flagged here as the next honest increment, not attempted
 in this lane.
 
+## Output redaction (sprint/lane-c2)
+
+Everything above is about the read-THEN-egress *pattern* — `FlowTracker`
+watches which tools were called, never what came back from them. This
+section is a different mitigation layer: scanning a completed tool call's
+OWN output for secret-shaped content and — on exactly one host — actually
+rewriting it before the model ever sees it. It exists because a single
+`cat .env` or `cat id_rsa` with no subsequent network call trips nothing
+above (no sink was ever touched), yet the secret is now sitting in the
+model's context regardless.
+
+### What was actually tested, per host — read this before trusting the rest
+
+The question going in was genuinely open: does any host integration let
+keel rewrite what a completed tool call's output looks like to the model,
+or is that channel purely theoretical? It was tested empirically, live,
+zero-spend, against a real `opencode run` session — not inferred from a
+type declaration — because a prior, untested assumption in this exact
+codebase (`rule-parser.ts`'s old comment on why `mask` was dropped from
+`EnforcementAction`) had already gotten this wrong once, citing an
+unrelated comment as if it settled the question. The full methodology and
+raw transcripts are in
+`session/transcripts/opencode-tool-execute-after-mutation-probe.txt`.
+
+| Host | Can keel rewrite what the model already received? | Evidence |
+|---|---|---|
+| **OpenCode** | **Yes, confirmed live.** `tool.execute.after`'s `output` object is mutable, and the mutation reaches the model — not just the terminal. | A probe plugin redacted a runtime-generated value (`openssl rand -hex 8`, unknowable to the model any other way) from `output.output`; the model's own final reply contained the redacted marker, never the real value. A control run with the same prompt and the mutation removed produced the real value verbatim, ruling out a refusal-pattern artifact. Also confirmed through the REAL install path (`keel install --opencode --project`, unmodified shipped `no-secrets-in-code` rule, real built plugin): `cat`ing a fixture file containing an AKIA-shaped key produced a model reply that never contained the key, and the raw value was absent from the entire isolated `$HOME` (including OpenCode's own session-storage database) afterward. |
+| **Claude Code** | **No rewrite. A context-injection warning only.** `PostToolUse` fires after the tool already ran and its result already reached the model — there is nothing left to rewrite. Its documented `additionalContext` field injects text the model sees on its NEXT turn, alongside what it already has, not instead of it. | code.claude.com/docs/en/hooks, quoted directly: "`PostToolUse` fires after a tool call succeeds. It cannot block the tool call... `additionalContext` injects text into Claude's context for Claude to consider." Not live-exercised against an installed Claude Code session in this environment (same "docs" confidence ceiling as the rest of this repo's Claude Code PostToolUse wiring — see docs/integrations.md); the CLI-layer unit/integration tests below exercise the real built `keel hook claude-code` binary end to end, just not a live `claude` process. |
+| **Codex, Gemini** | Same as Claude Code — warn only, same citation tier this repo already applies to their `PostToolUse` wiring (docs/integrations.md). | Reuses `hook.ts`'s existing PostToolUse parsing (already shared across these three hosts for exit-code discharge, before this lane). |
+| **Cursor, Cline, generic** | **Not wired at all.** These hosts have no `PostToolUse`-shaped parsing in `hook.ts` today (pre-existing gap, unrelated to this lane). | `parsePayload`'s `cursor`/`cline`/`generic` branches never set `postAction`. |
+
+### What was built
+
+**Detection**: `EnforcementPipeline.evaluateOutput()` (`packages/core/src/enforce/pipeline.ts`)
+scans a completed tool call's own output text against the exact same
+`type: content` regex patterns that already gate what gets WRITTEN to a
+file — `no-secrets-in-code`'s shipped patterns, reused verbatim, not a
+separate detector. It is a pure function: text in, a verdict plus a
+candidate replacement text out. It never mutates anything itself, never
+touches `flowTracker`/`sequenceDetector`/rate state, and a `mode: observe`
+content rule can never drive a mutation through it — the same restraint
+every other rule type already gets from the `evaluate()` observe path,
+extended here for the same reason: a rule the user configured to only
+WATCH must never itself cause a live change to what the agent sees.
+
+**The correctness invariant this had to earn (found in review, before
+shipping — not a hypothetical)**: `no-secrets-in-code`'s eight patterns
+were written as DETECTORS ("does this file contain a secret → deny the
+write"), not as redaction spans. `AKIA[0-9A-Z]{16}` matches exactly an AWS
+access key — the match span IS the secret, safe to replace in place. But
+`aws_secret_access_key[\t ]*[:=]` and `BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE
+KEY` match only a LABEL or HEADER; the real secret (the key value, the PEM
+body) sits AFTER the match, uncovered by it. Blindly replacing the match
+span on one of those would strip the label and leave the actual secret
+sitting right next to a `[redacted-by-keel:...]` marker, verbatim — a
+false-confidence signal strictly worse than no redaction at all, because
+the trace and the marker both say "redacted" while the secret shipped
+anyway. `KeelRule.patterns[].redact_span` (opt-in boolean, `types.ts`) is
+the fix: only a pattern explicitly marked `redact_span: true` — because its
+match span is known to fully cover the secret bytes, not just a nearby
+label — can drive a mutation. The shipped rule marks its five full-token
+patterns (`AKIA`, `ghp_`, `github_pat_`, `xox[baprs]-`, `sk-`) this way and
+deliberately leaves the three label/header patterns unmarked; a
+label/header match is still detected (it contributes to
+`EnforceResult.redacted_rule_ids` and the message) and still worth a
+warning, it just never contributes a span to `redacted_output`. Regression
+coverage for exactly this — a span-safe match redacting correctly *while a
+span-unsafe match in the same output survives fully intact* — lives in
+`packages/core/src/enforce/__tests__/output-redaction.test.ts`'s
+"redact_span correctness" block and `opencode-plugin/scripts/load-test.js`'s
+"redact_span correctness" check.
+
+**Applying it — OpenCode** (`packages/opencode-plugin/src/plugin.ts`'s
+`tool.execute.after` handler): mutates `output.output`, `output.title`, and
+every top-level string value of `output.metadata` in place. Metadata is
+included because live probing found (run 6 of the transcript above) that
+OpenCode's own bash-tool metadata independently duplicates raw stdout
+(`metadata.output`) — a redaction that only touched `output.output` would
+leave a second raw copy sitting in the object OpenCode persists to its own
+session store. A redact-action trace entry is written distinct from the
+existing allow/"Tool completed" entry, keyed the same `hook:
+'tool.execute.after'` value the pre-existing outcome-telemetry entry
+already uses (so it stays correctly invisible to `retrospective.ts`'s
+`tool_calls` counter, which keys on `hook === 'tool.execute.before'`
+specifically). Runs at every dial, including `sprint` — a deliberate,
+stated divergence from the input-side content check's sprint-skip
+behavior: that trade-off exists because a BLOCKING content check costs the
+agent real friction at the fast dial, and this check never blocks, so
+there is no friction to trade away.
+
+**Applying it — Claude Code, Codex, Gemini** (`packages/cli/src/commands/hook.ts`):
+`postToolUseOutputText()` best-effort-extracts a completed tool's output
+text from a `PostToolUse` payload (tries `tool_response`/`tool_output`,
+nested `output`/`stdout`/`content`/`text`/`result` — the same
+"try several plausible field names, `undefined` on no match" posture
+`postToolUseExitCode` already established, and the same reason: this
+repo's sandbox cannot capture a real Claude Code PostToolUse payload live,
+so the exact field name is unconfirmed and two independent citations
+disagree — the installed `claude-posttooluse.sh` template's own contract
+comment names `TOOL_RESPONSE`; a direct fetch of Claude Code's hook docs
+for this lane named `tool_output`; both are tried). When something is
+extracted and `evaluateOutput()` returns `action: 'redact'`, `hookVerdict`
+returns a `hookSpecificOutput: { hookEventName: 'PostToolUse',
+additionalContext: ... }` envelope (plus `systemMessage`, the same
+belt-and-suspenders pairing `renderVerdict`'s advisory path already uses)
+whose text says PLAINLY that keel could not remove the value from what was
+already delivered and that it should be treated as exposed. This always
+returns exit 0 — the same structurally-can't-block contract every other
+post-action path in this file already has, because the call already ran.
+
+### The false-positive surface does NOT transfer from the write-side check
+
+`no-secrets-in-code`'s pattern list was tuned against file content being
+WRITTEN — a narrower, more predictable surface than arbitrary tool stdout.
+A `sk-[A-Za-z0-9_-]{24,}`-shaped run of characters is a reasonable bet
+inside a source file; the same pattern run against a `npm ls` dump, a
+lockfile's integrity hash, a lengthy base64 blob, or a JSON API response
+body is a real, not hypothetical, false-positive surface this lane did not
+measure. Treat a redaction (or, for Claude Code/Codex/Gemini, a warning) as
+"keel saw something secret-shaped," not as a calibrated, low-noise signal
+in the way the write-side rule has been reasoned about elsewhere in this
+document.
+
+### What this does NOT cover, stated plainly
+
+- **Label/header-only pattern matches never redact**, by design (the
+  `redact_span` invariant above) — a PEM private key body or an
+  `aws_secret_access_key=...` value flows through completely unredacted on
+  every host, with at most a detection note in the trace/message. This is
+  a real, known gap, not an oversight: widening the span for these
+  patterns (e.g., a `BEGIN...END` block match) was considered and set
+  aside as its own, separately-risky piece of work (a multi-line match
+  spanning an unbounded body has its own correctness questions), not
+  folded into this lane silently.
+- **Only top-level `output.metadata` string values are scanned** on
+  OpenCode — a tool whose metadata nests a secret inside a further object
+  or array is not covered; no other tool's metadata shape has been
+  observed besides bash's flat `{output, exit, truncated}`.
+- **Scan is bounded** (`MAX_OUTPUT_SCAN_CHARS`, 256KB) — text past that
+  bound is not scanned, and the result says so rather than silently
+  returning a clean verdict for content it never looked at.
+- **Cursor, Cline, generic**: no wiring at all, as stated in the table
+  above — this is the SAME pre-existing PostToolUse gap those hosts already
+  had for exit-code discharge, not a new one this lane introduced.
+- **A single command that reads and transmits in one shot** is out of
+  scope for this section the same way it is out of scope for
+  `no-exfil-flow` above — redaction happens on ONE tool's own output after
+  it runs; it cannot see or interrupt a command that reads a secret and
+  sends it over the network within its own execution.
+
 ## Considered and deferred: one-repo-per-session
 
 A "session may only touch one repo" guardrail — flagging or blocking when a
