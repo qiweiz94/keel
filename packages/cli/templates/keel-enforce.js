@@ -11487,7 +11487,7 @@ var plugin_default = {
       if (result.action === "warn" && result.rule_id) surfaceWarn(result.rule_id, result.message, input?.sessionID);
       if (result.action === "fix") applyFix(args, result);
       if (result.action === "warn" && result.rule_id && verificationIds.has(result.rule_id)) {
-        const key = `${result.rule_id}:${directory}:${input?.sessionID || "unknown"}`;
+        const key = `${result.rule_id}:${directory}`;
         if (verificationWarnings.has(key)) {
           throw new Error(`[Keel] ${result.rule_id}: ${result.message}`);
         }
