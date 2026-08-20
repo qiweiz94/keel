@@ -380,13 +380,9 @@ export function renderVerdict(host: Host, result: EnforceResult | null): HostVer
         // costs nothing if Cursor ignores unknown keys (the common case)
         // and is strictly safer than a blind swap with no live Cursor
         // access to confirm either behavior in this environment.
-        // NOT changed here: the already-shipped, already-tested BLOCK path
-        // below (case 'cursor' under `blocked`), which has the identical
-        // camelCase-only bug — left untouched deliberately (same reasoning
-        // the prior wave gave: no live Cursor access to verify a change
-        // against, and `permission` alone still gates the actual block
-        // correctly even if the message text doesn't render). Tracked as a
-        // manual follow-up in session/v1/EVIDENCE/m4-hostbreadth.md.
+        // The BLOCK path below (case 'cursor' under `blocked`) carried the
+        // identical camelCase-only gap and now sends both spellings too,
+        // for the same reason given above.
         return {
           blocked: false, exitCode: 0,
           stdout: JSON.stringify({
@@ -486,10 +482,21 @@ export function renderVerdict(host: Host, result: EnforceResult | null): HostVer
       // `ask` routes to Cursor's own approval UI, the closest match to
       // keel's `prompt`; everything else is a hard deny.
       const permission = result?.action === 'prompt' ? 'ask' : 'deny'
+      // Sent under both camelCase and snake_case keys — same fix, same
+      // reasoning, as the advisory/non-blocking cursor path above: a live
+      // fetch of cursor.com/docs/hooks returns snake_case
+      // (user_message/agent_message), but a prior wave shipped this
+      // envelope camelCase-only. Both spellings cost nothing if Cursor
+      // ignores the unknown key, and `permission` alone still gates the
+      // actual block even if one spelling's message text doesn't render.
       return {
         blocked: true,
         exitCode: 0,          // Cursor decides from stdout, not the exit code
-        stdout: JSON.stringify({ permission, userMessage: text, agentMessage: text }),
+        stdout: JSON.stringify({
+          permission,
+          userMessage: text, agentMessage: text,
+          user_message: text, agent_message: text,
+        }),
         stderr: '',
       }
     }

@@ -183,6 +183,21 @@ rules:
     expect(allowed.permission).toBe('allow')
   })
 
+  it('cursor: block-path response carries both camelCase and snake_case message keys', () => {
+    // cursor.com/docs/hooks documents the beforeShellExecution response as
+    // snake_case (user_message/agent_message); a prior wave shipped this
+    // envelope camelCase-only (userMessage/agentMessage), which is a real
+    // Cursor host and matches nothing Cursor reads. Both keys must be
+    // present so the message renders on the real host regardless of which
+    // spelling it actually reads.
+    const denied = JSON.parse(run('cursor-beforeshellexecution.sh', JSON.stringify({ command: DENY })).stdout)
+    expect(denied.permission).toBe('deny')
+    expect(denied.userMessage).toContain(QUOTED)
+    expect(denied.agentMessage).toContain(QUOTED)
+    expect(denied.user_message).toContain(QUOTED)
+    expect(denied.agent_message).toContain(QUOTED)
+  })
+
   it('codex: exits 2 on a blocking verdict, 0 otherwise', () => {
     const blocked = run('codex-pretooluse.sh', JSON.stringify({ tool_name: 'bash', tool_input: { command: DENY } }))
     expect(blocked.status).toBe(2)
