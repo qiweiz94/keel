@@ -6,8 +6,8 @@ Keel enforces rules on AI coding agents OUTSIDE the agent's context window.
 
 ```bash
 npm run build                    # Build all packages
-npm run test -w @get-keel/core       # Core tests (82 passing)
-npm run test -w @get-keel/cli        # CLI tests (158 passing)
+npm run test -w @get-keel/core       # Core tests (665 passing, 2 skipped)
+npm run test -w @get-keel/cli        # CLI tests (863 passing, 14 skipped)
 npm run test -w @get-keel/opencode-plugin  # Plugin load tests
 keel validate                    # Check rules
 ```

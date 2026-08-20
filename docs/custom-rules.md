@@ -1,7 +1,7 @@
 # Write your first custom rule
 
 The full rule format (`rules:` in `rules.yaml`, or YAML frontmatter in `AGENTS.md`/
-`CLAUDE.md`) is the same rich shape keel's own 45 shipped rules use — `id`, `type`,
+`CLAUDE.md`) is the same rich shape keel's own 46 shipped rules use — `id`, `type`,
 `level`, `scope`, `context`, `action`, `message`, `priority`, plus a couple dozen more
 fields depending on `type`. That's the right shape for keel's own catalog. It is not a
 reasonable first thing to hand someone who just wants to block one command their team
@@ -12,7 +12,7 @@ keeps running by accident.
 - `id` — a unique name for the rule
 - `type` — one of `command`, `filesystem`, `content`, `env`, `network`
 - one match-condition field, chosen by `type` (see the table below)
-- `action` — what to do when it matches (`block`, `deny`, `warn`, `prompt`, `allow`, `fix`, `report`)
+- `action` — what to do when it matches (`block`, `deny`, `warn`, `prompt`, `allow`, `fix`, `report`, `research`, `redirect`)
 - `message` — what to tell the person or agent that triggered it
 
 Everything else — `level`, `scope`, `context`, `priority`, `mode` — is filled in for

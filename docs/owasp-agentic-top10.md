@@ -175,10 +175,10 @@ promoted:
 - `bash-rate-limit` (Tier 2, `warn`, active by default) — warns past 30 Bash calls in
   60 seconds, the one rate-limit rule in this group that actually enforces out of the
   box.
-- `no-repeat-loops` (Tier 3, `mode: observe`) — records an agent retrying the
-  identical failing command 3+ times in 15 minutes; ships with an `escalation` ladder
-  (redirect at 3, deny at 5) that only takes effect once the rule is promoted out of
-  observe.
+- `no-repeat-loops` (promoted out of Tier 3, `action: warn` + live `escalation`
+  ladder) — actively redirects an agent retrying the identical failing command 3+
+  times in 15 minutes, and denies at 5; this one already enforces out of the box (see
+  [docs/tiers.md](tiers.md)).
 - `runaway-budget-tool-calls` / `runaway-budget-bash-calls` (Tier 3, `mode: observe`)
   — record more than 500 tool/Bash calls in a 4-hour window, a coarse runaway-session
   proxy.
@@ -251,7 +251,7 @@ rogue via compromise, misalignment, or a successful hijack upstream:
 
 ## Rules with no OWASP category
 
-The mapping above cites 34 of the 46 shipped rules at least once. These 12 don't fit
+The mapping above cites 35 of the 46 shipped rules at least once. These 11 don't fit
 any ASI01–ASI10 category — most are standing engineering-workflow conventions rather
 than agentic-security controls, which is consistent with how their own rationale
 text describes them:
