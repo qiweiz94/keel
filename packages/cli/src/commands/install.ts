@@ -1634,6 +1634,40 @@ survive long sessions, compaction, and context rot. Edit it freely — it is you
   console.log(chalk.green(`  ✓ Created ${reqPath}`))
 }
 
+// A hook entry command written by keel's own installer always points at one
+// of the fixed .claude/hooks/<Event>/keel-* paths this file wires below —
+// never at a path a different tool's own hook registration would use. That
+// lets a re-install identify and replace only keel's OWN prior entries
+// without touching another tool's registrations under the same event key.
+function isKeelHookCommand(command: unknown): boolean {
+  if (typeof command !== 'string') return false
+  const base = command.split('/').pop() ?? ''
+  return base.startsWith('keel-')
+}
+
+interface ClaudeHookGroup {
+  matcher?: string
+  hooks?: Array<{ type: string; command: string }>
+  [key: string]: unknown
+}
+
+// Merges keel's current hook groups into whatever is already registered for
+// an event (PreToolUse/PostToolUse/Stop), preserving any other tool's
+// entries. Prior keel-authored hooks are dropped first — from within a
+// shared matcher group if another tool's hook shares it, or by dropping the
+// whole group once it has none left — so a re-install doesn't accumulate
+// duplicate keel entries alongside the fresh ones appended below.
+function mergeKeelHookEntries(existing: unknown, keelGroups: ClaudeHookGroup[]): ClaudeHookGroup[] {
+  const existingGroups: ClaudeHookGroup[] = Array.isArray(existing) ? existing : []
+  const preserved = existingGroups
+    .map((group) => {
+      if (!Array.isArray(group?.hooks)) return group
+      return { ...group, hooks: group.hooks.filter((h) => !isKeelHookCommand(h?.command)) }
+    })
+    .filter((group) => !Array.isArray(group?.hooks) || group.hooks.length > 0)
+  return [...preserved, ...keelGroups]
+}
+
 async function installClaudeCode() {
   const cwd = process.cwd()
   const hooksDir = join(cwd, '.claude', 'hooks')
@@ -1700,7 +1734,7 @@ async function installClaudeCode() {
   }
 
   const hooks = (settings.hooks as Record<string, unknown>) || {}
-  hooks.PreToolUse = [
+  hooks.PreToolUse = mergeKeelHookEntries(hooks.PreToolUse, [
     {
       matcher: '*',
       hooks: [
@@ -1710,8 +1744,8 @@ async function installClaudeCode() {
         },
       ],
     },
-  ]
-  hooks.PostToolUse = [
+  ])
+  hooks.PostToolUse = mergeKeelHookEntries(hooks.PostToolUse, [
     {
       matcher: '*',
       hooks: [
@@ -1725,8 +1759,8 @@ async function installClaudeCode() {
         },
       ],
     },
-  ]
-  hooks.Stop = [
+  ])
+  hooks.Stop = mergeKeelHookEntries(hooks.Stop, [
     {
       hooks: [
         {
@@ -1735,7 +1769,7 @@ async function installClaudeCode() {
         },
       ],
     },
-  ]
+  ])
   settings.hooks = hooks
 
   mkdirSync(dirname(settingsPath), { recursive: true })
@@ -1836,7 +1870,16 @@ Full requirements: ~/.keel/requirements.md
 `
 
   mkdirSync(rulesDir, { recursive: true })
-  writeFileSync(rulePath, mdc, 'utf-8')
+  if (!existsSync(rulePath)) {
+    writeFileSync(rulePath, mdc, 'utf-8')
+    console.log(chalk.green(`  ✓ Created ${rulePath}`))
+  } else if (!readFileSync(rulePath, 'utf-8').includes('# Keel enforcement')) {
+    const existing = readFileSync(rulePath, 'utf-8').trimEnd()
+    writeFileSync(rulePath, existing + '\n\n' + mdc, 'utf-8')
+    console.log(chalk.green(`  ✓ Appended Keel rules to ${rulePath}`))
+  } else {
+    console.log(chalk.dim(`  ${rulePath} already configured (skipping)`))
+  }
 
   await installHostHook({
     label: 'Cursor',
@@ -1858,7 +1901,6 @@ Full requirements: ~/.keel/requirements.md
   } else {
     console.log(chalk.yellow(`  ! ${cursorHooks} exists — add the keel hook to beforeShellExecution yourself`))
   }
-  console.log(chalk.green(`  ✓ Created ${rulePath}`))
   console.log(chalk.dim('  Note: the hook above is BLOCKING (failClosed) once wired into .cursor/hooks.json — not advisory.'))
   console.log(chalk.dim('    Contract taken from Cursor\'s docs, UNVERIFIED against a live Cursor install.'))
   console.log(chalk.dim('    keel.mdc above is a separate, always-active advisory layer alongside it.'))
