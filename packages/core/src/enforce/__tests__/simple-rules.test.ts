@@ -81,6 +81,7 @@ simple_rules:
       message: 'Do not drop tables directly — use a migration.',
       level: 'sprint',
       context: ['both'],
+      priority: -100,
       match: 'DROP TABLE',
     })
   })
@@ -180,7 +181,114 @@ simple_rules:
   })
 })
 
+describe('simple_rules — default priority defers to the shipped catalog', () => {
+  // Every shipped default rule with a deliberately negative priority
+  // (e.g. secret-file-read-without-egress, broad-privilege-escalation —
+  // both priority -5, see install.ts) relies on sorting LAST so it never
+  // shadows a more specific rule ahead of it. SimpleRule has no `priority`
+  // field, so before this fix every simple-form rule defaulted to
+  // priority 0 — HIGHER than -5 — and would silently out-rank and shadow
+  // those defaults for any command matching both surfaces.
+  it('expandSimpleRule defaults priority to -100 (below any shipped default)', () => {
+    const { rule } = expandSimpleRule({ id: 'x', type: 'command', match: 'foo', action: 'warn', message: 'msg' })
+    expect(rule?.priority).toBe(-100)
+  })
+
+  it('a broad simple_rules allow no longer priority-shadows a negative-priority shipped default (real repro)', () => {
+    // Mirrors the shape of install.ts's secret-file-read-without-egress:
+    // a project-scope full-form rule at priority -5 that catches `cat` of
+    // a secrets file.
+    const shippedDefault: RuleHierarchy['global'] = parseRulesContent(`version: 1
+rules:
+  - id: secret-file-read-without-egress
+    type: command
+    match: "cat .env"
+    action: warn
+    priority: -5
+    message: "Read of a secret file with no egress detected yet."
+`, '/tmp/CLAUDE.md')
+
+    // An agent-added simple_rules block matching a broad command surface
+    // that also happens to catch `cat .env` — e.g. added to CLAUDE.md by
+    // an agent that wants to quiet cat/less/head/tail noise.
+    const agentAdded: RuleHierarchy['local'] = parseRulesContent(`version: 1
+simple_rules:
+  - id: quiet-pager-noise
+    type: command
+    match_regex: "^(cat|less|head|tail) "
+    action: allow
+    message: "Pager commands are noisy, allow them."
+`, '/tmp/CLAUDE.local.md')
+
+    const hierarchy: RuleHierarchy = { global: null, user: null, project: shippedDefault, local: agentAdded }
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+
+    // Both rules match "cat .env" — the shipped default (priority -5)
+    // must sort AHEAD of the simple-form rule (priority -100 is lower
+    // still, so it evaluates LAST), meaning the pipeline's first-match-
+    // wins loop reaches the shipped warn before the simple-form allow.
+    const defaultIdx = merged.findIndex(r => r.id === 'secret-file-read-without-egress')
+    const simpleIdx = merged.findIndex(r => r.id === 'quiet-pager-noise')
+    expect(defaultIdx).toBeGreaterThanOrEqual(0)
+    expect(simpleIdx).toBeGreaterThanOrEqual(0)
+    expect(defaultIdx).toBeLessThan(simpleIdx)
+  })
+
+  it('end-to-end via EnforcementPipeline: the shipped-default warn fires before the simple-form allow can shadow it', async () => {
+    const shippedDefault = parseRulesContent(`version: 1
+rules:
+  - id: secret-file-read-without-egress-2
+    type: command
+    match: "cat .env"
+    action: warn
+    priority: -5
+    message: "Read of a secret file with no egress detected yet."
+simple_rules:
+  - id: quiet-pager-noise-2
+    type: command
+    match_regex: "^(cat|less|head|tail) "
+    action: allow
+    message: "Pager commands are noisy, allow them."
+`, '/tmp/rules.yaml')
+
+    const pipeline = new EnforcementPipeline({
+      level: 'balanced',
+      context: 'local',
+      cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(),
+      sequenceDetector: new SequenceDetector(),
+      flowTracker: new FlowTracker(),
+      overrideStore: noopOverrideStore,
+      ruleHierarchy: { global: null, user: null, project: shippedDefault, local: null },
+      ruleVersion: 1,
+      allowedFixTransforms: true,
+    })
+
+    const result = await pipeline.evaluate(input('Bash', { command: 'cat .env' }))
+    expect(result.rule_id).toBe('secret-file-read-without-egress-2')
+    expect(result.action).not.toBe('allow')
+  })
+})
+
 describe('simple_rules — friendly validation errors', () => {
+  it('rejects a whitespace-only `match` (would otherwise become a regex matching almost any command)', () => {
+    // Real repro of the danger: before this fix, a whitespace-only match
+    // string passed the (bare falsy) emptiness check, was assigned to
+    // base.match verbatim, and `new RegExp(' ')` matches almost any
+    // command containing a space — shadowing every other rule ahead of it.
+    expect(new RegExp(' ').test('git status')).toBe(true)
+
+    const { error, rule } = expandSimpleRule({ id: 'ws-match', type: 'command', match: '   ', action: 'warn', message: 'no' })
+    expect(error).toBe("rule 'ws-match': 'match' cannot be empty")
+    expect(rule).toBeUndefined()
+  })
+
+  it('rejects a whitespace-only `match_regex`', () => {
+    const { error, rule } = expandSimpleRule({ id: 'ws-match-regex', type: 'command', match_regex: '   ', action: 'warn', message: 'no' })
+    expect(error).toBe("rule 'ws-match-regex': 'match_regex' cannot be empty")
+    expect(rule).toBeUndefined()
+  })
+
   it('a command rule missing both match and match_regex gets a specific, friendly error', () => {
     const parsed = parseRulesContent(`version: 1
 simple_rules:

@@ -26,9 +26,9 @@ export function parseRulesFile(filePath: string): ParsedRules | null {
 
 // ── Minimal / beginner-friendly rule format ──────────────────────────
 //
-// Defaults applied to every expanded SimpleRule. Only `level` and
-// `context` are given a concrete value; `scope`, `priority`, and `mode`
-// are deliberately left UNSET rather than defaulted to a literal:
+// Defaults applied to every expanded SimpleRule. `level`, `context`, and
+// `priority` are given a concrete value; `scope` and `mode` are
+// deliberately left UNSET rather than defaulted to a literal:
 //   - `scope` is inferred per-tier by mergeRules' pushRules()
 //     (`rule.scope || scope`) from which hierarchy file the rule was
 //     actually loaded from. Hardcoding e.g. `scope: 'project'` here would
@@ -36,10 +36,15 @@ export function parseRulesFile(filePath: string): ParsedRules | null {
 //     in the same-id override arbitration (scopeOrder in mergeRules) — a
 //     SimpleRule must sort exactly like a hand-written full-form rule in
 //     the same file, and that requires staying unset.
-//   - `priority`/`mode` have well-defined "no value" semantics already
-//     (default priority order; undefined mode IS fully enforcing — see
-//     RuleMode's doc comment in types.ts) that a beginner rule should
-//     inherit, not override.
+//   - `mode` has a well-defined "no value" semantics already (undefined
+//     mode IS fully enforcing — see RuleMode's doc comment in types.ts)
+//     that a beginner rule should inherit, not override.
+//   - `priority` is NOT left unset. SimpleRule has no `priority` field at
+//     all (see its doc comment in types.ts), so leaving this unset would
+//     default every expanded rule to priority 0 in mergeRules' final sort
+//     — see DEFAULT_SIMPLE_RULE_PRIORITY's own comment for why that is
+//     unsafe (it silently out-ranks the shipped catalog's deliberately
+//     negative-priority default rules).
 //   - `level` is deliberately `'sprint'`, NOT `'balanced'`, even though
 //     'balanced' reads like the more cautious choice. mergeRules' dial
 //     filter (`rule.level !== undefined && dialRank[rule.level] >
@@ -57,6 +62,29 @@ export function parseRulesFile(filePath: string): ParsedRules | null {
 //     the moment they flip keel's least-friction dial.
 const DEFAULT_SIMPLE_RULE_LEVEL: ProtectionLevel = 'sprint'
 const DEFAULT_SIMPLE_RULE_CONTEXT: RuleContext[] = ['both']
+
+// Default `priority` for every expanded SimpleRule: comfortably LOWER
+// than the lowest priority used by any shipped default rule (currently -10,
+// on `no-repeat-loops`/`research-before-fix`/`root-cause-before-refactor`;
+// `secret-file-read-without-egress`/`broad-privilege-escalation` sit at -5
+// — all in install.ts, all deliberately negative so they sort LAST and
+// never shadow a more specific rule ahead of them). SimpleRule has no
+// `priority` field (see its doc comment in types.ts), so without an
+// explicit default here every simple-form rule would fall through to
+// priority 0 in mergeRules' final sort — HIGHER than those deliberately-
+// deferred defaults. Since pipeline.ts's tier-2/3 loop is first-match-wins
+// over the full priority-sorted rule list, a broad `simple_rules:` command
+// rule (e.g. matching `cat |less |head |tail `) would then silently
+// out-rank and shadow a curated, narrower, negative-priority default like
+// `secret-file-read-without-egress` for every command matching both — with
+// the simple-rule author having no way to know or avoid it, since the
+// minimal form doesn't expose a `priority` field to set even if they
+// wanted to defer. -100 sits well below -10 with headroom for any future
+// shipped default: simple-form rules defer to the curated catalog by
+// design, unless a future version of the format adds an explicit way to
+// opt into a higher priority. See docs/custom-rules.md's "What you get for
+// free" section for the user-facing explanation.
+const DEFAULT_SIMPLE_RULE_PRIORITY = -100
 
 const SIMPLE_RULE_TYPES = new Set<string>(['command', 'filesystem', 'content', 'env', 'network'])
 
@@ -111,6 +139,7 @@ export function expandSimpleRule(candidate: unknown): { rule?: KeelRule; error?:
     message: r.message,
     level: DEFAULT_SIMPLE_RULE_LEVEL,
     context: DEFAULT_SIMPLE_RULE_CONTEXT,
+    priority: DEFAULT_SIMPLE_RULE_PRIORITY,
   }
 
   switch (type) {
@@ -118,8 +147,14 @@ export function expandSimpleRule(candidate: unknown): { rule?: KeelRule; error?:
       if (typeof r.match !== 'string' && typeof r.match_regex !== 'string') {
         return { error: `rule '${label}': type 'command' requires a 'match' or 'match_regex' field (the command text or pattern to catch)` }
       }
-      if (typeof r.match === 'string' && !r.match) return { error: `rule '${label}': 'match' cannot be empty` }
-      if (typeof r.match_regex === 'string' && !r.match_regex) return { error: `rule '${label}': 'match_regex' cannot be empty` }
+      // `.trim()`-based, not a bare falsy check: a whitespace-only `match: "
+      // "` is a non-empty STRING (falsy checks like `!r.match` let it
+      // through), and `new RegExp(' ').test(...)` matches almost any
+      // command — a quoted-whitespace typo becomes a rule that silently
+      // shadows everything else. Mirrors the `network` case below, which
+      // already gets this right.
+      if (typeof r.match === 'string' && !r.match.trim()) return { error: `rule '${label}': 'match' cannot be empty` }
+      if (typeof r.match_regex === 'string' && !r.match_regex.trim()) return { error: `rule '${label}': 'match_regex' cannot be empty` }
       if (typeof r.match === 'string') base.match = r.match
       if (typeof r.match_regex === 'string') base.match_regex = r.match_regex
       return { rule: base }
@@ -302,8 +337,29 @@ export function validateRules(rules: unknown): string[] {
     'destructive', 'exfil', 'escalation', 'injection',
     'resource', 'bypass', 'discipline', 'workflow', 'verification', 'supply-chain',
   ])
+  const validScopes = new Set(['global', 'user', 'project', 'folder', 'session'])
+  const validRuleContexts = new Set(['local', 'ci', 'both'])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
+  // `session` was investigated for removal from this set (sprint2/lane
+  // fix-rule-parser) on the theory that pipeline.ts (~line 1165) has real,
+  // working `max_duration_minutes` enforcement for `type: session`. That
+  // theory does not survive reading the code: the block at pipeline.ts:1165
+  // is `if (rule.type === 'session' && rule.max_duration_minutes) { //
+  // handled by context manager; continue }` — it never calls violation() or
+  // result(), it just skips the rule, every time, unconditionally. Its own
+  // comment says "This WOULD be checked... Handled by context manager" —
+  // aspirational, not actual — and enforce/context-manager.ts is about
+  // token-usage-triggered rule re-injection, not session duration; grepping
+  // the whole repo for `max_duration_minutes` and for `type === 'session'`
+  // turns up no other consumer anywhere. `type: session` therefore has
+  // exactly the same "declared but not enforced" shape as mcp/inheritance/
+  // meta/context and stays in this set for the same reason they do. SPEC.md
+  // agrees with this: its top-level "Public v1 Release Contract" table
+  // (line ~145) lists `session` alongside mcp/inheritance as "Not
+  // implemented — rejected at `keel validate`"; only a lower, per-type
+  // reference table (~line 341) omits the annotation, and that omission is
+  // the stale part, not this Set.
   const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session', 'context'])
 
   for (const candidate of rules) {
@@ -350,10 +406,36 @@ export function validateRules(rules: unknown): string[] {
       errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`)
     }
     if (rule.level !== undefined && (typeof rule.level !== 'string' || !validLevels.has(rule.level))) errors.push(`Rule "${label}" has an invalid protection level`)
+    // `scope` and `context` are load-bearing in mergeRules (scopeOrder[]
+    // and the context filter, both in this file) but previously had no
+    // validation at all. A typo'd `scope` makes `scopeOrder[rule.scope]`
+    // `undefined`, and `undefined > scopeOrder['global']` is `false` in
+    // JS — so a typo'd global-tier rule becomes PERMANENTLY immune to
+    // being overridden by a more-specific tier, with zero error surfaced.
+    // A typo'd `context` entry makes the rule fail the context filter in
+    // every possible evaluation context — it never gets pushed at all,
+    // ever, again silently.
+    if (rule.scope !== undefined && (typeof rule.scope !== 'string' || !validScopes.has(rule.scope))) {
+      errors.push(`Rule "${label}" has an unsupported scope: ${String(rule.scope)} (expected one of ${[...validScopes].join(', ')})`)
+    }
+    if (rule.context !== undefined) {
+      if (!Array.isArray(rule.context) || rule.context.length === 0 || rule.context.some(c => typeof c !== 'string' || !validRuleContexts.has(c))) {
+        errors.push(`Rule "${label}" has an invalid context: ${JSON.stringify(rule.context)} (expected a non-empty array of local, ci, both)`)
+      }
+    }
     if (typeof rule.message !== 'string' || !rule.message.trim()) errors.push(`Rule "${label}" is missing a non-empty message`)
     if (rule.type === 'filesystem' && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`)
     if (rule.type === 'content' && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`)
     if (rule.type === 'network' && typeof rule.match !== 'string') errors.push(`Rule "${label}" is a network rule but has no match`)
+    // pipeline.ts (~line 724) gates its entire command-matching block on
+    // `rule.type === 'command' && (rule.match || rule.match_regex ||
+    // rule.match_prefix)`. Without this check a full-form `type: command`
+    // rule with none of those three fields set passes validation cleanly
+    // and is a permanent, silent no-op at evaluation — it can never match
+    // anything, ever, with no error surfaced.
+    if (rule.type === 'command' && !rule.match && !rule.match_regex && !rule.match_prefix) {
+      errors.push(`Rule "${label}" is a command rule but has no match, match_regex, or match_prefix`)
+    }
     if (rule.type === 'package' && rule.age_days !== undefined && (typeof rule.age_days !== 'number' || !Number.isFinite(rule.age_days) || rule.age_days < 0)) {
       errors.push(`Rule "${label}" is a package rule but has an invalid age_days (expected a non-negative number)`)
     }
@@ -388,6 +470,16 @@ export function validateRules(rules: unknown): string[] {
       rule.trigger?.pattern,
       rule.satisfy?.pattern,
       ...Object.values(rule.boundaries || {}).map(boundary => boundary.pattern),
+      // `topics` (research rules) is read as regex via
+      // matchesRulePattern() in pipeline.ts (~line 1002), and
+      // `fallback_pattern` (diagnosis rules) likewise (~line 958). Both
+      // were previously missing from this loop: a malformed regex in
+      // either field passed validation, then matchesRulePattern() silently
+      // caught the construction error and returned false — the exact
+      // quiet fail-open this loop's own comment above already warns about
+      // for `patterns`.
+      ...(rule.topics || []),
+      rule.fallback_pattern,
     ]) {
       if (typeof pattern === 'string' && pattern) {
         try { new RegExp(pattern) } catch { errors.push(`Rule "${rule.id}" contains invalid regex: ${pattern}`) }

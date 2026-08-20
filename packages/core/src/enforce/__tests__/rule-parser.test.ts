@@ -120,6 +120,179 @@ rules:
     const parsed = parseRulesContent('version: 1\nlevel: sprint\nsprint_started_at: "not a date"\nrules: []\n', '/tmp/rules.yaml')
     expect(parsed.errors?.some(e => e.includes('sprint_started_at'))).toBe(true)
   })
+
+  // ── Gap 2: a full-form `type: command` rule with none of match /
+  // match_regex / match_prefix set previously passed validation cleanly
+  // and was a permanent, silent no-op — pipeline.ts (~line 724) gates its
+  // whole command-matching block on those three fields being present.
+  it('rejects a full-form command rule with none of match/match_regex/match_prefix (was a silent no-op)', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: no-op-command-rule
+    type: command
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues).toContain('Rule "no-op-command-rule" is a command rule but has no match, match_regex, or match_prefix')
+  })
+
+  it('accepts a full-form command rule using only match_prefix (no error raised)', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: prefix-command-rule
+    type: command
+    match_prefix: "rm -rf"
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('has no match'))).toBe(false)
+  })
+
+  // ── Gap 3: `rule.topics` (research rules) and `rule.fallback_pattern`
+  // (diagnosis rules) were both missing from the load-time regex-validity
+  // check. matchesRulePattern() (pipeline.ts) silently catches a bad regex
+  // and returns false — a quiet fail-open that this same validator already
+  // guards against for `patterns`/`match`/etc.
+  it('rejects a research rule with an uncompilable topics[] regex', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-topics
+    type: research
+    topics:
+      - "(unclosed"
+    action: warn
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues).toContain('Rule "bad-topics" contains invalid regex: (unclosed')
+  })
+
+  it('rejects a diagnosis rule with an uncompilable fallback_pattern regex', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-fallback-pattern
+    type: diagnosis
+    fallback_pattern: "(unclosed"
+    action: warn
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues).toContain('Rule "bad-fallback-pattern" contains invalid regex: (unclosed')
+  })
+
+  it('accepts a research rule with valid topics regexes (no false positive)', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: good-topics
+    type: research
+    topics:
+      - "deploy.*process"
+    action: warn
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('invalid regex'))).toBe(false)
+  })
+
+  // ── Gap 4: `scope` and `rule.context` were never validated, despite
+  // being load-bearing in mergeRules' scopeOrder ranking and context
+  // filter. A typo'd `scope` makes scopeOrder[rule.scope] undefined, and
+  // `undefined > scopeOrder['global']` is false in JS — a typo'd
+  // global-tier rule becomes permanently immune to being overridden. A
+  // typo'd `context` entry fails the context filter in every possible
+  // evaluation context — the rule never gets pushed at all, ever.
+  it('rejects a rule with an invalid scope', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-scope
+    type: command
+    match: "rm -rf"
+    scope: projekt
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('unsupported scope'))).toBe(true)
+  })
+
+  it('accepts every valid scope value', () => {
+    for (const scope of ['global', 'user', 'project', 'folder', 'session']) {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: ok-scope
+    type: command
+    match: "rm -rf"
+    scope: ${scope}
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('unsupported scope'))).toBe(false)
+    }
+  })
+
+  it('rejects a rule with an invalid context entry', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-context
+    type: command
+    match: "rm -rf"
+    context: [boht]
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('invalid context'))).toBe(true)
+  })
+
+  it('accepts valid context arrays', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: ok-context
+    type: command
+    match: "rm -rf"
+    context: [local, ci]
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('invalid context'))).toBe(false)
+  })
+
+  // ── Gap 5 (investigated, reverted): `type: session` was initially
+  // suspected to be wrongly rejected as "not implemented", on the theory
+  // that pipeline.ts (~line 1165) has real `max_duration_minutes`
+  // enforcement for it. That theory does not survive reading the code: the
+  // pipeline block is a `continue`-only stub ("handled by context manager")
+  // and enforce/context-manager.ts is unrelated (token-usage re-injection,
+  // not session duration) — there is no consumer of `max_duration_minutes`
+  // anywhere. `type: session` stays rejected, same as mcp/inheritance/meta/
+  // context, matching SPEC.md's own "Public v1 Release Contract" table
+  // (~line 145), which lists `session` as "Not implemented — rejected at
+  // `keel validate`" alongside mcp/inheritance.
+  it('still rejects the genuinely-unimplemented types (mcp, inheritance, meta, session, context)', () => {
+    for (const type of ['mcp', 'inheritance', 'meta', 'session', 'context']) {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: unimplemented-${type}
+    type: ${type}
+    action: warn
+    message: "no"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('not implemented by the enforcement engine'))).toBe(true)
+    }
+  })
 })
 
 function hoursAgo(h: number): string {
