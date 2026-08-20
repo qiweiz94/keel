@@ -453,6 +453,14 @@ export class EnforcementPipeline {
       const result = this.result('allow', '', `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5)
       const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds]
       if (detectedOnly.length) result.redacted_rule_ids = detectedOnly
+      // See scan_truncated's doc comment (types.ts): this is the path that
+      // was lying by omission — a truncated scan that happened to find
+      // nothing in its scanned prefix returned a plain `allow` with no
+      // programmatic signal that anything past MAX_OUTPUT_SCAN_CHARS went
+      // unlooked-at. `truncNote` already said so in the human-readable
+      // message; this is the same fact for a caller that branches on the
+      // verdict instead of reading prose.
+      if (truncated) result.scan_truncated = true
       return result
     }
     const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds]
@@ -460,6 +468,7 @@ export class EnforcementPipeline {
     result.matched_pattern = matchedPattern
     result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted
     result.redacted_rule_ids = allIds
+    if (truncated) result.scan_truncated = true
     return result
   }
 
@@ -550,9 +559,29 @@ export class EnforcementPipeline {
     // runTieredRules() (the statefulRules loop's research handling requires
     // `rule.trigger`), so it needs the same floor-first protection as
     // command/filesystem/etc.
+    //
+    // `mode: observe` rules are ALSO included in this first pass — not
+    // because they are floors, but because mergeRules()'s rank(0 = observe,
+    // 1 = protect floor, 2 = everything else) exists specifically so an
+    // observe rule "always gets its chance to record before anything below
+    // it decides the call" (rule-parser.ts's own comment, backed by
+    // pipeline.test.ts's observe-continue block). A first pass filtered on
+    // `level: protect` ALONE would invert that for exactly the case that
+    // test covers: a non-floor observe rule sits at rank 0 in `rules`, so
+    // without this it would only run in the SECOND pass (after
+    // statefulRules) while a `level: protect` deny rule matching the same
+    // command now runs in the FIRST pass and returns before the observe
+    // rule ever gets to record — turning "observe records, then the real
+    // rule decides" into "the floor decides and the observe rule's own
+    // match on this call is silently lost," a regression of the same
+    // shadowing class this fix exists to close. Including observe rules
+    // here is free: violation() never lets one return (OBSERVE_CONTINUE is
+    // thrown and caught by runTieredRules' own try/catch), so hoisting one
+    // ahead of the statefulRules loop cannot change what decides the call —
+    // only what it silently loses the chance to record.
     const cmdSurfacesBox: { value?: string[] } = {}
     const isStatefulOnlyRuleType = (t: string) => t === 'verification' || t === 'claim'
-    const floorTieredRules = rules.filter(rule => rule.level === 'protect' && !isStatefulOnlyRuleType(rule.type))
+    const floorTieredRules = rules.filter(rule => (rule.mode === 'observe' || rule.level === 'protect') && !isStatefulOnlyRuleType(rule.type))
     const floorTieredSet = new Set(floorTieredRules)
     if (floorTieredRules.length) {
       const floorResult = this.runTieredRules(floorTieredRules, input, start, deepChecks, cmdSurfacesBox)
@@ -690,11 +719,13 @@ export class EnforcementPipeline {
    * package/stuck/diagnosis/research(topics)/env/content/oracle/sequence/
    * flow/session) — Tiers 2 through 6. Extracted out of evaluateTiers() so
    * it can be run TWICE over two different slices of the same rank-ordered
-   * `rules` list: once for the `level: protect` floor subset (before the
-   * statefulRules loop even starts), and once for everything else (in its
-   * original position, after statefulRules) — see evaluateTiers()'s
-   * "Floor-first pass" comment for why. `cmdSurfaces` is boxed so both
-   * calls share the same lazily-computed memo instead of recomputing it.
+   * `rules` list: once for the `mode: observe` + `level: protect` subset —
+   * ranks 0 and 1, in that relative order — (before the statefulRules loop
+   * even starts), and once for everything else (in its original position,
+   * after statefulRules) — see evaluateTiers()'s "Floor-first pass" comment
+   * for why observe rules ride along with the floors instead of only the
+   * floors moving. `cmdSurfaces` is boxed so both calls share the same
+   * lazily-computed memo instead of recomputing it.
    * Returns the first violation/result produced by any rule in `list`, or
    * `undefined` if none of them produced a verdict.
    */
@@ -1132,7 +1163,21 @@ export class EnforcementPipeline {
         // apply_patch carries the new content in patchText and the target
         // path only inside `*** Add File:` markers — both are honored here.
         const patchText = String(args.patchText || '')
-        const inlineContent = String(args.content || args.text || patchText || '')
+        // An Edit-shaped call (oldString/newString — the shape a host's
+        // in-place string-replace tool sends) carries the content the
+        // agent is ABOUT to write in `newString`, not `content`/`text` —
+        // omitting it here made every Edit-shaped call invisible to
+        // `no-secrets-in-code` (a Tier-2 DENY rule) and
+        // `test-oracle-env-introspection`: an agent could write a secret
+        // into a file via Edit and this branch would scan an empty string.
+        // `new_string` (snake_case) is ALSO checked: Claude Code's real
+        // Edit tool schema sends `old_string`/`new_string`, the exact same
+        // spelling argPath() above already had to add for `file_path` after
+        // a live probe found the camelCase-only path check let a write to
+        // `.claude/settings.json` slip past a protect floor undetected —
+        // the same class of miss, just on the content side of the same
+        // tool call instead of the path side.
+        const inlineContent = String(args.content || args.text || args.newString || args.new_string || patchText || '')
         const isFile = resolvedPath && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
         // Inline content is ALWAYS checkable — it is what the agent is about
         // to write. Only the disk-scan fallback is gated on the file having
@@ -1193,8 +1238,13 @@ export class EnforcementPipeline {
           const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths)
           if (pathMatched) {
             const patchText = String(args.patchText || '')
-            const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? '')
-            const explicitOld = typeof args.oldString === 'string' ? args.oldString : undefined
+            // Same camelCase/snake_case pair as the content-rule block
+            // above (`args.newString`/`args.new_string`) — Claude Code's
+            // real Edit tool sends the snake_case spelling.
+            const newText = String(args.content ?? args.text ?? args.newString ?? args.new_string ?? patchText ?? '')
+            const explicitOld = typeof args.oldString === 'string'
+              ? args.oldString
+              : typeof args.old_string === 'string' ? args.old_string : undefined
             const isFile = explicitOld === undefined && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
             const oldText = explicitOld !== undefined ? explicitOld : (isFile ? readFileSync(resolvedPath, 'utf-8') : '')
             if (newText || oldText) {
@@ -1445,9 +1495,22 @@ export class EnforcementPipeline {
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier)
     }
     if (action === 'redirect') {
-      // Course correction, not a block: never escalates warn-once, never
-      // consumes overrides, self-clears on compliance. Carries the
-      // machine-readable directive to the model.
+      // Course correction, not a block: never escalates warn-once,
+      // self-clears on compliance. Carries the machine-readable directive
+      // to the model.
+      //
+      // Overrides ARE consumed here, same as deny/prompt below — this used
+      // to be the one action branch that skipped the check, so a stuck
+      // `no-repeat-loops` redirect (type: stuck, action escalated to
+      // redirect at 3 identical failing attempts) could not be unstuck by
+      // a human running `keel allow <id> --once`: the override sat armed
+      // and unconsumed while every subsequent identical call kept getting
+      // redirected regardless. `research`/`diagnosis` redirects go through
+      // this same branch and get the same fix for the same reason — none
+      // of the three had a way for a human override to actually clear one.
+      if (this.overrideStore.consume(rule.id, input.session_id)) {
+        return this.result('allow', rule.id, this.overrideMessage(rule.id), start, false, tier)
+      }
       return this.result('redirect', rule.id, message, start, false, tier, undefined, undefined, directive)
     }
     if (action === 'warn' || action === 'allow' || action === 'report') {
