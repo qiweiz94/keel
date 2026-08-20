@@ -100,7 +100,15 @@ const MAX_SUBCOMMANDS = 64
 const MAX_TOKENS_PER_SUBCOMMAND = 256
 const MAX_INTERPRETER_DEPTH = 1
 
-const SHELL_INTERPRETERS = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh'])
+// `fish`, `csh`, `tcsh` are real interactive/scripting shells with a `-c`
+// flag; `ash` is busybox's shell (default `/bin/sh` on Alpine-based agent
+// sandboxes) and also has `-c`. All four were reachable via `<shell> -c
+// 'rm -rf /'` and ALLOWED before this set covered them (control: `bash -c`
+// correctly denied). Known remaining gap, NOT fixed here: `busybox sh` /
+// `busybox ash` invoked as `busybox sh -c '...'` has argv0 `busybox`, not
+// the shell name — classifying that needs argv0-aware dispatch on busybox's
+// own applet-selection argv[1], a harder, separate fix.
+const SHELL_INTERPRETERS = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'fish', 'csh', 'tcsh', 'ash'])
 
 type InterpreterKind = 'shell' | 'python' | 'node' | 'perl'
 
@@ -168,6 +176,8 @@ interface Segment {
   quoted: boolean
   hasSpace: boolean
   quoteChar: '"' | "'" | ''
+  /** This segment is a de-escaped space/tab from an UNQUOTED `\ ` — data inside the token, not a token boundary. See renderToken. */
+  escapedSpace?: boolean
 }
 
 interface Token {
@@ -211,7 +221,14 @@ function tokenize(text: string): Token[] {
     }
     if (c === '\\' && i + 1 < n) {
       // Unquoted backslash escape: next char literal, strip the backslash.
-      pushSegment({ text: text[i + 1], quoted: false, hasSpace: false, quoteChar: '' })
+      const next = text[i + 1]
+      pushSegment({
+        text: next,
+        quoted: false,
+        hasSpace: false,
+        quoteChar: '',
+        escapedSpace: next === ' ' || next === '\t',
+      })
       i += 2
       continue
     }
@@ -239,6 +256,17 @@ function tokenize(text: string): Token[] {
     let buf = ''
     while (j < n && text[j] !== ' ' && text[j] !== '\t' && !isQuoteChar(text[j]) && text[j] !== '\\') {
       buf += text[j]
+      j++
+    }
+    if (j === i) {
+      // Zero progress: the only way to land here is `text[i] === '\\'` with
+      // `i` the LAST character in the string (the escape branch above
+      // requires a following character and didn't fire). Treat a lone /
+      // trailing backslash as a literal character so `i` always advances —
+      // without this, `normalizeCommand('echo hi\\')` and
+      // `normalizeCommand('cd C:\\')` (an ORDINARY Windows path, `cd C:\`)
+      // spin forever making zero progress and OOM-crash the process.
+      buf = text[j]
       j++
     }
     pushSegment({ text: buf, quoted: false, hasSpace: false, quoteChar: '' })
@@ -289,6 +317,18 @@ function renderToken(token: Token, dict: Record<string, string>): NormalizedToke
       // Whitespace-free quoting only ever obfuscates a token
       // (`r"m"` -> `rm`, `"--force"` -> `--force`); strip it.
       rendered += seg.text
+      value += seg.text
+    } else if (seg.escapedSpace) {
+      // A backslash-escaped space/tab is DATA inside this token, not a word
+      // boundary — but normalizeSubcommand joins tokens' `rendered` with a
+      // bare space, so re-emitting it as a literal space here would make a
+      // single argument indistinguishable from a real word boundary on the
+      // joined surface (`mv rm\ -rf\ / backup/`, a benign single-argument
+      // command moving a file literally named "rm -rf /", would render as
+      // `mv rm -rf / backup/` and false-positive-deny). Keep the backslash
+      // in the rendered surface so it stays distinguishable; `value` (the
+      // decoded logical argv value) still gets the real character.
+      rendered += '\\' + seg.text
       value += seg.text
     } else {
       const expanded = expandVars(seg.text, dict)
@@ -402,10 +442,24 @@ function normalizeSubcommand(rawSub: string, dict: Record<string, string>, depth
         const isCodeFlag = flags.includes(tok)
           || (kind === 'shell' && /^-[a-z]*c$/.test(tok))
         if (isCodeFlag) {
-          const bodyToken = commandTokens[k + 1]
-          sub.interpreterBody = bodyToken.value
-          if (kind === 'shell' && depth < MAX_INTERPRETER_DEPTH) {
-            sub.nested = normalizeCommand(bodyToken.value, depth + 1)
+          // `bash -c -- 'payload'` / `sh -c -- 'payload'`: real bash/sh
+          // treat a literal `--` immediately after `-c` as end-of-options
+          // and use the NEXT token as the body, not `--` itself. Without
+          // this, the body extracted below is the literal string `--` and
+          // the real payload never becomes a surface (M-audit: `bash -c --
+          // 'rm -rf /'` never surfaced and allowed). Shell-specific: this
+          // getopt convention applies to `-c`, not to python/node/perl's
+          // code flags.
+          let bodyIndex = k + 1
+          if (kind === 'shell' && commandTokens[bodyIndex]?.value === '--') {
+            bodyIndex++
+          }
+          const bodyToken = commandTokens[bodyIndex]
+          if (bodyToken) {
+            sub.interpreterBody = bodyToken.value
+            if (kind === 'shell' && depth < MAX_INTERPRETER_DEPTH) {
+              sub.nested = normalizeCommand(bodyToken.value, depth + 1)
+            }
           }
           break
         }
@@ -414,6 +468,89 @@ function normalizeSubcommand(rawSub: string, dict: Record<string, string>, depth
   }
 
   return sub
+}
+
+interface HeredocBody {
+  kind: InterpreterKind
+  body: string
+}
+
+/**
+ * Command-start boundary (mirrors SEPARATORS — start of string or right
+ * after `;` `&&` `||` `|` `&` newline), then a bare interpreter token
+ * (optionally followed by short/long flags), then a heredoc operator `<<`
+ * or `<<-`, then a delimiter word — bare or quoted with `'`/`"`.
+ *
+ * Delimiter charset this recognizes is intentionally narrow (`[A-Za-z_]
+ * [A-Za-z0-9_]*` — covers `EOF`, `PYEOF`, any ordinary identifier-shaped
+ * delimiter). Real bash allows a much wider delimiter charset, and the
+ * quote form changes whether `$`-expansion happens INSIDE the body — both
+ * irrelevant here since this only needs to find where the body ENDS to
+ * expose it as a matching surface, not to interpret expansion. An unusual
+ * delimiter outside this charset is a documented remaining gap (see
+ * SECURITY.md), same spirit as the busybox-argv0 gap noted above.
+ */
+// The flag-cluster group uses a single fixed leading `-` (not `-{1,2}`)
+// with `-` also inside the trailing char class for `--eval`-style long
+// flags — avoids two quantifiers competing over the same `-` characters,
+// which is the classic shape for catastrophic backtracking on non-matching
+// input (measured: no blowup either way at MAX_INPUT_LEN, kept anyway).
+const HEREDOC_START_RE =
+  /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-[A-Za-z0-9_-]*)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g
+
+/**
+ * Fix (5): recognize a bare interpreter invocation immediately followed by
+ * a heredoc operator (`<interpreter> [flags...] <<[-] [']DELIM[']`) and
+ * expose the heredoc body — the lines between the operator's line and the
+ * line that is EXACTLY the delimiter (leading tabs stripped first when
+ * `<<-` was used) — as an additional surface, the same way `-c`/`-e` flag
+ * bodies are exposed in normalizeSubcommand. Before this, a heredoc body
+ * was never matched against anything: `bash <<'EOF' ... EOF` and
+ * `python3 <<'PYEOF' ... PYEOF` were completely invisible to every
+ * command-text rule (the root cause of a self-protection bypass — see
+ * SECURITY.md / the audit that found it: writing to `.keel/rules.yaml` via
+ * a Python heredoc).
+ *
+ * Operates on the RAW string directly rather than through tokenize() /
+ * splitTopLevel(): a heredoc body is genuinely multi-line, and
+ * splitTopLevel's per-newline subcommand splitting (needed for `x && y`,
+ * unrelated to heredocs) already chops it into independent lines before any
+ * per-subcommand logic runs, so there is no single subcommand that cleanly
+ * owns "the whole heredoc + body". This pass is purely additive — same
+ * invariant as the `-lc` short-cluster match above: it only ever adds
+ * surfaces, never suppresses one, so it runs independently without
+ * changing how subcommands are split.
+ */
+function extractHeredocs(raw: string): HeredocBody[] {
+  const results: HeredocBody[] = []
+  HEREDOC_START_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  let guard = 0
+  while (guard < MAX_SUBCOMMANDS && (m = HEREDOC_START_RE.exec(raw))) {
+    guard++
+    const interpToken = m[1]
+    const tabStrip = m[2] === '-'
+    const delim = m[3] ?? m[4] ?? m[5]
+    const kind = delim ? classifyInterpreter(basename(interpToken)) : null
+    if (!kind) continue
+
+    const opLineEnd = raw.indexOf('\n', HEREDOC_START_RE.lastIndex)
+    if (opLineEnd === -1) continue // operator has no following line: no body to extract
+    const bodyStart = opLineEnd + 1
+    const rest = raw.slice(bodyStart)
+    const escapedDelim = delim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const delimLineRe = new RegExp('^' + (tabStrip ? '\\t*' : '') + escapedDelim + '[ \\t]*$', 'm')
+    const end = delimLineRe.exec(rest)
+    if (!end) continue // unterminated heredoc (malformed input): best-effort, skip — never throw
+
+    const body = end.index > 0 ? rest.slice(0, end.index - 1) : ''
+    results.push({ kind, body })
+    // Resume scanning after the delimiter line — avoids re-matching inside
+    // the body text and guarantees forward progress (bounded by `guard`
+    // regardless).
+    HEREDOC_START_RE.lastIndex = bodyStart + end.index + end[0].length
+  }
+  return results
 }
 
 /**
@@ -463,6 +600,16 @@ export function normalizeCommand(raw: string, depth = 0): NormalizedCommand {
       if (sub.interpreterBody && !surfaces.includes(sub.interpreterBody)) surfaces.push(sub.interpreterBody)
       if (sub.nested) {
         for (const s of sub.nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s)
+      }
+    }
+
+    // Heredoc bodies (fix 5): a raw-string-level pass, independent of the
+    // subcommand loop above — see extractHeredocs doc for why.
+    for (const hd of extractHeredocs(raw)) {
+      if (!surfaces.includes(hd.body)) surfaces.push(hd.body)
+      if (hd.kind === 'shell' && depth < MAX_INTERPRETER_DEPTH) {
+        const nested = normalizeCommand(hd.body, depth + 1)
+        for (const s of nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s)
       }
     }
 
