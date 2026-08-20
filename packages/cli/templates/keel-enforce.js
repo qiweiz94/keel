@@ -6326,6 +6326,7 @@ function parseRulesFile(filePath) {
 }
 var DEFAULT_SIMPLE_RULE_LEVEL = "sprint";
 var DEFAULT_SIMPLE_RULE_CONTEXT = ["both"];
+var DEFAULT_SIMPLE_RULE_PRIORITY = -100;
 var SIMPLE_RULE_TYPES = /* @__PURE__ */ new Set(["command", "filesystem", "content", "env", "network"]);
 var SIMPLE_RULE_VALID_ACTIONS = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "fix", "report", "research", "redirect"]);
 function expandSimpleRule(candidate) {
@@ -6358,15 +6359,16 @@ function expandSimpleRule(candidate) {
     action: r.action,
     message: r.message,
     level: DEFAULT_SIMPLE_RULE_LEVEL,
-    context: DEFAULT_SIMPLE_RULE_CONTEXT
+    context: DEFAULT_SIMPLE_RULE_CONTEXT,
+    priority: DEFAULT_SIMPLE_RULE_PRIORITY
   };
   switch (type) {
     case "command": {
       if (typeof r.match !== "string" && typeof r.match_regex !== "string") {
         return { error: `rule '${label}': type 'command' requires a 'match' or 'match_regex' field (the command text or pattern to catch)` };
       }
-      if (typeof r.match === "string" && !r.match) return { error: `rule '${label}': 'match' cannot be empty` };
-      if (typeof r.match_regex === "string" && !r.match_regex) return { error: `rule '${label}': 'match_regex' cannot be empty` };
+      if (typeof r.match === "string" && !r.match.trim()) return { error: `rule '${label}': 'match' cannot be empty` };
+      if (typeof r.match_regex === "string" && !r.match_regex.trim()) return { error: `rule '${label}': 'match_regex' cannot be empty` };
       if (typeof r.match === "string") base.match = r.match;
       if (typeof r.match_regex === "string") base.match_regex = r.match_regex;
       return { rule: base };
@@ -6516,7 +6518,9 @@ function validateRules(rules) {
     "verification",
     "supply-chain"
   ]);
-  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
+  const validScopes = /* @__PURE__ */ new Set(["global", "user", "project", "folder", "session"]);
+  const validRuleContexts = /* @__PURE__ */ new Set(["local", "ci", "both"]);
+  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "context"]);
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       errors.push("Rule entries must be objects");
@@ -6561,10 +6565,21 @@ function validateRules(rules) {
       errors.push(`Rule "${label}" has an unsupported action: ${String(rule.action)}`);
     }
     if (rule.level !== void 0 && (typeof rule.level !== "string" || !validLevels.has(rule.level))) errors.push(`Rule "${label}" has an invalid protection level`);
+    if (rule.scope !== void 0 && (typeof rule.scope !== "string" || !validScopes.has(rule.scope))) {
+      errors.push(`Rule "${label}" has an unsupported scope: ${String(rule.scope)} (expected one of ${[...validScopes].join(", ")})`);
+    }
+    if (rule.context !== void 0) {
+      if (!Array.isArray(rule.context) || rule.context.length === 0 || rule.context.some((c) => typeof c !== "string" || !validRuleContexts.has(c))) {
+        errors.push(`Rule "${label}" has an invalid context: ${JSON.stringify(rule.context)} (expected a non-empty array of local, ci, both)`);
+      }
+    }
     if (typeof rule.message !== "string" || !rule.message.trim()) errors.push(`Rule "${label}" is missing a non-empty message`);
     if (rule.type === "filesystem" && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`);
     if (rule.type === "content" && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`);
     if (rule.type === "network" && typeof rule.match !== "string") errors.push(`Rule "${label}" is a network rule but has no match`);
+    if (rule.type === "command" && !rule.match && !rule.match_regex && !rule.match_prefix) {
+      errors.push(`Rule "${label}" is a command rule but has no match, match_regex, or match_prefix`);
+    }
     if (rule.type === "package" && rule.age_days !== void 0 && (typeof rule.age_days !== "number" || !Number.isFinite(rule.age_days) || rule.age_days < 0)) {
       errors.push(`Rule "${label}" is a package rule but has an invalid age_days (expected a non-negative number)`);
     }
@@ -6596,7 +6611,17 @@ function validateRules(rules) {
       ...(rule.steps || []).map((step) => step.pattern),
       rule.trigger?.pattern,
       rule.satisfy?.pattern,
-      ...Object.values(rule.boundaries || {}).map((boundary) => boundary.pattern)
+      ...Object.values(rule.boundaries || {}).map((boundary) => boundary.pattern),
+      // `topics` (research rules) is read as regex via
+      // matchesRulePattern() in pipeline.ts (~line 1002), and
+      // `fallback_pattern` (diagnosis rules) likewise (~line 958). Both
+      // were previously missing from this loop: a malformed regex in
+      // either field passed validation, then matchesRulePattern() silently
+      // caught the construction error and returned false — the exact
+      // quiet fail-open this loop's own comment above already warns about
+      // for `patterns`.
+      ...rule.topics || [],
+      rule.fallback_pattern
     ]) {
       if (typeof pattern === "string" && pattern) {
         try {

