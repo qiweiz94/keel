@@ -6520,7 +6520,7 @@ function validateRules(rules) {
   ]);
   const validScopes = /* @__PURE__ */ new Set(["global", "user", "project", "folder", "session"]);
   const validRuleContexts = /* @__PURE__ */ new Set(["local", "ci", "both"]);
-  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "context"]);
+  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       errors.push("Rule entries must be objects");

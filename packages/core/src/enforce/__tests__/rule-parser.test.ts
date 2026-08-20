@@ -269,30 +269,19 @@ rules:
     expect(issues.some(i => i.includes('invalid context'))).toBe(false)
   })
 
-  // ── Gap 5: `type: session` was incorrectly rejected as "not implemented"
-  // even though pipeline.ts (~line 1165) has real, working
-  // `max_duration_minutes` enforcement for it, and SPEC.md documents it as
-  // a working example (unlike mcp/inheritance/meta/context, which SPEC.md
-  // itself labels "not implemented"). Before this fix, validateRules()
-  // rejected every `type: session` rule outright, making the pipeline's
-  // own handler permanently dead code.
-  it('accepts a type: session rule with max_duration_minutes (previously incorrectly rejected)', () => {
-    const parsed = parseRulesContent(`version: 1
-rules:
-  - id: session-time-limit
-    type: session
-    max_duration_minutes: 120
-    action: warn
-    message: "Session running long."
-`, '/tmp/rules.yaml')
-
-    const issues = validateRules(parsed.rules)
-    expect(issues.some(i => i.includes('not implemented'))).toBe(false)
-    expect(issues).toEqual([])
-  })
-
-  it('still rejects the genuinely-unimplemented types (mcp, inheritance, meta, context)', () => {
-    for (const type of ['mcp', 'inheritance', 'meta', 'context']) {
+  // ── Gap 5 (investigated, reverted): `type: session` was initially
+  // suspected to be wrongly rejected as "not implemented", on the theory
+  // that pipeline.ts (~line 1165) has real `max_duration_minutes`
+  // enforcement for it. That theory does not survive reading the code: the
+  // pipeline block is a `continue`-only stub ("handled by context manager")
+  // and enforce/context-manager.ts is unrelated (token-usage re-injection,
+  // not session duration) — there is no consumer of `max_duration_minutes`
+  // anywhere. `type: session` stays rejected, same as mcp/inheritance/meta/
+  // context, matching SPEC.md's own "Public v1 Release Contract" table
+  // (~line 145), which lists `session` as "Not implemented — rejected at
+  // `keel validate`" alongside mcp/inheritance.
+  it('still rejects the genuinely-unimplemented types (mcp, inheritance, meta, session, context)', () => {
+    for (const type of ['mcp', 'inheritance', 'meta', 'session', 'context']) {
       const parsed = parseRulesContent(`version: 1
 rules:
   - id: unimplemented-${type}

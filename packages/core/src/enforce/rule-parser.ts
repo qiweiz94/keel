@@ -340,14 +340,26 @@ export function validateRules(rules: unknown): string[] {
   const validRuleContexts = new Set(['local', 'ci', 'both'])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
-  // `session` was removed from this set: pipeline.ts (~line 1165) has real,
-  // working `max_duration_minutes` enforcement for `type: session`, and
-  // SPEC.md documents it as a working example (unlike `mcp`/`inheritance`/
-  // `meta`/`context`, which SPEC.md itself labels "not implemented"). Before
-  // this fix, validateRules() rejected `type: session` outright, making the
-  // pipeline's own handler permanently dead code and `type: session` rules
-  // impossible to author at all.
-  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'context'])
+  // `session` was investigated for removal from this set (sprint2/lane
+  // fix-rule-parser) on the theory that pipeline.ts (~line 1165) has real,
+  // working `max_duration_minutes` enforcement for `type: session`. That
+  // theory does not survive reading the code: the block at pipeline.ts:1165
+  // is `if (rule.type === 'session' && rule.max_duration_minutes) { //
+  // handled by context manager; continue }` — it never calls violation() or
+  // result(), it just skips the rule, every time, unconditionally. Its own
+  // comment says "This WOULD be checked... Handled by context manager" —
+  // aspirational, not actual — and enforce/context-manager.ts is about
+  // token-usage-triggered rule re-injection, not session duration; grepping
+  // the whole repo for `max_duration_minutes` and for `type === 'session'`
+  // turns up no other consumer anywhere. `type: session` therefore has
+  // exactly the same "declared but not enforced" shape as mcp/inheritance/
+  // meta/context and stays in this set for the same reason they do. SPEC.md
+  // agrees with this: its top-level "Public v1 Release Contract" table
+  // (line ~145) lists `session` alongside mcp/inheritance as "Not
+  // implemented — rejected at `keel validate`"; only a lower, per-type
+  // reference table (~line 341) omits the annotation, and that omission is
+  // the stale part, not this Set.
+  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session', 'context'])
 
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
