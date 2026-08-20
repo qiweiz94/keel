@@ -28,6 +28,14 @@ import { resolveHome } from '../home.js'
  * lock can't be acquired within its bounded timeout, the mutation still
  * runs unlocked rather than being skipped or hung — see file-lock.ts's
  * fail-safe note.
+ *
+ * BOUNDED GROWTH: `load()` (see `pruneStale()`) sweeps `problems` on
+ * every load the same way state-manager.ts's `load*` methods sweep their
+ * 5 state files — a problem untouched for more than `TTL_MS` (24h) is
+ * dropped entirely, and any unverified hypothesis older than that is
+ * marked `falsified` even on a problem still being actively touched.
+ * Without this, `LedgerData.problems` grows without bound for the life of
+ * `~/.keel/state/ledger.json`.
  */
 
 export interface Hypothesis {
@@ -63,6 +71,13 @@ export function ledgerPath(): string {
 export function problemKey(cwd: string, fingerprint: string): string {
   return createHash('sha256').update(`${cwd}:${fingerprint}`).digest('hex').slice(0, 16)
 }
+
+// Same 24h value state-manager.ts's TTL_MS uses for its own load-time
+// sweep of the 5 state files — kept as its own constant here (rather than
+// importing state-manager.ts's, which is private to that module) so the
+// two stay independently readable, but deliberately the same NUMBER for
+// consistency across the enforcement state surface.
+const TTL_MS = 24 * 60 * 60 * 1000
 
 export class ProblemLedger {
   private data: LedgerData = { problems: {}, active: {} }
@@ -104,6 +119,56 @@ export class ProblemLedger {
     try {
       this.lastMtimeMs = statSync(this.path).mtimeMs
     } catch { /* best effort; reloadIfChanged just reloads more eagerly next time */ }
+    this.pruneStale()
+  }
+
+  /**
+   * Bounds `LedgerData.problems`' growth the same way state-manager.ts's
+   * `load*` methods bound their own 5 files: a TTL sweep run on every
+   * `load()` (constructor, `reloadIfChanged()`, and the reload at the top
+   * of every `withLock()` mutation), not a one-off admin action. Before
+   * this, `falsifyStaleHypotheses()` existed but was never called from
+   * any production path (only tests called it directly) — and even
+   * called, it only flips a hypothesis's `status` to `'falsified'`, it
+   * never removes anything, so `problems` would still have grown forever
+   * even with it wired in. This method does both: falsifies hypotheses
+   * stale past `TTL_MS` (unchanged from `falsifyStaleHypotheses()`'s own
+   * logic — a problem that is still being actively touched can still
+   * carry an old unverified hypothesis worth marking dead) AND drops
+   * whole problem entries whose `last_seen` is older than `TTL_MS` (an
+   * untouched problem ages out entirely, mirroring how state-manager.ts
+   * drops entries by age regardless of their other fields). Pruned
+   * problems are also unlinked from `active` so a session pointer never
+   * dangles at a key that no longer exists — `activeProblemKey()` would
+   * then return a stale key whose `hasFreshHypothesis`/`hasFreshDiagnosis`
+   * always report false (safe, fails toward re-diagnosing) but a
+   * dangling pointer is needless confusion `problems()`/`problem()`
+   * callers don't need to reason about.
+   *
+   * Like state-manager.ts's TTL sweep, this trims `this.data` in memory
+   * on every load; it is not itself a disk write. It gets persisted
+   * opportunistically on the next `save()` from a real mutation — exactly
+   * the same "load-time sweep, save-time persistence" split state-manager
+   * uses, not a separate scheduled job.
+   */
+  private pruneStale(): void {
+    const now = Date.now()
+    const staleKeys: string[] = []
+    for (const [key, problem] of Object.entries(this.data.problems)) {
+      for (const h of problem.hypotheses) {
+        if (h.status === 'unverified' && now - h.at > TTL_MS) h.status = 'falsified'
+      }
+      if (now - problem.last_seen > TTL_MS) staleKeys.push(key)
+    }
+    for (const key of staleKeys) {
+      delete this.data.problems[key]
+    }
+    if (staleKeys.length) {
+      const stale = new Set(staleKeys)
+      for (const [sessionId, key] of Object.entries(this.data.active)) {
+        if (stale.has(key)) delete this.data.active[sessionId]
+      }
+    }
   }
 
   /**
@@ -240,15 +305,17 @@ export class ProblemLedger {
     return problem.recent_diagnosis.some((d) => Date.now() - d.at <= windowMs)
   }
 
+  /**
+   * Public, explicit entry point that forces an immediate ON-DISK prune.
+   * `pruneStale()` now also runs implicitly on every `load()` — and
+   * `withLock()` below always reloads before running its callback — so
+   * by the time this callback runs, the sweep has already happened in
+   * memory; this method's only remaining job is `save()`, persisting it
+   * right now rather than waiting for the next incidental mutation to
+   * do so.
+   */
   falsifyStaleHypotheses(): void {
     this.withLock(() => {
-      // Hypotheses older than 24h with no confirmation become falsified.
-      const day = 24 * 3600_000
-      for (const problem of Object.values(this.data.problems)) {
-        for (const h of problem.hypotheses) {
-          if (h.status === 'unverified' && Date.now() - h.at > day) h.status = 'falsified'
-        }
-      }
       this.save()
     })
   }

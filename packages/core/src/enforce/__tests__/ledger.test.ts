@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execSync } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
@@ -251,5 +252,122 @@ describe('problem key derivation', () => {
   it('is deterministic per cwd and fingerprint', () => {
     expect(problemKey('/a', 'npm test')).toBe(problemKey('/a', 'npm test'))
     expect(problemKey('/a', 'npm test')).not.toBe(problemKey('/b', 'npm test'))
+  })
+})
+
+/**
+ * `LedgerData.problems` used to grow forever: `falsifyStaleHypotheses()`
+ * existed but was never called from any production path (only tests
+ * called it directly), and even called, it only flipped a hypothesis's
+ * `status` — it never removed a problem entry. `pruneStale()` (wired into
+ * `load()`, so it runs on construction, on `reloadIfChanged()`, and on
+ * every `withLock()` mutation's reload — not just when something
+ * remembers to call an admin method) now does both. These tests write
+ * ledger.json directly (bypassing the class) to plant entries at
+ * specific ages, since `recordOutcome`/`addHypothesis` always stamp
+ * `Date.now()`.
+ */
+describe('problem ledger — bounded growth (stale pruning wired into load)', () => {
+  const tmpDirs: string[] = []
+  function freshLedgerPath(): string {
+    const dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    tmpDirs.push(dir)
+    return join(dir, 'ledger.json')
+  }
+
+  afterEach(() => {
+    while (tmpDirs.length) {
+      const dir = tmpDirs.pop()!
+      execSync(`rm -rf "${dir}"`)
+    }
+  })
+
+  const DAY_MS = 24 * 60 * 60 * 1000
+
+  it('drops a problem whose last_seen is older than the 24h TTL, on construction alone', () => {
+    const path = freshLedgerPath()
+    const now = Date.now()
+    const staleKey = problemKey('/stale/project', 'npm test')
+    const freshKey = problemKey('/fresh/project', 'npm test')
+    writeFileSync(path, JSON.stringify({
+      problems: {
+        [staleKey]: {
+          problem_key: staleKey, first_seen: now - 2 * DAY_MS, last_seen: now - DAY_MS - 60_000,
+          fingerprint: 'x', status: 'stuck', failures: 3, last_exit: 1, hypotheses: [], recent_diagnosis: [],
+        },
+        [freshKey]: {
+          problem_key: freshKey, first_seen: now - 1000, last_seen: now - 1000,
+          fingerprint: 'x', status: 'opened', failures: 1, last_exit: 1, hypotheses: [], recent_diagnosis: [],
+        },
+      },
+      active: {},
+    }))
+
+    const ledger = new ProblemLedger(path)
+    expect(ledger.problem(staleKey)).toBeUndefined()
+    expect(ledger.problem(freshKey)).toBeDefined()
+    expect(ledger.problems().length).toBe(1)
+  })
+
+  it('falsifies a stale unverified hypothesis even on a problem that is still fresh (last_seen recent)', () => {
+    const path = freshLedgerPath()
+    const now = Date.now()
+    const key = problemKey('/still/active', 'npm test')
+    writeFileSync(path, JSON.stringify({
+      problems: {
+        [key]: {
+          problem_key: key, first_seen: now - 2 * DAY_MS, last_seen: now - 500, // touched recently
+          fingerprint: 'x', status: 'stuck', failures: 3, last_exit: 1,
+          hypotheses: [{ id: 'hyp_1', statement: 'old guess', evidence: [], at: now - DAY_MS - 60_000, status: 'unverified' }],
+          recent_diagnosis: [],
+        },
+      },
+      active: {},
+    }))
+
+    const ledger = new ProblemLedger(path)
+    const problem = ledger.problem(key)
+    expect(problem).toBeDefined()
+    expect(problem?.hypotheses[0].status).toBe('falsified')
+  })
+
+  it('clears an active-session pointer that referenced a now-pruned problem', () => {
+    const path = freshLedgerPath()
+    const now = Date.now()
+    const staleKey = problemKey('/gone/project', 'npm test')
+    writeFileSync(path, JSON.stringify({
+      problems: {
+        [staleKey]: {
+          problem_key: staleKey, first_seen: now - 2 * DAY_MS, last_seen: now - DAY_MS - 60_000,
+          fingerprint: 'x', status: 'stuck', failures: 3, last_exit: 1, hypotheses: [], recent_diagnosis: [],
+        },
+      },
+      active: { s1: staleKey },
+    }))
+
+    const ledger = new ProblemLedger(path)
+    expect(ledger.activeProblemKey('s1')).toBeUndefined()
+  })
+
+  it('a problem well within the TTL survives untouched', () => {
+    const path = freshLedgerPath()
+    const now = Date.now()
+    const key = problemKey('/recent/project', 'npm test')
+    writeFileSync(path, JSON.stringify({
+      problems: {
+        [key]: {
+          problem_key: key, first_seen: now - 1000, last_seen: now - 1000,
+          fingerprint: 'x', status: 'opened', failures: 1, last_exit: 1,
+          hypotheses: [{ id: 'hyp_1', statement: 'recent guess', evidence: [], at: now - 1000, status: 'unverified' }],
+          recent_diagnosis: [],
+        },
+      },
+      active: { s1: key },
+    }))
+
+    const ledger = new ProblemLedger(path)
+    expect(ledger.problem(key)?.failures).toBe(1)
+    expect(ledger.problem(key)?.hypotheses[0].status).toBe('unverified')
+    expect(ledger.activeProblemKey('s1')).toBe(key)
   })
 })

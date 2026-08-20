@@ -26,8 +26,20 @@ describe('rule overrides', () => {
     mkdirSync(directory, { recursive: true })
     const lock = join(directory, 'overrides.json.lock')
     writeFileSync(lock, 'active lock')
-    const store = new FileRuleOverrideStore(home)
+    // A short timeoutMs (well under the 5s production default, and well
+    // under this lockfile's own staleMs) so this deliberately-held,
+    // fresh lock makes withFileLock give up and hit its fail-safe fast,
+    // instead of this single test burning the whole 5s production
+    // acquire window (and risking vitest's own default per-test
+    // timeout) to prove the same thing.
+    const store = new FileRuleOverrideStore(home, { timeoutMs: 200, staleMs: 60000 })
     expect(store.consume('rule')).toBe(false)
+    // Fail-safe per file-lock.ts: consume() still RUNS unlocked on a
+    // timed-out acquire rather than skipping the operation — it does not
+    // touch the lockfile at all (no token was ever written into it, so
+    // there is nothing for release to conditionally unlink), which is
+    // the property this test exists to check: another process's live
+    // lock survives untouched.
     expect(existsSync(lock)).toBe(true)
   })
 
@@ -53,6 +65,25 @@ describe('rule overrides', () => {
       if (previous === undefined) delete process.env.KEEL_OVERRIDES_DIR
       else process.env.KEEL_OVERRIDES_DIR = previous
     }
+  })
+
+  it('survives a literal `null` overrides.json — consume() returns false and grant() still writes', () => {
+    // Same crash class as StateManager.loadFile: `JSON.parse('null')`
+    // parses successfully (legal JSON), so a plain try/catch around
+    // JSON.parse alone does not catch it. `read()` guards this
+    // explicitly (see its comment) — this exercises it end to end
+    // through the public methods, not just the private read() shape.
+    const home = mkdtempSync(join(tmpdir(), 'keel-overrides-null-'))
+    const directory = join(home, '.keel')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'overrides.json'), 'null')
+    const store = new FileRuleOverrideStore(home)
+    expect(() => store.consume('rule')).not.toThrow()
+    expect(store.consume('rule')).toBe(false)
+    expect(store.peek('rule')).toBeNull()
+    expect(store.list()).toEqual({})
+    expect(() => store.grant('rule', { expires_at: Date.now() + 60000, mode: 'window' })).not.toThrow()
+    expect(store.consume('rule')).toBe(true)
   })
 
   it('an explicit `home` argument still wins when KEEL_OVERRIDES_DIR is unset (existing behavior unchanged)', () => {

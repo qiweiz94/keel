@@ -1,6 +1,7 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveHome } from '../home.js'
+import { withFileLock, type LockOptions } from './file-lock.js'
 
 export type OverrideMode = 'once' | 'window' | 'session'
 
@@ -46,8 +47,18 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
   private readonly directory: string
   private readonly file: string
   private readonly lock: string
+  private readonly lockOptions: LockOptions
 
-  constructor(home = resolveHome()) {
+  /**
+   * `lockOptions` overrides file-lock.ts's default wait/stale-reclaim
+   * bounds — same purpose as the matching parameter on StateManager and
+   * ProblemLedger's constructors: production code never needs this, but
+   * a test deliberately creating heavy artificial contention (or one that
+   * wants a SHORT bound so an intentionally-held lock fails fast instead
+   * of eating the 5s production default) needs a value the production
+   * default doesn't have to grow to accommodate.
+   */
+  constructor(home = resolveHome(), lockOptions: LockOptions = {}) {
     // KEEL_OVERRIDES_DIR isolates the DEFAULT construction site
     // (pipeline.ts: `new FileRuleOverrideStore()`, used whenever a caller
     // does not supply its own overrideStore) from the real ~/.keel —
@@ -67,49 +78,76 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
     this.directory = process.env.KEEL_OVERRIDES_DIR || join(home, '.keel')
     this.file = join(this.directory, 'overrides.json')
     this.lock = `${this.file}.lock`
+    this.lockOptions = lockOptions
+  }
+
+  /**
+   * `consume`/`grant` share ONE lock (`overrides.json.lock`) via the
+   * shared `withFileLock`/`acquireLock` primitive from file-lock.ts —
+   * NOT a hand-rolled `openSync(path, 'wx')` + unconditional `unlinkSync`
+   * in `finally`, which this class used to do. That hand-rolled version
+   * reproduced the exact stale-lock reclaim-cascade file-lock.ts's own
+   * header comment warns against: no ownership token written into the
+   * lockfile, so a holder that stalls past the 60s staleness check, gets
+   * reclaimed by a waiter, then wakes up and reaches its own `finally`,
+   * unconditionally unlinks — deleting the RECLAIMER's live lock, not its
+   * own, letting a third writer in while the reclaimer still believes it
+   * holds it. `withFileLock`/`acquireLock` close this with a per-acquire
+   * token: release only unlinks when the lockfile still contains the
+   * exact token this call wrote (see file-lock.ts's header for the full
+   * mechanism). Same fail-safe contract as StateManager/ProblemLedger: on
+   * a timed-out acquire, the callback still runs UNLOCKED rather than the
+   * write being silently skipped or the caller hanging — losing an
+   * override write is worse than a rare unlocked window.
+   */
+  private ensureDir(): void {
+    try { mkdirSync(this.directory, { recursive: true }) } catch { /* write() would also fail loudly; consume/grant catch around this */ }
   }
 
   consume(ruleId: string, sessionId?: string): boolean {
-    let descriptor: number | undefined
-    let acquired = false
     try {
-      mkdirSync(this.directory, { recursive: true })
-      try {
-        descriptor = openSync(this.lock, 'wx')
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-        try {
-          if (Date.now() - statSync(this.lock).mtimeMs > 60000) unlinkSync(this.lock)
-        } catch {}
-        descriptor = openSync(this.lock, 'wx')
-      }
-      acquired = true
-      const overrides = this.read()
-      const override = overrides[ruleId]
-      if (!override || override.expires_at <= Date.now()) {
-        if (override) delete overrides[ruleId]
+      this.ensureDir()
+      return withFileLock(this.lock, () => {
+        const overrides = this.read()
+        const override = overrides[ruleId]
+        if (!override || override.expires_at <= Date.now()) {
+          if (override) delete overrides[ruleId]
+          this.write(overrides)
+          return false
+        }
+        if (override.mode === 'session') {
+          // Scoped to one exact session_id. A different (or absent) caller
+          // session_id does not match — and, importantly, does NOT delete or
+          // otherwise disturb the entry, so the owning session can still use
+          // it on a later call.
+          return sessionId !== undefined && override.session_id === sessionId
+        }
+        if (override.mode === 'window') return true
+        delete overrides[ruleId]
         this.write(overrides)
-        return false
-      }
-      if (override.mode === 'session') {
-        // Scoped to one exact session_id. A different (or absent) caller
-        // session_id does not match — and, importantly, does NOT delete or
-        // otherwise disturb the entry, so the owning session can still use
-        // it on a later call.
-        return sessionId !== undefined && override.session_id === sessionId
-      }
-      if (override.mode === 'window') return true
-      delete overrides[ruleId]
-      this.write(overrides)
-      return true
+        return true
+      }, this.lockOptions)
     } catch {
       return false
-    } finally {
-      if (descriptor !== undefined) closeSync(descriptor)
-      if (acquired) {
-        try { unlinkSync(this.lock) } catch {}
-      }
     }
+  }
+
+  /**
+   * Persist a new/updated override for `ruleId` — the only production
+   * WRITER of new entries (`keel allow`, packages/cli/src/commands/
+   * allow.ts). Locked exactly like `consume()`, against the same file:
+   * without this, a concurrent `keel allow` call (two terminals) or a
+   * `consume()` mid-violation on another process is a real lost-update
+   * race against this read-modify-write, same hazard class as
+   * StateManager/ProblemLedger were fixed for.
+   */
+  grant(ruleId: string, override: RuleOverride): void {
+    this.ensureDir()
+    withFileLock(this.lock, () => {
+      const overrides = this.read()
+      overrides[ruleId] = override
+      this.write(overrides)
+    }, this.lockOptions)
   }
 
   peek(ruleId: string): RuleOverride | null {
@@ -133,8 +171,18 @@ export class FileRuleOverrideStore implements RuleOverrideStore {
   private read(): Record<string, RuleOverride> {
     if (!existsSync(this.file)) return {}
     try {
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8'))
-      return parsed && typeof parsed === 'object' ? parsed : {}
+      const parsed: unknown = JSON.parse(readFileSync(this.file, 'utf8'))
+      // Guards the same non-object-but-legally-parses shapes as
+      // StateManager.loadFile (bare `null`, an array, a number/string) —
+      // `typeof null === 'object'` and `typeof [] === 'object'` both pass
+      // a bare `typeof parsed === 'object'` check, so callers indexing
+      // into the "dictionary" (consume/grant's `overrides[ruleId] = ...`)
+      // would otherwise crash on legal-but-wrong-shaped JSON, not just a
+      // syntax error.
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, RuleOverride>
+      }
+      return {}
     } catch {
       return {}
     }
