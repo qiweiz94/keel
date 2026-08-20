@@ -41,6 +41,12 @@ reasoning text. They are a gate, not an anti-virus engine:
 
 ### Measured bypass resistance of the Tier-1 floor
 
+This table measures a *deliberate adversary* trying to dodge one specific rule through
+obfuscation — a different threat from the README's prevention-axis number (0% harm rate
+across N=12 guarded runs where an ordinary model wasn't trying to evade anything; see
+**[README § The measured number](README.md#the-measured-number)**). Read the two
+together, not as substitutes for each other.
+
 An adversarial sweep (260 probes, each through the real CLI with a fresh
 state directory; method and raw verdicts in
 `session/v04/EVIDENCE/phase-3-redteam.md`, re-run against the v0.4-hardened

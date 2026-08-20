@@ -1,8 +1,11 @@
 # The three tiers
 
-`keel install` writes 45 default rules into `~/.keel/rules.yaml`, split into three
-tiers. This page explains what each tier does, how the "speed dial" (`keel level`)
-interacts with them, and how a rule moves from silently watching to actually blocking.
+`keel install` writes 46 default rules into `~/.keel/rules.yaml`, split into three
+tiers: 13 rules in Tier 1 carry a hard `level: protect` floor, plus one more Tier-1-
+positioned sibling rule that doesn't (see the note under Tier 1 below); 22 rules sit in
+Tier 2 (balanced); 10 rules sit in Tier 3 (observe). This page explains what each tier
+does, how the "speed dial" (`keel level`) interacts with them, and how a rule moves
+from silently watching to actually blocking.
 
 Two different things are both called "level" here, and it's worth pulling apart once:
 
@@ -35,7 +38,7 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   ladder is the wrong shape — the first hit *is* the incident.
 
 Three tiers resolve that tension by giving each rule the posture its own evidence
-earns it, instead of applying one policy to all 45.
+earns it, instead of applying one policy to all 46.
 
 | Tier | What it does | Can the dial soften it? | Example rules |
 |---|---|---|---|
@@ -67,6 +70,16 @@ violation... warning only") on its first call under the same dial.
 | `pipe-to-shell` | `curl/wget \| sh`-style remote code execution |
 | `no-exfil-flow` | Data read from a sensitive file, then sent over the network |
 | `prod-db-destruction` | A destructive DB operation against a connection tagged prod/production/live |
+
+**A 14th rule sits in this same source section but is not a floor:**
+`no-exfil-flow-cross-call` is `no-exfil-flow`'s warn-tier sibling — it checks the same
+sources/sinks against a persisted, session-scoped store instead of in-memory state, so
+it catches a read and a later network sink across two separate hook processes, not just
+one. It ships `action: warn`, `level: sprint` (no floor — the dial can soften it like any
+Tier-2 rule), yet it's written directly after `no-exfil-flow` in `rules.yaml` rather than
+under the Tier-2 comment header. This page counts it toward the 46-rule total but not
+toward Tier 1's 13-rule floor count, since behavior (no floor, dial-softenable `warn`) is
+what puts a rule in a tier, not its position in the file.
 
 ## Tier 2 — balanced (22 rules)
 
@@ -155,7 +168,7 @@ that carry a level (`level: balanced`) — they're also the exception to "every 
 evaluates at every dial": switching to `sprint` deactivates them. Confirmed live:
 `keel level sprint` from `protect` printed `2 rule(s) deactivated (their level floor
 is above sprint): test-oracle-tampering, test-oracle-env-introspection`, and `keel
-status` reported `Active at current dial: 43 of 45`.
+status` reported `Active at current dial: 44 of 46`.
 
 ## The speed dial
 
@@ -180,13 +193,14 @@ switching `protect → sprint`:
 
 ```
 Dial diff (protect → sprint), from the merged ruleset:
-  4 rule(s) soften deny/block → warn: no-secrets-in-code, no-secret-files,
-    no-credential-echo, source-change-requires-test
-  1 rule(s) deactivated (their `level` floor is above sprint): test-oracle-tampering
-  12 `level: protect` floor(s) unchanged: keel-control-gate, no-self-protection-write,
+  4 rule(s) soften deny/block → warn: source-change-requires-test, no-secrets-in-code,
+    no-secret-files, no-credential-echo
+  2 rule(s) deactivated (their `level` floor is above sprint): test-oracle-tampering,
+    test-oracle-env-introspection
+  13 `level: protect` floor(s) unchanged: keel-control-gate, no-self-protection-write,
     no-rules-tampering, no-enforcer-removal, agent-env-hijack, no-destructive-commands,
-    protected-branch-reset, protected-branch-delete, pipe-to-shell,
-    prod-db-destruction, no-exfil-flow, no-force-push
+    no-destructive-interpreter-body, protected-branch-reset, protected-branch-delete,
+    pipe-to-shell, prod-db-destruction, no-exfil-flow, no-force-push
 ```
 
 `sprint` isn't meant to be permanent: it auto-reverts to `balanced` after 4 hours

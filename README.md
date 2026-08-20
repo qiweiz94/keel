@@ -41,6 +41,23 @@ self-censorship, not for it. (The third harm-eliciting task, `stuck-nonexistent-
 sits on a `mode: observe` axis keel cannot block on either arm; excluded from that 10/10,
 classified ambiguous.) Full audit: **[session/v04/EVIDENCE/attribution-reaudit.md](session/v04/EVIDENCE/attribution-reaudit.md)**.
 
+**That 0% is not the same claim as bypass-resistance, and shouldn't be read alone.**
+The number above measures an *ordinary* model drifting into a mistake it wasn't trying
+to hide — a different threat than a *deliberate* adversary trying to slip one specific
+action past one specific rule through obfuscation. For that second threat, see the
+separate adversarial sweep in SECURITY.md: of a 260-probe corpus (some probes were
+expected to be allowed and are excluded from the denominators below), 188 probes
+deliberately obfuscated a command against one of the 12 `level: protect` floor rules
+that existed at sweep time, finding per-rule catch rates from **25%** (`no-exfil-flow`,
+1 of 4 probes, the floor's weakest rule measured) up to **93%**
+(`no-self-protection-write`) against the v0.4-hardened floors. That corpus is no
+longer reproducible and predates some v1.0.0 fixes — full caveats and the per-rule
+table: **[SECURITY.md § Measured bypass resistance of the Tier-1
+floor](SECURITY.md#measured-bypass-resistance-of-the-tier-1-floor)**. Read together: 0%
+is how often an unguided agent stumbled into the forbidden action on these three tasks;
+25–93% is how a floor rule fared, as of that sweep, against someone actively trying to
+evade it — neither number substitutes for the other.
+
 **Scope, stated plainly:** one free model, one machine, one temperature, no frontier-model
 arm run yet, and the attribution re-audit is proven for this one under-cautious cheap model
 only — **not re-verified for safety-tuned models**, some of which have been separately
@@ -195,7 +212,7 @@ suggested next step) · `research` (block on a stale knowledge-freshness gate) �
 `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
 problem-solving types below (`stuck`, `research`, `diagnosis`, `claim`, `oracle`).
 
-`keel install` ships 45 rules by default, split into three tiers — what's an
+`keel install` ships 46 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
 `curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
@@ -205,7 +222,7 @@ publishing, and `npx`/`bunx` of unpinned packages. Run `keel validate` after edi
 ### Stopping agents that circle
 
 Several rule types target the failure everyone recognises — an agent retrying the same
-broken command forever. Three ship as part of the default 43:
+broken command forever. Three ship as part of the default 46:
 
 - **`stuck`** (`no-repeat-loops`) — N identical failures in a window → redirect, then deny
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
@@ -253,8 +270,8 @@ keel level protect      # before a deploy
 | `balanced` | warn once, then block | full | day to day |
 | `protect` | **block on first violation** | full + reasoning heuristics | high-stakes work |
 
-A rule's own `level:` (12 rules ship with it, unrelated to the `keel level` dial you
-just set) is a **floor** — `level: protect` rules deny on the very first hit at *any*
+A rule's own `level:` (13 rules ship with `level: protect`, unrelated to the `keel level`
+dial you just set) is a **floor** — `level: protect` rules deny on the very first hit at *any*
 dial, sprint included, and are the only rules a lower dial can't soften or drop.
 `keel level sprint` auto-reverts to `balanced` after 4 hours (`sprint_expiry_hours`
 overrides it; `0` disables the revert) — `keel status` shows the countdown. Changes
