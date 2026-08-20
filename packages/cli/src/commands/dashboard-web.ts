@@ -4,6 +4,7 @@ import chalk from 'chalk'
 import { collectState, switchLevel } from './dashboard.js'
 import { isInteractive } from './interactive.js'
 import { resolveHome } from '../core/home.js'
+import { secureEqual } from './daemon.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -254,7 +255,7 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
   const token = randomBytes(16).toString('hex')
   const server = createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
-    const authed = req.headers.authorization === `Bearer ${token}` || url.searchParams.get('token') === token
+    const authed = secureEqual(req.headers.authorization || '', `Bearer ${token}`) || secureEqual(url.searchParams.get('token') || '', token)
     const send = (code: number, body: string, type = 'application/json') => {
       res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
       res.end(body)
