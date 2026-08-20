@@ -6,9 +6,10 @@
 
 The v1 release. Four correctness/hardening lanes landed on top of 0.4.0's default
 ruleset and thesis experiment: a fail-closed sweep across every enforcement entry
-point, a `KEEL_HOME` fix that closes the install/read split-brain on both sides,
-verification-obligation discharge on three more hosts, Windows support, and a wider
-host-breadth pass with one real user-facing fix (Cursor's warn-message casing).
+point, a `KEEL_HOME` fix that closes most of the install/read split-brain (a few
+reader call sites remain — see below), verification-obligation discharge on three
+more hosts, Windows support, and a wider host-breadth pass with one real
+user-facing fix (Cursor's warn-message casing).
 Separately, this release corrects a stale documentation count unrelated to any of
 those four lanes: `no-destructive-interpreter-body` (the same destructive-wipe
 class as the shell-command floor, caught when issued through an interpreter
@@ -92,12 +93,12 @@ the rule-count correction: `session/v1/EVIDENCE/m5-release.md`.
 
 ### Added
 
-- **`KEEL_HOME` closes the install/read split-brain, on both the write and the
-  read side.** Previously only the CLI's own `homedir()` calls existed to redirect;
-  now `resolveHome()` (`KEEL_HOME` → `HOME` → `os.homedir()`, exported from
-  `packages/core/src/home.ts` and generated into every consuming package) is used
-  by all 10 global-target installer writers *and* the 25 reader call sites across
-  `packages/cli` and `packages/core` that used to resolve a bare `homedir()`
+- **`KEEL_HOME` closes most of the install/read split-brain, on both the write and
+  the read side.** Previously only the CLI's own `homedir()` calls existed to
+  redirect; now `resolveHome()` (`KEEL_HOME` → `HOME` → `os.homedir()`, exported
+  from `packages/core/src/home.ts` and generated into every consuming package) is
+  used by all 10 global-target installer writers *and* the 25 reader call sites
+  across `packages/cli` and `packages/core` that used to resolve a bare `homedir()`
   independently — daemon token/state, rules.yaml, audit traces, signing/receipt
   keys, override state, the kill-switch sentinel, and more. Two bonus fixes found
   during the sweep: `rule-parser.ts`'s `loadRuleHierarchy()` (the single most
@@ -106,8 +107,13 @@ the rule-count correction: `session/v1/EVIDENCE/m5-release.md`.
   unset — worse than a bare `homedir()`, and the writer of the exact kill-switch
   file every reader above now trusts. A new install→read consistency test drives
   the real built CLI as separate processes with two distinct `HOME`/`KEEL_HOME`
-  temp dirs to prove nothing leaks across the boundary in either direction. See
-  `session/v1/EVIDENCE/m1r-3-install.md` and `session/v1/EVIDENCE/reader-home.md`.
+  temp dirs to prove nothing leaks across the boundary in either direction. **Known
+  remaining gap:** `level.ts`, `validate.ts`, and `enforce.ts`'s rule-fingerprint
+  watcher still resolve `process.env.HOME || '~'` directly instead of
+  `resolveHome()`, the same bare-fallback pattern `disable.ts` had — `keel level`,
+  `keel validate`, and the enforce pipeline's reload watcher do not yet honor
+  `KEEL_HOME`. See `session/v1/EVIDENCE/m1r-3-install.md` and
+  `session/v1/EVIDENCE/reader-home.md`.
 - **Verification-obligation discharge now works on Claude Code, Codex, and Gemini,
   not only OpenCode.** There was previously exactly one call site in the whole
   codebase (OpenCode's `tool.execute.after`) that could mark a `verification` rule's

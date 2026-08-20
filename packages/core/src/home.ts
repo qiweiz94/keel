@@ -10,11 +10,16 @@ import { homedir } from 'node:os'
  *   - `KEEL_HOME` is the explicit, keel-specific override for redirecting
  *     keel's entire footprint to a non-default location (a test run, a
  *     multi-user box, a sandboxed install). This is the override that
- *     closes the install/read split-brain: before this module existed,
- *     `install.ts` alone honored `KEEL_HOME` while every reader resolved
- *     a bare `homedir()` independently, so an install with `KEEL_HOME` set
- *     wrote to the redirected location while readers kept looking under
- *     the real home directory.
+ *     closes the install/read split-brain for every call site that uses
+ *     it: before this module existed, `install.ts` alone honored
+ *     `KEEL_HOME` while every reader resolved a bare `homedir()`
+ *     independently, so an install with `KEEL_HOME` set wrote to the
+ *     redirected location while readers kept looking under the real home
+ *     directory. As of this writing a few call sites (`level.ts`,
+ *     `validate.ts`, `enforce.ts`'s rule-fingerprint watcher) still
+ *     resolve `process.env.HOME` directly instead of calling this
+ *     function, so the split-brain isn't fully closed yet — see
+ *     CHANGELOG.md's "Known remaining gap" note.
  *   - `HOME` is checked next, not left to `os.homedir()` alone, because
  *     `os.homedir()` ignores `$HOME` on Windows (it reads `USERPROFILE`
  *     instead) — several tests across this repo sandbox by setting
