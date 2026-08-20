@@ -10,6 +10,7 @@ export { PersistentFlowStore, FLOW_TAG_TTL_MS, type PersistedFlowTag } from './f
 export { Suggester } from './suggester.js'
 export { StateManager } from './state-manager.js'
 export { StuckTracker } from './stuck-tracker.js'
+export { PersistentStuckStore, STUCK_STATE_MAX_WINDOW_MS, type PersistedStuckState } from './stuck-store.js'
 export { ResearchTracker } from './research-tracker.js'
 export { ProblemLedger, problemKey } from './problem-ledger.js'
 export {

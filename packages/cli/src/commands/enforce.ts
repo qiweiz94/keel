@@ -9,6 +9,8 @@ import {
   SequenceDetector,
   FlowTracker,
   PersistentFlowStore,
+  StuckTracker,
+  PersistentStuckStore,
   loadRuleHierarchy,
   parseRulesFile,
   hashRulesFile,
@@ -140,6 +142,21 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   // tests isolate it the same way and it never touches a real ~/.keel
   // unless that env var is unset.
   const flowTracker = new FlowTracker(new PersistentFlowStore())
+  // Same gap, same fix, for the stuck-loop detector (`type: stuck`,
+  // shipped as `no-repeat-loops`): `StuckTracker`'s `counts` Map is
+  // in-memory only, constructed fresh by `initEnforce()` on every single
+  // `keel hook <host>` process. Without a `PersistentStuckStore`, a command
+  // that failed twice in one process is invisible to the NEXT process
+  // evaluating the identical retry — the escalation ladder (3 → redirect,
+  // 5 → deny) can never advance past "first attempt" on this lane, no
+  // matter how many times the same command actually failed. `keel daemon`
+  // (daemon.ts) stays plain in-memory on purpose — it already holds one
+  // `StuckTracker` open for the whole session, same reasoning as its
+  // `FlowTracker`. Uses the same `stateDir()`/`KEEL_STATE_DIR` resolution
+  // as `PersistentFlowStore`/`StateManager` above, so tests isolate it the
+  // same way and it never touches a real ~/.keel unless that env var is
+  // unset.
+  const stuckTracker = new StuckTracker(new PersistentStuckStore())
   const cm = new ContextManager(level)
 
   // Initialize pipeline
@@ -151,6 +168,7 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     contentTracker,
     sequenceDetector,
     flowTracker,
+    stuckTracker,
     ruleHierarchy: hierarchy,
     ruleVersion,
     allowedFixTransforms: true,
