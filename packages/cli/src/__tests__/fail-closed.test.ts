@@ -416,6 +416,87 @@ rules:
       expect(r.stderr).toContain('would have blocked a real rm -rf /')
     })
   })
+
+  describe('(a6) TOOL_RESPONSE present in the env-var fallback path — a completed call must route to PostToolUse, not be re-evaluated as a pre-tool-call — FIXED', () => {
+    // Claude Code's own installed contract comment
+    // (templates/claude-posttooluse-verify.sh) documents TOOL_NAME/
+    // TOOL_INPUT/TOOL_RESPONSE arriving via env vars for a PostToolUse
+    // call, same as stdin. Before this fix, hookVerdict's env-var branch
+    // ignored TOOL_RESPONSE entirely and always built the bare
+    // pre-tool-call shape — so a call that had ALREADY RUN got evaluated
+    // as if it were about to run, and a matching deny rule produced a
+    // spurious exit-2 block for an action the host can no longer stop.
+    const home = newHome(`version: 1
+level: protect
+rules:
+  - id: t-posttooluse-env-routing
+    type: command
+    match: "rm -rf /"
+    action: deny
+    level: sprint
+    message: "would incorrectly block an already-completed call if misrouted as PreToolUse"
+`)
+
+    it('TOOL_RESPONSE present: the completed call exits 0 (PostToolUse can never block), not the exit-2 a PreToolUse-shaped evaluation of the same command would produce', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+        TOOL_RESPONSE: JSON.stringify({ exit_code: 0, stdout: 'ok' }),
+      })
+      expect(r.status).toBe(0)
+    })
+
+    it('the SAME command, same host, DOES exit 2 when TOOL_RESPONSE is absent — isolates the fix to TOOL_RESPONSE-present routing, not a rule-matching change', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+      })
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('would incorrectly block')
+    })
+
+    it('TOOL_RESPONSE="" (defined but empty, e.g. a wrapper that exports all three vars unconditionally): STILL exits 2 — an empty string is not "present" for routing purposes, or a wrapper that always exports the var would silently disarm every block', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+        TOOL_RESPONSE: '',
+      })
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('would incorrectly block')
+    })
+  })
+
+  describe('(a7) generic host block reason: stderr, not stdout — docs/integrations.md fixed to match the code, not the other way around', () => {
+    // renderVerdict's default case (hook.ts, `generic` falls through to the
+    // codex/claude-code/gemini exit-2 branch) writes the block reason to
+    // stderr and leaves stdout untouched. docs/integrations.md's generic
+    // contract table used to claim "stdout: the block reason" — real drift,
+    // caught by lane review — and `fail-closed.test.ts` already had passing
+    // tests (the (b) describe above, "generic: exits 2 ...") asserting
+    // stderr, meaning any integration built against this host type had
+    // already adapted to the CODE. The doc was fixed to say stderr instead
+    // of moving the stream underneath already-relied-upon behavior. This
+    // test locks the full split the fixed doc now claims — stderr carries
+    // the reason AND stdout is left empty on a block — not just "stderr
+    // contains the reason" (which the pre-existing (b) test already showed).
+    const home = newHome(`version: 1
+level: protect
+rules:
+  - id: t-generic-stdout-stderr-split
+    type: command
+    match: "rm -rf /"
+    action: deny
+    level: sprint
+    message: "generic host block reason belongs on stderr per the fixed docs"
+`)
+
+    it('blocked: reason on stderr, stdout empty', () => {
+      const r = runHook('generic', home, JSON.stringify({ tool: 'bash', args: { command: 'rm -rf /' } }))
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('generic host block reason belongs on stderr')
+      expect(r.stdout).toBe('')
+    })
+  })
 })
 
 describe('fail-closed: stdin stream error (deterministic, in-process)', () => {

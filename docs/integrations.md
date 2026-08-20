@@ -194,7 +194,8 @@ make an HTTP request can enforce through it, in any language.
 
 ```
 stdin  : {"tool": "bash", "args": {"command": "rm -rf /"}}
-stdout : the block reason, if blocked
+stdout : an advisory message, on a non-blocking warn (exit 0)
+stderr : the block reason, if blocked
 exit   : 0 = allow, 2 = blocked
 ```
 

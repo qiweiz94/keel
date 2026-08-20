@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { renderVerdict, parsePayload, HOSTS } from '../commands/hook.js'
+import { renderVerdict, parsePayload, buildEnvVarPayload, HOSTS } from '../commands/hook.js'
 import type { EnforceResult } from '../core/types.js'
 
 /**
@@ -175,6 +175,72 @@ describe('hook payload parsing', () => {
         tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'ses_6',
       }))
       expect(call.postAction).toBeUndefined()
+    })
+
+    describe('buildEnvVarPayload — the TOOL_NAME/TOOL_INPUT/TOOL_RESPONSE env-var fallback path (claude-code/gemini)', () => {
+      // Claude Code's own installed contract comment
+      // (templates/claude-posttooluse-verify.sh: "carrying TOOL_NAME/
+      // TOOL_INPUT/TOOL_RESPONSE (env or stdin — `keel hook claude-code`
+      // reads either)") documents that a real PostToolUse call can arrive
+      // this way, not only on stdin. Before this fix, hookVerdict's env-var
+      // branch built a bare {tool_name, tool_input} body with no
+      // hook_event_name regardless of TOOL_RESPONSE, so parsePayload's
+      // PostToolUse branch (gated on hook_event_name alone) never
+      // triggered — a completed call fell through to being evaluated as an
+      // ordinary pre-tool-call instead, discarding its real outcome and
+      // risking a spurious exit-2 block for a call the host can no longer
+      // stop. These prove the fix at the same level hook-command.test.ts
+      // already proves every other host's payload shape: parsePayload's
+      // resulting ParsedCall, not merely the exit code of a spawned
+      // process.
+      it('TOOL_RESPONSE present: builds a PostToolUse-shaped body that parsePayload turns into a postAction-shaped ParsedCall — mirrors the stdin-shaped PostToolUse test above, but via env vars', () => {
+        const { raw, toolInputCorrupt } = buildEnvVarPayload({
+          TOOL_NAME: 'Bash',
+          TOOL_INPUT: JSON.stringify({ command: 'npm test' }),
+          TOOL_RESPONSE: JSON.stringify({ exit_code: 0, stdout: 'ok' }),
+        })
+        expect(toolInputCorrupt).toBe(false)
+
+        const call = parsePayload('claude-code', raw)
+        expect(call.postAction).toEqual({ tool: 'Bash', args: { command: 'npm test' }, exitCode: 0, outputText: 'ok' })
+        expect(call.reasoning).toBeUndefined()
+      })
+
+      it('TOOL_RESPONSE absent: still builds the original bare pre-tool-call shape — the fix is additive, the ordinary PreToolUse-via-env-vars case is unchanged', () => {
+        const { raw } = buildEnvVarPayload({
+          TOOL_NAME: 'Bash',
+          TOOL_INPUT: JSON.stringify({ command: 'ls -la' }),
+        })
+        const call = parsePayload('claude-code', raw)
+        expect(call.tool).toBe('Bash')
+        expect(call.args).toEqual({ command: 'ls -la' })
+        expect(call.postAction).toBeUndefined()
+      })
+
+      it('TOOL_RESPONSE present but TOOL_INPUT corrupt: still routes to postAction (TOOL_INPUT corruption is orthogonal), and reports the corruption via toolInputCorrupt', () => {
+        const { raw, toolInputCorrupt } = buildEnvVarPayload({
+          TOOL_NAME: 'Bash',
+          TOOL_INPUT: '{"command":"npm test"',   // truncated mid-string
+          TOOL_RESPONSE: JSON.stringify({ exit_code: 0 }),
+        })
+        expect(toolInputCorrupt).toBe(true)
+
+        const call = parsePayload('claude-code', raw)
+        expect(call.postAction).toBeDefined()
+        expect(call.postAction?.exitCode).toBe(0)
+      })
+
+      it('TOOL_RESPONSE="" (defined but empty): stays on the bare pre-tool-call shape, NOT PostToolUse — a wrapper that exports the var unconditionally must not silently disarm blocking', () => {
+        const { raw } = buildEnvVarPayload({
+          TOOL_NAME: 'Bash',
+          TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+          TOOL_RESPONSE: '',
+        })
+        const call = parsePayload('claude-code', raw)
+        expect(call.tool).toBe('Bash')
+        expect(call.args).toEqual({ command: 'rm -rf /' })
+        expect(call.postAction).toBeUndefined()
+      })
     })
   })
 })
