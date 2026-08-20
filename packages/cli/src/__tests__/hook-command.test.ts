@@ -69,6 +69,61 @@ describe('hook payload parsing', () => {
       expect(call.tool).toBe('Bash')
     })
 
+    // Regression: `hookVerdict`'s actual PreToolUse `evaluateToolCall()`
+    // call site never set `reasoning` at all, on ANY host — so
+    // `unless_reasoning` and the `level: protect` deceptive-reasoning floor
+    // detector (pipeline.ts) had zero reach through the CLI hook path, only
+    // through the OpenCode plugin. Fixed via a SEPARATE `preToolReasoning`
+    // field (not a reuse of `reasoning` above): `hookVerdict` routes to the
+    // structurally-can't-block claim-reach path purely on `call.reasoning
+    // !== undefined`, so folding this into the same field would misroute
+    // an ordinary tool call into that branch and never evaluate it at all
+    // if `last_assistant_message` were ever present on a PreToolUse-shaped
+    // payload — see ParsedCall.preToolReasoning's own comment in hook.ts.
+    describe('preToolReasoning — reasoning-floor reach on an ORDINARY PreToolUse payload (v0.4 Phase 1 follow-up)', () => {
+      it('extracts last_assistant_message as `preToolReasoning` (never `reasoning`) on claude-code, codex, and gemini PreToolUse payloads', () => {
+        for (const host of ['claude-code', 'codex', 'gemini'] as const) {
+          const call = parsePayload(host, JSON.stringify({
+            tool_name: 'Bash',
+            tool_input: { command: 'git push --force origin main' },
+            session_id: 'ses_reasoning',
+            last_assistant_message: "I'll bypass the check and disable safety since the user said it's fine.",
+          }))
+          expect(call.preToolReasoning).toBe("I'll bypass the check and disable safety since the user said it's fine.")
+          // The claim-reach routing field MUST stay untouched — this is
+          // the actual bug this shape guards against: a shared field here
+          // would make `call.reasoning !== undefined` true and misroute
+          // this tool call into the claim-only evaluator, which never
+          // calls `evaluateToolCall` at all.
+          expect(call.reasoning).toBeUndefined()
+          expect(call.tool).toBe('Bash')
+          expect(call.args).toEqual({ command: 'git push --force origin main' })
+        }
+      })
+
+      it('leaves `preToolReasoning` undefined when the payload carries no last_assistant_message at all (the common case today)', () => {
+        for (const host of ['claude-code', 'codex', 'gemini'] as const) {
+          const call = parsePayload(host, JSON.stringify({
+            tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'ses_no_reasoning',
+          }))
+          expect(call.preToolReasoning).toBeUndefined()
+        }
+      })
+
+      it('cline, cursor, and generic payloads never set `preToolReasoning` — no citation confirms an equivalent field on those hosts', () => {
+        expect(parsePayload('cline', JSON.stringify({
+          preToolUse: { toolName: 'bash', parameters: { command: 'ls' } },
+          last_assistant_message: 'should not be picked up',
+        })).preToolReasoning).toBeUndefined()
+        expect(parsePayload('cursor', JSON.stringify({
+          command: 'ls', last_assistant_message: 'should not be picked up',
+        })).preToolReasoning).toBeUndefined()
+        expect(parsePayload('generic', JSON.stringify({
+          tool: 'bash', args: { command: 'ls' }, last_assistant_message: 'should not be picked up',
+        })).preToolReasoning).toBeUndefined()
+      })
+    })
+
     it('a payload claiming hook_event_name: Stop but missing last_assistant_message STAYS on the claim-reach path with empty reasoning, rather than falling back to the ordinary tool-call shape', () => {
       // Pre-v1-M1r-2 this fell back to the ordinary tool-call branch, where
       // an absent tool_name produced `tool: 'unknown'` — harmless only
