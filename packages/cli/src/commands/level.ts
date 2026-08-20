@@ -51,7 +51,7 @@ const LEVEL_EFFECTS: Record<ProtectionLevel, string[]> = {
  * change takes effect without a restart.
  */
 export async function levelCommand(options: { project?: boolean }, levelArg?: string) {
-  const home = process.env.HOME || '~'
+  const home = resolveHome()
   const globalPath = join(home, '.keel', 'rules.yaml')
   const projectPath = join(process.cwd(), '.keel', 'rules.yaml')
 
