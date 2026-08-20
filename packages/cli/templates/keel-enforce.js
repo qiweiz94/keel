@@ -6324,6 +6324,92 @@ function parseRulesFile(filePath) {
   const content = readFileSync(filePath, "utf-8");
   return parseRulesContent(content, filePath);
 }
+var DEFAULT_SIMPLE_RULE_LEVEL = "sprint";
+var DEFAULT_SIMPLE_RULE_CONTEXT = ["both"];
+var SIMPLE_RULE_TYPES = /* @__PURE__ */ new Set(["command", "filesystem", "content", "env", "network"]);
+var SIMPLE_RULE_VALID_ACTIONS = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "fix", "report", "research", "redirect"]);
+function expandSimpleRule(candidate) {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return { error: "a simple_rules entry must be an object" };
+  }
+  const r = candidate;
+  const label = typeof r.id === "string" && r.id.trim() ? r.id : "<unnamed>";
+  if (typeof r.id !== "string" || !r.id.trim()) {
+    return { error: `simple rule "${label}": missing a non-empty 'id'` };
+  }
+  if (typeof r.type !== "string" || !SIMPLE_RULE_TYPES.has(r.type)) {
+    return {
+      error: `rule '${label}': 'type' must be one of command, filesystem, content, env, network (got: ${JSON.stringify(r.type)}) \u2014 for any other rule type, use the full rule format under 'rules:'`
+    };
+  }
+  if (typeof r.action !== "string" || !r.action.trim()) {
+    return { error: `rule '${label}': missing an 'action' (e.g. block, deny, warn, allow, prompt, fix)` };
+  }
+  if (!SIMPLE_RULE_VALID_ACTIONS.has(r.action)) {
+    return { error: `rule '${label}': 'action' must be one of ${[...SIMPLE_RULE_VALID_ACTIONS].join(", ")} (got: ${JSON.stringify(r.action)})` };
+  }
+  if (typeof r.message !== "string" || !r.message.trim()) {
+    return { error: `rule '${label}': missing a non-empty 'message' explaining what this rule does` };
+  }
+  const type = r.type;
+  const base = {
+    id: r.id,
+    type,
+    action: r.action,
+    message: r.message,
+    level: DEFAULT_SIMPLE_RULE_LEVEL,
+    context: DEFAULT_SIMPLE_RULE_CONTEXT
+  };
+  switch (type) {
+    case "command": {
+      if (typeof r.match !== "string" && typeof r.match_regex !== "string") {
+        return { error: `rule '${label}': type 'command' requires a 'match' or 'match_regex' field (the command text or pattern to catch)` };
+      }
+      if (typeof r.match === "string" && !r.match) return { error: `rule '${label}': 'match' cannot be empty` };
+      if (typeof r.match_regex === "string" && !r.match_regex) return { error: `rule '${label}': 'match_regex' cannot be empty` };
+      if (typeof r.match === "string") base.match = r.match;
+      if (typeof r.match_regex === "string") base.match_regex = r.match_regex;
+      return { rule: base };
+    }
+    case "network": {
+      if (typeof r.match !== "string" || !r.match.trim()) {
+        return { error: `rule '${label}': type 'network' requires a 'match' field (the domain or pattern to catch)` };
+      }
+      base.match = r.match;
+      return { rule: base };
+    }
+    case "filesystem": {
+      if (!Array.isArray(r.paths) || r.paths.length === 0) {
+        return { error: `rule '${label}': type 'filesystem' requires a non-empty 'paths' list (e.g. paths: ["**/.env"])` };
+      }
+      if (r.paths.some((p) => typeof p !== "string" || !p)) {
+        return { error: `rule '${label}': every entry in 'paths' must be a non-empty string` };
+      }
+      base.paths = r.paths;
+      return { rule: base };
+    }
+    case "content": {
+      if (!Array.isArray(r.patterns) || r.patterns.length === 0) {
+        return { error: `rule '${label}': type 'content' requires a non-empty 'patterns' list of regex strings (e.g. patterns: ["sk-[a-zA-Z0-9]+"])` };
+      }
+      if (r.patterns.some((p) => typeof p !== "string" || !p)) {
+        return { error: `rule '${label}': every entry in 'patterns' must be a non-empty regex string` };
+      }
+      base.patterns = r.patterns.map((p) => ({ regex: p }));
+      return { rule: base };
+    }
+    case "env": {
+      if (!Array.isArray(r.vars) || r.vars.length === 0) {
+        return { error: `rule '${label}': type 'env' requires a non-empty 'vars' list of environment variable names` };
+      }
+      if (r.vars.some((v) => typeof v !== "string" || !v)) {
+        return { error: `rule '${label}': every entry in 'vars' must be a non-empty string` };
+      }
+      base.vars = r.vars;
+      return { rule: base };
+    }
+  }
+}
 function parseRulesContent(content, sourcePath) {
   const frontmatter = extractFrontmatter(content);
   const markdown = frontmatter ? content.replace(/---\n[\s\S]*?\n---\n?/, "") : content;
@@ -6342,7 +6428,7 @@ function parseRulesContent(content, sourcePath) {
       } else {
         errors.push("Keel configuration must be an object");
       }
-    } else if (parsed && typeof parsed === "object" && "rules" in parsed) {
+    } else if (parsed && typeof parsed === "object" && ("rules" in parsed || "simple_rules" in parsed)) {
       config = parsed;
     } else if (parsed && typeof parsed === "object" && Object.keys(parsed).length === 0) {
     }
@@ -6365,9 +6451,21 @@ function parseRulesContent(content, sourcePath) {
   if (config.promotion_fp_threshold !== void 0 && (typeof config.promotion_fp_threshold !== "number" || !Number.isFinite(config.promotion_fp_threshold) || config.promotion_fp_threshold <= 0 || config.promotion_fp_threshold > 1)) {
     errors.push(`promotion_fp_threshold must be a number in (0, 1] (a fraction of evaluations, e.g. 0.001 for 1 per 1000), got: ${String(config.promotion_fp_threshold)}`);
   }
+  const expandedSimpleRules = [];
+  if (config.simple_rules !== void 0) {
+    if (!Array.isArray(config.simple_rules)) {
+      errors.push("simple_rules must be an array");
+    } else {
+      for (const candidate of config.simple_rules) {
+        const { rule, error } = expandSimpleRule(candidate);
+        if (error) errors.push(error);
+        else if (rule) expandedSimpleRules.push(rule);
+      }
+    }
+  }
   return {
     config,
-    rules: Array.isArray(config.rules) ? config.rules : [],
+    rules: [...Array.isArray(config.rules) ? config.rules : [], ...expandedSimpleRules],
     sourcePath,
     version: config.version || 1,
     markdown: markdown.trim(),

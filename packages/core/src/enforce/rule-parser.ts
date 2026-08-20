@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { resolveHome } from '../home.js'
-import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext, RuleMode } from '../types.js'
+import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext, RuleMode, SimpleRule, SimpleRuleType } from '../types.js'
 
 export interface ParsedRules {
   config: KeelConfig
@@ -22,6 +22,146 @@ export function parseRulesFile(filePath: string): ParsedRules | null {
 
   const content = readFileSync(filePath, 'utf-8')
   return parseRulesContent(content, filePath)
+}
+
+// ── Minimal / beginner-friendly rule format ──────────────────────────
+//
+// Defaults applied to every expanded SimpleRule. Only `level` and
+// `context` are given a concrete value; `scope`, `priority`, and `mode`
+// are deliberately left UNSET rather than defaulted to a literal:
+//   - `scope` is inferred per-tier by mergeRules' pushRules()
+//     (`rule.scope || scope`) from which hierarchy file the rule was
+//     actually loaded from. Hardcoding e.g. `scope: 'project'` here would
+//     silently mis-rank a simple rule authored in the GLOBAL or LOCAL tier
+//     in the same-id override arbitration (scopeOrder in mergeRules) — a
+//     SimpleRule must sort exactly like a hand-written full-form rule in
+//     the same file, and that requires staying unset.
+//   - `priority`/`mode` have well-defined "no value" semantics already
+//     (default priority order; undefined mode IS fully enforcing — see
+//     RuleMode's doc comment in types.ts) that a beginner rule should
+//     inherit, not override.
+//   - `level` is deliberately `'sprint'`, NOT `'balanced'`, even though
+//     'balanced' reads like the more cautious choice. mergeRules' dial
+//     filter (`rule.level !== undefined && dialRank[rule.level] >
+//     currentRank`) DROPS a `level: 'balanced'` rule entirely — not
+//     softened, gone — the moment the ambient dial is `keel level sprint`.
+//     docs/tiers.md documents the shipped-catalog convention this mirrors:
+//     "Most rules don't set one (or carry `level: sprint`, meaning 'no
+//     floor — obey the dial')" — "every rule is evaluated at every dial."
+//     `level: 'sprint'` and leaving `level` unset are behaviorally
+//     identical (neither is ever filtered by dialRank; dialAction still
+//     softens deny/block to warn at the sprint dial) — 'sprint' is spelled
+//     out because it is self-documenting to the next reader, matching the
+//     catalog's own convention, rather than relying on implicit undefined
+//     semantics. A beginner's one rule must not silently stop existing
+//     the moment they flip keel's least-friction dial.
+const DEFAULT_SIMPLE_RULE_LEVEL: ProtectionLevel = 'sprint'
+const DEFAULT_SIMPLE_RULE_CONTEXT: RuleContext[] = ['both']
+
+const SIMPLE_RULE_TYPES = new Set<string>(['command', 'filesystem', 'content', 'env', 'network'])
+
+// Mirrors validateRules()' validActions exactly (see that Set's own
+// comment for why `mask` is deliberately absent). Kept as a separate
+// literal rather than importing validateRules' local const: validating
+// against the same set here is what lets a mistyped `action: blok` get
+// the friendly, field-specific message below instead of falling through
+// to validateRules()' generic "has an unsupported action" dump.
+const SIMPLE_RULE_VALID_ACTIONS = new Set<string>(['block', 'deny', 'warn', 'prompt', 'allow', 'fix', 'report', 'research', 'redirect'])
+
+/**
+ * Translate one minimal-form `SimpleRule` into a full `KeelRule`, or
+ * return a friendly, field-specific error instead of the generic
+ * schema-validation dump `validateRules()` produces for the full form.
+ * This is the entire beginner contract: id + type + one match-condition
+ * field appropriate to `type` + action + message — see SimpleRule's doc
+ * comment in types.ts for why the other ~20 KeelRule fields are out of
+ * scope for this format (use the full form for anything past these five
+ * types, or past a plain match/paths/patterns/vars condition).
+ */
+export function expandSimpleRule(candidate: unknown): { rule?: KeelRule; error?: string } {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return { error: 'a simple_rules entry must be an object' }
+  }
+  const r = candidate as Partial<SimpleRule>
+  const label = typeof r.id === 'string' && r.id.trim() ? r.id : '<unnamed>'
+
+  if (typeof r.id !== 'string' || !r.id.trim()) {
+    return { error: `simple rule "${label}": missing a non-empty 'id'` }
+  }
+  if (typeof r.type !== 'string' || !SIMPLE_RULE_TYPES.has(r.type)) {
+    return {
+      error: `rule '${label}': 'type' must be one of command, filesystem, content, env, network (got: ${JSON.stringify(r.type)}) — for any other rule type, use the full rule format under 'rules:'`,
+    }
+  }
+  if (typeof r.action !== 'string' || !r.action.trim()) {
+    return { error: `rule '${label}': missing an 'action' (e.g. block, deny, warn, allow, prompt, fix)` }
+  }
+  if (!SIMPLE_RULE_VALID_ACTIONS.has(r.action)) {
+    return { error: `rule '${label}': 'action' must be one of ${[...SIMPLE_RULE_VALID_ACTIONS].join(', ')} (got: ${JSON.stringify(r.action)})` }
+  }
+  if (typeof r.message !== 'string' || !r.message.trim()) {
+    return { error: `rule '${label}': missing a non-empty 'message' explaining what this rule does` }
+  }
+
+  const type = r.type as SimpleRuleType
+  const base: KeelRule = {
+    id: r.id,
+    type,
+    action: r.action as EnforcementAction,
+    message: r.message,
+    level: DEFAULT_SIMPLE_RULE_LEVEL,
+    context: DEFAULT_SIMPLE_RULE_CONTEXT,
+  }
+
+  switch (type) {
+    case 'command': {
+      if (typeof r.match !== 'string' && typeof r.match_regex !== 'string') {
+        return { error: `rule '${label}': type 'command' requires a 'match' or 'match_regex' field (the command text or pattern to catch)` }
+      }
+      if (typeof r.match === 'string' && !r.match) return { error: `rule '${label}': 'match' cannot be empty` }
+      if (typeof r.match_regex === 'string' && !r.match_regex) return { error: `rule '${label}': 'match_regex' cannot be empty` }
+      if (typeof r.match === 'string') base.match = r.match
+      if (typeof r.match_regex === 'string') base.match_regex = r.match_regex
+      return { rule: base }
+    }
+    case 'network': {
+      if (typeof r.match !== 'string' || !r.match.trim()) {
+        return { error: `rule '${label}': type 'network' requires a 'match' field (the domain or pattern to catch)` }
+      }
+      base.match = r.match
+      return { rule: base }
+    }
+    case 'filesystem': {
+      if (!Array.isArray(r.paths) || r.paths.length === 0) {
+        return { error: `rule '${label}': type 'filesystem' requires a non-empty 'paths' list (e.g. paths: ["**/.env"])` }
+      }
+      if (r.paths.some(p => typeof p !== 'string' || !p)) {
+        return { error: `rule '${label}': every entry in 'paths' must be a non-empty string` }
+      }
+      base.paths = r.paths
+      return { rule: base }
+    }
+    case 'content': {
+      if (!Array.isArray(r.patterns) || r.patterns.length === 0) {
+        return { error: `rule '${label}': type 'content' requires a non-empty 'patterns' list of regex strings (e.g. patterns: ["sk-[a-zA-Z0-9]+"])` }
+      }
+      if (r.patterns.some(p => typeof p !== 'string' || !p)) {
+        return { error: `rule '${label}': every entry in 'patterns' must be a non-empty regex string` }
+      }
+      base.patterns = r.patterns.map(p => ({ regex: p }))
+      return { rule: base }
+    }
+    case 'env': {
+      if (!Array.isArray(r.vars) || r.vars.length === 0) {
+        return { error: `rule '${label}': type 'env' requires a non-empty 'vars' list of environment variable names` }
+      }
+      if (r.vars.some(v => typeof v !== 'string' || !v)) {
+        return { error: `rule '${label}': every entry in 'vars' must be a non-empty string` }
+      }
+      base.vars = r.vars
+      return { rule: base }
+    }
+  }
 }
 
 export function parseRulesContent(content: string, sourcePath: string): ParsedRules {
@@ -47,8 +187,12 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
       } else {
         errors.push('Keel configuration must be an object')
       }
-    } else if (parsed && typeof parsed === 'object' && 'rules' in parsed) {
-      // Direct rules object (standalone .keel.yaml or pure YAML)
+    } else if (parsed && typeof parsed === 'object' && ('rules' in parsed || 'simple_rules' in parsed)) {
+      // Direct rules object (standalone .keel.yaml or pure YAML) — a file
+      // that declares ONLY `simple_rules:` (no full-form `rules:` at all)
+      // must still be picked up here, or the minimal-form-only case falls
+      // through to the "no config keys we recognize" branch below and
+      // every simple_rules entry is silently dropped.
       config = parsed as KeelConfig
     } else if (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) {
       // Empty file or just comments — use defaults
@@ -74,9 +218,29 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
     errors.push(`promotion_fp_threshold must be a number in (0, 1] (a fraction of evaluations, e.g. 0.001 for 1 per 1000), got: ${String(config.promotion_fp_threshold)}`)
   }
 
+  // ── Minimal-form rules (`simple_rules:`) ──
+  // Additive on top of the full-form `rules:` array: each entry is
+  // translated by expandSimpleRule() into a full KeelRule and appended to
+  // the rules list returned below, BEFORE validateRules() (called by every
+  // hierarchy-tier consumer — see pipeline.ts) ever sees it. Downstream of
+  // this function there is exactly one rule shape; nothing else needs to
+  // know a rule started life as shorthand.
+  const expandedSimpleRules: KeelRule[] = []
+  if (config.simple_rules !== undefined) {
+    if (!Array.isArray(config.simple_rules)) {
+      errors.push('simple_rules must be an array')
+    } else {
+      for (const candidate of config.simple_rules) {
+        const { rule, error } = expandSimpleRule(candidate)
+        if (error) errors.push(error)
+        else if (rule) expandedSimpleRules.push(rule)
+      }
+    }
+  }
+
   return {
     config,
-    rules: Array.isArray(config.rules) ? config.rules : [],
+    rules: [...(Array.isArray(config.rules) ? config.rules : []), ...expandedSimpleRules],
     sourcePath,
     version: config.version || 1,
     markdown: markdown.trim(),
