@@ -107,11 +107,25 @@ export class StateManager {
     return withFileLock(this.lockPath(name), fn, this.lockOptions)
   }
 
+  /**
+   * Parses `<name>.json` and returns it only when it is a genuine
+   * dictionary — every `load*` caller immediately does `Object.entries()`
+   * on the result, OUTSIDE any try/catch of its own, so a legally-parsing
+   * but non-object JSON value (bare `null`, a number, a string, an array)
+   * must be caught HERE or it throws an uncaught `TypeError` straight out
+   * of the constructor. A syntax error is already caught below by the
+   * JSON.parse try/catch; `null`/arrays/primitives parse fine and need
+   * their own check. Centralized once so all five state files share the
+   * same guard instead of every `load*` method re-deriving it.
+   */
   private loadFile<T>(name: string, fallback: T): T {
     const p = this.statePath(name)
     try {
       if (existsSync(p)) {
-        return JSON.parse(readFileSync(p, 'utf-8'))
+        const parsed: unknown = JSON.parse(readFileSync(p, 'utf-8'))
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as T
+        }
       }
     } catch { /* corrupt — use defaults */ }
     return fallback
