@@ -41,7 +41,7 @@ earns it, instead of applying one policy to all 45.
 |---|---|---|---|
 | **1 — protect floor** | Denies on the *first* hit, always | No — active and unsoftened at every dial, sprint included | `no-force-push`, `pipe-to-shell`, `no-exfil-flow`, `keel-control-gate` |
 | **2 — balanced** | Warns once, then blocks (dial-dependent) | Yes — `sprint` downgrades its deny/block to warn | `no-push-to-main`, `no-secrets-in-code`, `cicd-and-infra` |
-| **3 — observe** | Evaluated and recorded, never interrupts | N/A — records what it *would* have done regardless of dial | `no-repeat-loops`, `research-before-fix`, `claim-without-evidence` |
+| **3 — observe** | Evaluated and recorded, never interrupts | N/A — records what it *would* have done regardless of dial | `research-before-fix`, `claim-without-evidence`, `runaway-budget-tool-calls` |
 
 ## Tier 1 — protect floor (13 rules)
 
@@ -108,18 +108,38 @@ isn't under either tier's YAML comment header in `install.ts`. It's listed here 
 its behavior (no floor, dial-softenable `prompt`) matches Tier 2, but that placement is
 this page's inference, not something the source labels explicitly.
 
-## Tier 3 — observe (10 rules)
+## Promoted out of Tier 3: `no-repeat-loops`
+
+`no-repeat-loops` shipped as `mode: observe` alongside the other Tier-3 rules below,
+but has since been promoted to real enforcement — its `mode: observe` line was removed
+while its `action: warn` + escalation ladder stayed exactly as designed. The evidence
+behind the promotion, not an assumption: this project's own traces cite **41 distinct
+repeat loops across 20 sessions** (one command retried 39 times) from before this
+machinery existed — see "Why tiers exist" above — and no over-triggering or
+false-positive has ever been recorded against this rule anywhere in the project's
+history (checked against `session/PROMOTION-REPORT.md`, the fixture corpus, and every
+retrospective run). The two `runaway-budget-*` rules below were evaluated against the
+identical bar and held back: their own rationale states plainly that observe mode
+exists to measure a hit rate that has never actually been measured (precedent-only
+justification, zero real evaluations recorded to date) — that is the honest "not yet"
+case this promotion is not.
+
+Because it is a `type: stuck` escalation ladder rather than a flat warn-or-deny rule,
+it doesn't fit Tier 1 or Tier 2's simple action column cleanly:
+
+| Rule id | Type | Real action | Guards against |
+|---|---|---|---|
+| `no-repeat-loops` | stuck | warn (base) → **redirect** at 3 identical failures → **deny** at 5, in a 15-minute window; `sprint` downgrades the 5th-attempt deny to warn, the 3rd-attempt redirect never softens | An identical failing command retried 3× / 5× in a 15-minute window |
+
+## Tier 3 — observe (9 rules)
 
 Every rule below ships with `mode: observe`. The pipeline evaluates them on every
 matching call and records what it *would* have done — the `observed_action` field on
 the trace entry (`~/.keel/traces/YYYY-MM-DD.jsonl`) — but the actual `action` returned
-to the host is always `allow`. Nothing here interrupts anyone yet. Three are the
-original "stuck agent" rules; the other seven were added since and follow the same
-observe-first pattern.
+to the host is always `allow`. Nothing here interrupts anyone yet.
 
 | Rule id | Type | Would-be action | Guards against |
 |---|---|---|---|
-| `no-repeat-loops` | stuck | warn → deny | An identical failing command retried 3× / 5× in a 15-minute window |
 | `research-before-fix` | research | redirect | Patching a failure without looking anything up first |
 | `root-cause-before-refactor` | diagnosis | redirect | A destructive/structural change with no recorded hypothesis or investigation |
 | `source-change-requires-test` | verification | deny | A commit/push after a source edit with no passing test run since |
