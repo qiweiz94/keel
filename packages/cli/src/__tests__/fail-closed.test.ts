@@ -416,6 +416,45 @@ rules:
       expect(r.stderr).toContain('would have blocked a real rm -rf /')
     })
   })
+
+  describe('(a6) TOOL_RESPONSE present in the env-var fallback path — a completed call must route to PostToolUse, not be re-evaluated as a pre-tool-call — FIXED', () => {
+    // Claude Code's own installed contract comment
+    // (templates/claude-posttooluse-verify.sh) documents TOOL_NAME/
+    // TOOL_INPUT/TOOL_RESPONSE arriving via env vars for a PostToolUse
+    // call, same as stdin. Before this fix, hookVerdict's env-var branch
+    // ignored TOOL_RESPONSE entirely and always built the bare
+    // pre-tool-call shape — so a call that had ALREADY RUN got evaluated
+    // as if it were about to run, and a matching deny rule produced a
+    // spurious exit-2 block for an action the host can no longer stop.
+    const home = newHome(`version: 1
+level: protect
+rules:
+  - id: t-posttooluse-env-routing
+    type: command
+    match: "rm -rf /"
+    action: deny
+    level: sprint
+    message: "would incorrectly block an already-completed call if misrouted as PreToolUse"
+`)
+
+    it('TOOL_RESPONSE present: the completed call exits 0 (PostToolUse can never block), not the exit-2 a PreToolUse-shaped evaluation of the same command would produce', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+        TOOL_RESPONSE: JSON.stringify({ exit_code: 0, stdout: 'ok' }),
+      })
+      expect(r.status).toBe(0)
+    })
+
+    it('the SAME command, same host, DOES exit 2 when TOOL_RESPONSE is absent — isolates the fix to TOOL_RESPONSE-present routing, not a rule-matching change', () => {
+      const r = runHook('claude-code', home, '', {
+        TOOL_NAME: 'Bash',
+        TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+      })
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain('would incorrectly block')
+    })
+  })
 })
 
 describe('fail-closed: stdin stream error (deterministic, in-process)', () => {

@@ -558,6 +558,17 @@ export function renderVerdict(host: Host, result: EnforceResult | null): HostVer
       // All three block on exit 2 specifically. For Codex any OTHER non-zero
       // means "the hook failed" and execution continues, so the code
       // matters as much as being non-zero.
+      //
+      // `generic` falls through to this same default (no case of its own).
+      // docs/integrations.md's generic contract table once said "stdout:
+      // the block reason" while this always wrote it to stderr — a real
+      // drift, caught by lane review. `fail-closed.test.ts` already has
+      // passing tests asserting stderr for the generic host, meaning real
+      // integrations built against this host type adapted to the CODE, not
+      // the doc — so the doc was fixed to say stderr instead of moving this
+      // stream and risking already-relied-upon behavior. stderr here is the
+      // intentional, documented-to-match-code contract; keep it that way
+      // unless a deliberate, test-updating decision says otherwise.
       return { blocked: true, exitCode: 2, stdout: '', stderr: text }
     }
   }
@@ -625,9 +636,9 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
     let toolInputCorrupt = false
     const raw = (host === 'claude-code' || host === 'gemini') && process.env.TOOL_NAME
       ? (() => {
-          const parsed = safeJson(process.env.TOOL_INPUT)
-          toolInputCorrupt = parsed.corrupt
-          return JSON.stringify({ tool_name: process.env.TOOL_NAME, tool_input: parsed.value })
+          const built = buildEnvVarPayload(process.env)
+          toolInputCorrupt = built.toolInputCorrupt
+          return built.raw
         })()
       : await readStdin()
 
@@ -795,4 +806,36 @@ export async function hookCommand(hostArg: string, options: { cwd?: string; leve
 function safeJson(text: string | undefined): { value: Record<string, unknown>; corrupt: boolean } {
   if (!text) return { value: {}, corrupt: false }
   try { return { value: asRecord(JSON.parse(text)), corrupt: false } } catch { return { value: {}, corrupt: true } }
+}
+
+/**
+ * Builds the raw JSON body for `hookVerdict`'s TOOL_NAME/TOOL_INPUT env-var
+ * fallback path (claude-code/gemini only — see the caller's comment).
+ * Factored out of that inline closure so this specific routing decision —
+ * PostToolUse-shaped vs. bare pre-tool-call-shaped — can be unit tested
+ * directly against `parsePayload`, the same way every other host's payload
+ * shape already is (see hook-command.test.ts), instead of only indirectly
+ * through a spawned process reading real env vars.
+ *
+ * TOOL_RESPONSE present is the ONLY signal this path has that the call is a
+ * completed PostToolUse one rather than a pre-tool-call PreToolUse one —
+ * there is no separate hook_event_name env var — so its presence routes to
+ * the PostToolUse shape (`hook_event_name: 'PostToolUse'` plus
+ * `tool_response`), matching what `templates/claude-posttooluse-verify.sh`'s
+ * own contract comment documents Claude Code populates for a completed
+ * call. Absent, it stays the original bare pre-tool-call shape.
+ */
+export function buildEnvVarPayload(
+  env: { TOOL_NAME?: string; TOOL_INPUT?: string; TOOL_RESPONSE?: string },
+): { raw: string; toolInputCorrupt: boolean } {
+  const parsed = safeJson(env.TOOL_INPUT)
+  const raw = env.TOOL_RESPONSE !== undefined
+    ? JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        tool_name: env.TOOL_NAME,
+        tool_input: parsed.value,
+        tool_response: safeJson(env.TOOL_RESPONSE).value,
+      })
+    : JSON.stringify({ tool_name: env.TOOL_NAME, tool_input: parsed.value })
+  return { raw, toolInputCorrupt: parsed.corrupt }
 }
