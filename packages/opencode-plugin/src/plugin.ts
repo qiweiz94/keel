@@ -1657,7 +1657,7 @@ export default {
         // never "use up" session B's own, genuinely-first, occurrence of
         // the same rule and wrongly hard-block session B on what is
         // actually its first offense.
-        const key = `${result.rule_id}:${directory}`
+        const key = `${result.rule_id}:${directory}:${input?.sessionID || 'unknown'}`
         if (verificationWarnings.has(key)) {
           throw new Error(`[Keel] ${result.rule_id}: ${result.message}`)
         }
