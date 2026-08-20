@@ -362,3 +362,101 @@ describe('install → read consistency under KEEL_HOME (M1r-3b)', () => {
     expect(statusOut.stdout).toContain('no-verify-bypass')
   })
 })
+
+describe('install --cursor preserves user customization on reinstall', () => {
+  it('does not clobber a hand-edited keel.mdc, and stops claiming "Created" once configured', () => {
+    // First install — genuinely fresh.
+    const first = run('install --cursor')
+    expect(first.stdout).toContain('Created')
+    const rulePath = join(dir, '.cursor', 'rules', 'keel.mdc')
+    expect(existsSync(rulePath)).toBe(true)
+
+    // User customizes the installed file.
+    const original = readFileSync(rulePath, 'utf-8')
+    const customized = original + '\n\n<!-- MY CUSTOM NOTE: do not remove this -->\n'
+    writeFileSync(rulePath, customized, 'utf-8')
+
+    // Reinstall must not clobber the customization.
+    const second = run('install --cursor')
+    const after = readFileSync(rulePath, 'utf-8')
+    expect(after).toContain('MY CUSTOM NOTE: do not remove this')
+    expect(after).toContain('# Keel enforcement')
+
+    // And it must not misreport a preserved file as freshly "Created".
+    expect(second.stdout).not.toMatch(/✓ Created.*keel\.mdc/)
+    expect(second.stdout).toMatch(/already configured/)
+  })
+
+  it('appends the keel marker rather than overwriting when keel.mdc exists but was never keel-managed', () => {
+    const rulesDir = join(dir, '.cursor', 'rules')
+    mkdirSync(rulesDir, { recursive: true })
+    const rulePath = join(rulesDir, 'keel.mdc')
+    writeFileSync(rulePath, '# Some unrelated pre-existing rule\nDo the thing.\n', 'utf-8')
+
+    const out = run('install --cursor')
+    const after = readFileSync(rulePath, 'utf-8')
+    expect(after).toContain('Some unrelated pre-existing rule')
+    expect(after).toContain('# Keel enforcement')
+    expect(out.stdout).toMatch(/Appended Keel rules/)
+  })
+})
+
+describe('install --claude-code merges hooks instead of replacing them wholesale', () => {
+  it('preserves an unrelated PreToolUse/PostToolUse/Stop hook registered by another tool', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const seeded = {
+      someUnrelatedTopLevelKey: 'preserved-value',
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: '.other-tool/hooks/pre.sh' }],
+          },
+        ],
+        PostToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: '.other-tool/hooks/post.sh' }],
+          },
+        ],
+        Stop: [
+          {
+            hooks: [{ type: 'command', command: '.other-tool/hooks/stop.sh' }],
+          },
+        ],
+      },
+    }
+    writeFileSync(settingsPath, JSON.stringify(seeded, null, 2) + '\n', 'utf-8')
+
+    run('install --claude-code')
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+
+    // Other top-level keys and the other tool's own hook entries must survive.
+    expect(settings.someUnrelatedTopLevelKey).toBe('preserved-value')
+    const preCommands = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.other-tool/hooks/pre.sh')
+    const postCommands = settings.hooks.PostToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(postCommands).toContain('.other-tool/hooks/post.sh')
+    const stopCommands = settings.hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(stopCommands).toContain('.other-tool/hooks/stop.sh')
+
+    // And keel's own entries must be correctly present alongside them.
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-enforce')
+    expect(postCommands).toContain('.claude/hooks/PostToolUse/keel-reinject')
+    expect(postCommands).toContain('.claude/hooks/PostToolUse/keel-verify')
+    expect(stopCommands).toContain('.claude/hooks/Stop/keel-claim')
+  })
+
+  it('does not accumulate duplicate keel entries across repeated installs', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    run('install --claude-code')
+    run('install --claude-code')
+    run('install --claude-code')
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands.filter((c: string) => c === '.claude/hooks/PreToolUse/keel-enforce')).toHaveLength(1)
+  })
+})
