@@ -229,6 +229,18 @@ describe('hook payload parsing', () => {
         expect(call.postAction).toBeDefined()
         expect(call.postAction?.exitCode).toBe(0)
       })
+
+      it('TOOL_RESPONSE="" (defined but empty): stays on the bare pre-tool-call shape, NOT PostToolUse — a wrapper that exports the var unconditionally must not silently disarm blocking', () => {
+        const { raw } = buildEnvVarPayload({
+          TOOL_NAME: 'Bash',
+          TOOL_INPUT: JSON.stringify({ command: 'rm -rf /' }),
+          TOOL_RESPONSE: '',
+        })
+        const call = parsePayload('claude-code', raw)
+        expect(call.tool).toBe('Bash')
+        expect(call.args).toEqual({ command: 'rm -rf /' })
+        expect(call.postAction).toBeUndefined()
+      })
     })
   })
 })

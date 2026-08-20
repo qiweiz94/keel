@@ -824,12 +824,26 @@ function safeJson(text: string | undefined): { value: Record<string, unknown>; c
  * `tool_response`), matching what `templates/claude-posttooluse-verify.sh`'s
  * own contract comment documents Claude Code populates for a completed
  * call. Absent, it stays the original bare pre-tool-call shape.
+ *
+ * Gated on TRUTHY, not merely `!== undefined` — matching the caller's own
+ * `&& process.env.TOOL_NAME` precedent on this same env-var path. A shell
+ * wrapper that exports all three vars unconditionally would set
+ * TOOL_RESPONSE="" (defined-but-empty) for an ordinary pre-tool-call
+ * invocation, and PostToolUse routing always exits 0 without evaluating a
+ * rule (see hookVerdict's postAction branch) — so treating empty-string as
+ * "present" would fail a real block open. The asymmetry is one-directional:
+ * a false PostToolUse read on an empty string silently drops a block, while
+ * a false PreToolUse read on a genuinely completed call only keeps this
+ * path's prior, already-accepted behavior. No confirmed source shows
+ * whether a real host ever exports TOOL_RESPONSE empty rather than unset,
+ * but the fallback stays truthy-gated because the failure mode if it does is
+ * the closed side, not the open one.
  */
 export function buildEnvVarPayload(
   env: { TOOL_NAME?: string; TOOL_INPUT?: string; TOOL_RESPONSE?: string },
 ): { raw: string; toolInputCorrupt: boolean } {
   const parsed = safeJson(env.TOOL_INPUT)
-  const raw = env.TOOL_RESPONSE !== undefined
+  const raw = env.TOOL_RESPONSE
     ? JSON.stringify({
         hook_event_name: 'PostToolUse',
         tool_name: env.TOOL_NAME,
