@@ -459,4 +459,28 @@ describe('install --claude-code merges hooks instead of replacing them wholesale
     const preCommands = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
     expect(preCommands.filter((c: string) => c === '.claude/hooks/PreToolUse/keel-enforce')).toHaveLength(1)
   })
+
+  it('preserves another tool\'s hook that shares keel\'s own matcher group, without duplicating keel\'s entry on reinstall', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+
+    // First install — keel writes its own PreToolUse group under matcher '*'.
+    run('install --claude-code')
+
+    // Simulate another tool joining the SAME matcher group keel already
+    // occupies, rather than adding its own separate group.
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const group = settings.hooks.PreToolUse.find((g: any) => g.matcher === '*')
+    group.hooks.push({ type: 'command', command: '.other-tool/hooks/pre.sh' })
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
+
+    // Reinstall must not drop the other tool's hook by discarding the whole
+    // shared group, and must not duplicate keel's own entry.
+    run('install --claude-code')
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.other-tool/hooks/pre.sh')
+    expect(preCommands.filter((c: string) => c === '.claude/hooks/PreToolUse/keel-enforce')).toHaveLength(1)
+  })
 })
