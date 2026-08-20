@@ -312,3 +312,142 @@ rules:
     expect(typeof p.evaluateOutput).toBe('function')
   })
 })
+
+// ── overlapping redact_span:true patterns (false-confidence regression) ───
+//
+// evaluateOutput() used to test EVERY pattern against the ORIGINAL
+// `scanText`, but mutate a single `redacted` string SEQUENTIALLY as each
+// pattern was found — `redacted = redacted.replace(...)`. Two overlapping
+// `redact_span: true` patterns then broke the "credited == actually
+// mutated" invariant: the second pattern's `re.test(scanText)` probe still
+// passed (it runs against the untouched original), so it was pushed onto
+// `matchedRuleIds` — but its own `.replace()` call ran against the
+// ALREADY-MUTATED `redacted` string, where the first pattern's replacement
+// had already consumed or shifted the bytes the second pattern's regex was
+// looking for. Its `.replace()` silently matched nothing, and the region it
+// claimed to have redacted survived VERBATIM in the output while still
+// being listed as successfully redacted.
+const OVERLAP_RULES = `version: 1
+rules:
+  - id: full-secret
+    type: content
+    patterns:
+      - regex: "SECRETVALUE"
+        redact_span: true
+    action: deny
+    message: "Prefix half of an overlapping-secret pattern — deliberately does NOT cover the trailing digits, so a real overlap fix (not just luck) is required to remove them too."
+  - id: tail-secret
+    type: content
+    patterns:
+      - regex: "VALUE[0-9]{4}"
+        redact_span: true
+    action: deny
+    message: "Staggered pattern whose span overlaps full-secret's tail — deliberately, for this test."
+  - id: nested-prefix
+    type: content
+    patterns:
+      - regex: "AKIA[0-9A-Z]{4}"
+        redact_span: true
+    action: deny
+    message: "Narrow pattern nested inside no-secrets-wide's span — same start, shorter end."
+  - id: wide-secret
+    type: content
+    patterns:
+      - regex: "AKIA[0-9A-Z]{16}"
+        redact_span: true
+    action: deny
+    message: "Wide pattern that fully contains nested-prefix's span."
+`
+
+function makeOverlapPipeline(): EnforcementPipeline {
+  const parsed = parseRulesContent(OVERLAP_RULES, '/tmp/output-redaction-overlap-rules.md')
+  expect(validateRules(parsed.rules)).toEqual([])
+  return new EnforcementPipeline({
+    level: 'balanced',
+    context: 'local',
+    cache: new ActionCache({ maxSize: 100 }),
+    contentTracker: new ContentTracker(),
+    sequenceDetector: new SequenceDetector(),
+    flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
+    ruleHierarchy: { global: null, user: null, project: parsed, local: null },
+    ruleVersion: 1,
+    allowedFixTransforms: true,
+  })
+}
+
+describe('evaluateOutput() — overlapping redact_span:true patterns never leave a "redacted" span exposed', () => {
+  it('STAGGERED overlap: the trailing digits a buggy sequential mutation would leave exposed are gone, and every contributing rule is honestly credited only for bytes actually removed', async () => {
+    const p = makeOverlapPipeline()
+    // "SECRETVALUE1234": full-secret's pattern "SECRETVALUE" matches ONLY
+    // positions [7,18) (just the prefix, no digits). tail-secret's pattern
+    // "VALUE[0-9]{4}" matches [13,22) ("VALUE1234") — a STAGGERED overlap:
+    // tail-secret's span extends 4 bytes PAST full-secret's end. The pre-fix
+    // bug processed full-secret first (mutating the shared string), then
+    // tested tail-secret against the ORIGINAL text (passed -> credited) but
+    // replaced against the ALREADY-MUTATED string (found nothing left to
+    // match, since "VALUE" was gone) — so the trailing "1234" survived
+    // verbatim in the output while tail-secret was still listed as having
+    // redacted it.
+    const text = 'token: SECRETVALUE1234 end'
+    const r = await p.evaluateOutput(outputInput(text))
+
+    expect(r.action).toBe('redact')
+    // The discriminating assertion: these exact trailing digits are what a
+    // buggy sequential-mutation implementation leaves exposed right after
+    // full-secret's placeholder. An assertion that only checked the FULL
+    // "SECRETVALUE1234" string is gone would pass even with the bug present
+    // (the prefix alone being replaced already breaks that literal
+    // substring) — this checks the REMNANT specifically.
+    expect(r.redacted_output).not.toContain('1234')
+    expect(r.redacted_output).not.toContain('SECRETVALUE1234')
+    expect(r.redacted_output).not.toContain('VALUE1234')
+    // Both rules contributed a span to the (merged) redacted region, so
+    // both are honestly credited — this is NOT the pre-fix bug: the pre-fix
+    // bug credited a rule whose bytes were NOT actually removed. Here they
+    // truly were, jointly.
+    expect(r.redacted_rule_ids).toEqual(expect.arrayContaining(['full-secret', 'tail-secret']))
+    // Exactly ONE placeholder was written for the merged region — the two
+    // patterns' overlapping claims collapsed into a single honest span,
+    // not two independent (and mutually corrupting) replacements.
+    expect((r.redacted_output!.match(/\[redacted-by-keel:/g) || []).length).toBe(1)
+  })
+
+  it('NESTED overlap (same start, one pattern fully inside the other): the tail bytes past the narrower pattern\'s end are gone too, not left exposed', async () => {
+    const p = makeOverlapPipeline()
+    // nested-prefix matches "AKIAABCD" (the first 8 chars); wide-secret
+    // matches the full "AKIAABCDEFGHIJKLMNOP" (20 chars) starting at the
+    // SAME position — nested-prefix's span is entirely inside wide-secret's.
+    // The pre-fix bug processed nested-prefix FIRST (declared first in the
+    // rules list), mutating the string down to just its own 8-char span,
+    // then tested wide-secret against the original (passed -> credited) but
+    // its replace() found nothing in the already-mutated string — so
+    // "EFGHIJKLMNOP" (bytes 9-20 of the original key) survived verbatim
+    // while wide-secret was listed as having redacted the whole thing.
+    const text = 'key: AKIAABCDEFGHIJKLMNOP done'
+    const r = await p.evaluateOutput(outputInput(text))
+
+    expect(r.action).toBe('redact')
+    // The discriminating assertion: this is the exact tail a buggy
+    // process-narrower-then-wider ordering leaves behind.
+    expect(r.redacted_output).not.toContain('EFGHIJKLMNOP')
+    expect(r.redacted_output).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(r.redacted_output).not.toContain('AKIAABCD')
+    expect(r.redacted_rule_ids).toEqual(expect.arrayContaining(['wide-secret', 'nested-prefix']))
+    // Still exactly one placeholder — the nested span didn't get its own,
+    // separate (and redundant/corrupting) replacement pass.
+    expect((r.redacted_output!.match(/\[redacted-by-keel:/g) || []).length).toBe(1)
+  })
+
+  it('two DISJOINT (non-overlapping) matches are unaffected by overlap resolution — each keeps its own independent placeholder', async () => {
+    const p = makeOverlapPipeline()
+    const text = 'first: SECRETVALUE1111 --- second: AKIAABCDEFGHIJKLMNOP'
+    const r = await p.evaluateOutput(outputInput(text))
+
+    expect(r.action).toBe('redact')
+    expect(r.redacted_output).not.toContain('SECRETVALUE1111')
+    expect(r.redacted_output).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    // Two independent, non-overlapping redactions -> two placeholders.
+    expect((r.redacted_output!.match(/\[redacted-by-keel:/g) || []).length).toBe(2)
+  })
+})

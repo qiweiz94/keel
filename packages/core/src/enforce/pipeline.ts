@@ -408,7 +408,6 @@ export class EnforcementPipeline {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const truncated = text.length > MAX_OUTPUT_SCAN_CHARS
     const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text
-    let redacted = scanText
     // Three buckets, not two — see `KeelRule.patterns[].redact_span`'s doc
     // comment in types.ts for the full reasoning. A match only ever lands
     // in `matchedRuleIds` (actually mutated) when BOTH are true: the rule
@@ -423,6 +422,23 @@ export class EnforcementPipeline {
     const observeOnlyRuleIds: string[] = []
     const spanUnsafeRuleIds: string[] = []
     let matchedPattern: string | undefined
+
+    // Every redact_span:true pattern's occurrences are located against the
+    // ORIGINAL `scanText` first, into a flat list of candidate spans — NOT
+    // mutated one at a time as they're found. The previous implementation
+    // tested each pattern against `scanText` (correct) but then called
+    // `redacted.replace(...)` against a string ALREADY REWRITTEN by an
+    // earlier pattern's replacement. Two overlapping patterns whose spans
+    // covered the same bytes meant the second pattern's `re.test(scanText)`
+    // check still passed (it's tested against the untouched original), so
+    // it was credited in `matchedRuleIds` as successfully redacted, even
+    // though its span had already been consumed/altered by the first
+    // pattern's replace() — its own replace() then found nothing left to
+    // match (or matched unrelated shifted text) in the already-mutated
+    // string, so the region it claimed to redact could survive VERBATIM in
+    // the output while still being listed as successfully redacted — false
+    // confidence, not partial redaction.
+    const candidateSpans: Array<{ start: number; end: number; ruleId: string }> = []
     for (const rule of rules) {
       if (rule.type !== 'content' || !rule.patterns) continue
       for (const pattern of rule.patterns) {
@@ -439,11 +455,60 @@ export class EnforcementPipeline {
           if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id)
           continue // recorded, never mutates — the match span doesn't bound the secret (types.ts's redact_span doc)
         }
-        if (!matchedRuleIds.includes(rule.id)) matchedRuleIds.push(rule.id)
-        const replacer = new RegExp(pattern.regex, 'gi')
-        redacted = redacted.replace(replacer, `[redacted-by-keel:${rule.id}]`)
+        // Locate every occurrence of THIS pattern against the original
+        // text — a fresh 'g'-flagged regex so `.lastIndex` starts at 0
+        // regardless of what the `re.test()` probe above already advanced.
+        const finder = new RegExp(pattern.regex, 'gi')
+        let occurrence: RegExpExecArray | null
+        while ((occurrence = finder.exec(scanText))) {
+          candidateSpans.push({ start: occurrence.index, end: occurrence.index + occurrence[0].length, ruleId: rule.id })
+          if (occurrence[0].length === 0) finder.lastIndex++ // guard a zero-width pattern from looping forever
+        }
       }
     }
+
+    // Resolve overlaps by MERGING them into their union, rather than
+    // picking one span and discarding the other: sort by start, then walk
+    // the list folding any span that starts at or before the current
+    // group's end into that group (extending its end, recording every
+    // contributing rule id). This is the stronger of the two fixes this
+    // method's own bug write-up allows for (union vs. skip-and-report) —
+    // it means NO byte covered by ANY matched redact_span:true pattern is
+    // ever left exposed just because a different pattern also covers it,
+    // and every rule that contributed a span to a group is honestly
+    // credited for that group's redaction (its bytes really were removed,
+    // jointly with the other contributor's).
+    candidateSpans.sort((a, b) => a.start - b.start)
+    const mergedSpans: Array<{ start: number; end: number; ruleIds: string[] }> = []
+    for (const span of candidateSpans) {
+      const current = mergedSpans[mergedSpans.length - 1]
+      if (current && span.start <= current.end) {
+        current.end = Math.max(current.end, span.end)
+        if (!current.ruleIds.includes(span.ruleId)) current.ruleIds.push(span.ruleId)
+      } else {
+        mergedSpans.push({ start: span.start, end: span.end, ruleIds: [span.ruleId] })
+      }
+    }
+    for (const group of mergedSpans) {
+      for (const ruleId of group.ruleIds) {
+        if (!matchedRuleIds.includes(ruleId)) matchedRuleIds.push(ruleId)
+      }
+    }
+
+    // A single replacement pass over the ORIGINAL text, in span order —
+    // nothing is ever mutated and then re-scanned.
+    let redacted = scanText
+    if (mergedSpans.length) {
+      let out = ''
+      let cursor = 0
+      for (const group of mergedSpans) {
+        out += scanText.slice(cursor, group.start) + `[redacted-by-keel:${group.ruleIds.join('+')}]`
+        cursor = group.end
+      }
+      out += scanText.slice(cursor)
+      redacted = out
+    }
+
     const truncNote = truncated ? ` (only the first ${MAX_OUTPUT_SCAN_CHARS} chars were scanned)` : ''
     if (!matchedRuleIds.length) {
       const notes: string[] = []
