@@ -97,16 +97,57 @@ describe('hook payload parsing', () => {
       }
     })
 
-    it('v1 M2-B1: a PostToolUse-shaped payload sets `postAction` on claude-code, codex and gemini, with a null exit code when no plausible success field is present', () => {
+    it('v1 M2-B1: a PostToolUse-shaped payload sets `postAction` on claude-code, codex and gemini, with a null exit code when no plausible success field is present (sprint/lane-c2: and outputText, when a plausible output field IS present — see postToolUseOutputText below)', () => {
       for (const host of ['claude-code', 'codex', 'gemini'] as const) {
         const call = parsePayload(host, JSON.stringify({
           hook_event_name: 'PostToolUse', session_id: 'ses_5',
           tool_name: 'Bash', tool_input: { command: 'npm test' },
           tool_response: { stdout: 'ok', stderr: '' },
         }))
-        expect(call.postAction).toEqual({ tool: 'Bash', args: { command: 'npm test' }, exitCode: null })
+        expect(call.postAction).toEqual({ tool: 'Bash', args: { command: 'npm test' }, exitCode: null, outputText: 'ok' })
         expect(call.reasoning).toBeUndefined()
       }
+    })
+
+    describe('sprint/lane-c2: postToolUseOutputText — real output capture, best-effort field extraction', () => {
+      it('reads `stdout`/`output`/`content`/`text`/`result` nested under tool_response, in that priority order', () => {
+        const cases: Array<[Record<string, unknown>, string]> = [
+          [{ output: 'from output' }, 'from output'],
+          [{ stdout: 'from stdout' }, 'from stdout'],
+          [{ content: 'from content' }, 'from content'],
+          [{ text: 'from text' }, 'from text'],
+          [{ result: 'from result' }, 'from result'],
+          [{ output: 'wins', stdout: 'loses' }, 'wins'],
+        ]
+        for (const [toolResponse, expected] of cases) {
+          const call = parsePayload('claude-code', JSON.stringify({
+            hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {}, tool_response: toolResponse,
+          }))
+          expect(call.postAction?.outputText).toBe(expected)
+        }
+      })
+
+      it('also reads a top-level `tool_output` field (the docs-cited spelling, alongside tool_response — both are tried)', () => {
+        const call = parsePayload('claude-code', JSON.stringify({
+          hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {},
+          tool_output: { stdout: 'from tool_output' },
+        }))
+        expect(call.postAction?.outputText).toBe('from tool_output')
+      })
+
+      it('reads a bare-string tool_response/tool_output directly, not only a nested object shape', () => {
+        const a = parsePayload('claude-code', JSON.stringify({
+          hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {}, tool_response: 'bare string response',
+        }))
+        expect(a.postAction?.outputText).toBe('bare string response')
+      })
+
+      it('is undefined (not a guessed empty string) when nothing plausible matches — silence, not a false "clean" signal', () => {
+        const call = parsePayload('claude-code', JSON.stringify({
+          hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {}, tool_response: { exit_code: 0 },
+        }))
+        expect(call.postAction?.outputText).toBeUndefined()
+      })
     })
 
     it('v1 M2-B1: postToolUseExitCode reads a plausible success signal when present, deliberately conservative about which field names count', () => {

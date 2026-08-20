@@ -6669,7 +6669,13 @@ var ACTION_STRENGTH = {
   warn: 1,
   allow: 0,
   report: 0,
-  research: 0
+  research: 0,
+  // `redact` is never a rule's `action:` field (validActions above
+  // deliberately excludes it — see that Set's comment) — this entry exists
+  // only so `Record<EnforcementAction, number>` type-checks as total.
+  // Ranked with fix/redirect for the same reason they are: it actively
+  // intervenes (rewrites output) but never stops the turn.
+  redact: 2
 };
 var MODE_STRENGTH = {
   block: 2,
@@ -7914,6 +7920,7 @@ function detectClaim(input) {
 
 // ../core/src/enforce/pipeline.ts
 var OBSERVE_CONTINUE = /* @__PURE__ */ Symbol("keel:observe-continue");
+var MAX_OUTPUT_SCAN_CHARS = 256 * 1024;
 var EnforcementPipeline = class {
   config;
   verificationTracker;
@@ -8104,6 +8111,100 @@ var EnforcementPipeline = class {
       }
     }
     return this.result("allow", "", "Allowed (no matching claim rule)", start, false, 0);
+  }
+  /**
+   * Scan a completed tool call's OWN output text (`input.tool_output`) for
+   * secret-shaped content, reusing the exact `type: content` regex patterns
+   * that already gate what gets WRITTEN to a file (`no-secrets-in-code`,
+   * `evaluateTiers()`'s Tier 5 content branch above) — sprint/lane-c2's
+   * output-capture-and-redact path, for a host's PostToolUse-equivalent
+   * hook. Live-verified (not inferred) to actually change what an OpenCode
+   * session's model receives when the caller applies `redacted_output` back
+   * onto the host's mutable output object — see
+   * session/transcripts/opencode-tool-execute-after-mutation-probe.txt and
+   * docs/exfil.md's "Output redaction" section. On every OTHER host this
+   * result is, at best, a warning a caller can inject as context (Claude
+   * Code's `additionalContext`) — see hook.ts.
+   *
+   * Deliberately NOT `evaluate()` or `evaluateClaim()`: this is a pure
+   * text-in, verdict-and-candidate-replacement-text-out function. It never
+   * touches flowTracker/sequenceDetector/rate state, never consults
+   * VerificationTracker, and — critically — never mutates anything itself;
+   * the caller decides whether and how to apply `redacted_output`.
+   *
+   * `mode: observe` content rules are deliberately excluded from producing
+   * an `action: 'redact'` verdict here, the same restraint `evaluate()`'s
+   * OBSERVE_CONTINUE gives every other rule type: a rule the user configured
+   * to only WATCH must never itself cause a live mutation of what the agent
+   * sees — that would be enforcement from a rule believed to be inert, the
+   * failure this codebase's own memory calls the worst shape a guardrail can
+   * have. An observe-mode content rule that matches output text is still
+   * recorded (`redacted_rule_ids` includes it, `observed_matches` carries
+   * it), just never contributes its span to `redacted_output`.
+   *
+   * Bounded: `tool_output` can be multi-megabyte (a large file read, a
+   * verbose test run) and this runs on every call through a host's after-
+   * hook, awaited on that hook's own hot path. Text past
+   * `MAX_OUTPUT_SCAN_CHARS` is not scanned — the result says so
+   * (`truncated: true` is folded into the message) rather than silently
+   * returning a clean verdict for content it never looked at.
+   */
+  async evaluateOutput(input) {
+    const start = Date.now();
+    const text = input.tool_output;
+    if (!text) return this.result("allow", "", "No tool output to scan", start, false, 5);
+    this.checkRuleVersion();
+    const level = this.effectiveLevel(input);
+    const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
+    const truncated = text.length > MAX_OUTPUT_SCAN_CHARS;
+    const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text;
+    let redacted = scanText;
+    const matchedRuleIds = [];
+    const observeOnlyRuleIds = [];
+    const spanUnsafeRuleIds = [];
+    let matchedPattern;
+    for (const rule of rules) {
+      if (rule.type !== "content" || !rule.patterns) continue;
+      for (const pattern of rule.patterns) {
+        if (!pattern.regex) continue;
+        let re;
+        try {
+          re = new RegExp(pattern.regex, "gi");
+        } catch {
+          continue;
+        }
+        if (!re.test(scanText)) continue;
+        matchedPattern = matchedPattern || pattern.regex;
+        if (rule.mode === "observe") {
+          if (!observeOnlyRuleIds.includes(rule.id)) observeOnlyRuleIds.push(rule.id);
+          continue;
+        }
+        if (pattern.redact_span !== true) {
+          if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id);
+          continue;
+        }
+        if (!matchedRuleIds.includes(rule.id)) matchedRuleIds.push(rule.id);
+        const replacer = new RegExp(pattern.regex, "gi");
+        redacted = redacted.replace(replacer, `[redacted-by-keel:${rule.id}]`);
+      }
+    }
+    const truncNote = truncated ? ` (only the first ${MAX_OUTPUT_SCAN_CHARS} chars were scanned)` : "";
+    if (!matchedRuleIds.length) {
+      const notes = [];
+      if (observeOnlyRuleIds.length) notes.push(`${observeOnlyRuleIds.join(", ")} matched in mode: observe \u2014 recorded, not redacted`);
+      if (spanUnsafeRuleIds.length) notes.push(`${spanUnsafeRuleIds.join(", ")} matched a label/signature only (redact_span not set) \u2014 recorded, not redacted, because the match does not bound the secret`);
+      const note = notes.length ? ` (${notes.join("; ")})` : "";
+      const result2 = this.result("allow", "", `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5);
+      const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds];
+      if (detectedOnly.length) result2.redacted_rule_ids = detectedOnly;
+      return result2;
+    }
+    const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds];
+    const result = this.result("redact", matchedRuleIds[0], `Tool output contained secret-shaped content (${allIds.join(", ")}) \u2014 redacted before delivery${truncNote}.`, start, false, 5);
+    result.matched_pattern = matchedPattern;
+    result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted;
+    result.redacted_rule_ids = allIds;
+    return result;
   }
   async evaluateTiers(input) {
     const start = Date.now();
@@ -10451,12 +10552,29 @@ rules:
 
   - id: no-secrets-in-code
     type: content
+    # redact_span: true (sprint/lane-c2) marks a pattern whose match span
+    # fully covers the secret bytes themselves, safe for
+    # EnforcementPipeline.evaluateOutput() (output redaction, a DIFFERENT
+    # consumer than the deny-on-write check below \u2014 this field has no
+    # effect on that check) to replace in place. The last three patterns
+    # here deliberately do NOT set it: they match only a LABEL or HEADER
+    # (aws_secret_access_key=, a PEM BEGIN line) \u2014 the real secret sits
+    # AFTER the match, uncovered by it. Redacting just the label would
+    # strip the label and leave the actual key/PEM body sitting right next
+    # to a "[redacted]" marker \u2014 a false-confidence signal worse than no
+    # redaction at all. See types.ts's redact_span doc comment and
+    # docs/exfil.md's "Output redaction" section.
     patterns:
       - regex: "AKIA[0-9A-Z]{16}"
+        redact_span: true
       - regex: "ghp_[A-Za-z0-9]{36}"
+        redact_span: true
       - regex: "github_pat_[A-Za-z0-9_]{22,}"
+        redact_span: true
       - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
+        redact_span: true
       - regex: "sk-[A-Za-z0-9_-]{24,}"
+        redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
       - regex: "-----BEGIN PRIVATE KEY-----"
       - regex: "aws_secret_access_key[	 ]*[:=]"
@@ -11255,6 +11373,65 @@ var plugin_default = {
       pendingSyntaxFindings.push(message);
       record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: "post-edit-syntax", action: "warn", message, hook: "tool.execute.after", cwd: directory });
     };
+    const scanForRedaction = async (text, sessionID, tool) => {
+      if (!text) return null;
+      const scanInput = toEnforceInput(tool || "unknown", {}, { sessionID }, level, directory);
+      scanInput.tool_output = text;
+      const result = await pipeline.evaluateOutput(scanInput);
+      return result.action === "redact" && result.redacted_output ? result : null;
+    };
+    const recordRedaction = (result, sessionID, turn, tool) => {
+      record({
+        session_id: sessionID,
+        turn_number: turn,
+        tool,
+        args: {},
+        rule_id: result.rule_id,
+        action: "redact",
+        message: result.message,
+        redacted_rule_ids: result.redacted_rule_ids,
+        hook: "tool.execute.after",
+        cwd: directory
+      });
+    };
+    const FIELD_SEP = "\0KEEL-FIELD-SEP\0";
+    const redactToolOutput = async (input, output, turn) => {
+      if (isDisabled()) return;
+      if (!output || typeof output !== "object") return;
+      if (typeof output.output === "string" && output.output) {
+        const result2 = await scanForRedaction(output.output, input?.sessionID, input?.tool);
+        if (result2) {
+          output.output = result2.redacted_output;
+          recordRedaction(result2, input?.sessionID, turn, input?.tool);
+        }
+      }
+      const smallFields = [];
+      const smallValues = [];
+      if (typeof output.title === "string" && output.title) {
+        smallFields.push({ path: "title" });
+        smallValues.push(output.title);
+      }
+      if (output.metadata && typeof output.metadata === "object") {
+        for (const key of Object.keys(output.metadata)) {
+          const value = output.metadata[key];
+          if (typeof value === "string" && value) {
+            smallFields.push({ path: "metadata", key });
+            smallValues.push(value);
+          }
+        }
+      }
+      if (!smallValues.length) return;
+      const joined = smallValues.join(FIELD_SEP);
+      const result = await scanForRedaction(joined, input?.sessionID, input?.tool);
+      if (!result) return;
+      const parts = result.redacted_output.split(FIELD_SEP);
+      if (parts.length !== smallFields.length) return;
+      smallFields.forEach((field, i) => {
+        if (field.path === "title") output.title = parts[i];
+        else output.metadata[field.key] = parts[i];
+      });
+      recordRedaction(result, input?.sessionID, turn, input?.tool);
+    };
     const before = async (input, output) => {
       if (isDisabled()) return;
       if (sentinelCorrupted) {
@@ -11324,6 +11501,10 @@ var plugin_default = {
         try {
           const args = input?.args || {};
           const action = toEnforceInput(input?.tool || "unknown", args, input, level, directory);
+          try {
+            await redactToolOutput(input, output, action.turn_number);
+          } catch {
+          }
           const exit = output?.metadata?.exit === void 0 ? null : Number(output?.metadata?.exit);
           if (exit === 0) pipeline.markVerificationSatisfied(action);
           pipeline.recordAttemptOutcome(action, exit);

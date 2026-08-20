@@ -57,6 +57,20 @@ export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
  */
 const OBSERVE_CONTINUE = Symbol('keel:observe-continue')
 
+/**
+ * Bound on how much of a tool's output `evaluateOutput()` (below) will run
+ * `type: content` regex patterns against. `tool.execute.after` is awaited
+ * on a host's hot path, and tool output can be multi-megabyte (a large file
+ * read, a verbose test run) — running eight-plus global-replace regexes
+ * over that on every single tool call is a real cost against this
+ * pipeline's own <50ms tier budget. 256KB comfortably covers a typical
+ * command's stdout/file read while keeping the scan itself sub-millisecond;
+ * text past this bound is left unscanned (and the result says so, rather
+ * than silently returning a clean verdict for content that was never
+ * looked at — see evaluateOutput()'s own comment).
+ */
+const MAX_OUTPUT_SCAN_CHARS = 256 * 1024
+
 export interface PipelineConfig {
   level: ProtectionLevel
   context: RuleContext
@@ -339,6 +353,114 @@ export class EnforcementPipeline {
       }
     }
     return this.result('allow', '', 'Allowed (no matching claim rule)', start, false, 0)
+  }
+
+  /**
+   * Scan a completed tool call's OWN output text (`input.tool_output`) for
+   * secret-shaped content, reusing the exact `type: content` regex patterns
+   * that already gate what gets WRITTEN to a file (`no-secrets-in-code`,
+   * `evaluateTiers()`'s Tier 5 content branch above) — sprint/lane-c2's
+   * output-capture-and-redact path, for a host's PostToolUse-equivalent
+   * hook. Live-verified (not inferred) to actually change what an OpenCode
+   * session's model receives when the caller applies `redacted_output` back
+   * onto the host's mutable output object — see
+   * session/transcripts/opencode-tool-execute-after-mutation-probe.txt and
+   * docs/exfil.md's "Output redaction" section. On every OTHER host this
+   * result is, at best, a warning a caller can inject as context (Claude
+   * Code's `additionalContext`) — see hook.ts.
+   *
+   * Deliberately NOT `evaluate()` or `evaluateClaim()`: this is a pure
+   * text-in, verdict-and-candidate-replacement-text-out function. It never
+   * touches flowTracker/sequenceDetector/rate state, never consults
+   * VerificationTracker, and — critically — never mutates anything itself;
+   * the caller decides whether and how to apply `redacted_output`.
+   *
+   * `mode: observe` content rules are deliberately excluded from producing
+   * an `action: 'redact'` verdict here, the same restraint `evaluate()`'s
+   * OBSERVE_CONTINUE gives every other rule type: a rule the user configured
+   * to only WATCH must never itself cause a live mutation of what the agent
+   * sees — that would be enforcement from a rule believed to be inert, the
+   * failure this codebase's own memory calls the worst shape a guardrail can
+   * have. An observe-mode content rule that matches output text is still
+   * recorded (`redacted_rule_ids` includes it, `observed_matches` carries
+   * it), just never contributes its span to `redacted_output`.
+   *
+   * Bounded: `tool_output` can be multi-megabyte (a large file read, a
+   * verbose test run) and this runs on every call through a host's after-
+   * hook, awaited on that hook's own hot path. Text past
+   * `MAX_OUTPUT_SCAN_CHARS` is not scanned — the result says so
+   * (`truncated: true` is folded into the message) rather than silently
+   * returning a clean verdict for content it never looked at.
+   */
+  async evaluateOutput(input: EnforceInput): Promise<EnforceResult> {
+    const start = Date.now()
+    const text = input.tool_output
+    if (!text) return this.result('allow', '', 'No tool output to scan', start, false, 5)
+    this.checkRuleVersion()
+    const level = this.effectiveLevel(input)
+    // Deliberately NOT gated on `depth`/sprint's "skip content checks for
+    // speed" trade-off (evaluateTiers()'s `deepChecks`): that trade-off
+    // exists because a blocking content check costs the agent real friction
+    // at the fast dial. This check never blocks — the only cost of running
+    // it at every dial is the scan itself (bounded below), and a leaked
+    // secret is not a cost sprint's speed/safety trade-off was ever meant to
+    // accept. A stated choice, not an oversight.
+    const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
+    const truncated = text.length > MAX_OUTPUT_SCAN_CHARS
+    const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text
+    let redacted = scanText
+    // Three buckets, not two — see `KeelRule.patterns[].redact_span`'s doc
+    // comment in types.ts for the full reasoning. A match only ever lands
+    // in `matchedRuleIds` (actually mutated) when BOTH are true: the rule
+    // itself is enforcing (not `mode: observe`) AND the specific pattern
+    // that matched has `redact_span: true` — meaning its match span is
+    // known to fully cover the secret bytes, not just a nearby label.
+    // Everything else that matched is still recorded (`detectedOnlyRuleIds`)
+    // with the reason it did NOT drive a mutation, because a partial
+    // redaction that strips a label while leaving the real secret verbatim
+    // is a false-confidence signal — worse than no redaction at all.
+    const matchedRuleIds: string[] = []
+    const observeOnlyRuleIds: string[] = []
+    const spanUnsafeRuleIds: string[] = []
+    let matchedPattern: string | undefined
+    for (const rule of rules) {
+      if (rule.type !== 'content' || !rule.patterns) continue
+      for (const pattern of rule.patterns) {
+        if (!pattern.regex) continue // `prefix` patterns have no well-defined redaction span
+        let re: RegExp
+        try { re = new RegExp(pattern.regex, 'gi') } catch { continue }
+        if (!re.test(scanText)) continue
+        matchedPattern = matchedPattern || pattern.regex
+        if (rule.mode === 'observe') {
+          if (!observeOnlyRuleIds.includes(rule.id)) observeOnlyRuleIds.push(rule.id)
+          continue // recorded, never mutates — see this method's header comment
+        }
+        if (pattern.redact_span !== true) {
+          if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id)
+          continue // recorded, never mutates — the match span doesn't bound the secret (types.ts's redact_span doc)
+        }
+        if (!matchedRuleIds.includes(rule.id)) matchedRuleIds.push(rule.id)
+        const replacer = new RegExp(pattern.regex, 'gi')
+        redacted = redacted.replace(replacer, `[redacted-by-keel:${rule.id}]`)
+      }
+    }
+    const truncNote = truncated ? ` (only the first ${MAX_OUTPUT_SCAN_CHARS} chars were scanned)` : ''
+    if (!matchedRuleIds.length) {
+      const notes: string[] = []
+      if (observeOnlyRuleIds.length) notes.push(`${observeOnlyRuleIds.join(', ')} matched in mode: observe — recorded, not redacted`)
+      if (spanUnsafeRuleIds.length) notes.push(`${spanUnsafeRuleIds.join(', ')} matched a label/signature only (redact_span not set) — recorded, not redacted, because the match does not bound the secret`)
+      const note = notes.length ? ` (${notes.join('; ')})` : ''
+      const result = this.result('allow', '', `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5)
+      const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds]
+      if (detectedOnly.length) result.redacted_rule_ids = detectedOnly
+      return result
+    }
+    const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds]
+    const result = this.result('redact', matchedRuleIds[0], `Tool output contained secret-shaped content (${allIds.join(', ')}) — redacted before delivery${truncNote}.`, start, false, 5)
+    result.matched_pattern = matchedPattern
+    result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted
+    result.redacted_rule_ids = allIds
+    return result
   }
 
   private async evaluateTiers(input: EnforceInput): Promise<EnforceResult> {

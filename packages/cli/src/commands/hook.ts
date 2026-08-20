@@ -1,4 +1,4 @@
-import { initEnforce, evaluateToolCall, evaluateClaimText, recordPostAction, flushBackgroundWork } from './enforce.js'
+import { initEnforce, evaluateToolCall, evaluateClaimText, recordPostAction, evaluateOutputText, flushBackgroundWork } from './enforce.js'
 import { BLOCKING_ACTIONS } from './evaluate.js'
 import type { EnforceResult, ProtectionLevel } from '../core/types.js'
 
@@ -92,8 +92,15 @@ export interface ParsedCall {
    * Like the Stop-shaped claim-reach path above, this is structurally
    * observe-only: `hookVerdict` NEVER blocks on a PostToolUse-shaped
    * payload, always returns exit 0, even if evaluation throws internally.
+   *
+   * `outputText` (sprint/lane-c2: real output capture + redaction) is the
+   * completed tool's own output text, when this payload carries something
+   * recognizable as one — same best-effort, same honesty posture as
+   * `exitCode` above, see `postToolUseOutputText`'s own comment. Unlike
+   * `exitCode`, there is no safe default to fall back to on "unknown" —
+   * `undefined` here just means "nothing to scan," not "assume clean."
    */
-  postAction?: { tool: string; args: Record<string, unknown>; exitCode: number | null }
+  postAction?: { tool: string; args: Record<string, unknown>; exitCode: number | null; outputText?: string }
   /**
    * Set when the payload could not supply the ONE field every rule needs to
    * match against: a real tool identity (or, for the env-var TOOL_INPUT
@@ -158,6 +165,38 @@ function postToolUseExitCode(toolResponse: unknown): number | null {
   if (typeof response.is_error === 'boolean') return response.is_error ? 1 : 0
   if (response.interrupted === true) return 1
   return null
+}
+
+/**
+ * Best-effort extraction of a completed tool's OWN output text from a
+ * PostToolUse-shaped payload (sprint/lane-c2: real output capture +
+ * redaction, the CLI-hook-layer counterpart to the OpenCode plugin's
+ * `tool.execute.after` output-mutation wiring — see plugin.ts and
+ * pipeline.ts's `evaluateOutput()`). Same conservative posture as
+ * `postToolUseExitCode` above, for the same underlying reason: this
+ * repo's own live-verification budget could not capture a real Claude
+ * Code PostToolUse payload (docs/integrations.md's honesty table), so the
+ * exact field NAME is unconfirmed. Two independent citations disagree —
+ * the installed `claude-posttooluse.sh` template's own contract comment
+ * says `TOOL_RESPONSE — JSON of the tool output` (i.e. nested inside
+ * `tool_response`, which is also what `postToolUseExitCode` already reads),
+ * while a direct fetch of code.claude.com/docs/en/hooks for THIS lane
+ * described a top-level `tool_output` field name instead. Both are tried,
+ * same "send/read both spellings" precedent as `renderVerdict`'s Cursor
+ * camelCase/snake_case fix — and if NEITHER matches a real payload, this
+ * silently returns `undefined` (nothing scanned), not a guessed default;
+ * that silence is itself worth stating plainly rather than treating an
+ * unconfirmed extraction as reassurance that output scanning "works."
+ */
+function postToolUseOutputText(body: Record<string, unknown>): string | undefined {
+  const container = asRecord(body.tool_response ?? body.tool_output)
+  for (const key of ['output', 'stdout', 'content', 'text', 'result']) {
+    const value = container[key]
+    if (typeof value === 'string' && value) return value
+  }
+  if (typeof body.tool_response === 'string' && body.tool_response) return body.tool_response
+  if (typeof body.tool_output === 'string' && body.tool_output) return body.tool_output
+  return undefined
 }
 
 /**
@@ -259,6 +298,7 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
             tool: identity.tool,
             args: asRecord(body.tool_input),
             exitCode: postToolUseExitCode(body.tool_response),
+            outputText: postToolUseOutputText(body),
           },
         }
       }
@@ -302,6 +342,7 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
             tool: identity.tool,
             args: asRecord(body.tool_input),
             exitCode: postToolUseExitCode(body.tool_response),
+            outputText: postToolUseOutputText(body),
           },
         }
       }
@@ -624,15 +665,54 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
     // completed tool call cannot be un-run, so this path ALWAYS reports
     // exit 0, even if evaluation throws.
     if (call.postAction) {
+      let outputWarning = ''
       try {
         const cwd = options.cwd || process.cwd()
         const level = (options.level as ProtectionLevel | undefined)
         initEnforce(cwd, level ? { level } : undefined)
         await recordPostAction(call.postAction.tool, call.postAction.args, call.postAction.exitCode, { cwd, agent: host, sessionId: call.sessionId })
+        // Real output capture + redaction (sprint/lane-c2), CLI-hook-host
+        // ceiling: unlike the OpenCode plugin (packages/opencode-plugin/src/
+        // plugin.ts), NOTHING on this path can rewrite output that already
+        // reached the model — the call already ran and its result already
+        // went out before this hook ever fires (this branch's own header
+        // comment). The honest ceiling here is Claude Code's documented
+        // `PostToolUse` `additionalContext` field: a context-injection
+        // channel the model sees on its NEXT turn, not a literal rewrite —
+        // see docs/exfil.md's "Output redaction" section. Only built when
+        // `outputText` was actually extracted (postToolUseOutputText's own
+        // comment: silence there means "nothing to scan," not "clean").
+        if (call.postAction.outputText) {
+          const result = await evaluateOutputText(
+            call.postAction.tool, call.postAction.args, call.postAction.outputText,
+            { cwd, agent: host, sessionId: call.sessionId },
+          )
+          if (result.action === 'redact' && result.rule_id) {
+            outputWarning = `[keel:${result.rule_id}] The last tool's output matched a secret-shaped pattern (${(result.redacted_rule_ids || [result.rule_id]).join(', ')}). `
+              + 'Keel could not remove it from what you already received — this host\'s PostToolUse hook cannot rewrite delivered '
+              + 'tool output, only warn after the fact. Treat that value as exposed: do not repeat, log, or transmit it, and tell the user to rotate it.'
+          }
+        }
       } catch {
         // Fail open, on purpose — see the comment above.
       }
-      return { blocked: false, exitCode: 0, stdout: '', stderr: '' }
+      // `hookSpecificOutput.hookEventName: 'PostToolUse'` (not 'PreToolUse',
+      // unlike renderVerdict's advisory case above) — this response answers
+      // THIS hook invocation specifically. `systemMessage` alongside it for
+      // the same reason renderVerdict's advisory path sends both: the
+      // confirmed user-visible channel and the confirmed model-visible one,
+      // per anthropics/claude-code#40380's "systemMessage silently dropped
+      // without hookSpecificOutput" report cited there.
+      return {
+        blocked: false, exitCode: 0,
+        stdout: outputWarning
+          ? JSON.stringify({
+              hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: outputWarning },
+              systemMessage: outputWarning,
+            })
+          : '',
+        stderr: '',
+      }
     }
 
     // Degenerate payload (empty stdin, unparseable JSON, a missing/blank

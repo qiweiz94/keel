@@ -8,11 +8,28 @@ export type RuleContext = 'local' | 'ci' | 'both'
 
 export type EnforcementDepth = 'fast' | 'full' | 'deep'
 
-// `mask` (redact matched content) was removed from this vocabulary — see
-// rule-parser.ts's `validActions` comment for why (declared meaning would
-// either duplicate `fix` or require an output-rewrite channel keel does not
-// have) — rather than ship it perpetually declared-but-rejected.
-export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'fix' | 'report' | 'research' | 'redirect'
+// `mask` (redact matched content, as a rule-authorable `action:` value) is
+// still deliberately absent from rule-parser.ts's `validActions` — see that
+// comment for the current reasoning. CORRECTION (sprint/lane-c2): the
+// earlier version of that comment claimed the underlying capability itself
+// — rewriting a tool's own output after it runs — was a channel keel does
+// not have at all, citing opencode-plugin's `tool.execute.after` "the hook
+// cannot inject tool results" comment. That citation is about a DIFFERENT
+// thing (the before-hook's `redirect` action cannot fabricate a fake tool
+// RESULT to stand in for a call it interrupts) and was never actually
+// tested for the after-hook's own output-mutation capability. It has now
+// been live-tested and confirmed real for OpenCode specifically: mutating
+// `tool.execute.after`'s `output.output`/`output.metadata` fields
+// rewrites what the MODEL receives, not just what the terminal renders —
+// see session/transcripts/opencode-tool-execute-after-mutation-probe.txt
+// and docs/exfil.md's "Output redaction" section. `'redact'` below is that
+// capability's result-side vocabulary: distinct from `'redirect'`, and
+// deliberately still NOT added to rule-parser.ts's validActions — it is
+// never a rule author's `action:` choice, only a verdict
+// `EnforcementPipeline.evaluateOutput()` can itself return, because the
+// mutation only actually reaches the model on one host (OpenCode) today;
+// making it rule-authorable would silently be a no-op everywhere else.
+export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'fix' | 'report' | 'research' | 'redirect' | 'redact'
 
 export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
@@ -124,7 +141,35 @@ export interface KeelRule {
   operations?: ('read' | 'write' | 'delete' | 'overwrite' | 'glob')[]
 
   // ── Content rules ──
-  patterns?: ({ regex?: string; prefix?: string })[]
+  /**
+   * `redact_span` (sprint/lane-c2, opt-in, default false/absent): whether
+   * this specific pattern's match span fully covers the secret bytes
+   * themselves, as opposed to merely a nearby label/signature that
+   * indicates a secret is present without bounding it. This distinction
+   * only matters to `EnforcementPipeline.evaluateOutput()` (output
+   * redaction) — Tier 5's ordinary write-side content blocking in
+   * `evaluateTiers()` ignores this field entirely and behaves exactly as
+   * before.
+   *
+   * Found the hard way: `AKIA[0-9A-Z]{16}` matches exactly an AWS access
+   * key — safe to redact in place. `aws_secret_access_key[\t ]*[:=]` and
+   * `BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY` match only a LABEL or HEADER
+   * — the actual secret (the key material, the PEM body) sits AFTER the
+   * match and is not covered by it. Blindly replacing the match span with
+   * a "[redacted]" marker on one of these would strip the label and leave
+   * the real secret sitting right next to it, verbatim — a false-
+   * confidence signal strictly worse than no redaction at all (the trace
+   * would say "redacted" while the secret shipped anyway). See
+   * `evaluateOutput()`'s own comment and docs/exfil.md's "Output
+   * redaction" section for the full reasoning and the shipped rule's
+   * per-pattern marking (`no-secrets-in-code`, install.ts).
+   *
+   * A pattern without `redact_span: true` can still MATCH and be detected
+   * (contributes to `EnforceResult.redacted_rule_ids` and the message) —
+   * it just never contributes to `redacted_output`, the same restraint
+   * `mode: observe` gets for a different reason.
+   */
+  patterns?: ({ regex?: string; prefix?: string; redact_span?: boolean })[]
 
   // ── Network rules ──
   except?: string[]                 // domains to allow
@@ -336,6 +381,19 @@ export interface EnforceInput {
   reasoning?: string                // agent's chain-of-thought, if available
   depth?: EnforcementDepth          // fast | full | deep evaluation depth
   action_override?: EnforcementAction // integration-level action override
+  /**
+   * A completed tool call's OWN output text (stdout, file content read back,
+   * an API response body, ...) — populated ONLY for a call into
+   * `EnforcementPipeline.evaluateOutput()` (sprint/lane-c2's real-output-
+   * capture path, called from a host's PostToolUse-equivalent hook, never
+   * from `evaluate()`/`evaluateClaim()`). Every other consumer of
+   * `EnforceInput` in this codebase leaves this undefined; it exists so the
+   * secret-detection content-rule patterns (`no-secrets-in-code`, `type:
+   * content`) can be reused against output text instead of only input text,
+   * without overloading `args` (which is the CALL's arguments, not its
+   * result) or adding a parallel input shape.
+   */
+  tool_output?: string
 }
 
 export interface EnforceResult {
@@ -378,6 +436,19 @@ export interface EnforceResult {
    * byte-identical.
    */
   observed_matches?: Array<{ rule_id: string; observed_action: EnforcementAction; message: string }>
+  /**
+   * Set only when `action === 'redact'` (`EnforcementPipeline.
+   * evaluateOutput()` — see EnforceInput.tool_output's comment): the
+   * caller's `tool_output` text with every matched secret-shaped span
+   * replaced by an attributed `[redacted-by-keel:<rule_id>]` marker. The
+   * caller (a host integration) is responsible for actually applying this
+   * back onto whatever channel it came from — evaluateOutput() itself never
+   * mutates anything; it is a pure function from text to a verdict + a
+   * candidate replacement text.
+   */
+  redacted_output?: string
+  /** Every `type: content` rule id whose pattern matched during a `redact` verdict, in match order. Absent when nothing matched. */
+  redacted_rule_ids?: string[]
 }
 
 export interface RedirectDirective {

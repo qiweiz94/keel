@@ -573,12 +573,29 @@ rules:
 
   - id: no-secrets-in-code
     type: content
+    # redact_span: true (sprint/lane-c2) marks a pattern whose match span
+    # fully covers the secret bytes themselves, safe for
+    # EnforcementPipeline.evaluateOutput() (output redaction, a DIFFERENT
+    # consumer than the deny-on-write check below — this field has no
+    # effect on that check) to replace in place. The last three patterns
+    # here deliberately do NOT set it: they match only a LABEL or HEADER
+    # (aws_secret_access_key=, a PEM BEGIN line) — the real secret sits
+    # AFTER the match, uncovered by it. Redacting just the label would
+    # strip the label and leave the actual key/PEM body sitting right next
+    # to a "[redacted]" marker — a false-confidence signal worse than no
+    # redaction at all. See types.ts's redact_span doc comment and
+    # docs/exfil.md's "Output redaction" section.
     patterns:
       - regex: "AKIA[0-9A-Z]{16}"
+        redact_span: true
       - regex: "ghp_[A-Za-z0-9]{36}"
+        redact_span: true
       - regex: "github_pat_[A-Za-z0-9_]{22,}"
+        redact_span: true
       - regex: "xox[baprs]-[A-Za-z0-9-]{10,}"
+        redact_span: true
       - regex: "sk-[A-Za-z0-9_-]{24,}"
+        redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
       - regex: "-----BEGIN PRIVATE KEY-----"
       - regex: "aws_secret_access_key[\t ]*[:=]"
@@ -1403,6 +1420,126 @@ export default {
       record({ session_id: sessionID, turn_number: turn, tool, args: { path: target }, rule_id: 'post-edit-syntax', action: 'warn', message, hook: 'tool.execute.after', cwd: directory })
     }
 
+    /**
+     * Real output redaction (sprint/lane-c2). Live-verified — not inferred
+     * from the SDK's type declarations — that mutating `tool.execute.after`'s
+     * `output` object actually rewrites what the MODEL receives on
+     * OpenCode, not just what the terminal renders: a probe plugin that
+     * redacted a runtime-generated secret (a value the model could not have
+     * known any other way) from `output.output` produced a model reply that
+     * never contained the real value, while an identical run with the
+     * mutation removed produced the real value verbatim. See
+     * session/transcripts/opencode-tool-execute-after-mutation-probe.txt and
+     * docs/exfil.md's "Output redaction" section for the full transcript.
+     *
+     * `output.metadata` was found (same probe, run 6) to independently
+     * duplicate raw stdout in at least the bash tool's shape
+     * (`metadata.output`) — a redaction that only touched `output.output`
+     * would leave a second raw copy sitting in the object OpenCode persists
+     * to its own session store. `redactText` below is applied to every
+     * string field that could carry the same content: `output.output`,
+     * `output.title`, and every string value under `output.metadata`.
+     *
+     * Reuses `pipeline.evaluateOutput()` — the SAME `type: content` regex
+     * patterns that already gate what gets WRITTEN to a file
+     * (`no-secrets-in-code`) — rather than inventing separate output-side
+     * detection. `evaluateOutput()` never mutates anything itself; applying
+     * `redacted_output` back onto the host's own mutable object is this
+     * hook's job specifically, because this is the one host where doing so
+     * is confirmed to actually reach the model.
+     *
+     * Only TOP-LEVEL string values of `output.metadata` are scanned — the
+     * shape confirmed live for the bash tool (`{output, exit, truncated}`,
+     * session/transcripts/opencode-tool-execute-after-mutation-probe.txt's
+     * run 6). A tool whose metadata nests a secret inside a further object
+     * or array is not covered; this was a deliberate scope decision (no
+     * other tool's metadata shape has been observed), not an oversight.
+     */
+    // Scan-only — deliberately does NOT record to the trace. Recording
+    // "redacted before delivery" has to happen strictly AFTER the caller
+    // has actually written `redacted_output` back onto the host object,
+    // never before: on the batched (title+metadata) path below, the
+    // split-count guard can bail out and leave the fields unmutated, and a
+    // trace entry claiming a redaction that was never applied is exactly
+    // the "control that lies" shape this codebase's own audit discipline
+    // exists to prevent. See `recordRedaction` below, the only place that
+    // writes the trace entry, always called right after the matching
+    // write-back.
+    const scanForRedaction = async (text: string, sessionID: string | undefined, tool: string | undefined) => {
+      if (!text) return null
+      const scanInput = toEnforceInput(tool || 'unknown', {}, { sessionID }, level, directory)
+      scanInput.tool_output = text
+      const result = await pipeline.evaluateOutput(scanInput as any)
+      return result.action === 'redact' && result.redacted_output ? result : null
+    }
+    const recordRedaction = (result: any, sessionID: string | undefined, turn: number, tool: string | undefined) => {
+      record({
+        session_id: sessionID, turn_number: turn, tool, args: {},
+        rule_id: result.rule_id, action: 'redact', message: result.message,
+        redacted_rule_ids: result.redacted_rule_ids, hook: 'tool.execute.after', cwd: directory,
+      })
+    }
+
+    // Unlikely-to-occur-in-real-content delimiter used only to batch small
+    // fields (title, metadata values) into ONE evaluateOutput() call —
+    // evaluateOutput()'s checkRuleVersion() re-hashes several rules files
+    // from disk on every call (computeRulesHash()), and doing that once per
+    // field (title, then every metadata key separately) on this hook's
+    // awaited hot path was a real, avoidable cost. Redaction here is plain
+    // string replace (never position-based), so joining several field
+    // values, scanning once, and splitting the result back apart is exact —
+    // not an approximation — as long as the split produces exactly as many
+    // parts as fields went in; if it doesn't (the delimiter itself got
+    // mangled by truncation or, implausibly, matched by some pattern), the
+    // batch is skipped rather than risk assigning a redacted fragment to
+    // the wrong field. `output.output` is scanned SEPARATELY, not batched
+    // in: it is the one field routinely large enough to hit
+    // MAX_OUTPUT_SCAN_CHARS, and batching it with small fields would make
+    // an ordinary truncation corrupt the split for every field, not just
+    // the large one.
+    const FIELD_SEP = ' KEEL-FIELD-SEP '
+
+    const redactToolOutput = async (input: any, output: any, turn: number): Promise<void> => {
+      if (isDisabled()) return
+      if (!output || typeof output !== 'object') return
+      if (typeof output.output === 'string' && output.output) {
+        const result = await scanForRedaction(output.output, input?.sessionID, input?.tool)
+        if (result) {
+          output.output = result.redacted_output
+          recordRedaction(result, input?.sessionID, turn, input?.tool)
+        }
+      }
+      const smallFields: Array<{ path: 'title' } | { path: 'metadata'; key: string }> = []
+      const smallValues: string[] = []
+      if (typeof output.title === 'string' && output.title) {
+        smallFields.push({ path: 'title' })
+        smallValues.push(output.title)
+      }
+      if (output.metadata && typeof output.metadata === 'object') {
+        for (const key of Object.keys(output.metadata)) {
+          const value = output.metadata[key]
+          if (typeof value === 'string' && value) {
+            smallFields.push({ path: 'metadata', key })
+            smallValues.push(value)
+          }
+        }
+      }
+      if (!smallValues.length) return
+      const joined = smallValues.join(FIELD_SEP)
+      const result = await scanForRedaction(joined, input?.sessionID, input?.tool)
+      if (!result) return
+      const parts = result.redacted_output.split(FIELD_SEP)
+      // See this block's own header comment: on a mismatch, the batch is
+      // skipped WITHOUT recording — nothing was actually applied, so
+      // nothing is claimed.
+      if (parts.length !== smallFields.length) return
+      smallFields.forEach((field, i) => {
+        if (field.path === 'title') output.title = parts[i]
+        else output.metadata[field.key] = parts[i]
+      })
+      recordRedaction(result, input?.sessionID, turn, input?.tool)
+    }
+
     const before = async (input: any, output: any) => {
       if (isDisabled()) return
       if (sentinelCorrupted) {
@@ -1495,6 +1632,11 @@ export default {
         try {
           const args = input?.args || {}
           const action = toEnforceInput(input?.tool || 'unknown', args, input, level, directory)
+          // Real output redaction runs FIRST — see redactToolOutput's own
+          // header comment. Never allowed to fail this hook closed: a
+          // redaction-scan error must degrade to "output left as-is," not
+          // to a lost verification/outcome record below.
+          try { await redactToolOutput(input, output, action.turn_number) } catch {}
           const exit = output?.metadata?.exit === undefined ? null : Number(output?.metadata?.exit)
           if (exit === 0) pipeline.markVerificationSatisfied(action)
           // Outcome telemetry: exit codes feed the stuck-loop detector and

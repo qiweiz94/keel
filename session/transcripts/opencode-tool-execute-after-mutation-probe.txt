@@ -1,0 +1,187 @@
+== OpenCode tool.execute.after output-mutation live probe (sprint/lane-c2) ==
+opencode version: 1.18.18
+model: opencode/deepseek-v4-flash-free (free, zero spend)
+isolated HOME per scripts/live-verify/lib/common.sh's pattern (HOME + XDG_*
+all pointed at a scratch dir — never the real ~/.opencode)
+
+QUESTION: does mutating output.output (and output.metadata) inside OpenCode's
+'tool.execute.after' hook actually change what the MODEL sees, or only what
+the terminal renders? Prior belief in this codebase (packages/core/src/
+enforce/rule-parser.ts, pre-this-lane) asserted "a channel this pipeline does
+not have," citing an unrelated comment about the BEFORE-hook's redirect path.
+Never actually tested. This probe tests it directly.
+
+-- probe plugin (final form, run 7) --
+import fs from "node:fs"
+const HEX16 = /\b[0-9a-f]{16}\b/g
+export default {
+  id: "keel-probe-mutate",
+  server: async (pluginInput) => {
+    return {
+      "tool.execute.after": async (input, output) => {
+        let matched = null
+        if (typeof output?.output === "string") {
+          const m = output.output.match(HEX16)
+          if (m) matched = m[0]
+        }
+        if (matched) {
+          output.output = output.output.split(matched).join("[REDACTED-HEX]")
+          if (typeof output.title === "string") output.title = output.title.split(matched).join("[REDACTED-HEX]")
+          if (output.metadata && typeof output.metadata === "object") {
+            for (const k of Object.keys(output.metadata)) {
+              if (typeof output.metadata[k] === "string" && output.metadata[k].includes(matched)) {
+                output.metadata[k] = output.metadata[k].split(matched).join("[REDACTED-HEX]")
+              }
+            }
+          }
+        }
+      },
+    }
+  },
+}
+
+== RUN 1 (confounded — DO NOT cite as evidence on its own) ==
+Prompt: "Run the bash command: echo SECRET_MARKER_9f3a1b ... reply with exactly
+what it printed." Secret was ALSO present verbatim in the prompt text itself,
+so the model could echo it without consulting tool output at all. Mutation
+DID change the CLI's rendered tool-output block
+([REDACTED-BY-KEEL-PROBE] -- do not modify it), but the model's final reply
+still contained the raw secret. This looked like "mutation is display-only"
+but the confound (secret already in the prompt) fully explains it — see runs
+4/5 below, which remove the confound and show the opposite.
+
+== RUN 2 (read tool, file content unknown to the prompt) ==
+File config.env contained TOKEN=ZQK7-VAULT-4471, never mentioned in the
+prompt. Prompt: "cat config.env... reply with EXACTLY the value after
+TOKEN=." Plugin redacted the 'read' tool's output.output.
+Result: model's reply was "[REDACTED-BY-KEEL-PROBE]" only — the real token
+never appeared in the model's response.
+
+== RUN 3 (bash cat, same file) ==
+Same file, forced the bash tool instead of the read tool. Plugin redacted
+output.output for the bash tool.
+Result: CLI showed "TOKEN=[REDACTED-BY-KEEL-PROBE]"; model's reply: "I won't
+extract or reveal token values from config files... The token appears to
+already be redacted in the file output." — the model only ever saw the
+redacted string.
+
+== RUN 4 (clean test — no confound, treatment) ==
+Prompt: "Use the bash tool to run: openssl rand -hex 8 -- then reply with
+EXACTLY and ONLY the 16 hex characters it printed, nothing else." The value
+is generated at runtime; the model cannot know it except from the tool
+result. Plugin redacted any 16-hex-char match in output.output to
+"[REDACTED-HEX]".
+Hook log (from the plugin's own instrumentation):
+  {"hook":"tool.execute.after","tool":"bash","matched":"39695be4ad51ff16",
+   "beforeSample":"39695be4ad51ff16\n","afterSample":"[REDACTED-HEX]\n"}
+  {"hook":"experimental.text.complete","textSample":"[REDACTED-HEX]"}
+CLI transcript:
+  $ openssl rand -hex 8
+  [REDACTED-HEX]
+
+  [REDACTED-HEX]
+Model's final reply: "[REDACTED-HEX]" — NOT the real value
+(39695be4ad51ff16). The model never received the raw secret.
+
+== RUN 5 (control — same prompt, plugin REMOVED) ==
+Identical prompt, identical isolated HOME/project, mutating plugin moved out
+of .opencode/plugins/ so no hook fires.
+CLI transcript:
+  $ openssl rand -hex 8
+  fa687c6cf9601743
+
+  fa687c6cf9601743
+Model's final reply: "fa687c6cf9601743" — the REAL value, verbatim. Confirms
+the model normally DOES receive and repeat the tool's real stdout; run 4's
+redacted reply was not a refusal-pattern artifact, it was the redaction
+actually removing the secret from what the model saw.
+
+== RUN 6 — does output.metadata carry a SECOND raw copy? ==
+Same openssl-rand prompt, plugin logs (does not mutate) tool.execute.after's
+full payload.
+  {"hook":"tool.execute.after","tool":"bash","title":"openssl rand -hex 8",
+   "outputSample":"03ca8e0c2aee88ce\n",
+   "metadataKeys":["output","exit","truncated"],
+   "metadataJSON":"{\"output\":\"03ca8e0c2aee88ce\\n\",\"exit\":0,\"truncated\":false}"}
+CONFIRMED: output.metadata.output duplicates the raw stdout independently of
+output.output. A redaction that only mutates output.output and ignores
+metadata leaves a second raw copy in the object OpenCode persists to its own
+session store. This is why the shipped fix (packages/core/src/enforce/
+pipeline.ts's evaluateOutput()) redacts every string value under
+output.metadata too, not just output.output.
+
+== RUN 7 — combined fix (output.output + title + every metadata string) + durability check ==
+Same prompt/model. Plugin (shown above) redacts output.output, output.title,
+and every string field of output.metadata.
+Hook log: {"matched":"181317bae2039a5b",
+  "afterMetadataJSON":"{\"output\":\"[REDACTED-HEX]\\n\",\"exit\":0,\"truncated\":false}"}
+CLI transcript and model's final reply: "[REDACTED-HEX]" only.
+
+DURABILITY CHECK: after the run completed, grepped the ENTIRE isolated HOME
+(including OpenCode's own session storage under .local/share/opencode and
+.local/state/opencode) for the raw secret "181317bae2039a5b":
+  grep -rl "181317bae2039a5b" $HOME   -> no matches (exit 1)
+The raw value is not present anywhere on disk under this session's storage
+after the metadata fix. (Run 4, which mutated output.output only, was
+already clean for its own secret "39695be4ad51ff16" — also zero matches —
+but run 7 is the one that also closes the metadata hole run 6 found.)
+
+== BOTTOM LINE ==
+For OpenCode's 'tool.execute.after' hook, mutating output.output (and, to
+close a real duplicate-copy hole, every string field of output.metadata,
+plus output.title) DOES rewrite what the model actually receives — not just
+what the terminal renders. This is a live, reproducible, zero-spend result,
+not a docs/types inference. It directly overturns the prior (untested)
+assertion in this codebase that no such channel exists. It does NOT show
+Claude Code, Cursor, Codex, Gemini, or Cline have any equivalent channel —
+those hosts were not probed here; see docs/exfil.md's new section for what
+was and was not tested for each host.
+
+== SHIPPED-RULE END-TO-END CONFIRMATION (2 is the one that matters — same bar as phase-1.md's claim-channel proof) ==
+
+Everything above uses a hand-written probe plugin. This section proves the
+actual SHIPPED redaction wiring — the real `no-secrets-in-code` rule from
+DEFAULT_RULES_YAML, un-modified, and the real built plugin
+(packages/opencode-plugin/dist/index.js, byte-identical to
+packages/cli/templates/keel-enforce.js) — through the real install path:
+
+  keel install --opencode --project
+
+in an isolated HOME (never the real ~/.opencode or ~/.keel — HOME + every
+XDG_* var pointed at a scratch dir, per scripts/live-verify/lib/common.sh's
+own pattern). A fixture file config-value.txt contained a 20-character
+AWS-access-key-shaped string (AKIA-prefixed, matching no-secrets-in-code's
+first pattern), never mentioned in the prompt.
+
+Command: opencode run "Use the bash tool to run: cat config-value.txt --
+then reply with EXACTLY and ONLY the 20-character value it printed, nothing
+else, no commentary." --model opencode/mimo-v2.5-free --auto
+
+(Note: opencode/deepseek-v4-flash-free, used in every probe above, had
+rotated out of the free-tier catalog between the earlier probes and this
+run — opencode's free-model roster changes over time. mimo-v2.5-free was
+the live replacement; also free, zero spend.)
+
+CLI transcript:
+  $ cat config-value.txt
+  [redacted-by-keel:no-secrets-in-code]
+
+  The file content was redacted by Keel security system and cannot be
+  displayed.
+
+The model's own final reply never contained the raw key
+(AKIAABCD1234EFGH5678) — it saw the redaction marker and correctly reported
+that the content was redacted. It was not even asked to notice this; the
+prompt asked it to repeat the value, and it couldn't, because it was never
+given the real one.
+
+Audit trace confirms the SHIPPED rule fired via the real hook, not a test
+double (~/.keel/traces/2026-08-20.jsonl, under the isolated HOME):
+  {"tool":"bash","rule_id":"no-secrets-in-code","action":"redact",
+   "message":"Tool output contained secret-shaped content
+   (no-secrets-in-code) — redacted before delivery.",
+   "redacted_rule_ids":["no-secrets-in-code"],"hook":"tool.execute.after"}
+
+Durability check: grepped the ENTIRE isolated HOME (session storage
+included) for the raw value "AKIAABCD1234EFGH5678" after the run —
+zero matches.

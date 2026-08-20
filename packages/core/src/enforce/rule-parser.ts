@@ -257,16 +257,36 @@ export function validateRules(rules: unknown): string[] {
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
     'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim', 'oracle', 'package',
   ])
-  // `mask` was deliberately dropped from this set (and from EnforcementAction
-  // in types.ts) rather than shipped perpetually declared-but-rejected: its
-  // only plausible concrete meaning — redact matched sensitive content —
-  // either duplicates what `fix` already does (rewrite the command's args
-  // pre-execution, e.g. `fix: [{pattern, replace: '[REDACTED]'}]`) or would
-  // need to rewrite TOOL OUTPUT after the fact, a channel this pipeline does
-  // not have (opencode-plugin/src/plugin.ts's own `tool.execute.after`
-  // comment: "the hook cannot inject tool results"). A rule author who wants
-  // redaction should reach for `fix`; the generic action-unsupported check
-  // below still fails closed on any leftover `action: mask` in a rules file.
+  // `mask` (a rule-authorable `action: mask`) stays deliberately absent from
+  // this set. CORRECTION (sprint/lane-c2): the previous version of this
+  // comment additionally claimed that rewriting TOOL OUTPUT after the fact
+  // was "a channel this pipeline does not have," citing opencode-plugin's
+  // `tool.execute.after` "the hook cannot inject tool results" comment. That
+  // citation is about something else (the BEFORE-hook's `redirect` action
+  // cannot fabricate a fake tool RESULT for a call it interrupts) and the
+  // output-rewrite claim was never actually tested. It has since been live-
+  // tested and found FALSE for OpenCode specifically: mutating
+  // `tool.execute.after`'s `output.output`/`output.metadata` really does
+  // rewrite what the model receives, not just the terminal rendering — see
+  // session/transcripts/opencode-tool-execute-after-mutation-probe.txt and
+  // `EnforcementPipeline.evaluateOutput()` (pipeline.ts), which reuses these
+  // same `type: content` patterns against captured tool output. `mask`
+  // STILL isn't added here, though, for a narrower and still-true reason:
+  // the mutation only actually reaches the model on ONE host (OpenCode)
+  // today — Claude Code's PostToolUse can only inject `additionalContext`
+  // (a warning the model sees alongside the original text, not a rewrite of
+  // it), and Cursor/Codex/Gemini/Cline/generic have no post-hoc output
+  // channel confirmed at all. A rule author writing `action: mask` in
+  // rules.yaml would get real redaction on OpenCode and a silent no-op
+  // everywhere else — exactly the "declared-but-inconsistent" trap this
+  // comment originally existed to avoid, just for a different reason than
+  // before. A rule author who wants redaction should still reach for `fix`
+  // (pre-execution, args-only, host-independent); the generic action-
+  // unsupported check below still fails closed on any leftover
+  // `action: mask` in a rules file. `redact` is a real value now — see
+  // EnforcementAction in types.ts — but it is pipeline-emitted only
+  // (`evaluateOutput()`'s own result), never a rule's `action:` field, and
+  // is deliberately left out of this Set for that reason.
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
   // Catalog metadata. These MUST be validated rather than passed through:
@@ -585,6 +605,12 @@ const ACTION_STRENGTH: Record<EnforcementAction, number> = {
   fix: 2, redirect: 2,
   warn: 1,
   allow: 0, report: 0, research: 0,
+  // `redact` is never a rule's `action:` field (validActions above
+  // deliberately excludes it — see that Set's comment) — this entry exists
+  // only so `Record<EnforcementAction, number>` type-checks as total.
+  // Ranked with fix/redirect for the same reason they are: it actively
+  // intervenes (rewrites output) but never stops the turn.
+  redact: 2,
 }
 
 /**

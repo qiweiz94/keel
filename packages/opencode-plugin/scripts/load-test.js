@@ -106,6 +106,13 @@ rules:
       - regex: "PRIVATE_KEY"
     action: deny
     message: "Private key content"
+  - id: no-full-secret-value
+    type: content
+    patterns:
+      - regex: "SECRETVAL_[A-Za-z0-9]{10}"
+        redact_span: true
+    action: deny
+    message: "Full-value secret pattern (redact_span: true — the match IS the whole secret, unlike content-protection's label-only PRIVATE_KEY above, which output redaction deliberately does NOT mutate — see types.ts's redact_span doc comment)."
   - id: keel-control-gate
     type: command
     match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
@@ -485,6 +492,113 @@ try {
   externalBoundaryDenied = e.message.startsWith('[Keel]')
 }
 check('worktree changes create verification obligation', externalBoundaryDenied)
+
+// ── real output redaction (sprint/lane-c2) ───────────────────────────
+// Live-verified end to end against a real installed opencode (this file's
+// own "OpenCode auto-load probe" below, plus
+// session/transcripts/opencode-tool-execute-after-mutation-probe.txt) that
+// mutating tool.execute.after's `output` object actually rewrites what the
+// MODEL receives, not just what the terminal renders. These checks exercise
+// the wiring in-process: `no-full-secret-value` (this file's own fixture
+// rules.yaml, top of this file) has `redact_span: true` — its match IS the
+// whole secret — and is action: deny — an enforcing rule, so it must
+// actually redact.
+const redactDir = join(tmpHome, 'redact-project')
+fs.mkdirSync(redactDir, { recursive: true })
+const redactHooks = await plugin.server({ directory: redactDir })
+
+const secretOutput = { title: 'cat secrets.env', output: 'token: SECRETVAL_abc123defg\ndone', metadata: { exit: 0, output: 'token: SECRETVAL_abc123defg\ndone' } }
+await redactHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-1', callID: 'c1', args: { command: 'cat secrets.env' } },
+  secretOutput,
+)
+check('MUST-REDACT: output.output no longer contains the raw secret', !secretOutput.output.includes('SECRETVAL_abc123defg'))
+check('MUST-REDACT: output.output carries an attributed redaction marker', secretOutput.output.includes('[redacted-by-keel:no-full-secret-value]'))
+check('MUST-REDACT: output.metadata\'s duplicate copy is ALSO redacted (closes the metadata hole)', !secretOutput.metadata.output.includes('SECRETVAL_abc123defg') && secretOutput.metadata.output.includes('[redacted-by-keel:no-full-secret-value]'))
+
+const redactTrace = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+  .map(line => { try { return JSON.parse(line) } catch { return null } })
+  .filter(Boolean)
+check('MUST-REDACT: a redact-action trace entry is recorded, distinct from the allow/"Tool completed" entry', redactTrace.some(e => e.session_id === 'redact-1' && e.action === 'redact' && e.rule_id === 'no-full-secret-value' && e.hook === 'tool.execute.after'))
+
+// redact_span correctness (found in review before this shipped, see
+// pipeline.ts's evaluateOutput() and types.ts's redact_span doc comment):
+// `content-protection`'s pattern (`PRIVATE_KEY`, no redact_span) matches
+// only a LABEL, not a value that follows it. It must NEVER mutate — a
+// partial redaction that strips the label and leaves a real value sitting
+// right next to a "[redacted]" marker would be a false-confidence signal
+// worse than no redaction at all.
+const labelOnlyOutput = { title: 'cat labeled.env', output: 'PRIVATE_KEY=realvalue123\ndone', metadata: { exit: 0 } }
+await redactHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-label', callID: 'c-label', args: { command: 'cat labeled.env' } },
+  labelOnlyOutput,
+)
+check('a label-only content match (no redact_span) is left FULLY byte-identical, value included', labelOnlyOutput.output === 'PRIVATE_KEY=realvalue123\ndone')
+
+const cleanOutput = { title: 'echo ok', output: 'build succeeded, 0 errors', metadata: { exit: 0, output: 'build succeeded, 0 errors' } }
+await redactHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-2', callID: 'c2', args: { command: 'echo ok' } },
+  cleanOutput,
+)
+check('MUST-NOT-FIRE: clean output is left byte-identical', cleanOutput.output === 'build succeeded, 0 errors' && cleanOutput.metadata.output === 'build succeeded, 0 errors')
+
+// Regression: the trace must never claim a redaction that was never
+// applied. `field-sep-collision`'s pattern matches the literal text of
+// plugin.ts's own FIELD_SEP batching delimiter — when title+metadata are
+// joined and scanned together, the match consumes the delimiter itself, so
+// splitting the redacted text back apart by that same delimiter produces
+// FEWER parts than fields went in. That mismatch must bail out WITHOUT
+// mutating title/metadata AND without recording a redact trace entry —
+// found in review before this shipped: recordRedaction() used to run
+// inside the scan step, before the caller checked whether the split
+// actually succeeded.
+//
+// This rule is deliberately NOT added to the shared global rules.yaml at
+// the top of this file: doing so once (an earlier version of this test)
+// made EVERY OTHER multi-field batch in this whole suite collide with it
+// too — any title+metadata join contains the literal delimiter text, so a
+// rule matching that text fires on every batched scan process-wide, not
+// just this one case. A dedicated project directory with its own
+// project-scoped rules.yaml keeps the collision contained to this test.
+const sepCollisionDir = join(tmpHome, 'sep-collision-project')
+fs.mkdirSync(join(sepCollisionDir, '.keel'), { recursive: true })
+fs.writeFileSync(join(sepCollisionDir, '.keel', 'rules.yaml'), `version: 1
+rules:
+  - id: field-sep-collision
+    type: content
+    patterns:
+      - regex: "KEEL-FIELD-SEP"
+        redact_span: true
+    action: deny
+    message: "Regression fixture only."
+`)
+const sepCollisionHooks = await plugin.server({ directory: sepCollisionDir })
+const sepOutput = { title: 'a', output: '', metadata: { exit: 0, note: 'b' } }
+await sepCollisionHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-sep-collision', callID: 'c-sep', args: {} },
+  sepOutput,
+)
+check('field/delimiter collision: title is left unmutated on a split-count mismatch', sepOutput.title === 'a')
+check('field/delimiter collision: metadata is left unmutated on a split-count mismatch', sepOutput.metadata.note === 'b')
+const sepTrace = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+  .map(line => { try { return JSON.parse(line) } catch { return null } })
+  .filter(Boolean)
+check('field/delimiter collision: NO redact trace entry is recorded for the unapplied mutation', !sepTrace.some(e => e.session_id === 'redact-sep-collision' && e.action === 'redact'))
+
+// A redaction-scan failure must never turn into a lost verification/outcome
+// record — the try/catch around redactToolOutput() in plugin.ts exists
+// specifically so a malformed `output` object degrades to "left as-is,"
+// not to this hook throwing and the host marking the call failed.
+let malformedOutputSurvived = true
+try {
+  await redactHooks['tool.execute.after'](
+    { tool: 'bash', sessionID: 'redact-3', callID: 'c3', args: { command: 'true' } },
+    null,
+  )
+} catch { malformedOutputSurvived = false }
+check('a null/malformed output object does not crash tool.execute.after', malformedOutputSurvived)
 
 // Requirements injection with a requirements file present.
 fs.mkdirSync(join(tmpHome, '.keel'), { recursive: true })
