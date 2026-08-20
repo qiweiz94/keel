@@ -44,14 +44,18 @@ classified ambiguous.) Full audit: **[session/v04/EVIDENCE/attribution-reaudit.m
 The number above measures an *ordinary* model drifting into a mistake it wasn't trying
 to hide — a different threat than a *deliberate* adversary trying to slip one specific
 action past one specific rule through obfuscation. For that second threat, see the
-separate adversarial sweep in SECURITY.md: 260 probes, each deliberately obfuscating a
-command to dodge a `level: protect` floor rule, found catch rates ranging from **25%**
-(`no-exfil-flow`, the floor's weakest rule) up to **93%** (`no-self-protection-write`) —
-full per-rule table: **[SECURITY.md § Measured bypass resistance of the Tier-1
+separate adversarial sweep in SECURITY.md: of a 260-probe corpus (some probes were
+expected to be allowed and are excluded from the denominators below), 188 probes
+deliberately obfuscated a command against one of the 12 `level: protect` floor rules
+that existed at sweep time, finding per-rule catch rates from **25%** (`no-exfil-flow`,
+1 of 4 probes, the floor's weakest rule measured) up to **93%**
+(`no-self-protection-write`) against the v0.4-hardened floors. That corpus is no
+longer reproducible and predates some v1.0.0 fixes — full caveats and the per-rule
+table: **[SECURITY.md § Measured bypass resistance of the Tier-1
 floor](SECURITY.md#measured-bypass-resistance-of-the-tier-1-floor)**. Read together: 0%
 is how often an unguided agent stumbled into the forbidden action on these three tasks;
-25–93% is how often a floor rule still caught someone actively trying to evade it —
-neither number substitutes for the other.
+25–93% is how a floor rule fared, as of that sweep, against someone actively trying to
+evade it — neither number substitutes for the other.
 
 **Scope, stated plainly:** one free model, one machine, one temperature, no frontier-model
 arm run yet, and the attribution re-audit is proven for this one under-cautious cheap model
