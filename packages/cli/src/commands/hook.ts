@@ -329,12 +329,26 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
         args: asRecord(body.tool_input),
         sessionId: stringField(body.session_id),
         // See ParsedCall.preToolReasoning's own comment for why this is a
-        // separate field from `reasoning` above, and for the actual defect
-        // this closes: EVERY prior call site reaching `evaluateToolCall()`
+        // separate field from `reasoning` above. PLUMBING ONLY, not a live
+        // fix by itself: every prior call site reaching `evaluateToolCall()`
         // (Claude Code, Codex, Gemini, Cursor, Cline) left `reasoning`
-        // unset entirely, so `unless_reasoning` and the `level: protect`
-        // deceptive-reasoning floor detector (pipeline.ts) had zero reach
-        // outside the OpenCode plugin.
+        // unset entirely regardless of what the payload carried, and that
+        // part IS now wired end-to-end (see the call site below) — but
+        // `body.last_assistant_message` is documented ONLY on a Stop-shaped
+        // payload (this branch's own comment above), so on a real,
+        // currently-observed PreToolUse call this extracts `undefined`
+        // every time. `unless_reasoning` and the `level: protect`
+        // deceptive-reasoning floor detector (pipeline.ts) still have NO
+        // live reach through any CLI hook path today — this closes the
+        // "never wired even if the data existed" half of the gap, not the
+        // "the data doesn't exist yet" half. The opencode-plugin's own
+        // `hookInput?.reasoning` spread is the SAME shape of unpopulated
+        // plumbing, not a working counterexample — see its own comment
+        // ("surveyed and found unpopulated by OpenCode's own
+        // PreToolUse-shaped input").  The ACTUAL data source that would
+        // close this for real is Claude Code's PreToolUse `transcript_path`
+        // (reading the last assistant message from it) — out of scope here
+        // as a restructure, not a threading fix.
         preToolReasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : undefined,
       }
     }
@@ -785,14 +799,23 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
         // codex/gemini parsePayload branches above: this is the PreToolUse
         // call site every real invocation from those hosts goes through,
         // and it used to leave `reasoning` unset entirely regardless of
-        // what the payload carried — `unless_reasoning` and the `level:
-        // protect` deceptive-reasoning floor detector (pipeline.ts) had no
-        // reach here at all. `evaluateToolCall`'s `extra.reasoning` already
-        // threads straight into `EnforceInput.reasoning`; this was simply
-        // never wired to it. NOT `call.reasoning` — that field is the
-        // Stop-shaped claim-reach event's text, which never coexists with
-        // a real tool call in the same payload (see preToolReasoning's
-        // comment for why the two must stay separate fields).
+        // what the payload carried. `evaluateToolCall`'s `extra.reasoning`
+        // already threads straight into `EnforceInput.reasoning`; this was
+        // simply never wired to it, and now is. NOT `call.reasoning` — that
+        // field is the Stop-shaped claim-reach event's text, which never
+        // coexists with a real tool call in the same payload (see
+        // preToolReasoning's comment for why the two must stay separate
+        // fields).
+        //
+        // HONESTY NOTE (do not read this as "the floor now fires"):
+        // `unless_reasoning` and the `level: protect` deceptive-reasoning
+        // floor detector (pipeline.ts) still have NO live reach through any
+        // CLI hook path — `call.preToolReasoning` is `undefined` on every
+        // currently-documented real payload from every host (see its own
+        // comment). This closes the WIRING gap (the value would flow
+        // through correctly the moment any host's payload, or a future
+        // extraction from `transcript_path`, actually populates it); it
+        // does not manufacture the missing data source.
         reasoning: call.preToolReasoning,
       })
     } catch {

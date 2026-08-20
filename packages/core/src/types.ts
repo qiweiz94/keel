@@ -440,7 +440,17 @@ export interface EnforceResult {
    * Set only when `action === 'redact'` (`EnforcementPipeline.
    * evaluateOutput()` — see EnforceInput.tool_output's comment): the
    * caller's `tool_output` text with every matched secret-shaped span
-   * replaced by an attributed `[redacted-by-keel:<rule_id>]` marker. The
+   * replaced by an attributed `[redacted-by-keel:<rule_id>]` marker — or
+   * `[redacted-by-keel:<rule_id_a>+<rule_id_b>]` when two or more
+   * redact_span:true patterns from different rules matched OVERLAPPING (or
+   * byte-adjacent) spans: those are merged into a single placeholder
+   * covering their union rather than left to corrupt each other via
+   * sequential mutation, and every contributing rule id is named, joined
+   * by `+`, in match order. A consumer that expects exactly one id after
+   * the colon should split on `+` rather than assume a single token.
+   * `redacted_rule_ids` (below) is always the flat, individually-listed
+   * form regardless of how many placeholders merged which ids — parse that
+   * field, not this marker's text, if you need a clean id list. The
    * caller (a host integration) is responsible for actually applying this
    * back onto whatever channel it came from — evaluateOutput() itself never
    * mutates anything; it is a pure function from text to a verdict + a

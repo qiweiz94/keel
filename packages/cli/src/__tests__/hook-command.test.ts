@@ -70,17 +70,26 @@ describe('hook payload parsing', () => {
     })
 
     // Regression: `hookVerdict`'s actual PreToolUse `evaluateToolCall()`
-    // call site never set `reasoning` at all, on ANY host — so
-    // `unless_reasoning` and the `level: protect` deceptive-reasoning floor
-    // detector (pipeline.ts) had zero reach through the CLI hook path, only
-    // through the OpenCode plugin. Fixed via a SEPARATE `preToolReasoning`
-    // field (not a reuse of `reasoning` above): `hookVerdict` routes to the
+    // call site never set `reasoning` at all, on ANY host — that WIRING gap
+    // is what this closes, via a SEPARATE `preToolReasoning` field (not a
+    // reuse of `reasoning` above): `hookVerdict` routes to the
     // structurally-can't-block claim-reach path purely on `call.reasoning
     // !== undefined`, so folding this into the same field would misroute
     // an ordinary tool call into that branch and never evaluate it at all
     // if `last_assistant_message` were ever present on a PreToolUse-shaped
     // payload — see ParsedCall.preToolReasoning's own comment in hook.ts.
-    describe('preToolReasoning — reasoning-floor reach on an ORDINARY PreToolUse payload (v0.4 Phase 1 follow-up)', () => {
+    //
+    // HONESTY NOTE: these tests construct payloads that CONTAIN
+    // `last_assistant_message` to prove the plumbing carries it through
+    // correctly when present. No currently-documented real payload from
+    // any surveyed host (Claude Code, Codex, Gemini) actually sends this
+    // field on an ordinary PreToolUse event — it is Stop-only per every
+    // citation in this file. So `unless_reasoning` and the `level: protect`
+    // deceptive-reasoning floor detector (pipeline.ts) still have NO live
+    // reach through any CLI hook path today; this only guarantees the data
+    // WOULD flow through correctly the moment a host (or a future
+    // `transcript_path`-based extraction) actually provides it.
+    describe('preToolReasoning — reasoning-floor PLUMBING on an ORDINARY PreToolUse payload (v0.4 Phase 1 follow-up; wiring only, no live host populates this yet)', () => {
       it('extracts last_assistant_message as `preToolReasoning` (never `reasoning`) on claude-code, codex, and gemini PreToolUse payloads', () => {
         for (const host of ['claude-code', 'codex', 'gemini'] as const) {
           const call = parsePayload(host, JSON.stringify({
