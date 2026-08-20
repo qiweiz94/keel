@@ -190,6 +190,27 @@ describe('perf caps', () => {
     }
   })
 
+  it('HEREDOC_START_RE does not catastrophically backtrack on many non-matching flag-shaped tokens (fix 5 regression guard)', () => {
+    // A long run of `-x`-shaped tokens that never reaches a `<<` operator —
+    // the shape that stresses a flag-cluster quantifier the hardest.
+    // Averaged over many calls (like the adversarial-command test below)
+    // rather than timed on a single call: a single-call wall-clock budget
+    // is noisy under a parallel full-suite run on a shared machine, where
+    // catastrophic backtracking (seconds-to-minutes) is still unmistakable
+    // against a merely-slow scheduler tick (sub-millisecond).
+    const inputs = [
+      ('sh ' + '-'.repeat(3990)).slice(0, 3990),
+      ('sh' + ' -a'.repeat(1000)).slice(0, 3990),
+      ('sh' + ' -a'.repeat(1000) + ' <<Q').slice(0, 3990), // flags then an unterminated heredoc
+    ]
+    for (const raw of inputs) {
+      const start = process.hrtime.bigint()
+      for (let i = 0; i < 20; i++) normalizeCommand(raw)
+      const perCallMs = Number(process.hrtime.bigint() - start) / 1e6 / 20
+      expect(perCallMs).toBeLessThan(100)
+    }
+  })
+
   it('stays fast on a worst-case adversarial command (many subcommands, near the length cap, nested interpreter)', () => {
     const many = Array(60).fill('echo a').join(' ; ') + `; sh -c 'r"m" -rf /'`
     const start = process.hrtime.bigint()

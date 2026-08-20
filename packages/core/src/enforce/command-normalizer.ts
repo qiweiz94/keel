@@ -490,8 +490,13 @@ interface HeredocBody {
  * delimiter outside this charset is a documented remaining gap (see
  * SECURITY.md), same spirit as the busybox-argv0 gap noted above.
  */
+// The flag-cluster group uses a single fixed leading `-` (not `-{1,2}`)
+// with `-` also inside the trailing char class for `--eval`-style long
+// flags — avoids two quantifiers competing over the same `-` characters,
+// which is the classic shape for catastrophic backtracking on non-matching
+// input (measured: no blowup either way at MAX_INPUT_LEN, kept anyway).
 const HEREDOC_START_RE =
-  /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-{1,2}[A-Za-z0-9_-]+)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g
+  /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-[A-Za-z0-9_-]*)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g
 
 /**
  * Fix (5): recognize a bare interpreter invocation immediately followed by

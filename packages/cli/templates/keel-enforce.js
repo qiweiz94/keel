@@ -7360,7 +7360,7 @@ function normalizeSubcommand(rawSub, dict, depth) {
   }
   return sub;
 }
-var HEREDOC_START_RE = /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-{1,2}[A-Za-z0-9_-]+)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g;
+var HEREDOC_START_RE = /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-[A-Za-z0-9_-]*)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g;
 function extractHeredocs(raw) {
   const results = [];
   HEREDOC_START_RE.lastIndex = 0;
