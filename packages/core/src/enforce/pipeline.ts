@@ -521,6 +521,44 @@ export class EnforcementPipeline {
       this.config.sequenceDetector.record(input)
     }
 
+    // Floor-first pass: `level: protect` rules are floors and must never be
+    // shadowed by a non-floor rule from a DIFFERENT rule-type/loop category.
+    // mergeRules() already rank-sorts `rules` (observe, then protect floors,
+    // then everything else), so WITHIN one loop a floor rule already sorts
+    // ahead of a non-floor one — but this method runs the statefulRules
+    // loop just below (verification/claim/research-trigger) BEFORE it ever
+    // reaches the tiered rule-matching loop (command/filesystem/network/
+    // etc — runTieredRules(), below), and that unconditional ordering
+    // ignores rank entirely. A `level: protect` floor rule of type command
+    // (e.g. no-force-push) would then only be evaluated AFTER the
+    // statefulRules loop already had a chance to `return` for an unrelated
+    // non-floor rule (e.g. a promoted `source-change-requires-test`
+    // verification rule), silently shadowing the floor.
+    //
+    // Fix: run the floor subset of runTieredRules()'s rule types FIRST,
+    // before statefulRules ever starts, so those floors can always return
+    // ahead of any non-floor verification/claim/research-trigger rule.
+    // verification/claim are excluded from this floor-first subset — they
+    // are EXCLUSIVELY handled inside the statefulRules loop (boundary/
+    // isPending), which already runs before the remaining tiered pass, so
+    // they were never shadowable in the first place; moving their handling
+    // earlier would only reorder verificationTracker.observeTrigger() (still
+    // fired later, inside runTieredRules()) relative to the boundary/
+    // isPending check for no benefit and real risk of changing obligation-
+    // tracking semantics. `research` is NOT excluded: a `topics`-based
+    // (knowledge-freshness) floor rule is ONLY ever evaluated inside
+    // runTieredRules() (the statefulRules loop's research handling requires
+    // `rule.trigger`), so it needs the same floor-first protection as
+    // command/filesystem/etc.
+    const cmdSurfacesBox: { value?: string[] } = {}
+    const isStatefulOnlyRuleType = (t: string) => t === 'verification' || t === 'claim'
+    const floorTieredRules = rules.filter(rule => rule.level === 'protect' && !isStatefulOnlyRuleType(rule.type))
+    const floorTieredSet = new Set(floorTieredRules)
+    if (floorTieredRules.length) {
+      const floorResult = this.runTieredRules(floorTieredRules, input, start, deepChecks, cmdSurfacesBox)
+      if (floorResult) return floorResult
+    }
+
     for (const rule of statefulRules) {
       // See OBSERVE_CONTINUE's header comment: a `mode: observe` match
       // inside this iteration throws instead of returning from
@@ -606,8 +644,62 @@ export class EnforcementPipeline {
     // Lazily computed once per evaluate() call (not per rule) — the
     // command-normalizer sits on this hot path, see command-normalizer.ts's
     // perf caps. `undefined` until the first `type: command` rule needs it.
-    let cmdSurfaces: string[] | undefined
-    for (const rule of rules) {
+    const remainingTieredRules = floorTieredRules.length ? rules.filter(rule => !floorTieredSet.has(rule)) : rules
+    const tieredResult = this.runTieredRules(remainingTieredRules, input, start, deepChecks, cmdSurfacesBox)
+    if (tieredResult) return tieredResult
+
+    // ── Tier 7: Reasoning coherence check ──
+    if (reasoningChecks && level === 'protect' && input.reasoning) {
+      // Simple heuristic: if agent is doing something it shouldn't
+      const dangerSignals = [
+        /ignore.*(rule|policy|restrict)/i,
+        /bypass.*(check|guard|protect)/i,
+        /disable.*(safety|keel|hook)/i,
+        /workaround.*(rule|block)/i,
+        /don'?t tell.*(user|human)/i,
+        /hid(e|den).*(action|change)/i,
+      ]
+      for (const signal of dangerSignals) {
+        if (signal.test(input.reasoning)) {
+          return this.result('warn', 'reasoning-anomaly', `Suspicious reasoning pattern detected`, start, false, 7)
+        }
+      }
+    }
+
+    // ── Allowed — cache and return ──
+    // Never cache a call that recorded an observe match: a `(tool, args)`
+    // pair that trips an observe rule needs to be re-evaluated (and
+    // re-recorded) on every repeat, since a cached tier-1 `allow` on the
+    // NEXT identical call would return before the rules loop ever runs —
+    // exactly the traffic an observe rule burning in most needs to count,
+    // silently starving its shadow counters.
+    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
+      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
+        verdict: 'allow',
+        rule_id: null,
+        count: 0,
+        timestamp: Date.now(),
+      }, this.cacheContext(input, depth))
+    }
+
+    return this.result('allow', '', 'Allowed (no matching rule)', start, false, 0)
+  }
+
+  /**
+   * The tiered rule-matching loop (rate/time/command/filesystem/network/
+   * package/stuck/diagnosis/research(topics)/env/content/oracle/sequence/
+   * flow/session) — Tiers 2 through 6. Extracted out of evaluateTiers() so
+   * it can be run TWICE over two different slices of the same rank-ordered
+   * `rules` list: once for the `level: protect` floor subset (before the
+   * statefulRules loop even starts), and once for everything else (in its
+   * original position, after statefulRules) — see evaluateTiers()'s
+   * "Floor-first pass" comment for why. `cmdSurfaces` is boxed so both
+   * calls share the same lazily-computed memo instead of recomputing it.
+   * Returns the first violation/result produced by any rule in `list`, or
+   * `undefined` if none of them produced a verdict.
+   */
+  private runTieredRules(list: KeelRule[], input: EnforceInput, start: number, deepChecks: boolean, cmdSurfaces: { value?: string[] }): EnforceResult | undefined {
+    for (const rule of list) {
       // See OBSERVE_CONTINUE's header comment and the identical try/catch
       // on the statefulRules loop above: this try wraps every tier-2
       // through tier-6 check below (rate/time/command/filesystem/network/
@@ -731,10 +823,10 @@ export class EnforcementPipeline {
             ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase())
             : !!pattern && this.matchesRulePattern(pattern, cmdStr)
         } else {
-          cmdSurfaces ??= commandSurfaces(input)
+          cmdSurfaces.value ??= commandSurfaces(input)
           matches = rule.match_prefix
-            ? cmdSurfaces.some(s => s.toLowerCase().startsWith(rule.match_prefix!.toLowerCase()))
-            : !!pattern && cmdSurfaces.some(s => this.matchesRulePattern(pattern, s))
+            ? cmdSurfaces.value.some(s => s.toLowerCase().startsWith(rule.match_prefix!.toLowerCase()))
+            : !!pattern && cmdSurfaces.value.some(s => this.matchesRulePattern(pattern, s))
         }
 
         if (matches) {
@@ -1171,42 +1263,7 @@ export class EnforcementPipeline {
         throw err
       }
     }
-
-    // ── Tier 7: Reasoning coherence check ──
-    if (reasoningChecks && level === 'protect' && input.reasoning) {
-      // Simple heuristic: if agent is doing something it shouldn't
-      const dangerSignals = [
-        /ignore.*(rule|policy|restrict)/i,
-        /bypass.*(check|guard|protect)/i,
-        /disable.*(safety|keel|hook)/i,
-        /workaround.*(rule|block)/i,
-        /don'?t tell.*(user|human)/i,
-        /hid(e|den).*(action|change)/i,
-      ]
-      for (const signal of dangerSignals) {
-        if (signal.test(input.reasoning)) {
-          return this.result('warn', 'reasoning-anomaly', `Suspicious reasoning pattern detected`, start, false, 7)
-        }
-      }
-    }
-
-    // ── Allowed — cache and return ──
-    // Never cache a call that recorded an observe match: a `(tool, args)`
-    // pair that trips an observe rule needs to be re-evaluated (and
-    // re-recorded) on every repeat, since a cached tier-1 `allow` on the
-    // NEXT identical call would return before the rules loop ever runs —
-    // exactly the traffic an observe rule burning in most needs to count,
-    // silently starving its shadow counters.
-    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
-      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
-        verdict: 'allow',
-        rule_id: null,
-        count: 0,
-        timestamp: Date.now(),
-      }, this.cacheContext(input, depth))
-    }
-
-    return this.result('allow', '', 'Allowed (no matching rule)', start, false, 0)
+    return undefined
   }
 
   markVerificationSatisfied(input: EnforceInput): void {
