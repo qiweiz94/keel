@@ -7128,7 +7128,7 @@ var MAX_INPUT_LEN = 4e3;
 var MAX_SUBCOMMANDS = 64;
 var MAX_TOKENS_PER_SUBCOMMAND = 256;
 var MAX_INTERPRETER_DEPTH = 1;
-var SHELL_INTERPRETERS = /* @__PURE__ */ new Set(["sh", "bash", "dash", "zsh", "ksh"]);
+var SHELL_INTERPRETERS = /* @__PURE__ */ new Set(["sh", "bash", "dash", "zsh", "ksh", "fish", "csh", "tcsh", "ash"]);
 function classifyInterpreter(basename3) {
   if (SHELL_INTERPRETERS.has(basename3)) return "shell";
   if (/^python[0-9.]*$/.test(basename3)) return "python";
@@ -7178,7 +7178,14 @@ function tokenize2(text) {
       continue;
     }
     if (c === "\\" && i + 1 < n) {
-      pushSegment({ text: text[i + 1], quoted: false, hasSpace: false, quoteChar: "" });
+      const next = text[i + 1];
+      pushSegment({
+        text: next,
+        quoted: false,
+        hasSpace: false,
+        quoteChar: "",
+        escapedSpace: next === " " || next === "	"
+      });
       i += 2;
       continue;
     }
@@ -7206,6 +7213,10 @@ function tokenize2(text) {
       buf += text[j];
       j++;
     }
+    if (j === i) {
+      buf = text[j];
+      j++;
+    }
     pushSegment({ text: buf, quoted: false, hasSpace: false, quoteChar: "" });
     i = j;
   }
@@ -7231,6 +7242,9 @@ function renderToken(token, dict) {
       value += seg.text;
     } else if (seg.quoted) {
       rendered += seg.text;
+      value += seg.text;
+    } else if (seg.escapedSpace) {
+      rendered += "\\" + seg.text;
       value += seg.text;
     } else {
       const expanded = expandVars(seg.text, dict);
@@ -7328,10 +7342,16 @@ function normalizeSubcommand(rawSub, dict, depth) {
         const tok = commandTokens[k].value;
         const isCodeFlag = flags.includes(tok) || kind === "shell" && /^-[a-z]*c$/.test(tok);
         if (isCodeFlag) {
-          const bodyToken = commandTokens[k + 1];
-          sub.interpreterBody = bodyToken.value;
-          if (kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
-            sub.nested = normalizeCommand(bodyToken.value, depth + 1);
+          let bodyIndex = k + 1;
+          if (kind === "shell" && commandTokens[bodyIndex]?.value === "--") {
+            bodyIndex++;
+          }
+          const bodyToken = commandTokens[bodyIndex];
+          if (bodyToken) {
+            sub.interpreterBody = bodyToken.value;
+            if (kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
+              sub.nested = normalizeCommand(bodyToken.value, depth + 1);
+            }
           }
           break;
         }
@@ -7339,6 +7359,33 @@ function normalizeSubcommand(rawSub, dict, depth) {
     }
   }
   return sub;
+}
+var HEREDOC_START_RE = /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-{1,2}[A-Za-z0-9_-]+)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g;
+function extractHeredocs(raw) {
+  const results = [];
+  HEREDOC_START_RE.lastIndex = 0;
+  let m;
+  let guard = 0;
+  while (guard < MAX_SUBCOMMANDS && (m = HEREDOC_START_RE.exec(raw))) {
+    guard++;
+    const interpToken = m[1];
+    const tabStrip = m[2] === "-";
+    const delim = m[3] ?? m[4] ?? m[5];
+    const kind = delim ? classifyInterpreter(basename(interpToken)) : null;
+    if (!kind) continue;
+    const opLineEnd = raw.indexOf("\n", HEREDOC_START_RE.lastIndex);
+    if (opLineEnd === -1) continue;
+    const bodyStart = opLineEnd + 1;
+    const rest = raw.slice(bodyStart);
+    const escapedDelim = delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const delimLineRe = new RegExp("^" + (tabStrip ? "\\t*" : "") + escapedDelim + "[ \\t]*$", "m");
+    const end = delimLineRe.exec(rest);
+    if (!end) continue;
+    const body = end.index > 0 ? rest.slice(0, end.index - 1) : "";
+    results.push({ kind, body });
+    HEREDOC_START_RE.lastIndex = bodyStart + end.index + end[0].length;
+  }
+  return results;
 }
 function normalizeCommand(raw, depth = 0) {
   if (typeof raw !== "string" || raw.length === 0) {
@@ -7372,6 +7419,13 @@ function normalizeCommand(raw, depth = 0) {
       if (sub.interpreterBody && !surfaces.includes(sub.interpreterBody)) surfaces.push(sub.interpreterBody);
       if (sub.nested) {
         for (const s of sub.nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
+      }
+    }
+    for (const hd of extractHeredocs(raw)) {
+      if (!surfaces.includes(hd.body)) surfaces.push(hd.body);
+      if (hd.kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
+        const nested = normalizeCommand(hd.body, depth + 1);
+        for (const s of nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
       }
     }
     return { raw, normalized: normalizedFull, subcommands, surfaces, truncated };

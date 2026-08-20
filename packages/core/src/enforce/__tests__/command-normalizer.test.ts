@@ -117,6 +117,57 @@ describe('interpreter body extraction and recursion', () => {
   })
 })
 
+describe('sprint-2 fixes: five bugs found via live reproduction during the audit', () => {
+  it('fix 1: a trailing/lone unescaped backslash does not hang tokenize() (was an infinite loop / OOM crash)', () => {
+    // Reproduced pre-fix: both calls made zero progress in tokenize()'s
+    // plain-run loop and spun forever. `cd C:\` is an ORDINARY Windows path,
+    // not an adversarial payload.
+    expect(() => normalizeCommand('echo hi\\')).not.toThrow()
+    expect(normalizeCommand('echo hi\\').surfaces).toEqual(['echo hi\\'])
+    expect(() => normalizeCommand('cd C:\\')).not.toThrow()
+    expect(normalizeCommand('cd C:\\').surfaces).toEqual(['cd C:\\'])
+  })
+
+  it('fix 2: `-c --` is real bash/sh end-of-options — the body is the token AFTER `--`, not `--` itself', () => {
+    const bash = normalizeCommand("bash -c -- 'rm -rf /'")
+    expect(bash.surfaces).toContain('rm -rf /')
+    const sh = normalizeCommand("sh -c -- 'rm -rf /'")
+    expect(sh.surfaces).toContain('rm -rf /')
+  })
+
+  it('fix 3: an unquoted backslash-escaped space does not fuse into a fake word boundary on the joined surface', () => {
+    // `mv rm\ -rf\ / backup/` moves a file literally named "rm -rf /" — a
+    // single-argument benign command. Pre-fix this rendered as
+    // `mv rm -rf / backup/`, indistinguishable from the real destructive
+    // command on the regex-matching surface.
+    const n = normalizeCommand('mv rm\\ -rf\\ / backup/')
+    expect(n.surfaces.some(s => s === 'mv rm -rf / backup/')).toBe(false)
+    expect(n.surfaces).toContain('mv rm\\ -rf\\ / backup/')
+  })
+
+  it('fix 4: SHELL_INTERPRETERS covers fish, csh, tcsh, ash (busybox) in addition to sh/bash/dash/zsh/ksh', () => {
+    // Control: bash -c already surfaces the body.
+    expect(normalizeCommand("bash -c 'rm -rf /'").surfaces).toContain('rm -rf /')
+    expect(normalizeCommand("fish -c 'rm -rf /'").surfaces).toContain('rm -rf /')
+    expect(normalizeCommand("tcsh -c 'rm -rf /'").surfaces).toContain('rm -rf /')
+    expect(normalizeCommand("csh -c 'rm -rf /'").surfaces).toContain('rm -rf /')
+    expect(normalizeCommand("ash -c 'rm -rf /'").surfaces).toContain('rm -rf /')
+  })
+
+  it('fix 5: a bare interpreter followed by a heredoc exposes the body as a surface (root cause of the self-protection bypass)', () => {
+    const bash = normalizeCommand("bash <<'EOF'\necho hi\nrm -rf /\nEOF")
+    // The heredoc body is exposed, AND (since bash is a shell) recursed one
+    // level so its own lines become surfaces too — same mechanism as `sh -c`.
+    expect(bash.surfaces).toContain('echo hi\nrm -rf /')
+    expect(bash.surfaces).toContain('rm -rf /')
+
+    const python = normalizeCommand(
+      `python3 <<'PYEOF'\nopen('.keel/rules.yaml', 'w').write('pwned')\nPYEOF`,
+    )
+    expect(python.surfaces).toContain(`open('.keel/rules.yaml', 'w').write('pwned')`)
+  })
+})
+
 describe('perf caps', () => {
   it('degrades to raw-only above the input-length cap instead of scanning an unbounded string', () => {
     const huge = 'echo ' + 'a'.repeat(5000)
