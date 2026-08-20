@@ -440,7 +440,17 @@ export interface EnforceResult {
    * Set only when `action === 'redact'` (`EnforcementPipeline.
    * evaluateOutput()` — see EnforceInput.tool_output's comment): the
    * caller's `tool_output` text with every matched secret-shaped span
-   * replaced by an attributed `[redacted-by-keel:<rule_id>]` marker. The
+   * replaced by an attributed `[redacted-by-keel:<rule_id>]` marker — or
+   * `[redacted-by-keel:<rule_id_a>+<rule_id_b>]` when two or more
+   * redact_span:true patterns from different rules matched OVERLAPPING (or
+   * byte-adjacent) spans: those are merged into a single placeholder
+   * covering their union rather than left to corrupt each other via
+   * sequential mutation, and every contributing rule id is named, joined
+   * by `+`, in match order. A consumer that expects exactly one id after
+   * the colon should split on `+` rather than assume a single token.
+   * `redacted_rule_ids` (below) is always the flat, individually-listed
+   * form regardless of how many placeholders merged which ids — parse that
+   * field, not this marker's text, if you need a clean id list. The
    * caller (a host integration) is responsible for actually applying this
    * back onto whatever channel it came from — evaluateOutput() itself never
    * mutates anything; it is a pure function from text to a verdict + a
@@ -449,6 +459,22 @@ export interface EnforceResult {
   redacted_output?: string
   /** Every `type: content` rule id whose pattern matched during a `redact` verdict, in match order. Absent when nothing matched. */
   redacted_rule_ids?: string[]
+  /**
+   * Set only by `EnforcementPipeline.evaluateOutput()`, and only `true`
+   * when the scanned text was longer than `MAX_OUTPUT_SCAN_CHARS`
+   * (pipeline.ts): content past that bound was never run through the
+   * `type: content` patterns at all, so a clean/`allow` verdict on a
+   * truncated scan is not a claim that the UNSCANNED tail is clean too —
+   * it is silent about it. Before this field existed, that silence was
+   * only ever visible in the human-readable `message` string (a "(only the
+   * first N chars were scanned)" suffix) — readable by a person, invisible
+   * to any caller that branches on the verdict programmatically (a
+   * dashboard, an alerting rule, a test asserting "no secret leaked").
+   * Absent (not `false`) on every other result shape, so old trace lines
+   * and JSON.stringify output stay byte-identical for anyone not reading
+   * this field yet.
+   */
+  scan_truncated?: boolean
 }
 
 export interface RedirectDirective {

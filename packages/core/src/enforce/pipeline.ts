@@ -408,7 +408,6 @@ export class EnforcementPipeline {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const truncated = text.length > MAX_OUTPUT_SCAN_CHARS
     const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text
-    let redacted = scanText
     // Three buckets, not two — see `KeelRule.patterns[].redact_span`'s doc
     // comment in types.ts for the full reasoning. A match only ever lands
     // in `matchedRuleIds` (actually mutated) when BOTH are true: the rule
@@ -423,6 +422,23 @@ export class EnforcementPipeline {
     const observeOnlyRuleIds: string[] = []
     const spanUnsafeRuleIds: string[] = []
     let matchedPattern: string | undefined
+
+    // Every redact_span:true pattern's occurrences are located against the
+    // ORIGINAL `scanText` first, into a flat list of candidate spans — NOT
+    // mutated one at a time as they're found. The previous implementation
+    // tested each pattern against `scanText` (correct) but then called
+    // `redacted.replace(...)` against a string ALREADY REWRITTEN by an
+    // earlier pattern's replacement. Two overlapping patterns whose spans
+    // covered the same bytes meant the second pattern's `re.test(scanText)`
+    // check still passed (it's tested against the untouched original), so
+    // it was credited in `matchedRuleIds` as successfully redacted, even
+    // though its span had already been consumed/altered by the first
+    // pattern's replace() — its own replace() then found nothing left to
+    // match (or matched unrelated shifted text) in the already-mutated
+    // string, so the region it claimed to redact could survive VERBATIM in
+    // the output while still being listed as successfully redacted — false
+    // confidence, not partial redaction.
+    const candidateSpans: Array<{ start: number; end: number; ruleId: string }> = []
     for (const rule of rules) {
       if (rule.type !== 'content' || !rule.patterns) continue
       for (const pattern of rule.patterns) {
@@ -439,11 +455,60 @@ export class EnforcementPipeline {
           if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id)
           continue // recorded, never mutates — the match span doesn't bound the secret (types.ts's redact_span doc)
         }
-        if (!matchedRuleIds.includes(rule.id)) matchedRuleIds.push(rule.id)
-        const replacer = new RegExp(pattern.regex, 'gi')
-        redacted = redacted.replace(replacer, `[redacted-by-keel:${rule.id}]`)
+        // Locate every occurrence of THIS pattern against the original
+        // text — a fresh 'g'-flagged regex so `.lastIndex` starts at 0
+        // regardless of what the `re.test()` probe above already advanced.
+        const finder = new RegExp(pattern.regex, 'gi')
+        let occurrence: RegExpExecArray | null
+        while ((occurrence = finder.exec(scanText))) {
+          candidateSpans.push({ start: occurrence.index, end: occurrence.index + occurrence[0].length, ruleId: rule.id })
+          if (occurrence[0].length === 0) finder.lastIndex++ // guard a zero-width pattern from looping forever
+        }
       }
     }
+
+    // Resolve overlaps by MERGING them into their union, rather than
+    // picking one span and discarding the other: sort by start, then walk
+    // the list folding any span that starts at or before the current
+    // group's end into that group (extending its end, recording every
+    // contributing rule id). This is the stronger of the two fixes this
+    // method's own bug write-up allows for (union vs. skip-and-report) —
+    // it means NO byte covered by ANY matched redact_span:true pattern is
+    // ever left exposed just because a different pattern also covers it,
+    // and every rule that contributed a span to a group is honestly
+    // credited for that group's redaction (its bytes really were removed,
+    // jointly with the other contributor's).
+    candidateSpans.sort((a, b) => a.start - b.start)
+    const mergedSpans: Array<{ start: number; end: number; ruleIds: string[] }> = []
+    for (const span of candidateSpans) {
+      const current = mergedSpans[mergedSpans.length - 1]
+      if (current && span.start <= current.end) {
+        current.end = Math.max(current.end, span.end)
+        if (!current.ruleIds.includes(span.ruleId)) current.ruleIds.push(span.ruleId)
+      } else {
+        mergedSpans.push({ start: span.start, end: span.end, ruleIds: [span.ruleId] })
+      }
+    }
+    for (const group of mergedSpans) {
+      for (const ruleId of group.ruleIds) {
+        if (!matchedRuleIds.includes(ruleId)) matchedRuleIds.push(ruleId)
+      }
+    }
+
+    // A single replacement pass over the ORIGINAL text, in span order —
+    // nothing is ever mutated and then re-scanned.
+    let redacted = scanText
+    if (mergedSpans.length) {
+      let out = ''
+      let cursor = 0
+      for (const group of mergedSpans) {
+        out += scanText.slice(cursor, group.start) + `[redacted-by-keel:${group.ruleIds.join('+')}]`
+        cursor = group.end
+      }
+      out += scanText.slice(cursor)
+      redacted = out
+    }
+
     const truncNote = truncated ? ` (only the first ${MAX_OUTPUT_SCAN_CHARS} chars were scanned)` : ''
     if (!matchedRuleIds.length) {
       const notes: string[] = []
@@ -453,6 +518,14 @@ export class EnforcementPipeline {
       const result = this.result('allow', '', `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5)
       const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds]
       if (detectedOnly.length) result.redacted_rule_ids = detectedOnly
+      // See scan_truncated's doc comment (types.ts): this is the path that
+      // was lying by omission — a truncated scan that happened to find
+      // nothing in its scanned prefix returned a plain `allow` with no
+      // programmatic signal that anything past MAX_OUTPUT_SCAN_CHARS went
+      // unlooked-at. `truncNote` already said so in the human-readable
+      // message; this is the same fact for a caller that branches on the
+      // verdict instead of reading prose.
+      if (truncated) result.scan_truncated = true
       return result
     }
     const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds]
@@ -460,6 +533,7 @@ export class EnforcementPipeline {
     result.matched_pattern = matchedPattern
     result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted
     result.redacted_rule_ids = allIds
+    if (truncated) result.scan_truncated = true
     return result
   }
 
@@ -519,6 +593,64 @@ export class EnforcementPipeline {
       this.config.sequenceDetector.setWindow(maxWindow * 1000)
       // Stateful rules depend on every action and cannot use a stateless cache verdict.
       this.config.sequenceDetector.record(input)
+    }
+
+    // Floor-first pass: `level: protect` rules are floors and must never be
+    // shadowed by a non-floor rule from a DIFFERENT rule-type/loop category.
+    // mergeRules() already rank-sorts `rules` (observe, then protect floors,
+    // then everything else), so WITHIN one loop a floor rule already sorts
+    // ahead of a non-floor one — but this method runs the statefulRules
+    // loop just below (verification/claim/research-trigger) BEFORE it ever
+    // reaches the tiered rule-matching loop (command/filesystem/network/
+    // etc — runTieredRules(), below), and that unconditional ordering
+    // ignores rank entirely. A `level: protect` floor rule of type command
+    // (e.g. no-force-push) would then only be evaluated AFTER the
+    // statefulRules loop already had a chance to `return` for an unrelated
+    // non-floor rule (e.g. a promoted `source-change-requires-test`
+    // verification rule), silently shadowing the floor.
+    //
+    // Fix: run the floor subset of runTieredRules()'s rule types FIRST,
+    // before statefulRules ever starts, so those floors can always return
+    // ahead of any non-floor verification/claim/research-trigger rule.
+    // verification/claim are excluded from this floor-first subset — they
+    // are EXCLUSIVELY handled inside the statefulRules loop (boundary/
+    // isPending), which already runs before the remaining tiered pass, so
+    // they were never shadowable in the first place; moving their handling
+    // earlier would only reorder verificationTracker.observeTrigger() (still
+    // fired later, inside runTieredRules()) relative to the boundary/
+    // isPending check for no benefit and real risk of changing obligation-
+    // tracking semantics. `research` is NOT excluded: a `topics`-based
+    // (knowledge-freshness) floor rule is ONLY ever evaluated inside
+    // runTieredRules() (the statefulRules loop's research handling requires
+    // `rule.trigger`), so it needs the same floor-first protection as
+    // command/filesystem/etc.
+    //
+    // `mode: observe` rules are ALSO included in this first pass — not
+    // because they are floors, but because mergeRules()'s rank(0 = observe,
+    // 1 = protect floor, 2 = everything else) exists specifically so an
+    // observe rule "always gets its chance to record before anything below
+    // it decides the call" (rule-parser.ts's own comment, backed by
+    // pipeline.test.ts's observe-continue block). A first pass filtered on
+    // `level: protect` ALONE would invert that for exactly the case that
+    // test covers: a non-floor observe rule sits at rank 0 in `rules`, so
+    // without this it would only run in the SECOND pass (after
+    // statefulRules) while a `level: protect` deny rule matching the same
+    // command now runs in the FIRST pass and returns before the observe
+    // rule ever gets to record — turning "observe records, then the real
+    // rule decides" into "the floor decides and the observe rule's own
+    // match on this call is silently lost," a regression of the same
+    // shadowing class this fix exists to close. Including observe rules
+    // here is free: violation() never lets one return (OBSERVE_CONTINUE is
+    // thrown and caught by runTieredRules' own try/catch), so hoisting one
+    // ahead of the statefulRules loop cannot change what decides the call —
+    // only what it silently loses the chance to record.
+    const cmdSurfacesBox: { value?: string[] } = {}
+    const isStatefulOnlyRuleType = (t: string) => t === 'verification' || t === 'claim'
+    const floorTieredRules = rules.filter(rule => (rule.mode === 'observe' || rule.level === 'protect') && !isStatefulOnlyRuleType(rule.type))
+    const floorTieredSet = new Set(floorTieredRules)
+    if (floorTieredRules.length) {
+      const floorResult = this.runTieredRules(floorTieredRules, input, start, deepChecks, cmdSurfacesBox)
+      if (floorResult) return floorResult
     }
 
     for (const rule of statefulRules) {
@@ -606,8 +738,64 @@ export class EnforcementPipeline {
     // Lazily computed once per evaluate() call (not per rule) — the
     // command-normalizer sits on this hot path, see command-normalizer.ts's
     // perf caps. `undefined` until the first `type: command` rule needs it.
-    let cmdSurfaces: string[] | undefined
-    for (const rule of rules) {
+    const remainingTieredRules = floorTieredRules.length ? rules.filter(rule => !floorTieredSet.has(rule)) : rules
+    const tieredResult = this.runTieredRules(remainingTieredRules, input, start, deepChecks, cmdSurfacesBox)
+    if (tieredResult) return tieredResult
+
+    // ── Tier 7: Reasoning coherence check ──
+    if (reasoningChecks && level === 'protect' && input.reasoning) {
+      // Simple heuristic: if agent is doing something it shouldn't
+      const dangerSignals = [
+        /ignore.*(rule|policy|restrict)/i,
+        /bypass.*(check|guard|protect)/i,
+        /disable.*(safety|keel|hook)/i,
+        /workaround.*(rule|block)/i,
+        /don'?t tell.*(user|human)/i,
+        /hid(e|den).*(action|change)/i,
+      ]
+      for (const signal of dangerSignals) {
+        if (signal.test(input.reasoning)) {
+          return this.result('warn', 'reasoning-anomaly', `Suspicious reasoning pattern detected`, start, false, 7)
+        }
+      }
+    }
+
+    // ── Allowed — cache and return ──
+    // Never cache a call that recorded an observe match: a `(tool, args)`
+    // pair that trips an observe rule needs to be re-evaluated (and
+    // re-recorded) on every repeat, since a cached tier-1 `allow` on the
+    // NEXT identical call would return before the rules loop ever runs —
+    // exactly the traffic an observe rule burning in most needs to count,
+    // silently starving its shadow counters.
+    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
+      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
+        verdict: 'allow',
+        rule_id: null,
+        count: 0,
+        timestamp: Date.now(),
+      }, this.cacheContext(input, depth))
+    }
+
+    return this.result('allow', '', 'Allowed (no matching rule)', start, false, 0)
+  }
+
+  /**
+   * The tiered rule-matching loop (rate/time/command/filesystem/network/
+   * package/stuck/diagnosis/research(topics)/env/content/oracle/sequence/
+   * flow/session) — Tiers 2 through 6. Extracted out of evaluateTiers() so
+   * it can be run TWICE over two different slices of the same rank-ordered
+   * `rules` list: once for the `mode: observe` + `level: protect` subset —
+   * ranks 0 and 1, in that relative order — (before the statefulRules loop
+   * even starts), and once for everything else (in its original position,
+   * after statefulRules) — see evaluateTiers()'s "Floor-first pass" comment
+   * for why observe rules ride along with the floors instead of only the
+   * floors moving. `cmdSurfaces` is boxed so both calls share the same
+   * lazily-computed memo instead of recomputing it.
+   * Returns the first violation/result produced by any rule in `list`, or
+   * `undefined` if none of them produced a verdict.
+   */
+  private runTieredRules(list: KeelRule[], input: EnforceInput, start: number, deepChecks: boolean, cmdSurfaces: { value?: string[] }): EnforceResult | undefined {
+    for (const rule of list) {
       // See OBSERVE_CONTINUE's header comment and the identical try/catch
       // on the statefulRules loop above: this try wraps every tier-2
       // through tier-6 check below (rate/time/command/filesystem/network/
@@ -731,10 +919,10 @@ export class EnforcementPipeline {
             ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase())
             : !!pattern && this.matchesRulePattern(pattern, cmdStr)
         } else {
-          cmdSurfaces ??= commandSurfaces(input)
+          cmdSurfaces.value ??= commandSurfaces(input)
           matches = rule.match_prefix
-            ? cmdSurfaces.some(s => s.toLowerCase().startsWith(rule.match_prefix!.toLowerCase()))
-            : !!pattern && cmdSurfaces.some(s => this.matchesRulePattern(pattern, s))
+            ? cmdSurfaces.value.some(s => s.toLowerCase().startsWith(rule.match_prefix!.toLowerCase()))
+            : !!pattern && cmdSurfaces.value.some(s => this.matchesRulePattern(pattern, s))
         }
 
         if (matches) {
@@ -1040,7 +1228,21 @@ export class EnforcementPipeline {
         // apply_patch carries the new content in patchText and the target
         // path only inside `*** Add File:` markers — both are honored here.
         const patchText = String(args.patchText || '')
-        const inlineContent = String(args.content || args.text || patchText || '')
+        // An Edit-shaped call (oldString/newString — the shape a host's
+        // in-place string-replace tool sends) carries the content the
+        // agent is ABOUT to write in `newString`, not `content`/`text` —
+        // omitting it here made every Edit-shaped call invisible to
+        // `no-secrets-in-code` (a Tier-2 DENY rule) and
+        // `test-oracle-env-introspection`: an agent could write a secret
+        // into a file via Edit and this branch would scan an empty string.
+        // `new_string` (snake_case) is ALSO checked: Claude Code's real
+        // Edit tool schema sends `old_string`/`new_string`, the exact same
+        // spelling argPath() above already had to add for `file_path` after
+        // a live probe found the camelCase-only path check let a write to
+        // `.claude/settings.json` slip past a protect floor undetected —
+        // the same class of miss, just on the content side of the same
+        // tool call instead of the path side.
+        const inlineContent = String(args.content || args.text || args.newString || args.new_string || patchText || '')
         const isFile = resolvedPath && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
         // Inline content is ALWAYS checkable — it is what the agent is about
         // to write. Only the disk-scan fallback is gated on the file having
@@ -1101,8 +1303,13 @@ export class EnforcementPipeline {
           const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths)
           if (pathMatched) {
             const patchText = String(args.patchText || '')
-            const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? '')
-            const explicitOld = typeof args.oldString === 'string' ? args.oldString : undefined
+            // Same camelCase/snake_case pair as the content-rule block
+            // above (`args.newString`/`args.new_string`) — Claude Code's
+            // real Edit tool sends the snake_case spelling.
+            const newText = String(args.content ?? args.text ?? args.newString ?? args.new_string ?? patchText ?? '')
+            const explicitOld = typeof args.oldString === 'string'
+              ? args.oldString
+              : typeof args.old_string === 'string' ? args.old_string : undefined
             const isFile = explicitOld === undefined && existsSync(resolvedPath) && statSync(resolvedPath).isFile()
             const oldText = explicitOld !== undefined ? explicitOld : (isFile ? readFileSync(resolvedPath, 'utf-8') : '')
             if (newText || oldText) {
@@ -1171,42 +1378,7 @@ export class EnforcementPipeline {
         throw err
       }
     }
-
-    // ── Tier 7: Reasoning coherence check ──
-    if (reasoningChecks && level === 'protect' && input.reasoning) {
-      // Simple heuristic: if agent is doing something it shouldn't
-      const dangerSignals = [
-        /ignore.*(rule|policy|restrict)/i,
-        /bypass.*(check|guard|protect)/i,
-        /disable.*(safety|keel|hook)/i,
-        /workaround.*(rule|block)/i,
-        /don'?t tell.*(user|human)/i,
-        /hid(e|den).*(action|change)/i,
-      ]
-      for (const signal of dangerSignals) {
-        if (signal.test(input.reasoning)) {
-          return this.result('warn', 'reasoning-anomaly', `Suspicious reasoning pattern detected`, start, false, 7)
-        }
-      }
-    }
-
-    // ── Allowed — cache and return ──
-    // Never cache a call that recorded an observe match: a `(tool, args)`
-    // pair that trips an observe rule needs to be re-evaluated (and
-    // re-recorded) on every repeat, since a cached tier-1 `allow` on the
-    // NEXT identical call would return before the rules loop ever runs —
-    // exactly the traffic an observe rule burning in most needs to count,
-    // silently starving its shadow counters.
-    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
-      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
-        verdict: 'allow',
-        rule_id: null,
-        count: 0,
-        timestamp: Date.now(),
-      }, this.cacheContext(input, depth))
-    }
-
-    return this.result('allow', '', 'Allowed (no matching rule)', start, false, 0)
+    return undefined
   }
 
   markVerificationSatisfied(input: EnforceInput): void {
@@ -1388,9 +1560,22 @@ export class EnforcementPipeline {
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier)
     }
     if (action === 'redirect') {
-      // Course correction, not a block: never escalates warn-once, never
-      // consumes overrides, self-clears on compliance. Carries the
-      // machine-readable directive to the model.
+      // Course correction, not a block: never escalates warn-once,
+      // self-clears on compliance. Carries the machine-readable directive
+      // to the model.
+      //
+      // Overrides ARE consumed here, same as deny/prompt below — this used
+      // to be the one action branch that skipped the check, so a stuck
+      // `no-repeat-loops` redirect (type: stuck, action escalated to
+      // redirect at 3 identical failing attempts) could not be unstuck by
+      // a human running `keel allow <id> --once`: the override sat armed
+      // and unconsumed while every subsequent identical call kept getting
+      // redirected regardless. `research`/`diagnosis` redirects go through
+      // this same branch and get the same fix for the same reason — none
+      // of the three had a way for a human override to actually clear one.
+      if (this.overrideStore.consume(rule.id, input.session_id)) {
+        return this.result('allow', rule.id, this.overrideMessage(rule.id), start, false, tier)
+      }
       return this.result('redirect', rule.id, message, start, false, tier, undefined, undefined, directive)
     }
     if (action === 'warn' || action === 'allow' || action === 'report') {

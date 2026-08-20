@@ -231,3 +231,81 @@ describe('stuck rules at the dials', () => {
     expect((await pipeline.evaluate(input('ls -la'))).action).toBe('allow')
   })
 })
+
+// Regression: the `redirect` action branch (violation()'s action-switch in
+// pipeline.ts) used to skip the `overrideStore.consume()` check that every
+// OTHER action (deny/block/prompt) already goes through. Once a
+// `no-repeat-loops`-shaped `type: stuck` rule escalates to `redirect` (3
+// identical failing attempts), a human running `keel allow <id> --once`
+// armed an override that sat there UNCONSUMED forever — every subsequent
+// identical call kept getting redirected regardless, because nothing in
+// this branch ever checked (let alone consumed) it. `research`/`diagnosis`
+// redirects share the exact same branch and were equally stuck.
+describe('no-repeat-loops redirect can be unstuck by a human override', () => {
+  it('MUST-CONSUME: an armed override turns the NEXT redirect into an allow, and the override store is asked for THIS rule id and session', async () => {
+    const tracker = new StuckTracker()
+    const rules = parseRulesContent(STUCK_RULE, '/tmp/stuck-override-rules.yaml')
+    const consumeCalls: Array<{ ruleId: string; sessionId: string }> = []
+    // Simulates `keel allow no-test-loops --once` having been run by a
+    // human between attempts: the NEXT consume() call for this exact rule
+    // id succeeds once, then reverts to false (a real one-time override).
+    let armed = true
+    const overrideStore = {
+      consume: (ruleId: string, sessionId: string) => {
+        consumeCalls.push({ ruleId, sessionId })
+        if (ruleId === 'no-test-loops' && armed) {
+          armed = false
+          return true
+        }
+        return false
+      },
+      peek: () => null,
+      list: () => ({}),
+    }
+    const pipeline = new EnforcementPipeline({
+      level: 'balanced',
+      context: 'local',
+      cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(),
+      sequenceDetector: new SequenceDetector(),
+      flowTracker: new FlowTracker(),
+      overrideStore,
+      stuckTracker: tracker,
+      ruleHierarchy: { global: rules, user: null, project: null, local: null },
+      ruleVersion: 1,
+      allowedFixTransforms: true,
+    })
+
+    const cmd = input('npm test', 'override-session')
+    pipeline.recordAttemptOutcome(cmd, 1)
+    pipeline.recordAttemptOutcome(cmd, 1)
+    pipeline.recordAttemptOutcome(cmd, 1)
+
+    // Escalated to redirect (3 failures) — consume() was already tried and
+    // declined (armed=true but the FIRST call inside violation() for a
+    // redirect that then still returns 'redirect' would only happen if
+    // consume() returned false; here it returns true, so the very first
+    // post-escalation call should already come back as an allow).
+    const unstuck = await pipeline.evaluate(cmd)
+    expect(unstuck.action).toBe('allow')
+    expect(unstuck.rule_id).toBe('no-test-loops')
+    expect(consumeCalls).toContainEqual({ ruleId: 'no-test-loops', sessionId: 'override-session' })
+
+    // The override was ONE-TIME: a second identical call finds it already
+    // spent and goes back to being redirected, exactly like every other
+    // action's override semantics.
+    pipeline.recordAttemptOutcome(cmd, 1)
+    const stillStuck = await pipeline.evaluate(cmd)
+    expect(stillStuck.action).toBe('redirect')
+  })
+
+  it('with NO override armed, the redirect fires normally (proves consume() being called is not a bypass by itself)', async () => {
+    const { pipeline } = makePipeline(STUCK_RULE)
+    const cmd = input('npm test', 'no-override-session')
+    pipeline.recordAttemptOutcome(cmd, 1)
+    pipeline.recordAttemptOutcome(cmd, 1)
+    pipeline.recordAttemptOutcome(cmd, 1)
+    const result = await pipeline.evaluate(cmd)
+    expect(result.action).toBe('redirect')
+  })
+})

@@ -8372,11 +8372,11 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const truncated = text.length > MAX_OUTPUT_SCAN_CHARS;
     const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text;
-    let redacted = scanText;
     const matchedRuleIds = [];
     const observeOnlyRuleIds = [];
     const spanUnsafeRuleIds = [];
     let matchedPattern;
+    const candidateSpans = [];
     for (const rule of rules) {
       if (rule.type !== "content" || !rule.patterns) continue;
       for (const pattern of rule.patterns) {
@@ -8397,10 +8397,40 @@ var EnforcementPipeline = class {
           if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id);
           continue;
         }
-        if (!matchedRuleIds.includes(rule.id)) matchedRuleIds.push(rule.id);
-        const replacer = new RegExp(pattern.regex, "gi");
-        redacted = redacted.replace(replacer, `[redacted-by-keel:${rule.id}]`);
+        const finder = new RegExp(pattern.regex, "gi");
+        let occurrence;
+        while (occurrence = finder.exec(scanText)) {
+          candidateSpans.push({ start: occurrence.index, end: occurrence.index + occurrence[0].length, ruleId: rule.id });
+          if (occurrence[0].length === 0) finder.lastIndex++;
+        }
       }
+    }
+    candidateSpans.sort((a, b) => a.start - b.start);
+    const mergedSpans = [];
+    for (const span of candidateSpans) {
+      const current = mergedSpans[mergedSpans.length - 1];
+      if (current && span.start <= current.end) {
+        current.end = Math.max(current.end, span.end);
+        if (!current.ruleIds.includes(span.ruleId)) current.ruleIds.push(span.ruleId);
+      } else {
+        mergedSpans.push({ start: span.start, end: span.end, ruleIds: [span.ruleId] });
+      }
+    }
+    for (const group of mergedSpans) {
+      for (const ruleId of group.ruleIds) {
+        if (!matchedRuleIds.includes(ruleId)) matchedRuleIds.push(ruleId);
+      }
+    }
+    let redacted = scanText;
+    if (mergedSpans.length) {
+      let out = "";
+      let cursor = 0;
+      for (const group of mergedSpans) {
+        out += scanText.slice(cursor, group.start) + `[redacted-by-keel:${group.ruleIds.join("+")}]`;
+        cursor = group.end;
+      }
+      out += scanText.slice(cursor);
+      redacted = out;
     }
     const truncNote = truncated ? ` (only the first ${MAX_OUTPUT_SCAN_CHARS} chars were scanned)` : "";
     if (!matchedRuleIds.length) {
@@ -8411,6 +8441,7 @@ var EnforcementPipeline = class {
       const result2 = this.result("allow", "", `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5);
       const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds];
       if (detectedOnly.length) result2.redacted_rule_ids = detectedOnly;
+      if (truncated) result2.scan_truncated = true;
       return result2;
     }
     const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds];
@@ -8418,6 +8449,7 @@ var EnforcementPipeline = class {
     result.matched_pattern = matchedPattern;
     result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted;
     result.redacted_rule_ids = allIds;
+    if (truncated) result.scan_truncated = true;
     return result;
   }
   async evaluateTiers(input) {
@@ -8454,6 +8486,14 @@ var EnforcementPipeline = class {
       const maxWindow = Math.max(...statefulRules.map((rule) => rule.sequence_window_seconds || rule.window_seconds || 60));
       this.config.sequenceDetector.setWindow(maxWindow * 1e3);
       this.config.sequenceDetector.record(input);
+    }
+    const cmdSurfacesBox = {};
+    const isStatefulOnlyRuleType = (t) => t === "verification" || t === "claim";
+    const floorTieredRules = rules.filter((rule) => (rule.mode === "observe" || rule.level === "protect") && !isStatefulOnlyRuleType(rule.type));
+    const floorTieredSet = new Set(floorTieredRules);
+    if (floorTieredRules.length) {
+      const floorResult = this.runTieredRules(floorTieredRules, input, start, deepChecks, cmdSurfacesBox);
+      if (floorResult) return floorResult;
     }
     for (const rule of statefulRules) {
       try {
@@ -8511,8 +8551,51 @@ var EnforcementPipeline = class {
         return this.result("allow", "", "Allowed (cached)", start, true, 1);
       }
     }
-    let cmdSurfaces;
-    for (const rule of rules) {
+    const remainingTieredRules = floorTieredRules.length ? rules.filter((rule) => !floorTieredSet.has(rule)) : rules;
+    const tieredResult = this.runTieredRules(remainingTieredRules, input, start, deepChecks, cmdSurfacesBox);
+    if (tieredResult) return tieredResult;
+    if (reasoningChecks && level === "protect" && input.reasoning) {
+      const dangerSignals = [
+        /ignore.*(rule|policy|restrict)/i,
+        /bypass.*(check|guard|protect)/i,
+        /disable.*(safety|keel|hook)/i,
+        /workaround.*(rule|block)/i,
+        /don'?t tell.*(user|human)/i,
+        /hid(e|den).*(action|change)/i
+      ];
+      for (const signal of dangerSignals) {
+        if (signal.test(input.reasoning)) {
+          return this.result("warn", "reasoning-anomaly", `Suspicious reasoning pattern detected`, start, false, 7);
+        }
+      }
+    }
+    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
+      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
+        verdict: "allow",
+        rule_id: null,
+        count: 0,
+        timestamp: Date.now()
+      }, this.cacheContext(input, depth));
+    }
+    return this.result("allow", "", "Allowed (no matching rule)", start, false, 0);
+  }
+  /**
+   * The tiered rule-matching loop (rate/time/command/filesystem/network/
+   * package/stuck/diagnosis/research(topics)/env/content/oracle/sequence/
+   * flow/session) — Tiers 2 through 6. Extracted out of evaluateTiers() so
+   * it can be run TWICE over two different slices of the same rank-ordered
+   * `rules` list: once for the `mode: observe` + `level: protect` subset —
+   * ranks 0 and 1, in that relative order — (before the statefulRules loop
+   * even starts), and once for everything else (in its original position,
+   * after statefulRules) — see evaluateTiers()'s "Floor-first pass" comment
+   * for why observe rules ride along with the floors instead of only the
+   * floors moving. `cmdSurfaces` is boxed so both calls share the same
+   * lazily-computed memo instead of recomputing it.
+   * Returns the first violation/result produced by any rule in `list`, or
+   * `undefined` if none of them produced a verdict.
+   */
+  runTieredRules(list, input, start, deepChecks, cmdSurfaces) {
+    for (const rule of list) {
       try {
         if (rule.type === "rate") {
           const matchPattern = rule.match || input.tool;
@@ -8572,8 +8655,8 @@ var EnforcementPipeline = class {
           if (isFix) {
             matches2 = rule.match_prefix ? cmdStr.toLowerCase().startsWith(rule.match_prefix.toLowerCase()) : !!pattern && this.matchesRulePattern(pattern, cmdStr);
           } else {
-            cmdSurfaces ??= commandSurfaces(input);
-            matches2 = rule.match_prefix ? cmdSurfaces.some((s) => s.toLowerCase().startsWith(rule.match_prefix.toLowerCase())) : !!pattern && cmdSurfaces.some((s) => this.matchesRulePattern(pattern, s));
+            cmdSurfaces.value ??= commandSurfaces(input);
+            matches2 = rule.match_prefix ? cmdSurfaces.value.some((s) => s.toLowerCase().startsWith(rule.match_prefix.toLowerCase())) : !!pattern && cmdSurfaces.value.some((s) => this.matchesRulePattern(pattern, s));
           }
           if (matches2) {
             if (rule.unless_reasoning && input.reasoning) {
@@ -8729,7 +8812,7 @@ var EnforcementPipeline = class {
           const pathStr = argPath(args);
           const resolvedPath = resolveMaybeRelative(pathStr, input.cwd);
           const patchText = String(args.patchText || "");
-          const inlineContent = String(args.content || args.text || patchText || "");
+          const inlineContent = String(args.content || args.text || args.newString || args.new_string || patchText || "");
           const isFile = resolvedPath && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
           const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
           if (inlineContent || diskChanged) {
@@ -8760,8 +8843,8 @@ var EnforcementPipeline = class {
             const pathMatched = !!resolvedPath && matchesAnyTestGlob(resolvedPath, rule.paths);
             if (pathMatched) {
               const patchText = String(args.patchText || "");
-              const newText = String(args.content ?? args.text ?? args.newString ?? patchText ?? "");
-              const explicitOld = typeof args.oldString === "string" ? args.oldString : void 0;
+              const newText = String(args.content ?? args.text ?? args.newString ?? args.new_string ?? patchText ?? "");
+              const explicitOld = typeof args.oldString === "string" ? args.oldString : typeof args.old_string === "string" ? args.old_string : void 0;
               const isFile = explicitOld === void 0 && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
               const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync5(resolvedPath, "utf-8") : "";
               if (newText || oldText) {
@@ -8809,30 +8892,7 @@ var EnforcementPipeline = class {
         throw err;
       }
     }
-    if (reasoningChecks && level === "protect" && input.reasoning) {
-      const dangerSignals = [
-        /ignore.*(rule|policy|restrict)/i,
-        /bypass.*(check|guard|protect)/i,
-        /disable.*(safety|keel|hook)/i,
-        /workaround.*(rule|block)/i,
-        /don'?t tell.*(user|human)/i,
-        /hid(e|den).*(action|change)/i
-      ];
-      for (const signal of dangerSignals) {
-        if (signal.test(input.reasoning)) {
-          return this.result("warn", "reasoning-anomaly", `Suspicious reasoning pattern detected`, start, false, 7);
-        }
-      }
-    }
-    if (!statefulRules.length && !gatedRules.length && !this.observedMatches.length) {
-      this.config.cache.set(input.tool, input.args, this.config.ruleVersion, {
-        verdict: "allow",
-        rule_id: null,
-        count: 0,
-        timestamp: Date.now()
-      }, this.cacheContext(input, depth));
-    }
-    return this.result("allow", "", "Allowed (no matching rule)", start, false, 0);
+    return void 0;
   }
   markVerificationSatisfied(input) {
     const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
@@ -8975,6 +9035,9 @@ var EnforcementPipeline = class {
       return this.warn(input, rule, `${message} (no automatic fix available)`, start, tier);
     }
     if (action === "redirect") {
+      if (this.overrideStore.consume(rule.id, input.session_id)) {
+        return this.result("allow", rule.id, this.overrideMessage(rule.id), start, false, tier);
+      }
       return this.result("redirect", rule.id, message, start, false, tier, void 0, void 0, directive);
     }
     if (action === "warn" || action === "allow" || action === "report") {
