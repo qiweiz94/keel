@@ -36,6 +36,8 @@ rules:
   - id: t-stuck-loop
     type: stuck
     match: "npm test"
+    action: redirect
+    message: "Fallback stuck-loop message (t-stuck-loop)."
     category: workflow
     severity: medium
     confidence: high
@@ -49,9 +51,11 @@ rules:
       - at: 3
         action: redirect
         message: "STUCK_LOOP_REDIRECT: npm test has failed 3 times."
-  - id: t-stuck-loop-other
+  - id: t-stuck-loop-multi
     type: stuck
-    match: "npm run lint"
+    match: "npm (test-multi|run build-multi)"
+    action: redirect
+    message: "Fallback stuck-loop message (t-stuck-loop-multi)."
     window_seconds: 900
     max_attempts: 3
     fingerprint: auto
@@ -60,7 +64,6 @@ rules:
     escalation:
       - at: 3
         action: redirect
-        message: "STUCK_LOOP_REDIRECT_OTHER: npm run lint has failed 3 times."
 `
 
 let home = ''
@@ -141,46 +144,60 @@ describe('cross-process stuck-loop persistence (`keel hook claude-code`)', () =>
     expect(pre4.stderr).toContain('STUCK_LOOP_REDIRECT')
   })
 
-  it('bucket contamination: two DIFFERENT failing commands interleaved across processes do not share a fail-streak', () => {
+  it('bucket contamination: two DIFFERENT commands matched by the SAME rule, interleaved across processes, do not share a fail-streak', () => {
     // Regression coverage for the bucketOf() fix at the cross-process
-    // level (the in-process version lives in stuck.test.ts). Drive two
-    // unrelated stuck-loop rules to the edge of their OWN thresholds,
-    // interleaved process-by-process, and confirm neither bleeds into the
-    // other's count.
+    // level (the in-process version lives in stuck.test.ts). Deliberately
+    // uses `t-stuck-loop-multi`, ONE rule id whose match pattern covers TWO
+    // distinct commands/fingerprints ("npm test-multi", "npm run
+    // build-multi") — the exact namespace the old `nearIdentical(cmd, fp)`
+    // fallback searched across when no exact-fingerprint bucket existed yet
+    // (it scanned every bucket keyed `stuck:{ruleId}:{cwd}:*` and, because
+    // it self-compared the incoming command's own fingerprint, matched the
+    // FIRST one it found in Map iteration order regardless of which command
+    // that bucket was actually for). Two DIFFERENT rule ids would not
+    // exercise this at all, since they never shared a bucket namespace to
+    // begin with.
     const session = 'contamination-session'
+    const CMD_A = 'npm test-multi'
+    const CMD_B = 'npm run build-multi'
 
     // A: 1 failure, B: 1 failure, A: 1 failure, B: 1 failure — interleaved,
     // each in its own process. If A's bucket ever contaminated B's (or vice
     // versa), one of them would hit count=3 and redirect one attempt early.
-    expect(preToolUse('npm test', session).status).toBe(0)
-    expect(postToolUse('npm test', 1, session).status).toBe(0)
+    expect(preToolUse(CMD_A, session).status).toBe(0)
+    expect(postToolUse(CMD_A, 1, session).status).toBe(0)
 
-    expect(preToolUse('npm run lint', session).status).toBe(0)
-    expect(postToolUse('npm run lint', 1, session).status).toBe(0)
+    expect(preToolUse(CMD_B, session).status).toBe(0)
+    expect(postToolUse(CMD_B, 1, session).status).toBe(0)
 
-    expect(preToolUse('npm test', session).status).toBe(0)
-    expect(postToolUse('npm test', 1, session).status).toBe(0)
+    expect(preToolUse(CMD_A, session).status).toBe(0)
+    expect(postToolUse(CMD_A, 1, session).status).toBe(0)
 
-    expect(preToolUse('npm run lint', session).status).toBe(0)
-    expect(postToolUse('npm run lint', 1, session).status).toBe(0)
+    expect(preToolUse(CMD_B, session).status).toBe(0)
+    expect(postToolUse(CMD_B, 1, session).status).toBe(0)
 
-    // Each command has now failed exactly twice — under its own threshold.
-    // One more failure of EITHER should redirect only that command's rule,
-    // not the other one's, and not before its own third failure.
-    const preTestStillAllowed = preToolUse('npm test', session)
-    expect(preTestStillAllowed.status, `npm test should still be allowed at 2 failures: ${preTestStillAllowed.stderr}`).toBe(0)
-    const preLintStillAllowed = preToolUse('npm run lint', session)
-    expect(preLintStillAllowed.status, `npm run lint should still be allowed at 2 failures: ${preLintStillAllowed.stderr}`).toBe(0)
+    // Each command has now failed exactly twice — under the shared rule's
+    // threshold. Both must still be allowed: if A's two failures had
+    // contaminated B's bucket (or vice versa), one of these would already
+    // read count>=3 and redirect one attempt early.
+    const preAStillAllowed = preToolUse(CMD_A, session)
+    expect(preAStillAllowed.status, `${CMD_A} should still be allowed at 2 failures: ${preAStillAllowed.stderr}`).toBe(0)
+    const preBStillAllowed = preToolUse(CMD_B, session)
+    expect(preBStillAllowed.status, `${CMD_B} should still be allowed at 2 failures: ${preBStillAllowed.stderr}`).toBe(0)
 
-    // Push "npm test" to its 3rd failure — only ITS bucket should escalate.
-    expect(postToolUse('npm test', 1, session).status).toBe(0)
-    const testRedirect = preToolUse('npm test', session)
-    expect(testRedirect.status).toBe(2)
-    expect(testRedirect.stderr).toContain('STUCK_LOOP_REDIRECT: npm test')
+    // Push A to its 3rd failure — only ITS bucket should escalate. The
+    // default (no static `message:` on this rule's escalation step) embeds
+    // the actual matched fingerprint, so the stderr text distinguishes
+    // which command tripped it.
+    expect(postToolUse(CMD_A, 1, session).status).toBe(0)
+    const redirectA = preToolUse(CMD_A, session)
+    expect(redirectA.status, `${CMD_A} should redirect at its 3rd failure: ${redirectA.stderr}`).toBe(2)
+    expect(redirectA.stderr).toContain(CMD_A)
+    expect(redirectA.stderr).not.toContain(CMD_B)
 
-    // "npm run lint" is still only at 2 failures — must NOT have been
-    // dragged along by "npm test"'s escalation.
-    const lintStillAllowed = preToolUse('npm run lint', session)
-    expect(lintStillAllowed.status, `lint bucket must be unaffected by npm test's escalation: ${lintStillAllowed.stderr}`).toBe(0)
+    // B is still only at 2 failures — must NOT have been dragged along by
+    // A's escalation (the exact contamination the old fallback caused).
+    const bStillAllowed = preToolUse(CMD_B, session)
+    expect(bStillAllowed.status, `${CMD_B} must be unaffected by ${CMD_A}'s escalation: ${bStillAllowed.stderr}`).toBe(0)
   })
 })
