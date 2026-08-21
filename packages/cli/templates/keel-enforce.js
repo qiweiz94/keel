@@ -7548,6 +7548,85 @@ function normalizeCommand(raw, depth = 0) {
   }
 }
 
+// ../core/src/enforce/known-hallucinated-packages.ts
+var HALLUCINATED_PACKAGE_REGISTRY_SOURCE = "Socket.dev slopsquatting research (2026): 53 registrable LLM-hallucinated package names (41 PyPI, 12 npm) across 5 frontier models \u2014 PLACEHOLDER DATA in this build, see file header";
+var PLACEHOLDER_NOTE = "PLACEHOLDER \u2014 not a real hallucinated name. Replace with the actual name from the Socket.dev (2026) source before relying on this registry as a production deny signal. See this file\u2019s header.";
+var KNOWN_HALLUCINATED_PACKAGES = [
+  // ── npm (12 expected) ──────────────────────────────────────────────
+  { name: "keel-placeholder-hallucination-npm-01", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-02", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-03", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-04", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-05", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-06", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-07", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-08", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-09", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-10", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-11", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  { name: "keel-placeholder-hallucination-npm-12", ecosystem: "npm", note: PLACEHOLDER_NOTE },
+  // ── PyPI (41 expected) ──────────────────────────────────────────────
+  { name: "keel_placeholder_hallucination_pypi_01", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_02", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_03", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_04", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_05", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_06", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_07", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_08", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_09", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_10", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_11", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_12", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_13", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_14", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_15", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_16", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_17", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_18", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_19", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_20", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_21", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_22", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_23", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_24", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_25", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_26", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_27", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_28", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_29", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_30", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_31", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_32", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_33", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_34", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_35", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_36", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_37", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_38", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_39", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_40", ecosystem: "pypi", note: PLACEHOLDER_NOTE },
+  { name: "keel_placeholder_hallucination_pypi_41", ecosystem: "pypi", note: PLACEHOLDER_NOTE }
+];
+function normalizeNpmName(name) {
+  return name.toLowerCase();
+}
+function normalizePypiName(name) {
+  return name.toLowerCase().replace(/[-_.]+/g, "-");
+}
+function normalizeForEcosystem(name, ecosystem) {
+  return ecosystem === "npm" ? normalizeNpmName(name) : normalizePypiName(name);
+}
+function indexKey(name, ecosystem) {
+  return `${ecosystem}:${normalizeForEcosystem(name, ecosystem)}`;
+}
+var HALLUCINATION_INDEX = new Map(
+  KNOWN_HALLUCINATED_PACKAGES.map((entry) => [indexKey(entry.name, entry.ecosystem), entry])
+);
+function lookupKnownHallucination(name, ecosystem) {
+  return HALLUCINATION_INDEX.get(indexKey(name, ecosystem));
+}
+
 // ../core/src/enforce/package-verifier.ts
 var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
 var MANAGER_ECOSYSTEM2 = {
@@ -8089,6 +8168,13 @@ var PackageVerifierCache = class {
 function withDependencyConfusion(result, spec) {
   return spec.dependencyConfusionRisk ? { ...result, dependencyConfusionRisk: true, ambientSource: spec.ambientSource } : result;
 }
+function withKnownHallucination(result, spec) {
+  const ecosystem = ecosystemForManager(spec.manager);
+  if (ecosystem !== "npm" && ecosystem !== "pypi") return result;
+  const match = lookupKnownHallucination(spec.name, ecosystem);
+  if (!match) return result;
+  return { ...result, knownHallucination: { ecosystem, source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } };
+}
 async function checkPackages(specs, opts = {}) {
   const now = opts.now ?? Date.now;
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2e3;
@@ -8108,7 +8194,7 @@ async function checkPackages(specs, opts = {}) {
     const key = `${ecosystem}:${spec.name}`;
     const already = seen.get(key);
     if (already) {
-      results.push(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec));
+      results.push(withKnownHallucination(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec), spec));
       continue;
     }
     let result;
@@ -8163,7 +8249,7 @@ async function checkPackages(specs, opts = {}) {
         }, now());
       }
     }
-    result = withDependencyConfusion(result, spec);
+    result = withKnownHallucination(withDependencyConfusion(result, spec), spec);
     seen.set(key, result);
     results.push(result);
   }
@@ -8177,19 +8263,19 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
   for (const spec of specs) {
     const ecosystem = ecosystemForManager(spec.manager);
     if (spec.privateIndex) {
-      results.push(withDependencyConfusion({
+      results.push(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: "unverified",
         reason: spec.ambientSource ? "ambient_private_registry" : "private_index",
         fromCache: false,
         ...spec.ambientSource ? { ambientSource: spec.ambientSource } : {}
-      }, spec));
+      }, spec), spec));
       continue;
     }
     const cached = cache.get(spec.name, t, ecosystem);
     if (cached) {
-      results.push(withDependencyConfusion({
+      results.push(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: cached.verdict,
@@ -8198,15 +8284,15 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
         createdAt: cached.createdAt,
         didYouMean: cached.didYouMean,
         fromCache: true
-      }, spec));
+      }, spec), spec));
     } else {
-      results.push(withDependencyConfusion({
+      results.push(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: "unverified",
         reason: "not_yet_checked",
         fromCache: false
-      }, spec));
+      }, spec), spec));
       const missKey = `${ecosystem}:${spec.name}`;
       if (!missSeen.has(missKey)) {
         missSeen.add(missKey);
@@ -8220,33 +8306,38 @@ function scheduleBackgroundVerification(misses, opts = {}) {
   if (misses.length === 0) return Promise.resolve();
   return checkPackages(misses, opts).then(() => void 0, () => void 0);
 }
+function knownHallucinationSuffix(r) {
+  if (!r.knownHallucination) return "";
+  return ` This name additionally matches a DOCUMENTED LLM-package-hallucination pattern (${r.knownHallucination.source}) \u2014 a known "slopsquatting" target that models repeatedly invent, making it an especially attractive name for an attacker to pre-register.`;
+}
 function buildNotFoundMessage(r) {
   const suggestion = r.didYouMean?.length ? ` Did you mean: ${r.didYouMean.join(", ")}?` : "";
-  return `Package "${r.name}" does not exist on its package registry \u2014 this install is unfulfillable regardless of intent.${suggestion}`;
+  return `Package "${r.name}" does not exist on its package registry \u2014 this install is unfulfillable regardless of intent.${suggestion}${knownHallucinationSuffix(r)}`;
+}
+function buildKnownHallucinationMessage(r) {
+  const source = r.knownHallucination?.source ?? "a documented LLM-hallucination pattern";
+  return `Package "${r.name}" matches a DOCUMENTED LLM-package-hallucination pattern (${source}) and currently exists on the public registry \u2014 this is the "slopsquatting" attack shape: an attacker pre-registers a name frontier models are known to repeatedly invent, then waits for an agent to hallucinate the same name and be told to install it. The fact that this name resolves does NOT mean it is safe; it may mean someone has weaponized the exact pattern this registry documents. Treating as a high-confidence deny regardless of the package's age.`;
 }
 function buildUnverifiedMessage(r) {
+  let msg;
   if (r.reason === "scoped_not_public") {
-    return `unverified \u2014 "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist \u2014 treating as unverified, not denying.`;
+    msg = `unverified \u2014 "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist \u2014 treating as unverified, not denying.`;
+  } else if (r.reason === "private_index") {
+    msg = `unverified \u2014 "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) \u2014 approve only if you recognize and trust this index.`;
+  } else if (r.reason === "ambient_private_registry") {
+    msg = `unverified \u2014 "${r.name}" resolves to a private/internal registry per your ambient package-manager config (${r.ambientSource ?? "local .npmrc/pip.conf/.cargo/config.toml/GOPRIVATE"}), not the public registry. keel does not query ambient-configured private registries (same SSRF-avoidance rationale as an explicit --index-url) \u2014 approve only if you recognize and trust this registry.`;
+  } else if (r.reason === "go_ambiguous") {
+    msg = `unverified \u2014 "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence \u2014 the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`;
+  } else if (r.reason === "budget_exhausted") {
+    msg = `unverified \u2014 registry lookup budget exhausted before "${r.name}" could be checked`;
+  } else if (r.reason === "too_large") {
+    msg = `unverified \u2014 registry response for "${r.name}" exceeded the size cap before it could be checked`;
+  } else if (r.reason === "not_yet_checked") {
+    msg = `unverified \u2014 registry not yet checked for "${r.name}"; approve to proceed. A background lookup is filling the cache now, so a repeat of this install will get a real verdict.`;
+  } else {
+    msg = `unverified \u2014 registry unreachable (could not verify "${r.name}": ${r.reason ?? "unknown error"})`;
   }
-  if (r.reason === "private_index") {
-    return `unverified \u2014 "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) \u2014 approve only if you recognize and trust this index.`;
-  }
-  if (r.reason === "ambient_private_registry") {
-    return `unverified \u2014 "${r.name}" resolves to a private/internal registry per your ambient package-manager config (${r.ambientSource ?? "local .npmrc/pip.conf/.cargo/config.toml/GOPRIVATE"}), not the public registry. keel does not query ambient-configured private registries (same SSRF-avoidance rationale as an explicit --index-url) \u2014 approve only if you recognize and trust this registry.`;
-  }
-  if (r.reason === "go_ambiguous") {
-    return `unverified \u2014 "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence \u2014 the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`;
-  }
-  if (r.reason === "budget_exhausted") {
-    return `unverified \u2014 registry lookup budget exhausted before "${r.name}" could be checked`;
-  }
-  if (r.reason === "too_large") {
-    return `unverified \u2014 registry response for "${r.name}" exceeded the size cap before it could be checked`;
-  }
-  if (r.reason === "not_yet_checked") {
-    return `unverified \u2014 registry not yet checked for "${r.name}"; approve to proceed. A background lookup is filling the cache now, so a repeat of this install will get a real verdict.`;
-  }
-  return `unverified \u2014 registry unreachable (could not verify "${r.name}": ${r.reason ?? "unknown error"})`;
+  return msg + knownHallucinationSuffix(r);
 }
 function buildAgeGateMessage(r, ageThresholdDays) {
   const days = r.ageDays !== void 0 ? Math.max(0, Math.floor(r.ageDays)) : void 0;
@@ -8258,6 +8349,10 @@ function buildDependencyConfusionMessage(r) {
 function decidePackageAction(results, ageThresholdDays) {
   const notFound = results.find((r) => r.verdict === "not_found");
   if (notFound) return { reason: "not_found", message: buildNotFoundMessage(notFound), result: notFound };
+  const hallucinatedButExists = results.find((r) => r.verdict === "exists" && r.knownHallucination);
+  if (hallucinatedButExists) {
+    return { reason: "known_hallucination", message: buildKnownHallucinationMessage(hallucinatedButExists), result: hallucinatedButExists };
+  }
   const unverified = results.find((r) => r.verdict === "unverified");
   if (unverified) return { reason: "unverified", message: buildUnverifiedMessage(unverified), result: unverified };
   const young = results.find((r) => r.verdict === "exists" && r.ageDays !== void 0 && r.ageDays < ageThresholdDays);
@@ -9730,6 +9825,9 @@ var EnforcementPipeline = class {
           const decision = decidePackageAction(results, ageThresholdDays);
           if (decision.reason === "ok") continue;
           if (decision.reason === "not_found") {
+            return this.violation(input, { ...rule, action: "deny" }, decision.message, start, 3, rule.id, void 0, true);
+          }
+          if (decision.reason === "known_hallucination") {
             return this.violation(input, { ...rule, action: "deny" }, decision.message, start, 3, rule.id, void 0, true);
           }
           if (decision.reason === "unverified") {

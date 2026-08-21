@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { resolveHome } from '../home.js'
 import { applyAmbientConfig } from './ambient-registry-config.js'
 import { PYTHON_INTERPRETER_RE } from './command-normalizer.js'
+import { lookupKnownHallucination, HALLUCINATED_PACKAGE_REGISTRY_SOURCE, type HallucinationEcosystem } from './known-hallucinated-packages.js'
 
 /**
  * Slopsquatting install gate.
@@ -67,6 +68,24 @@ import { PYTHON_INTERPRETER_RE } from './command-normalizer.js'
  *     itself is still exactly as fresh as day one. This mirrors npm's own
  *     existing (correct) use of `time.created`, never `time.modified`.
  *   - exists, older than age_days         -> allow
+ *   - name matches known-hallucination registry, AND exists -> deny,
+ *     high confidence, regardless of age — see known-hallucinated-
+ *     packages.ts. This is the "slopsquatting" case the existence check
+ *     alone cannot catch: an attacker who registers a name documented as
+ *     an LLM hallucination target makes that name pass the ordinary
+ *     existence check outright. The registry lookup itself is a static,
+ *     zero-network, zero-cost comparison run on EVERY spec regardless of
+ *     its existence verdict (not_found already denies on its own; this
+ *     adds a reason to the not_found message too, and independently
+ *     upgrades an otherwise-clean `exists` verdict to a deny). NEVER
+ *     forces a deny when the verdict is merely `unverified` (network
+ *     failure) — the "never deny on a network blip" invariant above
+ *     applies here too; an unverified name that also matches the
+ *     registry still just prompts, with the pattern match noted in the
+ *     message for the human's benefit. See `known-hallucinated-
+ *     packages.ts`'s own header for the data source, and its placeholder-
+ *     data caveat (that file ships with structurally-valid but NOT-real
+ *     names pending a human populating the actual list).
  *
  * No SSRF guard (unlike enforce/research/fetcher.ts): every registry base
  * URL this module queries is a fixed, operator/rule-author-controlled URL
@@ -576,6 +595,17 @@ export interface PackageCheckResult {
   ambientSource?: string
   /** Threaded through from `PackageSpec.dependencyConfusionRisk` — see that field's own doc and `decidePackageAction`. */
   dependencyConfusionRisk?: boolean
+  /**
+   * Set when `name` matches an entry in the known-LLM-hallucination
+   * registry (`known-hallucinated-packages.ts`), independent of and
+   * computed regardless of `verdict` — a static, zero-network lookup run
+   * on every checked spec, npm/PyPI only (see that file's own scoping
+   * note; `crates`/`go` specs never set this). `source` is the
+   * human-readable citation for the rule message (see
+   * `HALLUCINATED_PACKAGE_REGISTRY_SOURCE`). See `decidePackageAction`
+   * for how this combines with `verdict` to decide deny vs. prompt.
+   */
+  knownHallucination?: { ecosystem: HallucinationEcosystem; source: string }
 }
 
 /**
@@ -1073,6 +1103,24 @@ function withDependencyConfusion(result: PackageCheckResult, spec: PackageSpec):
     : result
 }
 
+/**
+ * Overlay a known-hallucination registry match onto a `PackageCheckResult`,
+ * conditionally so no `knownHallucination` key ever appears on a result
+ * that didn't match (same "no undefined-valued keys" discipline as
+ * `withDependencyConfusion`). Runs regardless of `verdict` — see this
+ * module's header SEMANTICS note and `known-hallucinated-packages.ts`'s
+ * own header for why the check must not be skipped just because a name
+ * happens to exist. `crates`/`go` ecosystems always miss (the registry
+ * only covers npm/PyPI) and are cheap no-ops here.
+ */
+function withKnownHallucination(result: PackageCheckResult, spec: PackageSpec): PackageCheckResult {
+  const ecosystem = ecosystemForManager(spec.manager)
+  if (ecosystem !== 'npm' && ecosystem !== 'pypi') return result
+  const match = lookupKnownHallucination(spec.name, ecosystem)
+  if (!match) return result
+  return { ...result, knownHallucination: { ecosystem, source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } }
+}
+
 export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallOptions = {}): Promise<PackageCheckResult[]> {
   const now = opts.now ?? Date.now
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2000
@@ -1094,7 +1142,7 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
     const key = `${ecosystem}:${spec.name}`
     const already = seen.get(key)
     if (already) {
-      results.push(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec))
+      results.push(withKnownHallucination(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec), spec))
       continue
     }
 
@@ -1164,7 +1212,7 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
         }, now())
       }
     }
-    result = withDependencyConfusion(result, spec)
+    result = withKnownHallucination(withDependencyConfusion(result, spec), spec)
     seen.set(key, result)
     results.push(result)
   }
@@ -1209,19 +1257,19 @@ export function checkPackagesCacheOnly(
   for (const spec of specs) {
     const ecosystem = ecosystemForManager(spec.manager)
     if (spec.privateIndex) {
-      results.push(withDependencyConfusion({
+      results.push(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: 'unverified',
         reason: spec.ambientSource ? 'ambient_private_registry' : 'private_index',
         fromCache: false,
         ...(spec.ambientSource ? { ambientSource: spec.ambientSource } : {}),
-      }, spec))
+      }, spec), spec))
       continue
     }
     const cached = cache.get(spec.name, t, ecosystem)
     if (cached) {
-      results.push(withDependencyConfusion({
+      results.push(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: cached.verdict,
@@ -1230,15 +1278,15 @@ export function checkPackagesCacheOnly(
         createdAt: cached.createdAt,
         didYouMean: cached.didYouMean,
         fromCache: true,
-      }, spec))
+      }, spec), spec))
     } else {
-      results.push(withDependencyConfusion({
+      results.push(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: 'unverified',
         reason: 'not_yet_checked',
         fromCache: false,
-      }, spec))
+      }, spec), spec))
       const missKey = `${ecosystem}:${spec.name}`
       if (!missSeen.has(missKey)) {
         missSeen.add(missKey)
@@ -1271,7 +1319,7 @@ export function scheduleBackgroundVerification(
   return checkPackages(misses, opts).then(() => undefined, () => undefined)
 }
 
-export type PackageDecisionReason = 'not_found' | 'unverified' | 'age_gate' | 'dependency_confusion' | 'ok'
+export type PackageDecisionReason = 'not_found' | 'known_hallucination' | 'unverified' | 'age_gate' | 'dependency_confusion' | 'ok'
 
 export interface PackageRuleDecision {
   reason: PackageDecisionReason
@@ -1279,34 +1327,56 @@ export interface PackageRuleDecision {
   result?: PackageCheckResult
 }
 
+/** Shared suffix appended whenever a result ALSO matches the known-hallucination registry, regardless of which top-level message ends up wrapping it (not_found / unverified / age_gate all call this). Kept as one function so the wording — and the fact that it fires — stays identical across every call site rather than drifting. */
+function knownHallucinationSuffix(r: PackageCheckResult): string {
+  if (!r.knownHallucination) return ''
+  return ` This name additionally matches a DOCUMENTED LLM-package-hallucination pattern (${r.knownHallucination.source}) — a known "slopsquatting" target that models repeatedly invent, making it an especially attractive name for an attacker to pre-register.`
+}
+
 function buildNotFoundMessage(r: PackageCheckResult): string {
   const suggestion = r.didYouMean?.length ? ` Did you mean: ${r.didYouMean.join(', ')}?` : ''
-  return `Package "${r.name}" does not exist on its package registry — this install is unfulfillable regardless of intent.${suggestion}`
+  return `Package "${r.name}" does not exist on its package registry — this install is unfulfillable regardless of intent.${suggestion}${knownHallucinationSuffix(r)}`
+}
+
+/**
+ * The headline new signal: a name that matches the known-hallucination
+ * registry AND currently resolves on the registry (`verdict === 'exists'`)
+ * — see `decidePackageAction`'s priority ordering for why this is checked
+ * (and denies) before an ordinary `unverified`/`age_gate` outcome would.
+ * This is the actual slopsquatting attack shape: an attacker registered a
+ * name documented as an LLM hallucination target, so the plain existence
+ * check alone would wave it straight through as `exists`.
+ */
+function buildKnownHallucinationMessage(r: PackageCheckResult): string {
+  const source = r.knownHallucination?.source ?? 'a documented LLM-hallucination pattern'
+  return `Package "${r.name}" matches a DOCUMENTED LLM-package-hallucination pattern (${source}) and currently exists on the public registry — this is the "slopsquatting" attack shape: an attacker pre-registers a name frontier models are known to repeatedly invent, then waits for an agent to hallucinate the same name and be told to install it. The fact that this name resolves does NOT mean it is safe; it may mean someone has weaponized the exact pattern this registry documents. Treating as a high-confidence deny regardless of the package's age.`
 }
 
 function buildUnverifiedMessage(r: PackageCheckResult): string {
+  let msg: string
   if (r.reason === 'scoped_not_public') {
-    return `unverified — "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist — treating as unverified, not denying.`
+    msg = `unverified — "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist — treating as unverified, not denying.`
+  } else if (r.reason === 'private_index') {
+    msg = `unverified — "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) — approve only if you recognize and trust this index.`
+  } else if (r.reason === 'ambient_private_registry') {
+    msg = `unverified — "${r.name}" resolves to a private/internal registry per your ambient package-manager config (${r.ambientSource ?? 'local .npmrc/pip.conf/.cargo/config.toml/GOPRIVATE'}), not the public registry. keel does not query ambient-configured private registries (same SSRF-avoidance rationale as an explicit --index-url) — approve only if you recognize and trust this registry.`
+  } else if (r.reason === 'go_ambiguous') {
+    msg = `unverified — "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence — the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`
+  } else if (r.reason === 'budget_exhausted') {
+    msg = `unverified — registry lookup budget exhausted before "${r.name}" could be checked`
+  } else if (r.reason === 'too_large') {
+    msg = `unverified — registry response for "${r.name}" exceeded the size cap before it could be checked`
+  } else if (r.reason === 'not_yet_checked') {
+    msg = `unverified — registry not yet checked for "${r.name}"; approve to proceed. A background lookup is filling the cache now, so a repeat of this install will get a real verdict.`
+  } else {
+    msg = `unverified — registry unreachable (could not verify "${r.name}": ${r.reason ?? 'unknown error'})`
   }
-  if (r.reason === 'private_index') {
-    return `unverified — "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) — approve only if you recognize and trust this index.`
-  }
-  if (r.reason === 'ambient_private_registry') {
-    return `unverified — "${r.name}" resolves to a private/internal registry per your ambient package-manager config (${r.ambientSource ?? 'local .npmrc/pip.conf/.cargo/config.toml/GOPRIVATE'}), not the public registry. keel does not query ambient-configured private registries (same SSRF-avoidance rationale as an explicit --index-url) — approve only if you recognize and trust this registry.`
-  }
-  if (r.reason === 'go_ambiguous') {
-    return `unverified — "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence — the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`
-  }
-  if (r.reason === 'budget_exhausted') {
-    return `unverified — registry lookup budget exhausted before "${r.name}" could be checked`
-  }
-  if (r.reason === 'too_large') {
-    return `unverified — registry response for "${r.name}" exceeded the size cap before it could be checked`
-  }
-  if (r.reason === 'not_yet_checked') {
-    return `unverified — registry not yet checked for "${r.name}"; approve to proceed. A background lookup is filling the cache now, so a repeat of this install will get a real verdict.`
-  }
-  return `unverified — registry unreachable (could not verify "${r.name}": ${r.reason ?? 'unknown error'})`
+  // Never escalated to deny here — the "never deny on a network blip"
+  // invariant applies to a known-hallucination match exactly as it does to
+  // an ordinary lookup failure. The match is still worth surfacing to the
+  // human reviewing this prompt, just not worth denying over on its own
+  // while existence itself couldn't be confirmed.
+  return msg + knownHallucinationSuffix(r)
 }
 
 function buildAgeGateMessage(r: PackageCheckResult, ageThresholdDays: number): string {
@@ -1322,25 +1392,47 @@ function buildDependencyConfusionMessage(r: PackageCheckResult): string {
  * Pure decision function — no I/O, easy to test independently of the
  * network layer. Priority order across a multi-package command mirrors
  * severity: a not_found ANYWHERE denies the whole command (deterministic,
- * highest confidence); otherwise an unverified anywhere prompts; otherwise
- * an age-gated package prompts; otherwise a dependency-confusion-risked
- * package warns; otherwise allow.
+ * highest confidence); otherwise a package that EXISTS but matches the
+ * known-hallucination registry denies too (see below); otherwise an
+ * unverified anywhere prompts; otherwise an age-gated package prompts;
+ * otherwise a dependency-confusion-risked package warns; otherwise allow.
  *
- * dependency_confusion is deliberately LAST, below not_found/unverified/
- * age_gate, not first — it is a `warn`, strictly weaker than `deny` or
+ * known_hallucination sits directly below not_found and ABOVE unverified/
+ * age_gate/dependency_confusion — deliberately, not incidentally. It only
+ * ever fires for a result whose `verdict === 'exists'` (see the `.find`
+ * below): a hallucination-list match on a `not_found` result is already
+ * covered by the not_found branch above (its message gets the extra
+ * hallucination note via `knownHallucinationSuffix`, but the verdict
+ * itself doesn't change), and a match on an `unverified` result
+ * deliberately does NOT escalate past `unverified` — the module's
+ * "never deny on a network blip" invariant applies to this signal exactly
+ * as it does to an ordinary lookup failure; `buildUnverifiedMessage` still
+ * surfaces the match in its text. So the only NEW deny path this adds is
+ * exists + hallucination-match: a name that resolves right now but is
+ * documented as an LLM hallucination target is the exact slopsquatting
+ * shape a plain existence check cannot see on its own.
+ *
+ * dependency_confusion is deliberately LAST, below every deny/prompt
+ * reason above, not first — it is a `warn`, strictly weaker than `deny` or
  * `prompt`. Checking it first would let `npm i <hallucinated-name>
  * --registry=https://registry.npmjs.org` in a repo with an ambient private
  * `.npmrc` DOWNGRADE a deterministic not_found deny to a warn — an explicit
  * public-registry flag would become a deny-ESCAPE for exactly the
  * hallucinated-name attack this rule exists to stop. Checked last, it only
- * ever fires when every result has already cleared not_found/unverified/
- * age_gate (i.e. every package genuinely exists and is old enough) — the
- * actual squatted-name shape: a real, aged, PUBLIC package sitting under a
- * name your ambient config normally routes internally.
+ * ever fires when every result has already cleared not_found/
+ * known_hallucination/unverified/age_gate (i.e. every package genuinely
+ * exists, is old enough, and isn't a documented hallucination target) —
+ * the actual squatted-name shape: a real, aged, PUBLIC package sitting
+ * under a name your ambient config normally routes internally.
  */
 export function decidePackageAction(results: PackageCheckResult[], ageThresholdDays: number): PackageRuleDecision {
   const notFound = results.find(r => r.verdict === 'not_found')
   if (notFound) return { reason: 'not_found', message: buildNotFoundMessage(notFound), result: notFound }
+
+  const hallucinatedButExists = results.find(r => r.verdict === 'exists' && r.knownHallucination)
+  if (hallucinatedButExists) {
+    return { reason: 'known_hallucination', message: buildKnownHallucinationMessage(hallucinatedButExists), result: hallucinatedButExists }
+  }
 
   const unverified = results.find(r => r.verdict === 'unverified')
   if (unverified) return { reason: 'unverified', message: buildUnverifiedMessage(unverified), result: unverified }

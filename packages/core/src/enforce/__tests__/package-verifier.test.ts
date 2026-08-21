@@ -16,6 +16,11 @@ import {
   type PackageCheckResult,
 } from '../package-verifier.js'
 import {
+  lookupKnownHallucination,
+  KNOWN_HALLUCINATED_PACKAGES,
+  HALLUCINATED_PACKAGE_REGISTRY_SOURCE,
+} from '../known-hallucinated-packages.js'
+import {
   applyAmbientConfig,
   AmbientConfigCache,
   resolveNpmAmbient,
@@ -1831,5 +1836,229 @@ describe('ambient config: per-cwd caching (AmbientConfigCache)', () => {
       rmSafe(cwdA)
       rmSafe(cwdB)
     }
+  })
+})
+
+// ── Known-hallucination registry ("slopsquatting" deny signal) ─────────
+//
+// PLACEHOLDER-DATA NOTE (see known-hallucinated-packages.ts's own header):
+// these tests deliberately pull real entries OUT of
+// `KNOWN_HALLUCINATED_PACKAGES` rather than hardcoding literal name
+// strings, so they exercise the actual shipped data (whatever it is —
+// placeholder today, the real 53 names once a human populates them) and
+// keep passing unmodified once that swap happens. Nothing here asserts on
+// the specific placeholder spelling.
+
+const NPM_HALLUCINATION_NAME = KNOWN_HALLUCINATED_PACKAGES.find(e => e.ecosystem === 'npm')!.name
+const PYPI_HALLUCINATION_NAME = KNOWN_HALLUCINATED_PACKAGES.find(e => e.ecosystem === 'pypi')!.name
+
+describe('known-hallucinated-packages: registry data shape', () => {
+  it('ships exactly 53 entries total (41 PyPI + 12 npm), matching the Socket.dev source counts', () => {
+    expect(KNOWN_HALLUCINATED_PACKAGES).toHaveLength(53)
+    expect(KNOWN_HALLUCINATED_PACKAGES.filter(e => e.ecosystem === 'npm')).toHaveLength(12)
+    expect(KNOWN_HALLUCINATED_PACKAGES.filter(e => e.ecosystem === 'pypi')).toHaveLength(41)
+  })
+
+  it('every entry has a non-empty name scoped to npm or pypi only', () => {
+    for (const entry of KNOWN_HALLUCINATED_PACKAGES) {
+      expect(entry.name.length).toBeGreaterThan(0)
+      expect(['npm', 'pypi']).toContain(entry.ecosystem)
+    }
+  })
+})
+
+describe('lookupKnownHallucination', () => {
+  it('finds an npm entry by exact name', () => {
+    expect(lookupKnownHallucination(NPM_HALLUCINATION_NAME, 'npm')).toBeDefined()
+    expect(lookupKnownHallucination(NPM_HALLUCINATION_NAME, 'npm')?.name).toBe(NPM_HALLUCINATION_NAME)
+  })
+
+  it('finds a PyPI entry by exact name', () => {
+    expect(lookupKnownHallucination(PYPI_HALLUCINATION_NAME, 'pypi')).toBeDefined()
+  })
+
+  it('does not match an unrelated name', () => {
+    expect(lookupKnownHallucination('definitely-not-on-any-list-abc123', 'npm')).toBeUndefined()
+    expect(lookupKnownHallucination('definitely-not-on-any-list-abc123', 'pypi')).toBeUndefined()
+  })
+
+  it('npm lookup is case-insensitive', () => {
+    expect(lookupKnownHallucination(NPM_HALLUCINATION_NAME.toUpperCase(), 'npm')).toBeDefined()
+  })
+
+  it('PyPI lookup normalizes per PEP 503 (case-insensitive, "-"/"_"/"." interchangeable)', () => {
+    const mangled = PYPI_HALLUCINATION_NAME.toUpperCase().replace(/_/g, '-')
+    expect(lookupKnownHallucination(mangled, 'pypi')).toBeDefined()
+    expect(lookupKnownHallucination(mangled, 'pypi')?.name).toBe(PYPI_HALLUCINATION_NAME)
+  })
+
+  it('ecosystem-scoped: an npm-list name does not match when looked up under pypi, and vice versa', () => {
+    // Realistic even though the placeholder names differ in separator
+    // convention: real hallucinated names could plausibly collide in
+    // spelling across ecosystems, and the two lists are drawn from
+    // different model-output samples — a match in one must never leak
+    // into the other. Proven directly against the lookup, independent of
+    // whether any shipped name today happens to collide.
+    expect(lookupKnownHallucination(NPM_HALLUCINATION_NAME, 'pypi')).toBeUndefined()
+    expect(lookupKnownHallucination(PYPI_HALLUCINATION_NAME, 'npm')).toBeUndefined()
+  })
+})
+
+describe('decidePackageAction: known_hallucination signal', () => {
+  it('a package that EXISTS and matches the hallucination registry -> reason known_hallucination, deny-worthy message', () => {
+    const d = decidePackageAction([result({
+      name: NPM_HALLUCINATION_NAME,
+      verdict: 'exists',
+      ageDays: 5000, // deliberately old — must still deny; this signal ignores age
+      knownHallucination: { ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE },
+    })], 30)
+    expect(d.reason).toBe('known_hallucination')
+    expect(d.message).toContain('hallucination')
+    expect(d.message).toContain('slopsquatting')
+    expect(d.message).toContain(NPM_HALLUCINATION_NAME)
+  })
+
+  it('a not_found package that ALSO matches the registry stays reason not_found (already denies), but the message notes the hallucination match too', () => {
+    const d = decidePackageAction([result({
+      name: NPM_HALLUCINATION_NAME,
+      verdict: 'not_found',
+      knownHallucination: { ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE },
+    })], 30)
+    expect(d.reason).toBe('not_found')
+    expect(d.message).toContain('does not exist')
+    expect(d.message).toContain('hallucination')
+  })
+
+  it('an unverified result that ALSO matches the registry stays reason unverified (never denies on a network blip), message notes the match', () => {
+    const d = decidePackageAction([result({
+      name: NPM_HALLUCINATION_NAME,
+      verdict: 'unverified',
+      reason: 'timeout',
+      knownHallucination: { ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE },
+    })], 30)
+    expect(d.reason).toBe('unverified')
+    expect(d.message).toContain('unverified — registry unreachable')
+    expect(d.message).toContain('hallucination')
+  })
+
+  it('priority: not_found still beats known_hallucination when both are present in one command', () => {
+    const d = decidePackageAction([
+      result({ name: 'squatted-exists-pkg', verdict: 'exists', knownHallucination: { ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } }),
+      result({ name: 'fake-pkg', verdict: 'not_found' }),
+    ], 30)
+    expect(d.reason).toBe('not_found')
+  })
+
+  it('priority: known_hallucination beats unverified and age_gate in the same command', () => {
+    const d = decidePackageAction([
+      result({ name: 'young-pkg', verdict: 'exists', ageDays: 1 }),
+      result({ name: 'unreachable-pkg', verdict: 'unverified', reason: 'timeout' }),
+      result({ name: 'squatted-exists-pkg', verdict: 'exists', knownHallucination: { ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } }),
+    ], 30)
+    expect(d.reason).toBe('known_hallucination')
+  })
+
+  it('regression: a package NOT on the registry (no knownHallucination field) is completely unaffected', () => {
+    const d = decidePackageAction([result({ verdict: 'exists', ageDays: 2000 })], 30)
+    expect(d.reason).toBe('ok')
+    expect(d.message).not.toContain('hallucination')
+  })
+})
+
+describe('checkPackages: known-hallucination wiring end-to-end', () => {
+  let stateDir: string
+  beforeEach(() => { stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-halluc-')) })
+  afterEach(() => { rmSafe(stateDir) })
+
+  it('an npm hallucination-list name that now EXISTS (attacker squatted it) sets knownHallucination and denies via decidePackageAction', async () => {
+    const { fetchImpl } = makeMockRegistry({ [NPM_HALLUCINATION_NAME]: { existsDaysAgo: 400 } })
+    const [r] = await checkPackages(
+      [{ name: NPM_HALLUCINATION_NAME, manager: 'npm', raw: NPM_HALLUCINATION_NAME }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(r.knownHallucination).toEqual({ ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE })
+    const decision = decidePackageAction([r], 30)
+    expect(decision.reason).toBe('known_hallucination')
+  })
+
+  it('an npm name NOT on the registry that exists is unaffected — no knownHallucination field at all, ordinary "ok"', async () => {
+    const { fetchImpl } = makeMockRegistry({ lodash: { existsDaysAgo: 2000 } })
+    const [r] = await checkPackages(
+      [{ name: 'lodash', manager: 'npm', raw: 'lodash' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.knownHallucination).toBeUndefined()
+    expect(decidePackageAction([r], 30).reason).toBe('ok')
+  })
+
+  it('a PyPI hallucination-list name that exists sets knownHallucination scoped to pypi', async () => {
+    const { fetchImpl } = makeMockPyPi({ [PYPI_HALLUCINATION_NAME]: { releases: { '1.0.0': [daysAgoIso(2000)] } } })
+    const [r] = await checkPackages(
+      [{ name: PYPI_HALLUCINATION_NAME, manager: 'pip', raw: PYPI_HALLUCINATION_NAME }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), pypiBaseUrl: 'https://mock-pypi.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(r.knownHallucination).toEqual({ ecosystem: 'pypi', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE })
+    expect(decidePackageAction([r], 30).reason).toBe('known_hallucination')
+  })
+
+  it('an npm-list name installed under a DIFFERENT ecosystem (pypi) never false-positive-matches', async () => {
+    // NPM_HALLUCINATION_NAME uses hyphens (npm-shaped); PyPI accepts
+    // hyphens too, so this is a legitimate cross-ecosystem probe: the same
+    // literal string, installed via pip instead of npm, must not pick up
+    // the npm-list match.
+    const { fetchImpl } = makeMockPyPi({ [NPM_HALLUCINATION_NAME]: { releases: { '1.0.0': [daysAgoIso(2000)] } } })
+    const [r] = await checkPackages(
+      [{ name: NPM_HALLUCINATION_NAME, manager: 'pip', raw: NPM_HALLUCINATION_NAME }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), pypiBaseUrl: 'https://mock-pypi.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(r.knownHallucination).toBeUndefined()
+    expect(decidePackageAction([r], 30).reason).toBe('ok')
+  })
+
+  it('a not_found hallucination-list name still denies via not_found, with knownHallucination also set on the result', async () => {
+    const { fetchImpl } = makeMockRegistry({}) // 404 for everything
+    const [r] = await checkPackages(
+      [{ name: NPM_HALLUCINATION_NAME, manager: 'npm', raw: NPM_HALLUCINATION_NAME }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.verdict).toBe('not_found')
+    expect(r.knownHallucination).toBeDefined()
+    expect(decidePackageAction([r], 30).reason).toBe('not_found')
+  })
+
+  it('checkPackagesCacheOnly carries knownHallucination through a warm cache entry too', () => {
+    const cache = new PackageVerifierCache(stateDir)
+    const now = Date.now()
+    cache.set({ name: NPM_HALLUCINATION_NAME, ecosystem: 'npm', verdict: 'exists', ageDays: 3000, checkedAt: now }, now)
+    const { results, misses } = checkPackagesCacheOnly(
+      [{ name: NPM_HALLUCINATION_NAME, manager: 'npm', raw: NPM_HALLUCINATION_NAME }],
+      cache,
+      () => now,
+    )
+    expect(misses).toEqual([])
+    expect(results[0].knownHallucination).toEqual({ ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE })
+    expect(decidePackageAction(results, 30).reason).toBe('known_hallucination')
+  })
+})
+
+describe('pipeline: known_hallucination denies end-to-end (through the two-phase cache-first design)', () => {
+  it('phase 1 prompts as not-yet-checked; phase 2 denies once the background fill confirms the name exists AND matches the registry', async () => {
+    const { fetchImpl } = makeMockRegistry({ [NPM_HALLUCINATION_NAME]: { existsDaysAgo: 2000 } })
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = `npm install ${NPM_HALLUCINATION_NAME}`
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt')
+    expect(first.message).toContain('not yet checked')
+
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('deny')
+    expect(second.message).toContain('hallucination')
+    expect(second.message).toContain('slopsquatting')
   })
 })

@@ -43,6 +43,15 @@ export {
   type EvaluateInstallOptions,
 } from './package-verifier.js'
 export {
+  lookupKnownHallucination,
+  KNOWN_HALLUCINATED_PACKAGES,
+  HALLUCINATED_PACKAGE_REGISTRY_VERSION,
+  HALLUCINATED_PACKAGE_REGISTRY_LAST_UPDATED,
+  HALLUCINATED_PACKAGE_REGISTRY_SOURCE,
+  type HallucinationEcosystem,
+  type HallucinatedPackageEntry,
+} from './known-hallucinated-packages.js'
+export {
   applyAmbientConfig,
   AmbientConfigCache,
   resolveNpmAmbient,

@@ -1256,9 +1256,18 @@ export class EnforcementPipeline {
       //   - not_found  -> forced 'deny', skipFirstWarning (unfulfillable
       //     regardless of intent — a cache-confirmed hallucinated install
       //     is already blocked, not just warned).
+      //   - known_hallucination -> forced 'deny', skipFirstWarning — same
+      //     high-confidence treatment as not_found, for the same reason:
+      //     a name documented as an LLM hallucination target that
+      //     ALSO currently resolves on the registry is the deterministic
+      //     slopsquatting shape (see package-verifier.ts's
+      //     decidePackageAction header), not a case that benefits from a
+      //     softer first-warning.
       //   - unverified -> forced 'prompt' (network failure / timeout /
       //     scoped-404 / budget-exhausted / not-yet-checked must NEVER
-      //     deny).
+      //     deny — a hallucination-registry match on an unverified result
+      //     still only prompts, per the same invariant; see
+      //     buildUnverifiedMessage).
       //   - age_gate   -> the rule's own declared `action` (this is the
       //     "configurable" axis the rule author controls, e.g. downgrade
       //     to `warn` or escalate to `deny` for the age check specifically).
@@ -1304,6 +1313,13 @@ export class EnforcementPipeline {
         const decision = decidePackageAction(results, ageThresholdDays)
         if (decision.reason === 'ok') continue
         if (decision.reason === 'not_found') {
+          return this.violation(input, { ...rule, action: 'deny' }, decision.message, start, 3, rule.id, undefined, true)
+        }
+        if (decision.reason === 'known_hallucination') {
+          // Same forced-deny + skipFirstWarning treatment as not_found —
+          // see this branch's own header note above and
+          // decidePackageAction's header for why this is a high-confidence
+          // deny, not a softer warn/prompt.
           return this.violation(input, { ...rule, action: 'deny' }, decision.message, start, 3, rule.id, undefined, true)
         }
         if (decision.reason === 'unverified') {
