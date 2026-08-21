@@ -266,6 +266,152 @@ OpenCode's SQLite shape are both live-verified against real installs on the mach
 this lane was built on; every other host (`docs/integrations.md`'s new "Real
 token/dollar spend" table) is explicitly unsupported, not silently assumed to work.
 
+A batch of six correctness and security-hardening lanes closed via targeted
+follow-up investigation across the enforcement pipeline, package-provenance
+checks, and host integrations: a stale-discharge race in verification-obligation
+tracking, two real command-floor bypasses, a label-only secret match that was
+detected but never actually redacted, real post-action hook wiring for two more
+hosts, a fail-open claim that turned out more pessimistic than the installed
+runtime's actual behavior, and two package-manager detection gaps.
+
+### Fixed
+
+- **Verification obligations no longer discharge stale test runs (a generation
+  race).** `VerificationTracker.markSatisfied()`
+  (`packages/core/src/enforce/verification.ts`) had no version check: a test run
+  whose `PreToolUse` fired before a *later* edit re-armed the same obligation
+  could still clear that later edit's obligation on `PostToolUse`, discharging a
+  result that never actually covered it. Fixed with a generation stamp recorded
+  at the moment a satisfying command is observed to *start*
+  (`observeSatisfyStart()`, called from `pipeline.ts` alongside the existing
+  `observeTrigger()`); `markSatisfied()` now compares that start-time generation
+  against the obligation's current generation and refuses to clear it if a later
+  edit bumped the generation while the run was still executing. The ordinary
+  edit-then-test-then-discharge order is unaffected. New tests in
+  `verification.test.ts` cover both the race (stays armed) and the correct-order
+  case (still discharges).
+- **`no-destructive-interpreter-body` is no longer evadable via Python module
+  aliasing.** `python3 -c "__import__('shutil').rmtree('/')"` and both
+  `getattr(shutil, 'rmtree')(...)`/`getattr(__import__('shutil'),
+  'rmtree')(...)` forms previously allowed — the floor regex required the
+  literal token `shutil.rmtree`. Widened to also accept the module obtained via
+  `__import__('shutil')` in place of a plain `shutil` name, and
+  `getattr(<module>, 'rmtree')(...)` in place of dot notation, keeping the same
+  root/home-only target scoping (`install.ts`/`plugin.ts`'s `DEFAULT_RULES_YAML`,
+  kept field-identical). Verified via `scripts/redteam/round2.mjs`: both probe
+  strings moved from allow to deny, no previously-caught probe regressed.
+  SECURITY.md's disclosed residual is updated from "known gap" to "found then
+  fixed."
+- **The quote-wrapped `${IFS}` word-splitting bypass is closed.**
+  `rm"${IFS}"-rf"${IFS}"/` and `rm'${IFS}'-rf'${IFS}'/` previously allowed:
+  `command-normalizer.ts`'s `renderToken()` stripped quotes on a
+  whitespace-free quoted span but never called `expandVars()` on it, unlike the
+  unquoted branch. Both forms now expand and correctly deny via
+  `no-destructive-commands`. Deliberately does not distinguish single- from
+  double-quote shell semantics (real shells do; this bounded, floor-only
+  matching surface treats both as obfuscation vectors, not real variable data).
+  One narrower form remains open, disclosed rather than silently absent:
+  `rm${IFS:0:1}-rf${IFS:0:1}/` (a parameter-expansion modifier `VAR_RE` doesn't
+  recognize) — tracked as a `bypass-attempt` probe in
+  `scripts/redteam/round2.mjs`.
+- **`keel check`'s weaker command-matching path is now disclosed in
+  SECURITY.md.** `keel check`/`keel check --ci` route through the legacy
+  `PolicyEngine` (`packages/core/src/policy-engine.ts`), which matches the raw
+  command string with none of `command-normalizer.ts`'s hardening — no
+  quote-strip, no compound-command splitting, no variable expansion, no `${IFS}`
+  defeat protection, no interpreter-body extraction (`keel hook
+  <host>`/`keel evaluate`/`keel daemon` are the hardened path). Every
+  obfuscation-bypass fix on this page that closed on the real enforcement path
+  is still open against `keel check` specifically, since it never runs through
+  the fixed code at all — previously left implied, now stated plainly.
+- **Output redaction now widens a label-only secret match to cover the secret
+  bytes that follow it, instead of leaving them exposed.** `evaluateOutput()`
+  detected but never redacted the three label/header-only patterns
+  (`aws_secret_access_key[\t ]*[:=]`, both PEM `BEGIN` headers) — a real key
+  value or private-key body flowed through fully intact with only a detection
+  flag noting something was found. New opt-in, output-path-only
+  `KeelRule.patterns[].redact_widen` (`'line' | 'pem'`) extends a matched label
+  forward, bounded (4KB for `line`, 8KB for `pem`), to the next newline or a
+  matching `-----END ... PRIVATE KEY-----` footer, and redacts the whole
+  widened span. A widen that hits its bound without finding a boundary is still
+  redacted up to the cap and flagged in the new
+  `EnforceResult.redaction_incomplete_rule_ids`, rather than silently claimed
+  complete. The write-side deny-on-write check (Tier 5) is completely untouched
+  by this field, same scoping as the existing `redact_span`. Shipped on the
+  three patterns above in the default ruleset (`install.ts`/`plugin.ts`).
+- **OpenClaw's fail-open claim was more pessimistic than the installed
+  runtime's actual behavior — corrected.** README.md, `docs/integration-
+  guides/hermes.md`, and the OpenClaw plugin's own circuit-breaker comment
+  (`packages/cli/templates/openclaw/index.mjs`) previously stated "OpenClaw
+  fails open by design" without qualification. Reading the installed 2026.4.15
+  runtime's compiled source shows that's only true for a plugin-*load* failure
+  (issue #20914, closed as stale without a fix) — a `before_tool_call` *handler*
+  that throws mid-call is caught by OpenClaw's own hook runner and turned into a
+  block instead. Also confirmed the openclaw/openclaw#5943 concern
+  ("`before_tool_call` might not fire at all") is a closed, stale issue, and
+  that the hook is wired into the tool-execution call graph in the installed
+  build — `docs/integrations.md` footnote 1 carries the full trace.
+  `installOpenClaw()` (`packages/cli/src/commands/install.ts`) now prints the
+  real, verified `openclaw config set plugins.load.paths/allow ...
+  --strict-json` commands instead of a hand-edit config sketch, and warns that
+  `config set` *replaces*, not appends, the array at that path. Still open, and
+  said so plainly: no live `openclaw agent` turn against a configured provider
+  has been run to observe an actual tool call reach keel's daemon.
+- **`.npmrc` `${VAR}` references now resolve, and can no longer manufacture a
+  fake private-registry host.** `parseNpmrc()`
+  (`packages/core/src/enforce/ambient-registry-config.ts`) now interpolates
+  `${VAR_NAME}` against the environment via the new `interpolateEnvVars()`; an
+  *unset* variable is left as the literal `${VAR_NAME}` text (never substituted
+  with an empty string, which could silently corrupt a registry URL a
+  different, worse way). `hostOf()` separately refuses to read a value that
+  still contains an unresolved `${...}` as a real hostname, closing the path
+  where a crafted project `.npmrc` (e.g. `registry=https://${UNDEFINED_VAR}/`)
+  could otherwise manufacture a host that merely fails to equal
+  `registry.npmjs.org` — exactly the shape that would downgrade a would-be deny
+  into an ambient-private allow.
+- **`python -m pip install <pkg>` / `python3 -m pip install <pkg>` are now
+  recognized as pip installs.** `extractPackageInstalls()`
+  (`packages/core/src/enforce/package-verifier.ts`) only matched a bare
+  `pip`/`pip3` token as the package manager, so this very common invocation
+  style silently fell through unrecognized and skipped ambient-registry/
+  hallucination checks entirely. Routed through the exact same pip-handling
+  logic as a bare `pip install` (consumes the `python`/`python3` + `-m` prefix,
+  then continues unmodified into the shared manager-detection code) rather than
+  duplicating any pip-specific parsing. `cargo install` (a different, binary
+  install subcommand) remains explicitly out of scope, unchanged.
+
+### Added
+
+- **Real post-action hooks wired for Cursor and Cline's claim/verification
+  discharge.** Cursor's `postToolUse`/`postToolUseFailure` (the discharge path)
+  and `afterAgentResponse` (the claim-text path) are now real, typed events
+  read from the installed Cursor.app's own bundled `cursor-agent-exec`
+  extension — not documented at cursor.com/docs/hooks. For a shell command, a
+  real exit code is read out of `postToolUse`'s `tool_output` JSON; every other
+  tool type is left `null` rather than guessed at. Cline's `PostToolUse`
+  (`tool_result`) and `TaskComplete` (`agent_end`) are now real
+  `HookConfigFileName` entries read from the installed `cline` CLI's compiled
+  `@cline/core` bundle. `TaskComplete`'s `turn.outputText` fully wires the
+  claim path; `PostToolUse`'s discharge stays deliberately `null`-only —
+  whether a failing shell command trips Cline's own success flag could not be
+  pinned down from any source available in this setup. Both close
+  `docs/integrations.md`'s prior "NO CHANNEL CONFIRMED" cells with a
+  types-tier citation apiece, still short of a live-host guarantee. New
+  templates `cline-posttooluse.sh`/`cline-taskcomplete.sh`, wired into `keel
+  install` (`install.ts`); new `cline-claim-hook.test.ts`/`cursor-claim-
+  hook.test.ts`, plus new coverage added to the existing `hook-command.test.ts`.
+
+Verified per-lane, not as one combined pass: the Python-aliasing bypass fix
+against `scripts/redteam/round2.mjs` (both probe strings moved from allow to
+deny, no previously-caught probe regressed); the quoted-IFS bypass fix via new
+`command-normalizer.test.ts` cases plus its own `bypass-attempt` probe added to
+`scripts/redteam/round2.mjs`; targeted new/updated unit tests for the
+verification-race, output-redaction-widening, `.npmrc` interpolation, and
+`python -m pip install` items (see each commit under this range for its own
+test additions); and the Cursor/Cline hook wiring against the installed
+runtimes' own compiled source and type definitions, still short of a live
+exercised call on either host.
+
 ## 1.0.0
 
 `@get-keel/cli` 1.0.0 · `@get-keel/core` 1.0.0 · `@get-keel/opencode-plugin` 1.0.0
