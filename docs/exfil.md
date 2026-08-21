@@ -352,7 +352,9 @@ raw transcripts are in
 | **OpenCode** | **Yes, confirmed live.** `tool.execute.after`'s `output` object is mutable, and the mutation reaches the model — not just the terminal. | A probe plugin redacted a runtime-generated value (`openssl rand -hex 8`, unknowable to the model any other way) from `output.output`; the model's own final reply contained the redacted marker, never the real value. A control run with the same prompt and the mutation removed produced the real value verbatim, ruling out a refusal-pattern artifact. Also confirmed through the REAL install path (`keel install --opencode --project`, unmodified shipped `no-secrets-in-code` rule, real built plugin): `cat`ing a fixture file containing an AKIA-shaped key produced a model reply that never contained the key, and the raw value was absent from the entire isolated `$HOME` (including OpenCode's own session-storage database) afterward. |
 | **Claude Code** | **No rewrite. A context-injection warning only.** `PostToolUse` fires after the tool already ran and its result already reached the model — there is nothing left to rewrite. Its documented `additionalContext` field injects text the model sees on its NEXT turn, alongside what it already has, not instead of it. | code.claude.com/docs/en/hooks, quoted directly: "`PostToolUse` fires after a tool call succeeds. It cannot block the tool call... `additionalContext` injects text into Claude's context for Claude to consider." Not live-exercised against an installed Claude Code session in this environment (same "docs" confidence ceiling as the rest of this repo's Claude Code PostToolUse wiring — see docs/integrations.md); the CLI-layer unit/integration tests below exercise the real built `keel hook claude-code` binary end to end, just not a live `claude` process. |
 | **Codex, Gemini** | Same as Claude Code — warn only, same citation tier this repo already applies to their `PostToolUse` wiring (docs/integrations.md). | Reuses `hook.ts`'s existing PostToolUse parsing (already shared across these three hosts for exit-code discharge, before this lane). |
-| **Cursor, Cline, generic** | **Not wired at all.** These hosts have no `PostToolUse`-shaped parsing in `hook.ts` today (pre-existing gap, unrelated to this lane). | `parsePayload`'s `cursor`/`cline`/`generic` branches never set `postAction`. |
+| **Cursor, Cline** | **No rewrite. A context-injection warning only.** Same ceiling as Claude Code/Codex/Gemini — the tool result already reached the model before this hook fires. STALE UNTIL Lane F (tool-result injection scanning): an earlier version of this row claimed these two hosts had no `PostToolUse`-shaped parsing at all. That was already wrong by the time Lane F landed — Cursor's `tool_output`/`error_message` shape and Cline's `hookName === 'tool_result'` both set `postAction` — and Lane F's own per-host injection table (docs/injection.md) is now the source of truth for exactly which hosts are wired, since the same wiring backs both the secret-redaction and injection-marker warnings. | `parsePayload`'s `cursor` branch (`'tool_output' in body \|\| 'error_message' in body`) and `cline` branch (`body.hookName === 'tool_result'`) both set `postAction`. |
+| **generic** | **Not wired at all.** `keel hook generic` has no `PostToolUse`-shaped parsing — `parsePayload`'s `generic`/default branch never sets `postAction`. Pre-existing gap, not a regression. | `parsePayload`'s `generic` branch returns tool/args/session_id only. |
+| **`keel daemon`** (OpenClaw, Hermes) | **Not wired at all.** The daemon's outcome route carries `exit_code` only — no output text ever reaches keel on this path, so there is nothing to scan or rewrite. | `daemon.ts`'s outcome handler parses `{session_id, cwd, tool, args, exit_code}`; the only pipeline call in the daemon is `pipeline.evaluate()`. |
 
 ### What was built
 
@@ -467,14 +469,22 @@ so the exact field name is unconfirmed and two independent citations
 disagree — the installed `claude-posttooluse.sh` template's own contract
 comment names `TOOL_RESPONSE`; a direct fetch of Claude Code's hook docs
 for this lane named `tool_output`; both are tried). When something is
-extracted and `evaluateOutput()` returns `action: 'redact'`, `hookVerdict`
-returns a `hookSpecificOutput: { hookEventName: 'PostToolUse',
-additionalContext: ... }` envelope (plus `systemMessage`, the same
-belt-and-suspenders pairing `renderVerdict`'s advisory path already uses)
-whose text says PLAINLY that keel could not remove the value from what was
-already delivered and that it should be treated as exposed. This always
-returns exit 0 — the same structurally-can't-block contract every other
-post-action path in this file already has, because the call already ran.
+extracted, `hook.ts` calls `evaluateOutputText()` (`enforce.ts`), which
+now routes through `pipeline.evaluateToolResult()` — the Lane F
+orchestrator that runs this secret scan (`evaluateOutput()`'s own body,
+unchanged) AND the `type: injection` marker scan in one pass, see
+docs/injection.md — rather than calling `evaluateOutput()` directly. When
+a secret was found (`action: 'redact'` in the composed result),
+`hookVerdict` returns a `hookSpecificOutput: { hookEventName:
+'PostToolUse', additionalContext: ... }` envelope (plus `systemMessage`,
+the same belt-and-suspenders pairing `renderVerdict`'s advisory path
+already uses) whose text says PLAINLY that keel could not remove the value
+from what was already delivered and that it should be treated as exposed.
+An injection-marker finding on the SAME result gets its own, independent
+warning composed into the same envelope — see docs/injection.md. This
+always returns exit 0 — the same structurally-can't-block contract every
+other post-action path in this file already has, because the call already
+ran.
 
 ### The false-positive surface does NOT transfer from the write-side check
 
@@ -511,9 +521,17 @@ document.
 - **Scan is bounded** (`MAX_OUTPUT_SCAN_CHARS`, 256KB) — text past that
   bound is not scanned, and the result says so rather than silently
   returning a clean verdict for content it never looked at.
-- **Cursor, Cline, generic**: no wiring at all, as stated in the table
-  above — this is the SAME pre-existing PostToolUse gap those hosts already
-  had for exit-code discharge, not a new one this lane introduced.
+- **Cursor, Cline**: wired for a context-injection warning, same ceiling as
+  Claude Code/Codex/Gemini — see the corrected table row above. **generic**
+  and `keel daemon`: no wiring at all, as stated in the table above — this
+  is the SAME pre-existing PostToolUse gap those surfaces already had for
+  exit-code discharge, not a new one this lane introduced.
+- **This section covers secret redaction only.** For prompt-injection
+  MARKER scanning of the same tool-result text (a related but separate
+  detection surface — new `type: injection` rules, not `type: content`),
+  see docs/injection.md, which has its own, more current per-host table
+  covering both concerns together (the two scans now share one pass —
+  `EnforcementPipeline.evaluateToolResult()`).
 - **A single command that reads and transmits in one shot** is out of
   scope for this section the same way it is out of scope for
   `no-exfil-flow` above — redaction happens on ONE tool's own output after

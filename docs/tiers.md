@@ -78,11 +78,11 @@ sources/sinks against a persisted, session-scoped store instead of in-memory sta
 it catches a read and a later network sink across two separate hook processes, not just
 one. It ships `action: warn`, `level: sprint` (no floor — the dial can soften it like any
 Tier-2 rule), yet it's written directly after `no-exfil-flow` in `rules.yaml` rather than
-under the Tier-2 comment header. This page counts it toward the 48-rule total but not
+under the Tier-2 comment header. This page counts it toward the 51-rule total but not
 toward Tier 1's 13-rule floor count, since behavior (no floor, dial-softenable `warn`) is
 what puts a rule in a tier, not its position in the file.
 
-## Tier 2 — balanced (22 rules)
+## Tier 2 — balanced (24 rules)
 
 These carry no floor (`level: sprint` in the YAML, meaning "obey the dial normally") or
 no `level:` field at all. Most `deny` actions here warn on the first hit and block on
@@ -116,6 +116,8 @@ are never downgraded by any dial.
 | `publish-gate` | prompt | Publishing or deleting registry artifacts |
 | `verify-format-before-decision` | warn | Choosing a format/convention without checking the project's own |
 | `unverified-package-install` * | prompt | A package name that doesn't resolve against its package registry (npm, PyPI, crates.io, or the Go module proxy) |
+| `injected-instructions-in-tool-output` | warn | A completed tool result matching a literal prompt-injection marker shape (chat-template control tokens, "ignore previous instructions", role-marker impersonation, Unicode tag-character smuggling). Never blocks by construction — see `docs/injection.md`. |
+| `untrusted-content-next-call` | warn | The compensating control for the above on every host except OpenCode: arms on a detection, fires once on the session's next write/shell call. See below. |
 
 \* `unverified-package-install` ships with no `level:` or `mode:` field at all — it
 isn't under either tier's YAML comment header in `install.ts`. It's listed here because
@@ -149,7 +151,7 @@ it doesn't fit Tier 1 or Tier 2's simple action column cleanly:
 |---|---|---|---|
 | `no-repeat-loops` | stuck | warn (base) → **redirect** at 3 identical failures → **deny** at 5, in a 15-minute window; `sprint` downgrades the 5th-attempt deny to warn, the 3rd-attempt redirect never softens | An identical failing command retried 3× / 5× in a 15-minute window |
 
-## Tier 3 — observe (12 rules)
+## Tier 3 — observe (13 rules)
 
 Every rule below ships with `mode: observe`. The pipeline evaluates them on every
 matching call and records what it *would* have done — the `observed_action` field on
@@ -170,6 +172,7 @@ to the host is always `allow`. Nothing here interrupts anyone yet.
 | `session-runaway-trip` | session | warn → prompt → **deny+halt** (consecutive_failures only) | A composite runaway-loop trip: session duration, cumulative tool/Bash-call counts, distinct-file-write churn, and consecutive-failure count. See below. |
 | `session-spend-limit` | **budget** | deny | Measured session spend (real tokens, read from a host's own local transcript/session record — a Claude Code transcript's usage fields or an OpenCode session row's cost/token columns) over `max_tokens`. NOT the same mechanism as the two `runaway-budget-*` rows above: this reads actual usage instead of counting calls. Ships `mode: observe` for a narrower, safety-specific reason than "unmeasured": its Claude Code reader depends on model-string normalization with a real failure mode (a short alias like `claude-sonnet-5` must never be priced as an official dated model ID), and that needs to survive real traffic before this rule denies anything. Two-phase by construction — see `packages/core/src/enforce/budget-tracker.ts` — because Claude Code's Stop hook cannot block. |
 | `command-oscillation` | **oscillation** | warn (base) → **redirect** at 2 repeats → **deny** at 3 repeats, in a 15-minute rolling window of the last 8 tracked calls | A short repeating CYCLE of >= 2 DIFFERENT recent command fingerprints (A→B→A→B, or A→B→C→A→B→C) — an agent alternating between two or three failing commands/edits that never converge, not the SAME command repeated (that's `no-repeat-loops`, above). See below. |
+| `untrusted-content-role-markers` | **injection** | warn | A weaker-confidence sibling of `injected-instructions-in-tool-output` (Tier 2): role-marker/permission-grant/exfiltration-instruction phrasing with a materially higher false-positive rate (log lines, instruct-format training data, chat transcripts). Recorded only, burning in against real hit-rate data — see `docs/injection.md`. |
 
 `session-runaway-trip` is `type: session`'s first real handler — a composite
 runaway-loop trip across five session-scoped dimensions (wall-clock duration,
@@ -207,6 +210,20 @@ each time) needs a content-state signal no tracker in this codebase feeds into t
 detector today. Ships with no measured hit-rate evidence, same posture as
 `session-runaway-trip` above.
 
+The three `type: injection` rules (Lane F — tool-result prompt-injection scanning)
+span two tiers by design, not by accident: `injected-instructions-in-tool-output`
+(Tier 2, warn) and `untrusted-content-next-call` (Tier 2, warn, the compensating
+next-call scrutiny gate) are the higher-confidence detector and its paired gate;
+`untrusted-content-role-markers` (Tier 3, observe, listed above) is a materially
+higher-false-positive-rate sibling matched against the exact same tool-result text,
+burning in separately before it can ever speak. None of the three can ever declare an
+action stronger than `warn` — `rule-parser.ts`'s `validateRules` rejects any other
+`action` on a `type: injection` rule, because a rewrite of the flagged tool result only
+actually reaches the model on one host (OpenCode); every other host is detection-only,
+post-hoc. See `docs/injection.md` for the full per-host honesty table and what this
+detection deliberately does NOT cover (paraphrase/translation/encoding evasion chief
+among them).
+
 `test-oracle-tampering` and `test-oracle-env-introspection` are the two Tier-3 rules
 that carry an explicit `level: sprint` (every other Tier-3 rule leaves `level` unset) —
 both mean "no floor, obey the dial" per this page's own opening distinction, so neither
@@ -215,9 +232,11 @@ soften either). Confirmed live, from a clean isolated install (`keel level sprin
 `protect`): 5 rules soften from deny/block to warn (`source-change-requires-test`,
 `session-spend-limit`, `no-secrets-in-code`, `no-secret-files`, `no-credential-echo`)
 but none are DEACTIVATED — every rule stays present and evaluated at every dial, only
-the deny-tier ones get weaker. `keel status` reports `Active at current dial: 49 of
-49` at sprint, confirming no rule drops out of the active set — "active at every dial"
-means present and evaluated, not unaffected by the dial.
+the deny-tier ones get weaker. `keel status` reported `Active at current dial: 49 of
+49` at sprint before Lane F's three new rules landed (confirming no rule drops out of
+the active set at that ruleset size — "active at every dial" means present and
+evaluated, not unaffected by the dial); the live count is `52 of 52` against the
+current shipped ruleset, same property, not re-verified live for this exact number.
 
 ## The speed dial
 
