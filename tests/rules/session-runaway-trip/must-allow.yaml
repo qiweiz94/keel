@@ -1,0 +1,45 @@
+cases:
+  - note: "a single tool call — nowhere near any dimension's threshold"
+    tool: Bash
+    args:
+      command: "echo hello"
+
+  - note: "a failing command followed by two passing runs resets consecutive_failures — mirrors no-repeat-loops's reset-on-success"
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 0
+
+  - note: "alternating failure and success never accumulates 3 CONSECUTIVE failures, even after many attempts — the composite trip is about a streak, not a total"
+    steps:
+      - tool: Bash
+        args: { command: "cmd-1" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "cmd-2" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "cmd-3" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "cmd-4" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "cmd-5" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "cmd-6" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "cmd-7" }
+
+  - note: "moderate session activity (50 tool calls) — well under every volume threshold (500/300/40)"
+    repeat: 50
+    tool: Read
+    args: { path: "/tmp/session-trip-allow-probe.txt" }

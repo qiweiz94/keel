@@ -269,19 +269,14 @@ rules:
     expect(issues.some(i => i.includes('invalid context'))).toBe(false)
   })
 
-  // ── Gap 5 (investigated, reverted): `type: session` was initially
-  // suspected to be wrongly rejected as "not implemented", on the theory
-  // that pipeline.ts (~line 1165) has real `max_duration_minutes`
-  // enforcement for it. That theory does not survive reading the code: the
-  // pipeline block is a `continue`-only stub ("handled by context manager")
-  // and enforce/context-manager.ts is unrelated (token-usage re-injection,
-  // not session duration) — there is no consumer of `max_duration_minutes`
-  // anywhere. `type: session` stays rejected, same as mcp/inheritance/meta/
-  // context, matching SPEC.md's own "Public v1 Release Contract" table
-  // (~line 145), which lists `session` as "Not implemented — rejected at
-  // `keel validate`" alongside mcp/inheritance.
-  it('still rejects the genuinely-unimplemented types (mcp, inheritance, meta, session, context)', () => {
-    for (const type of ['mcp', 'inheritance', 'meta', 'session', 'context']) {
+  // `type: session` used to be in this list — see git history and
+  // session-tracker.ts / pipeline.ts's session-trip branch for the real
+  // handler it now has (a composite runaway-loop trip across five
+  // session-scoped dimensions). mcp/inheritance/meta/context remain
+  // genuinely unimplemented, matching SPEC.md's "Public v1 Release
+  // Contract" table.
+  it('still rejects the genuinely-unimplemented types (mcp, inheritance, meta, context)', () => {
+    for (const type of ['mcp', 'inheritance', 'meta', 'context']) {
       const parsed = parseRulesContent(`version: 1
 rules:
   - id: unimplemented-${type}
@@ -292,6 +287,152 @@ rules:
       const issues = validateRules(parsed.rules)
       expect(issues.some(i => i.includes('not implemented by the enforcement engine'))).toBe(true)
     }
+  })
+
+  describe('type: session (composite runaway-loop trip)', () => {
+    it('accepts a well-formed session_escalation ladder', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: ok-session
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: tool_calls
+        at: 500
+        action: warn
+      - dimension: consecutive_failures
+        at: 5
+        action: deny
+        halt: true
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('not implemented by the enforcement engine'))).toBe(false)
+      expect(issues).toEqual([])
+    })
+
+    it('rejects a session rule with no session_escalation at all — the exact "declared but inert" shape this type used to have', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: inert-session
+    type: session
+    action: warn
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('needs at least one session_escalation entry'))).toBe(true)
+    })
+
+    it('rejects an empty session_escalation array', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: empty-session
+    type: session
+    action: warn
+    session_escalation: []
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('needs at least one session_escalation entry'))).toBe(true)
+    })
+
+    it('SAFETY: rejects action: deny on a volume-only dimension (tool_calls)', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-volume-deny
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: tool_calls
+        at: 500
+        action: deny
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('volume-only counter') && i.includes('must not escalate past "prompt"'))).toBe(true)
+    })
+
+    it('SAFETY: rejects action: block on a volume-only dimension (duration_minutes)', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-volume-block
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: duration_minutes
+        at: 240
+        action: block
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('volume-only counter'))).toBe(true)
+    })
+
+    it('SAFETY: rejects halt: true on a volume-only dimension (file_write_churn)', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-volume-halt
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: file_write_churn
+        at: 40
+        action: warn
+        halt: true
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('only allowed on a "consecutive_failures" step'))).toBe(true)
+    })
+
+    it('allows deny + halt on consecutive_failures — the one dimension permitted to reach it', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: ok-failure-halt
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: consecutive_failures
+        at: 8
+        action: deny
+        halt: true
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues).toEqual([])
+    })
+
+    it('rejects an unsupported dimension name', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-dimension
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: token_count
+        at: 1000
+        action: warn
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('unsupported dimension'))).toBe(true)
+    })
+
+    it('rejects a non-positive "at" threshold', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-at
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: tool_calls
+        at: 0
+        action: warn
+    message: "session trip"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('positive numeric "at" threshold'))).toBe(true)
+    })
   })
 })
 

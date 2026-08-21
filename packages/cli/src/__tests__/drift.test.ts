@@ -64,7 +64,7 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 46 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 47 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
@@ -79,8 +79,13 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     // warn/sprint sibling of no-exfil-flow that checks FlowTracker's new
     // persisted, session-scoped store so the correlation survives across
     // separate `keel hook` processes, not just within one; see
-    // docs/exfil.md).
-    expect(install.size).toBe(46)
+    // docs/exfil.md)
+    // + 1 from the session-composite-trip lane: session-runaway-trip
+    // (type: session's first real handler — a composite runaway-loop trip
+    // across five session-scoped dimensions, ships mode: observe pending
+    // real hit-rate data — see session-tracker.ts, pipeline.ts's
+    // session-trip branch, and docs/tiers.md).
+    expect(install.size).toBe(47)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

@@ -1180,6 +1180,94 @@ rules:
     action: warn
     message: "More than 500 Bash calls in this session's last 4 hours — possible runaway loop or scope creep."
 
+  - id: session-runaway-trip
+    type: session
+    mode: observe
+    category: resource
+    severity: medium
+    confidence: medium
+    priority: 0
+    action: warn
+    session_escalation:
+      - dimension: duration_minutes
+        at: 240
+        action: warn
+        message: "Session has been running 4+ hours — check whether this is still a legitimate long task."
+      - dimension: duration_minutes
+        at: 480
+        action: prompt
+        message: "Session has been running 8+ hours — confirm this is still intentional before continuing."
+      - dimension: tool_calls
+        at: 500
+        action: warn
+        message: "500+ tool calls this session — possible runaway loop or scope creep."
+      - dimension: tool_calls
+        at: 1000
+        action: prompt
+        message: "1000+ tool calls this session — confirm this is still intentional before continuing."
+      - dimension: bash_calls
+        at: 300
+        action: warn
+        message: "300+ Bash calls this session — possible runaway shell loop."
+      - dimension: bash_calls
+        at: 600
+        action: prompt
+        message: "600+ Bash calls this session — confirm this is still intentional before continuing."
+      - dimension: file_write_churn
+        at: 40
+        action: warn
+        message: "40+ distinct files written this session — possible scope creep beyond the original task."
+      - dimension: file_write_churn
+        at: 80
+        action: prompt
+        message: "80+ distinct files written this session — confirm this is still intentional before continuing."
+      - dimension: consecutive_failures
+        at: 3
+        action: warn
+        message: "3 consecutive failing tool-call outcomes this session — the agent may be stuck."
+      - dimension: consecutive_failures
+        at: 5
+        action: prompt
+        message: "5 consecutive failing tool-call outcomes this session — confirm before continuing."
+      - dimension: consecutive_failures
+        at: 8
+        action: deny
+        halt: true
+        message: "8 consecutive failing tool-call outcomes this session — locking down (keel halt) until a human runs keel resume."
+    rationale: >
+      A composite runaway-loop trip across five session-scoped dimensions:
+      wall-clock duration, cumulative tool-call count, cumulative Bash-call
+      count, distinct-file-write churn, and consecutive-failure count. The
+      first four are pure VOLUME counters that climb whether a session is
+      thriving or stuck — a legitimate 200-tool-call refactor across 60
+      files looks identical to a runaway loop on those dimensions alone —
+      so by construction (rule-parser.ts's validateRules rejects any other
+      shape) they cap at prompt and can NEVER trip keel halt on their own,
+      the same asymmetry no-repeat-loops (type: stuck) already relies on
+      via require_failure + fingerprint: auto. Only consecutive_failures
+      is failure-aware (reset on any success, exactly like no-repeat-loops)
+      and is the one dimension allowed to escalate all the way to a keel
+      halt lockdown latch with no auto-expiry.
+      Ships as mode: observe, unlike no-repeat-loops today: no-repeat-loops
+      earned its promotion out of observe on real measured evidence (41
+      distinct repeat loops across 20 sessions, zero recorded
+      false-positives — see docs/tiers.md). This rule is new and has no
+      such evidence base yet, so it starts exactly where no-repeat-loops
+      itself started and where the two runaway-budget-* rules above still
+      sit: observe-only, measuring a real would-block rate on your own
+      traffic before anyone raises its mode to warn or block.
+      Session-scoping depends on the calling host sending a real session
+      id (see hook.ts's parsePayload confidence ladder); a host that sends
+      none gets a fresh id per keel hook process, and every dimension
+      here silently under-counts to a single call per "session" — surfaced
+      explicitly at keel validate / keel status, not silently degraded.
+    remediation: "Slow down, re-scope, or ask the user for direction. If a consecutive_failures halt fires, a human must run keel resume — stop and investigate why every recent attempt failed before doing so."
+    false_positives:
+      - "A long legitimate multi-file refactor or a batch operation across many files — the volume-only dimensions (duration/tool_calls/bash_calls/file_write_churn) cap at prompt and can never halt on their own."
+      - "Polling a long-running job by re-running the same status command — if the poll command itself keeps exiting 0, consecutive_failures never advances."
+      - "An overnight-idle conversation: duration_minutes is computed from first-seen wall-clock time, not active time, so a session left open idle overnight crosses the duration thresholds on elapsed time alone. This is exactly the class mode: observe exists to measure before anyone promotes it."
+    message: "Session runaway trip: composite duration / call-volume / file-write-churn / consecutive-failure trip for this session."
+
 `
 
 /**

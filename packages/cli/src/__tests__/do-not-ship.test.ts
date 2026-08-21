@@ -282,6 +282,7 @@ describe('do-not-ship: false-positive guardrail patterns', () => {
       'claim',    // deterministic text-grammar + tool-history cross-reference, no model call
       'oracle',   // deterministic diff/signature heuristics, no model call
       'package',  // registry metadata lookup (existence/age), no model call
+      'session',  // deterministic call/duration/failure counters, no model call
     ])
 
     // Heuristic: look for operation-level keywords that indicate model invocation

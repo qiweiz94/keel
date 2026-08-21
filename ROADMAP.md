@@ -20,6 +20,16 @@ release and covered by tests; anything under **Planned** is not built yet.
   disable), has no `--until`/expiry of any kind, and only clears via `keel resume`
   run by a human. `keel-control-gate` blocks an agent from running either command
   on itself, same as it already blocks `keel disable`.
+- `type: session`'s first real handler: a composite runaway-loop trip
+  (`session-runaway-trip`) across five session-scoped dimensions — wall-clock
+  duration, cumulative tool-call count, cumulative Bash-call count, distinct-file-write
+  churn, and consecutive-failure count — escalating `warn → prompt → halt`. Volume-only
+  dimensions are structurally barred (`validateRules`) from escalating past `prompt`;
+  only a repeated-FAILURE streak (reset on any success) may trip `keel halt`'s lockdown
+  latch. Ships `mode: observe` — unlike `no-repeat-loops`, this rule has no measured
+  hit-rate evidence yet, so it starts exactly where `no-repeat-loops` itself started.
+  See `packages/core/src/enforce/session-tracker.ts`/`session-store.ts` and
+  `docs/tiers.md`.
 - Standalone Rego/WASM policy tools (`keel policy init|build|eval`) — **EXPERIMENTAL,
   unsupported, not part of real-time enforcement.** `.rego`/`.wasm` policies are never
   consulted by `keel hook`, the OpenCode plugin, or `keel daemon` — only YAML `rules.yaml`
@@ -48,7 +58,10 @@ made that jump — its own real hit-rate evidence (41 repeat loops across 20 ses
 no recorded false-triggering) cleared the bar; the two `runaway-budget-*` rules were
 checked against the same bar and held back pending real data (`docs/tiers.md`). `keel
 rules harness` / `--append` now exist only to backfill a rules.yaml created before
-these shipped as defaults.
+these shipped as defaults. A tenth Tier-3 rule, `session-runaway-trip` (`type:
+session`), covers a different signal — session-scoped volume plus a
+consecutive-failure streak, not command-fingerprint repetition or missing research —
+see the bullet above and `docs/tiers.md`.
 
 ## Planned
 

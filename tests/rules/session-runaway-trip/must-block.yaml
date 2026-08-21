@@ -1,0 +1,101 @@
+# session-runaway-trip is `mode: observe` — every case here asserts
+# `observed_action` (what the rule WOULD have done), never a real
+# interrupt. See pipeline.ts's session-trip branch and session-tracker.ts.
+#
+# `repeat` calls the same step N times on one pipeline/session — fine for
+# the VOLUME dimensions (tool_calls/bash_calls), which bump and check in
+# the SAME evaluate() call, no lag. `steps` + `exit_code` is used for
+# consecutive_failures instead: recordAttemptOutcome is the AFTER-hook, so
+# a given failure count is only observable on the NEXT evaluate() call —
+# each case below has one extra trailing step (no exit_code) so the FINAL
+# evaluate() call is the one that observes the threshold being met.
+cases:
+  - note: "500 tool calls this session — warn tier of the tool_calls dimension"
+    observed_action: warn
+    repeat: 500
+    tool: Read
+    args: { path: "/tmp/session-trip-probe.txt" }
+
+  - note: "1000 tool calls this session — prompt tier of the tool_calls dimension"
+    observed_action: prompt
+    repeat: 1000
+    tool: Read
+    args: { path: "/tmp/session-trip-probe.txt" }
+
+  - note: "300 Bash calls this session — warn tier of the bash_calls dimension"
+    observed_action: warn
+    repeat: 300
+    tool: Bash
+    args: { command: "echo hi" }
+
+  - note: "600 Bash calls this session — prompt tier of the bash_calls dimension"
+    observed_action: prompt
+    repeat: 600
+    tool: Bash
+    args: { command: "echo hi" }
+
+  - note: "3 consecutive failing tool-call outcomes — warn tier of consecutive_failures"
+    observed_action: warn
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+
+  - note: "5 consecutive failing tool-call outcomes — prompt tier of consecutive_failures"
+    observed_action: prompt
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+
+  - note: "8 consecutive failing tool-call outcomes — deny+halt tier of consecutive_failures. mode: observe means violation() throws OBSERVE_CONTINUE before the halt-sentinel write is ever reached, so no real ~/.keel/HALTED gets touched here — see pipeline.test.ts's dedicated 'Session composite trip' describe block for the real (non-observe) halt-write coverage."
+    observed_action: deny
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }

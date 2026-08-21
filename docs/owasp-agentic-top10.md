@@ -1,6 +1,6 @@
 # Keel vs. the OWASP Agentic AI Top 10
 
-This page maps Keel's 46 shipped default rules (`packages/cli/src/commands/install.ts`,
+This page maps Keel's 47 shipped default rules (`packages/cli/src/commands/install.ts`,
 `DEFAULT_RULES_YAML`) against the OWASP GenAI Security Project's Agentic Security
 Initiative (ASI) **"Top Ten for Agentic Applications"** — first public draft, ID
 prefix `ASI01`–`ASI10`, as retrieved 2026-08-19. Source:
@@ -182,6 +182,11 @@ promoted:
 - `runaway-budget-tool-calls` / `runaway-budget-bash-calls` (Tier 3, `mode: observe`)
   — record more than 500 tool/Bash calls in a 4-hour window, a coarse runaway-session
   proxy.
+- `session-runaway-trip` (Tier 3, `mode: observe`, `type: session`) — a composite of
+  the same signal across five session-scoped dimensions (duration, tool-call count,
+  Bash-call count, distinct-file-write churn, consecutive-failure count) instead of
+  one flat counter; only the failure-aware dimension can escalate past `prompt`, all
+  the way to a `keel halt` lockdown latch (see [docs/tiers.md](tiers.md)).
 - `claim-without-evidence` / `test-before-commit` / `source-change-requires-test`
   (all Tier 3, `mode: observe`) — record a "done/fixed/passing" claim or a commit
   that follows a source edit with no passing verification run in between, the
@@ -251,7 +256,7 @@ rogue via compromise, misalignment, or a successful hijack upstream:
 
 ## Rules with no OWASP category
 
-The mapping above cites 35 of the 46 shipped rules at least once. These 11 don't fit
+The mapping above cites 36 of the 47 shipped rules at least once. These 11 don't fit
 any ASI01–ASI10 category — most are standing engineering-workflow conventions rather
 than agentic-security controls, which is consistent with how their own rationale
 text describes them:

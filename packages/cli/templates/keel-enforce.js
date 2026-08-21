@@ -10,8 +10,8 @@ function resolveHome() {
 }
 
 // ../core/src/enforce/pipeline.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5, rmSync, statSync as statSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { existsSync as existsSync5, readFileSync as readFileSync5, rmSync, statSync as statSync2 } from "node:fs";
+import { join as join5 } from "node:path";
 
 // ../core/src/enforce/path-normalize.ts
 import { win32, posix } from "node:path";
@@ -6520,7 +6520,7 @@ function validateRules(rules) {
   ]);
   const validScopes = /* @__PURE__ */ new Set(["global", "user", "project", "folder", "session"]);
   const validRuleContexts = /* @__PURE__ */ new Set(["local", "ci", "both"]);
-  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "session", "context"]);
+  const notImplemented = /* @__PURE__ */ new Set(["mcp", "inheritance", "meta", "context"]);
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       errors.push("Rule entries must be objects");
@@ -6538,6 +6538,37 @@ function validateRules(rules) {
       }
       if (!rule.trigger) {
         errors.push(`Oracle rule "${label}" needs a trigger (the failing test-run matcher that arms the recency window) \u2014 without it the rule can never fire`);
+      }
+    }
+    if (rule.type === "session") {
+      if (!rule.session_escalation?.length) {
+        errors.push(`Session rule "${label}" needs at least one session_escalation entry \u2014 without one it can never fire, the exact "declared but inert" shape this type used to have`);
+      } else {
+        const validDimensions = /* @__PURE__ */ new Set(["duration_minutes", "tool_calls", "bash_calls", "file_write_churn", "consecutive_failures"]);
+        const validStepActions = /* @__PURE__ */ new Set(["warn", "prompt", "deny", "block"]);
+        for (const [i, step] of rule.session_escalation.entries()) {
+          if (!step || typeof step !== "object") {
+            errors.push(`Session rule "${label}" session_escalation[${i}] must be an object`);
+            continue;
+          }
+          if (!validDimensions.has(String(step.dimension))) {
+            errors.push(`Session rule "${label}" session_escalation[${i}] has an unsupported dimension: ${String(step.dimension)}`);
+          }
+          if (typeof step.at !== "number" || !(step.at > 0)) {
+            errors.push(`Session rule "${label}" session_escalation[${i}] needs a positive numeric "at" threshold`);
+          }
+          if (!validStepActions.has(String(step.action))) {
+            errors.push(`Session rule "${label}" session_escalation[${i}] has an unsupported action: ${String(step.action)} (expected warn, prompt, deny, or block)`);
+          }
+          if (step.dimension !== "consecutive_failures") {
+            if (step.action === "deny" || step.action === "block") {
+              errors.push(`Session rule "${label}" session_escalation[${i}]: dimension "${String(step.dimension)}" is a volume-only counter and must not escalate past "prompt" \u2014 action "${step.action}" is only allowed on "consecutive_failures"`);
+            }
+            if (step.halt) {
+              errors.push(`Session rule "${label}" session_escalation[${i}]: "halt: true" is only allowed on a "consecutive_failures" step \u2014 volume-only dimensions must never trip keel halt`);
+            }
+          }
+        }
       }
     }
     if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
@@ -6796,9 +6827,26 @@ function hashRulesFile(filePath) {
   return hash.toString(36);
 }
 
-// ../core/src/enforce/package-verifier.ts
-import { readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2, mkdirSync, renameSync } from "node:fs";
+// ../core/src/enforce/halt-writer.ts
+import { writeFileSync, existsSync as existsSync2, mkdirSync } from "node:fs";
 import { join as join2 } from "node:path";
+function writeHaltSentinel(haltPath, reason) {
+  try {
+    const haltDir = join2(haltPath, "..");
+    if (!existsSync2(haltDir)) mkdirSync(haltDir, { recursive: true });
+    const state = {
+      halted_at: (/* @__PURE__ */ new Date()).toISOString(),
+      reason: reason || "Rule-triggered halt",
+      auto_clear_on_restart: false
+    };
+    writeFileSync(haltPath, JSON.stringify(state, null, 2));
+  } catch {
+  }
+}
+
+// ../core/src/enforce/package-verifier.ts
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, renameSync } from "node:fs";
+import { join as join3 } from "node:path";
 var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
 var MANAGER_ECOSYSTEM = {
   npm: "npm",
@@ -7213,7 +7261,7 @@ var CACHE_TTL_MS = {
   unverified: 5 * 60 * 1e3
 };
 function packageVerifierStateDir() {
-  return process.env.KEEL_STATE_DIR || join2(resolveHome(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join3(resolveHome(), ".keel", "state");
 }
 var PackageVerifierCache = class {
   constructor(stateDir2 = packageVerifierStateDir()) {
@@ -7221,12 +7269,12 @@ var PackageVerifierCache = class {
   }
   stateDir;
   filePath() {
-    return join2(this.stateDir, "package-verifier.json");
+    return join3(this.stateDir, "package-verifier.json");
   }
   load() {
     try {
       const p = this.filePath();
-      if (!existsSync2(p)) return {};
+      if (!existsSync3(p)) return {};
       return JSON.parse(readFileSync2(p, "utf-8"));
     } catch {
       return {};
@@ -7234,10 +7282,10 @@ var PackageVerifierCache = class {
   }
   save(data) {
     try {
-      mkdirSync(this.stateDir, { recursive: true });
+      mkdirSync2(this.stateDir, { recursive: true });
       const p = this.filePath();
       const tmp = `${p}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(data));
+      writeFileSync2(tmp, JSON.stringify(data));
       renameSync(tmp, p);
     } catch {
     }
@@ -8125,8 +8173,8 @@ function matchesAnyTestGlob(value, patterns) {
 }
 
 // ../core/src/enforce/overrides.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // ../core/src/enforce/file-lock.ts
 import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync as readFileSync3 } from "node:fs";
@@ -8240,8 +8288,8 @@ var FileRuleOverrideStore = class {
    * default doesn't have to grow to accommodate.
    */
   constructor(home = resolveHome(), lockOptions = {}) {
-    this.directory = process.env.KEEL_OVERRIDES_DIR || join3(home, ".keel");
-    this.file = join3(this.directory, "overrides.json");
+    this.directory = process.env.KEEL_OVERRIDES_DIR || join4(home, ".keel");
+    this.file = join4(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
     this.lockOptions = lockOptions;
   }
@@ -8266,7 +8314,7 @@ var FileRuleOverrideStore = class {
    */
   ensureDir() {
     try {
-      mkdirSync2(this.directory, { recursive: true });
+      mkdirSync3(this.directory, { recursive: true });
     } catch {
     }
   }
@@ -8327,7 +8375,7 @@ var FileRuleOverrideStore = class {
     }
   }
   read() {
-    if (!existsSync3(this.file)) return {};
+    if (!existsSync4(this.file)) return {};
     try {
       const parsed = JSON.parse(readFileSync4(this.file, "utf8"));
       if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -8340,7 +8388,7 @@ var FileRuleOverrideStore = class {
   }
   write(overrides) {
     const temporary = `${this.file}.${process.pid}.tmp`;
-    writeFileSync2(temporary, JSON.stringify(overrides, null, 2));
+    writeFileSync3(temporary, JSON.stringify(overrides, null, 2));
     renameSync2(temporary, this.file);
   }
 };
@@ -8762,7 +8810,7 @@ var EnforcementPipeline = class {
    * permissions, a symlink loop, a corrupt/unparseable body) fails closed.
    */
   checkHalt(start) {
-    const haltPath = this.config.haltFile || join4(resolveHome(), ".keel", "HALTED");
+    const haltPath = this.config.haltFile || join5(resolveHome(), ".keel", "HALTED");
     let raw;
     try {
       raw = readFileSync5(haltPath, "utf-8");
@@ -8790,8 +8838,8 @@ var EnforcementPipeline = class {
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const protectFloor = (rules2) => rules2.some((rule) => rule.level === "protect" && (rule.type === "content" || rule.type === "sequence" || rule.type === "flow"));
     const reasoningChecks = depth === "deep";
-    const sentinelPath = this.config.disableFile || join4(resolveHome(), ".keel", "DISABLED");
-    if (existsSync4(sentinelPath)) {
+    const sentinelPath = this.config.disableFile || join5(resolveHome(), ".keel", "DISABLED");
+    if (existsSync5(sentinelPath)) {
       try {
         const sentinel = JSON.parse(readFileSync5(sentinelPath, "utf-8"));
         if (sentinel.expires_at && new Date(sentinel.expires_at) < /* @__PURE__ */ new Date()) {
@@ -9144,7 +9192,7 @@ var EnforcementPipeline = class {
           const resolvedPath = resolveMaybeRelative(pathStr, input.cwd);
           const patchText = String(args.patchText || "");
           const inlineContent = String(args.content || args.text || args.newString || args.new_string || patchText || "");
-          const isFile = resolvedPath && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
+          const isFile = resolvedPath && existsSync5(resolvedPath) && statSync2(resolvedPath).isFile();
           const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
           if (inlineContent || diskChanged) {
             for (const pattern of rule.patterns) {
@@ -9176,7 +9224,7 @@ var EnforcementPipeline = class {
               const patchText = String(args.patchText || "");
               const newText = String(args.content ?? args.text ?? args.newString ?? args.new_string ?? patchText ?? "");
               const explicitOld = typeof args.oldString === "string" ? args.oldString : typeof args.old_string === "string" ? args.old_string : void 0;
-              const isFile = explicitOld === void 0 && existsSync4(resolvedPath) && statSync2(resolvedPath).isFile();
+              const isFile = explicitOld === void 0 && existsSync5(resolvedPath) && statSync2(resolvedPath).isFile();
               const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync5(resolvedPath, "utf-8") : "";
               if (newText || oldText) {
                 const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
@@ -9215,7 +9263,19 @@ var EnforcementPipeline = class {
             }
           }
         }
-        if (rule.type === "session" && rule.max_duration_minutes) {
+        if (rule.type === "session" && rule.session_escalation?.length && this.config.sessionTracker) {
+          const args = input.args;
+          const pathStr = WRITE_TOOL_NAMES.has(input.tool.toLowerCase()) ? argPath(args) : "";
+          const writePath = pathStr ? resolveMaybeRelative(pathStr, input.cwd) : void 0;
+          this.config.sessionTracker.recordActivity(rule, input, { isBash: input.tool === "Bash", writePath });
+          const escalation = this.config.sessionTracker.check(rule, input);
+          if (escalation) {
+            const result = this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, void 0, true);
+            if (escalation.halt && (result.action === "deny" || result.action === "block")) {
+              writeHaltSentinel(this.config.haltFile || join5(resolveHome(), ".keel", "HALTED"), escalation.message);
+            }
+            return result;
+          }
           continue;
         }
       } catch (err) {
@@ -9251,6 +9311,14 @@ var EnforcementPipeline = class {
       const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
       for (const rule of rules2) {
         if (rule.type === "oracle") this.oracleTracker.observeOutcome(rule, input, exitCode);
+      }
+    }
+    if (this.config.sessionTracker) {
+      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      for (const rule of rules2) {
+        if (rule.type === "session" && rule.session_escalation?.length) {
+          this.config.sessionTracker.recordOutcome(rule, input, exitCode);
+        }
       }
     }
     if (!this.config.stuckTracker) return;
@@ -9488,7 +9556,7 @@ var EnforcementPipeline = class {
 };
 
 // ../core/src/enforce/cache.ts
-import { readFileSync as readFileSync6, existsSync as existsSync5, writeFileSync as writeFileSync3, mkdirSync as mkdirSync3 } from "node:fs";
+import { readFileSync as readFileSync6, existsSync as existsSync6, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4 } from "node:fs";
 import { createHash } from "node:crypto";
 var ActionCache = class {
   session = /* @__PURE__ */ new Map();
@@ -9499,7 +9567,7 @@ var ActionCache = class {
   constructor(opts) {
     this.maxSize = opts?.maxSize || 1e4;
     this.persistentPath = opts?.persistentPath || null;
-    if (this.persistentPath && existsSync5(this.persistentPath)) {
+    if (this.persistentPath && existsSync6(this.persistentPath)) {
       try {
         const data = JSON.parse(readFileSync6(this.persistentPath, "utf-8"));
         if (typeof data === "object") {
@@ -9556,12 +9624,12 @@ var ActionCache = class {
   flush() {
     if (!this.persistentPath) return;
     const dir = this.persistentPath.substring(0, this.persistentPath.lastIndexOf("/"));
-    if (!existsSync5(dir)) mkdirSync3(dir, { recursive: true });
+    if (!existsSync6(dir)) mkdirSync4(dir, { recursive: true });
     const data = {};
     for (const [k, v] of this.persistent) {
       data[k] = v;
     }
-    writeFileSync3(this.persistentPath, JSON.stringify(data, null, 0));
+    writeFileSync4(this.persistentPath, JSON.stringify(data, null, 0));
   }
   clear() {
     this.session.clear();
@@ -9594,7 +9662,7 @@ var ActionCache = class {
 var ContentTracker = class {
   hashes = /* @__PURE__ */ new Map();
   hasChanged(filePath) {
-    if (!existsSync5(filePath)) return true;
+    if (!existsSync6(filePath)) return true;
     const content = readFileSync6(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
@@ -9607,7 +9675,7 @@ var ContentTracker = class {
     return prev !== hash;
   }
   markUnchanged(filePath) {
-    if (!existsSync5(filePath)) return;
+    if (!existsSync6(filePath)) return;
     const content = readFileSync6(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
@@ -9702,7 +9770,7 @@ var SequenceDetector = class {
 };
 
 // ../core/src/enforce/flow-tracker.ts
-import { existsSync as existsSync6 } from "node:fs";
+import { existsSync as existsSync7 } from "node:fs";
 var FlowTracker = class {
   constructor(persistentStore) {
     this.persistentStore = persistentStore;
@@ -9719,7 +9787,7 @@ var FlowTracker = class {
     const args = input.args;
     const rawPath = argPath(args);
     const path2 = resolveMaybeRelative(rawPath, input.cwd);
-    if (path2 && existsSync6(path2)) {
+    if (path2 && existsSync7(path2)) {
       const configuredSources = typeof rule === "object" ? rule.sources : void 0;
       const matchedRule = configuredSources?.find((source) => this.pathMatches(path2, source)) || (!configuredSources ? this.matchesSensitivePath(path2) : null);
       if (matchedRule) {
@@ -9907,14 +9975,14 @@ var FlowTracker = class {
 };
 
 // ../core/src/enforce/flow-store.ts
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync4 } from "node:fs";
-import { join as join6 } from "node:path";
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
+import { join as join7 } from "node:path";
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync4, renameSync as renameSync3 } from "node:fs";
-import { join as join5 } from "node:path";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync3 } from "node:fs";
+import { join as join6 } from "node:path";
 function stateDir() {
-  return process.env.KEEL_STATE_DIR || join5(resolveHome(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join6(resolveHome(), ".keel", "state");
 }
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
@@ -9939,14 +10007,14 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join5(this.dir, `${name}.json`);
+    return join6(this.dir, `${name}.json`);
   }
   lockPath(name) {
     return this.statePath(name) + ".lock";
   }
   ensureDir() {
     try {
-      mkdirSync4(this.dir, { recursive: true });
+      mkdirSync5(this.dir, { recursive: true });
     } catch {
     }
   }
@@ -9969,7 +10037,7 @@ var StateManager = class {
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
-      if (existsSync7(p)) {
+      if (existsSync8(p)) {
         const parsed = JSON.parse(readFileSync8(p, "utf-8"));
         if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
           return parsed;
@@ -9981,10 +10049,10 @@ var StateManager = class {
   }
   saveFile(name, data) {
     try {
-      mkdirSync4(this.dir, { recursive: true });
+      mkdirSync5(this.dir, { recursive: true });
       const p = this.statePath(name);
       const tmp = p + ".tmp";
-      writeFileSync4(tmp, JSON.stringify(data));
+      writeFileSync5(tmp, JSON.stringify(data));
       renameSync3(tmp, p);
     } catch {
     }
@@ -10244,9 +10312,163 @@ function defaultMessage(ruleId, fingerprint, attempts, action) {
 }
 
 // ../core/src/enforce/stuck-store.ts
-import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync5 } from "node:fs";
-import { join as join7 } from "node:path";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
+import { join as join8 } from "node:path";
 var STUCK_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
+
+// ../core/src/enforce/session-tracker.ts
+function stepSeverity(step) {
+  const base = step.action === "deny" || step.action === "block" ? 3 : step.action === "prompt" ? 2 : 1;
+  return base + (step.halt ? 10 : 0);
+}
+function isWorse(candidate, current) {
+  const bySeverity = stepSeverity(candidate) - stepSeverity(current);
+  if (bySeverity !== 0) return bySeverity > 0;
+  const candidateIsFailureAware = candidate.dimension === "consecutive_failures";
+  const currentIsFailureAware = current.dimension === "consecutive_failures";
+  if (candidateIsFailureAware !== currentIsFailureAware) return candidateIsFailureAware;
+  return candidate.at > current.at;
+}
+var SessionTracker = class {
+  constructor(persistentStore) {
+    this.persistentStore = persistentStore;
+  }
+  persistentStore;
+  key(ruleId, sessionId) {
+    return `session:${ruleId}:${sessionId}`;
+  }
+  /**
+   * Record one more tool call toward the composite counters. A no-op (and
+   * a no-write) when no persistent store is configured — an in-memory-only
+   * tracker (the opencode plugin's long-lived process — see enforce.ts's
+   * own comment on why that host doesn't need one) still needs SOMEWHERE
+   * to keep counts, so this class also keeps a small in-memory fallback map
+   * for that case.
+   */
+  memory = /* @__PURE__ */ new Map();
+  recordActivity(rule, input, opts) {
+    if (!input.session_id) return;
+    const key = this.key(rule.id, input.session_id);
+    if (this.persistentStore) {
+      const next2 = this.persistentStore.bumpActivity(key, opts);
+      this.memory.set(key, next2);
+      return;
+    }
+    const now = Date.now();
+    const existing = this.memory.get(key);
+    const base = existing || {
+      sessionStart: now,
+      lastActivityAt: now,
+      toolCalls: 0,
+      bashCalls: 0,
+      filesWritten: [],
+      fileWriteChurn: 0,
+      consecutiveFailures: 0,
+      lastExit: null
+    };
+    const next = {
+      ...base,
+      lastActivityAt: now,
+      toolCalls: base.toolCalls + 1,
+      bashCalls: base.bashCalls + (opts.isBash ? 1 : 0)
+    };
+    if (opts.writePath && !base.filesWritten.includes(opts.writePath)) {
+      next.fileWriteChurn = base.fileWriteChurn + 1;
+      next.filesWritten = [...base.filesWritten, opts.writePath];
+    }
+    this.memory.set(key, next);
+  }
+  /** Record an attempt outcome for the consecutive-failures dimension — see session-store.ts's `bumpFailure` for the exact reset/increment/no-op semantics this mirrors for the in-memory fallback path. */
+  recordOutcome(rule, input, exitCode) {
+    if (!input.session_id) return;
+    const key = this.key(rule.id, input.session_id);
+    if (this.persistentStore) {
+      const next = this.persistentStore.bumpFailure(key, exitCode);
+      if (next) this.memory.set(key, next);
+      return;
+    }
+    if (exitCode === null) return;
+    const now = Date.now();
+    const existing = this.memory.get(key);
+    if (!existing) return;
+    this.memory.set(key, {
+      ...existing,
+      lastActivityAt: now,
+      consecutiveFailures: exitCode === 0 ? 0 : existing.consecutiveFailures + 1,
+      lastExit: exitCode
+    });
+  }
+  currentValue(dimension, state) {
+    switch (dimension) {
+      case "duration_minutes":
+        return (Date.now() - state.sessionStart) / 6e4;
+      case "tool_calls":
+        return state.toolCalls;
+      case "bash_calls":
+        return state.bashCalls;
+      case "file_write_churn":
+        return state.fileWriteChurn;
+      case "consecutive_failures":
+        return state.consecutiveFailures;
+    }
+  }
+  /**
+   * Resolve the worst met escalation step across all five dimensions for
+   * this call, or `null` if none are met. "Worst" = highest `stepSeverity`;
+   * ties broken by the higher `at` threshold, then declaration order —
+   * deterministic, so the same state always resolves the same verdict.
+   */
+  check(rule, input) {
+    if (!input.session_id || !rule.session_escalation?.length) return null;
+    const key = this.key(rule.id, input.session_id);
+    let state = this.memory.get(key);
+    if (this.persistentStore) {
+      const persisted = this.persistentStore.get(key);
+      if (persisted) state = persisted;
+    }
+    if (!state) return null;
+    let best = null;
+    for (const step of rule.session_escalation) {
+      const value = this.currentValue(step.dimension, state);
+      if (value < step.at) continue;
+      if (!best || isWorse(step, best.step)) {
+        best = { step, value };
+      }
+    }
+    if (!best) return null;
+    const message = best.step.message || defaultMessage2(best.step, best.value);
+    return {
+      action: best.step.action,
+      message,
+      dimension: best.step.dimension,
+      value: best.value,
+      // Structural invariant (rule-parser.ts's validateRules) already
+      // guarantees `halt` is never set on a non-consecutive_failures step —
+      // this clamp makes it true by construction here too, for any rule
+      // that reaches the pipeline without going through that validation
+      // (e.g. the opencode plugin's hardcoded DEFAULT_RULES_YAML fallback
+      // parse path, which calls parseRulesContent but the plugin does not
+      // re-run validateRules against its own fallback constant).
+      halt: best.step.dimension === "consecutive_failures" && !!best.step.halt
+    };
+  }
+};
+function defaultMessage2(step, value) {
+  const rounded = Math.round(value * 10) / 10;
+  const labels = {
+    duration_minutes: `session duration ${rounded}m`,
+    tool_calls: `${rounded} tool calls this session`,
+    bash_calls: `${rounded} Bash calls this session`,
+    file_write_churn: `${rounded} distinct files written this session`,
+    consecutive_failures: `${rounded} consecutive failing attempts`
+  };
+  return `Session runaway trip: ${labels[step.dimension]} (threshold ${step.at}).`;
+}
+
+// ../core/src/enforce/session-store.ts
+import { readFileSync as readFileSync11, writeFileSync as writeFileSync8, existsSync as existsSync11, mkdirSync as mkdirSync8, renameSync as renameSync6 } from "node:fs";
+import { join as join9 } from "node:path";
+var SESSION_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/research-tracker.ts
 var ResearchTracker = class {
@@ -10329,14 +10551,14 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync11, writeFileSync as writeFileSync7, renameSync as renameSync6, statSync as statSync3 } from "node:fs";
-import { join as join8 } from "node:path";
+import { existsSync as existsSync12, mkdirSync as mkdirSync9, readFileSync as readFileSync12, writeFileSync as writeFileSync9, renameSync as renameSync7, statSync as statSync3 } from "node:fs";
+import { join as join10 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync12, readdirSync } from "node:fs";
-import { join as join9 } from "node:path";
+import { appendFileSync, existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync13, readdirSync } from "node:fs";
+import { join as join11 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -10376,18 +10598,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync12, readFileSync as readFileSync13, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync7 } from "node:fs";
-import { join as join10 } from "node:path";
+import { existsSync as existsSync14, readFileSync as readFileSync14, writeFileSync as writeFileSync11, mkdirSync as mkdirSync11, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync8 } from "node:fs";
+import { join as join12 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join10(resolveHome(), ".keel", "receipt-key.json");
+  return join12(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join10(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join12(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync13(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync14(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -10421,20 +10643,20 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join10(resolveHome(), ".keel");
-    if (!existsSync12(dir)) mkdirSync9(dir, { recursive: true });
-    writeFileSync9(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join12(resolveHome(), ".keel");
+    if (!existsSync14(dir)) mkdirSync11(dir, { recursive: true });
+    writeFileSync11(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join10(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join12(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync13(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync14(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -10467,20 +10689,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join10(process.cwd(), ".keel", "receipts");
-    if (!existsSync12(dir)) mkdirSync9(dir, { recursive: true });
-    appendFileSync2(join10(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join12(process.cwd(), ".keel", "receipts");
+    if (!existsSync14(dir)) mkdirSync11(dir, { recursive: true });
+    appendFileSync2(join12(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync14 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join11 } from "node:path";
+import { readFileSync as readFileSync15 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join13 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join11(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join13(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -10514,7 +10736,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync14(filePath, "utf-8");
+        const source = readFileSync15(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -10524,11 +10746,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync14(filePath, "utf-8"));
+        JSON.parse(readFileSync15(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync14(filePath, "utf-8"));
+        parse(readFileSync15(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -11694,6 +11916,94 @@ rules:
     action: warn
     message: "More than 500 Bash calls in this session's last 4 hours \u2014 possible runaway loop or scope creep."
 
+  - id: session-runaway-trip
+    type: session
+    mode: observe
+    category: resource
+    severity: medium
+    confidence: medium
+    priority: 0
+    action: warn
+    session_escalation:
+      - dimension: duration_minutes
+        at: 240
+        action: warn
+        message: "Session has been running 4+ hours \u2014 check whether this is still a legitimate long task."
+      - dimension: duration_minutes
+        at: 480
+        action: prompt
+        message: "Session has been running 8+ hours \u2014 confirm this is still intentional before continuing."
+      - dimension: tool_calls
+        at: 500
+        action: warn
+        message: "500+ tool calls this session \u2014 possible runaway loop or scope creep."
+      - dimension: tool_calls
+        at: 1000
+        action: prompt
+        message: "1000+ tool calls this session \u2014 confirm this is still intentional before continuing."
+      - dimension: bash_calls
+        at: 300
+        action: warn
+        message: "300+ Bash calls this session \u2014 possible runaway shell loop."
+      - dimension: bash_calls
+        at: 600
+        action: prompt
+        message: "600+ Bash calls this session \u2014 confirm this is still intentional before continuing."
+      - dimension: file_write_churn
+        at: 40
+        action: warn
+        message: "40+ distinct files written this session \u2014 possible scope creep beyond the original task."
+      - dimension: file_write_churn
+        at: 80
+        action: prompt
+        message: "80+ distinct files written this session \u2014 confirm this is still intentional before continuing."
+      - dimension: consecutive_failures
+        at: 3
+        action: warn
+        message: "3 consecutive failing tool-call outcomes this session \u2014 the agent may be stuck."
+      - dimension: consecutive_failures
+        at: 5
+        action: prompt
+        message: "5 consecutive failing tool-call outcomes this session \u2014 confirm before continuing."
+      - dimension: consecutive_failures
+        at: 8
+        action: deny
+        halt: true
+        message: "8 consecutive failing tool-call outcomes this session \u2014 locking down (keel halt) until a human runs keel resume."
+    rationale: >
+      A composite runaway-loop trip across five session-scoped dimensions:
+      wall-clock duration, cumulative tool-call count, cumulative Bash-call
+      count, distinct-file-write churn, and consecutive-failure count. The
+      first four are pure VOLUME counters that climb whether a session is
+      thriving or stuck \u2014 a legitimate 200-tool-call refactor across 60
+      files looks identical to a runaway loop on those dimensions alone \u2014
+      so by construction (rule-parser.ts's validateRules rejects any other
+      shape) they cap at prompt and can NEVER trip keel halt on their own,
+      the same asymmetry no-repeat-loops (type: stuck) already relies on
+      via require_failure + fingerprint: auto. Only consecutive_failures
+      is failure-aware (reset on any success, exactly like no-repeat-loops)
+      and is the one dimension allowed to escalate all the way to a keel
+      halt lockdown latch with no auto-expiry.
+      Ships as mode: observe, unlike no-repeat-loops today: no-repeat-loops
+      earned its promotion out of observe on real measured evidence (41
+      distinct repeat loops across 20 sessions, zero recorded
+      false-positives \u2014 see docs/tiers.md). This rule is new and has no
+      such evidence base yet, so it starts exactly where no-repeat-loops
+      itself started and where the two runaway-budget-* rules above still
+      sit: observe-only, measuring a real would-block rate on your own
+      traffic before anyone raises its mode to warn or block.
+      Session-scoping depends on the calling host sending a real session
+      id (see hook.ts's parsePayload confidence ladder); a host that sends
+      none gets a fresh id per keel hook process, and every dimension
+      here silently under-counts to a single call per "session" \u2014 surfaced
+      explicitly at keel validate / keel status, not silently degraded.
+    remediation: "Slow down, re-scope, or ask the user for direction. If a consecutive_failures halt fires, a human must run keel resume \u2014 stop and investigate why every recent attempt failed before doing so."
+    false_positives:
+      - "A long legitimate multi-file refactor or a batch operation across many files \u2014 the volume-only dimensions (duration/tool_calls/bash_calls/file_write_churn) cap at prompt and can never halt on their own."
+      - "Polling a long-running job by re-running the same status command \u2014 if the poll command itself keeps exiting 0, consecutive_failures never advances."
+      - "An overnight-idle conversation: duration_minutes is computed from first-seen wall-clock time, not active time, so a session left open idle overnight crosses the duration thresholds on elapsed time alone. This is exactly the class mode: observe exists to measure before anyone promotes it."
+    message: "Session runaway trip: composite duration / call-volume / file-write-churn / consecutive-failure trip for this session."
+
 `;
 function ensureRules() {
   try {
@@ -11876,6 +12186,7 @@ var plugin_default = {
       allowedFixTransforms: true,
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
+      sessionTracker: new SessionTracker(),
       researchTracker: new ResearchTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [

@@ -12,6 +12,8 @@ import {
   PersistentFlowStore,
   StuckTracker,
   PersistentStuckStore,
+  SessionTracker,
+  PersistentSessionStore,
   loadRuleHierarchy,
   parseRulesFile,
   hashRulesFile,
@@ -158,6 +160,17 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   // same way and it never touches a real ~/.keel unless that env var is
   // unset.
   const stuckTracker = new StuckTracker(new PersistentStuckStore())
+  // Same gap, same fix, for the composite session-runaway trip (`type:
+  // session`, shipped as `session-runaway-trip`): SessionTracker's counters
+  // are in-memory only by default, constructed fresh by `initEnforce()` on
+  // every single `keel hook <host>` process — without a
+  // PersistentSessionStore, a session that made 400 tool calls across 400
+  // separate hook processes would look like 400 sessions of 1 call each,
+  // and the composite trip could never advance past its first tool call.
+  // `keel daemon`/the OpenCode plugin stay in-memory on purpose (see
+  // plugin.ts's own construction) — they already hold one SessionTracker
+  // open for the whole live session.
+  const sessionTracker = new SessionTracker(new PersistentSessionStore())
   const cm = new ContextManager(level)
 
   // Initialize pipeline
@@ -170,6 +183,7 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     sequenceDetector,
     flowTracker,
     stuckTracker,
+    sessionTracker,
     ruleHierarchy: hierarchy,
     ruleVersion,
     allowedFixTransforms: true,
