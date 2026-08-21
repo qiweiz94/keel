@@ -1659,6 +1659,20 @@ interface ClaudeHookGroup {
   [key: string]: unknown
 }
 
+// Whether a hook group survives the merge (i.e. still appears in `preserved`
+// below) once keel's own hook entries are filtered out of it. A single
+// source of truth for that question — used both to build the preserved list
+// AND to count how many groups before keel's original slot survived, so the
+// two can never independently drift out of sync on an edge case like a
+// literal `null` group (which this function treats as NOT surviving,
+// matching a malformed/garbage entry no valid HookGroup would ever be).
+function hookGroupSurvivesMerge(group: unknown): boolean {
+  if (group == null || typeof group !== 'object') return false
+  const g = group as ClaudeHookGroup
+  if (!Array.isArray(g.hooks)) return true
+  return g.hooks.some((h) => h != null && !isKeelHookCommand(h?.command))
+}
+
 // Merges keel's current hook groups into whatever is already registered for
 // an event (PreToolUse/PostToolUse/Stop), preserving any other tool's
 // entries. Prior keel-authored hooks are dropped first — from within a
@@ -1678,9 +1692,12 @@ function mergeKeelHookEntries(existing: unknown, keelGroups: ClaudeHookGroup[], 
   const existingGroups: ClaudeHookGroup[] = Array.isArray(existing) ? existing : []
 
   // Remember where keel's own group used to live so the merge can put the
-  // fresh one back in the same slot — otherwise every re-install silently
-  // moves keel's hook group to the end of the array, changing execution
-  // order relative to other tools' hooks registered under the same event.
+  // fresh one back in the same slot — otherwise every re-install would move
+  // keel's hook group to the end of the array. Defensive best-effort: this
+  // repo has not independently verified whether Claude Code actually
+  // dispatches multiple same-event hook groups in array order (vs. e.g. by
+  // matcher) — preserving position costs nothing either way, but the claim
+  // that reordering would be user-visible is unconfirmed against a live host.
   let keelSlot = -1
   existingGroups.forEach((group, i) => {
     if (Array.isArray(group?.hooks) && group.hooks.some((h) => isKeelHookCommand(h?.command))) {
@@ -1689,23 +1706,19 @@ function mergeKeelHookEntries(existing: unknown, keelGroups: ClaudeHookGroup[], 
   })
 
   const preserved = existingGroups
+    .filter(hookGroupSurvivesMerge)
     .map((group) => {
-      if (group == null || typeof group !== 'object') return group
-      if (!Array.isArray(group.hooks)) return group
-      return { ...group, hooks: group.hooks.filter((h) => h != null && !isKeelHookCommand(h?.command)) }
+      const g = group as ClaudeHookGroup
+      if (!Array.isArray(g.hooks)) return g
+      return { ...g, hooks: g.hooks.filter((h) => h != null && !isKeelHookCommand(h?.command)) }
     })
-    .filter((group) => group != null && (!Array.isArray(group.hooks) || group.hooks.length > 0))
 
   if (keelSlot === -1) return [...preserved, ...keelGroups]
 
   // Re-derive the insertion index in `preserved`: count how many of the
-  // groups BEFORE keel's original slot survived the filter above.
-  const before = existingGroups.slice(0, keelSlot)
-  const survivingBefore = before.filter((group) => {
-    if (group == null || typeof group !== 'object') return true
-    if (!Array.isArray(group.hooks)) return true
-    return group.hooks.some((h) => h != null && !isKeelHookCommand(h?.command))
-  }).length
+  // groups BEFORE keel's original slot survived the filter above, using the
+  // SAME predicate `preserved` itself was built from.
+  const survivingBefore = existingGroups.slice(0, keelSlot).filter(hookGroupSurvivesMerge).length
   return [...preserved.slice(0, survivingBefore), ...keelGroups, ...preserved.slice(survivingBefore)]
 }
 

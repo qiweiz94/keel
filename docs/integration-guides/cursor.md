@@ -15,7 +15,10 @@ This creates:
 - `.cursor/rules/keel.mdc` (glob `**/*`, `alwaysApply: true`) — restates your
   standing requirements (run tests before claiming done, build ≠ tests pass,
   ask before defaulting a format/config, re-check requirements in long
-  sessions).
+  sessions). If `keel.mdc` already exists with content keel didn't write,
+  keel writes `.cursor/rules/keel-enforcement.mdc` instead of appending —
+  MDC frontmatter is only recognized at the top of a file, so appending
+  would bury `alwaysApply: true` where Cursor would never parse it.
 - `.cursor/hooks/keel-enforce.sh` — evaluates the call with `keel evaluate`.
 - `.cursor/hooks.json`, wiring that script into both
   `beforeShellExecution` and `beforeMCPExecution` with `failClosed: true` (a
