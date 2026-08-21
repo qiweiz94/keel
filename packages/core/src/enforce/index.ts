@@ -66,6 +66,14 @@ export {
   type HallucinatedPackageEntry,
 } from './known-hallucinated-packages.js'
 export {
+  levenshtein,
+  findTyposquatMatch,
+  POPULAR_PACKAGES,
+  TYPOSQUAT_EXEMPT_NAMES,
+  type PopularPackageEcosystem,
+  type TyposquatMatch,
+} from './popular-packages.js'
+export {
   applyAmbientConfig,
   AmbientConfigCache,
   resolveNpmAmbient,

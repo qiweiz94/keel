@@ -7627,6 +7627,176 @@ function lookupKnownHallucination(name, ecosystem) {
   return HALLUCINATION_INDEX.get(indexKey(name, ecosystem));
 }
 
+// ../core/src/enforce/popular-packages.ts
+var POPULAR_PACKAGES = {
+  npm: [
+    "react",
+    "react-dom",
+    "vue",
+    "angular",
+    "lodash",
+    "underscore",
+    "express",
+    "koa",
+    "axios",
+    "node-fetch",
+    "chalk",
+    "commander",
+    "yargs",
+    "inquirer",
+    "typescript",
+    "eslint",
+    "prettier",
+    "webpack",
+    "vite",
+    "rollup",
+    "jest",
+    "mocha",
+    "chai",
+    "moment",
+    "dayjs",
+    "uuid",
+    "dotenv",
+    "nodemon",
+    "socket.io",
+    "redux",
+    "next",
+    "jquery",
+    "bootstrap",
+    "classnames",
+    "debug",
+    "semver",
+    "glob",
+    "rimraf",
+    "mkdirp",
+    "request"
+  ],
+  pypi: [
+    "requests",
+    "numpy",
+    "pandas",
+    "flask",
+    "django",
+    "pytest",
+    "scipy",
+    "matplotlib",
+    "boto3",
+    "sqlalchemy",
+    "click",
+    "pyyaml",
+    "jinja2",
+    "urllib3",
+    "certifi",
+    "six",
+    "setuptools",
+    "wheel",
+    "pip",
+    "virtualenv",
+    "tox",
+    "black",
+    "flake8",
+    "mypy",
+    "celery",
+    "gunicorn",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "cryptography"
+  ],
+  crates: [
+    "serde",
+    "tokio",
+    "clap",
+    "rand",
+    "regex",
+    "reqwest",
+    "anyhow",
+    "thiserror",
+    "log",
+    "env_logger",
+    "futures",
+    "syn",
+    "quote",
+    "proc-macro2",
+    "chrono"
+  ],
+  go: [
+    "github.com/gin-gonic/gin",
+    "github.com/spf13/cobra",
+    "github.com/spf13/viper",
+    "github.com/stretchr/testify",
+    "github.com/pkg/errors",
+    "github.com/sirupsen/logrus",
+    "github.com/gorilla/mux",
+    "github.com/golang/protobuf",
+    "google.golang.org/grpc",
+    "github.com/aws/aws-sdk-go"
+  ]
+};
+var TYPOSQUAT_EXEMPT_NAMES = {
+  npm: /* @__PURE__ */ new Set(),
+  pypi: /* @__PURE__ */ new Set(),
+  crates: /* @__PURE__ */ new Set(),
+  go: /* @__PURE__ */ new Set()
+};
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  if (a.length < b.length) {
+    const t = a;
+    a = b;
+    b = t;
+  }
+  let prevRow = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prevRow[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    const currRow = new Array(b.length + 1);
+    currRow[0] = i;
+    const aChar = a.charCodeAt(i - 1);
+    for (let j = 1; j <= b.length; j++) {
+      const cost = aChar === b.charCodeAt(j - 1) ? 0 : 1;
+      currRow[j] = Math.min(
+        prevRow[j] + 1,
+        // deletion
+        currRow[j - 1] + 1,
+        // insertion
+        prevRow[j - 1] + cost
+        // substitution
+      );
+    }
+    prevRow = currRow;
+  }
+  return prevRow[b.length];
+}
+var MIN_NAME_LENGTH_FOR_CHECK = 4;
+var MAX_EDIT_DISTANCE = 2;
+function normalize(name) {
+  return name.toLowerCase();
+}
+function isScopedName(name) {
+  return name.startsWith("@") && name.includes("/");
+}
+function findTyposquatMatch(name, ecosystem, opts = {}) {
+  if (!name) return void 0;
+  if (ecosystem === "npm" && isScopedName(name)) return void 0;
+  const exempt = opts.exemptNames ?? TYPOSQUAT_EXEMPT_NAMES[ecosystem];
+  const target = normalize(name);
+  if (exempt.has(target)) return void 0;
+  if (name.length < MIN_NAME_LENGTH_FOR_CHECK) return void 0;
+  const popularList = opts.popularNames ?? POPULAR_PACKAGES[ecosystem];
+  let best;
+  for (const popular of popularList) {
+    const p = normalize(popular);
+    if (p === target) return void 0;
+    const d = levenshtein(target, p);
+    if (d >= 1 && d <= MAX_EDIT_DISTANCE && (!best || d < best.distance)) {
+      best = { popularName: popular, distance: d };
+    }
+  }
+  return best;
+}
+
 // ../core/src/enforce/package-verifier.ts
 var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
 var MANAGER_ECOSYSTEM2 = {
@@ -8175,6 +8345,12 @@ function withKnownHallucination(result, spec) {
   if (!match) return result;
   return { ...result, knownHallucination: { ecosystem, source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } };
 }
+function withTyposquatCandidate(result, spec) {
+  const ecosystem = ecosystemForManager(spec.manager);
+  const match = findTyposquatMatch(spec.name, ecosystem);
+  if (!match) return result;
+  return { ...result, typosquatCandidate: { ecosystem, popularName: match.popularName, distance: match.distance } };
+}
 async function checkPackages(specs, opts = {}) {
   const now = opts.now ?? Date.now;
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2e3;
@@ -8194,7 +8370,7 @@ async function checkPackages(specs, opts = {}) {
     const key = `${ecosystem}:${spec.name}`;
     const already = seen.get(key);
     if (already) {
-      results.push(withKnownHallucination(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec), spec));
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec), spec), spec));
       continue;
     }
     let result;
@@ -8249,7 +8425,7 @@ async function checkPackages(specs, opts = {}) {
         }, now());
       }
     }
-    result = withKnownHallucination(withDependencyConfusion(result, spec), spec);
+    result = withTyposquatCandidate(withKnownHallucination(withDependencyConfusion(result, spec), spec), spec);
     seen.set(key, result);
     results.push(result);
   }
@@ -8263,19 +8439,19 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
   for (const spec of specs) {
     const ecosystem = ecosystemForManager(spec.manager);
     if (spec.privateIndex) {
-      results.push(withKnownHallucination(withDependencyConfusion({
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: "unverified",
         reason: spec.ambientSource ? "ambient_private_registry" : "private_index",
         fromCache: false,
         ...spec.ambientSource ? { ambientSource: spec.ambientSource } : {}
-      }, spec), spec));
+      }, spec), spec), spec));
       continue;
     }
     const cached = cache.get(spec.name, t, ecosystem);
     if (cached) {
-      results.push(withKnownHallucination(withDependencyConfusion({
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: cached.verdict,
@@ -8284,15 +8460,15 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
         createdAt: cached.createdAt,
         didYouMean: cached.didYouMean,
         fromCache: true
-      }, spec), spec));
+      }, spec), spec), spec));
     } else {
-      results.push(withKnownHallucination(withDependencyConfusion({
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: "unverified",
         reason: "not_yet_checked",
         fromCache: false
-      }, spec), spec));
+      }, spec), spec), spec));
       const missKey = `${ecosystem}:${spec.name}`;
       if (!missSeen.has(missKey)) {
         missSeen.add(missKey);
@@ -8343,6 +8519,12 @@ function buildAgeGateMessage(r, ageThresholdDays) {
   const days = r.ageDays !== void 0 ? Math.max(0, Math.floor(r.ageDays)) : void 0;
   return `Package "${r.name}" was published ${days ?? "?"} day(s) ago (younger than the ${ageThresholdDays}-day threshold) \u2014 verify this isn't a fresh, potentially attacker-registered release before installing.`;
 }
+function buildTyposquatMessage(r) {
+  const m = r.typosquatCandidate;
+  const distance = m?.distance ?? "?";
+  const popularName = m?.popularName ?? "(unknown)";
+  return `Package "${r.name}" is only ${distance} character edit(s) away from "${popularName}", a well-known, widely-used package \u2014 this is the shape a typosquatting attack takes (an attacker registers a name a fat-fingered human or an imprecise LLM recall might type instead of the real one). This is a SIMILARITY heuristic, not proof of malicious intent: legitimate forks, wrappers, and unrelated small packages can coincidentally land this close. Verify "${r.name}" is the exact package you intended before proceeding \u2014 if you meant "${popularName}", fix the spelling instead.`;
+}
 function buildDependencyConfusionMessage(r) {
   return `dependency-confusion risk \u2014 "${r.name}" normally resolves via your ambient private-registry config (${r.ambientSource ?? "ambient package-manager config"}), but this command explicitly forces the PUBLIC registry instead. If an attacker has squatted this name on the public registry, forcing the public registry here installs THEIR package, not your internal one. Verify this override is intentional before proceeding.`;
 }
@@ -8357,6 +8539,8 @@ function decidePackageAction(results, ageThresholdDays) {
   if (unverified) return { reason: "unverified", message: buildUnverifiedMessage(unverified), result: unverified };
   const young = results.find((r) => r.verdict === "exists" && r.ageDays !== void 0 && r.ageDays < ageThresholdDays);
   if (young) return { reason: "age_gate", message: buildAgeGateMessage(young, ageThresholdDays), result: young };
+  const typosquat = results.find((r) => r.verdict === "exists" && r.typosquatCandidate);
+  if (typosquat) return { reason: "typosquat", message: buildTyposquatMessage(typosquat), result: typosquat };
   const confusion = results.find((r) => r.dependencyConfusionRisk);
   if (confusion) return { reason: "dependency_confusion", message: buildDependencyConfusionMessage(confusion), result: confusion };
   return { reason: "ok", message: "All installed packages verified against their package registries." };
@@ -9832,6 +10016,9 @@ var EnforcementPipeline = class {
           }
           if (decision.reason === "unverified") {
             return this.violation(input, { ...rule, action: "prompt" }, decision.message, start, 3);
+          }
+          if (decision.reason === "typosquat") {
+            return this.violation(input, { ...rule, action: "warn" }, decision.message, start, 3);
           }
           if (decision.reason === "dependency_confusion") {
             return this.violation(input, { ...rule, action: "warn" }, decision.message, start, 3);

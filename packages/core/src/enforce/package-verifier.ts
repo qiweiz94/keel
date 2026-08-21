@@ -4,6 +4,7 @@ import { resolveHome } from '../home.js'
 import { applyAmbientConfig } from './ambient-registry-config.js'
 import { PYTHON_INTERPRETER_RE } from './command-normalizer.js'
 import { lookupKnownHallucination, HALLUCINATED_PACKAGE_REGISTRY_SOURCE, type HallucinationEcosystem } from './known-hallucinated-packages.js'
+import { findTyposquatMatch } from './popular-packages.js'
 
 /**
  * Slopsquatting install gate.
@@ -86,6 +87,20 @@ import { lookupKnownHallucination, HALLUCINATED_PACKAGE_REGISTRY_SOURCE, type Ha
  *     packages.ts`'s own header for the data source, and its placeholder-
  *     data caveat (that file ships with structurally-valid but NOT-real
  *     names pending a human populating the actual list).
+ *   - name is within a small edit distance of a genuinely popular package
+ *     name, AND is not exempt (scoped, allowlisted, or too short)   -> warn,
+ *     NOT deny — see popular-packages.ts. This is the manual-typosquatting
+ *     shape (`paysafe-checkout` next to `paysafe`), distinct from both the
+ *     not_found case (this name DOES exist — it's a deliberately-registered
+ *     near-miss, not a hallucination) and the known_hallucination case
+ *     (this is a SIMILARITY heuristic against real popular names, not an
+ *     exact match against a documented hallucination list, so it carries
+ *     meaningfully higher false-positive risk and is deliberately kept at
+ *     `warn` strength rather than escalated to `deny`). Computed
+ *     regardless of verdict (a static, zero-network comparison, same as
+ *     the hallucination-registry check), but only ever changes the
+ *     decision when nothing higher-priority already fired — see
+ *     `decidePackageAction`'s own priority-order comment.
  *
  * No SSRF guard (unlike enforce/research/fetcher.ts): every registry base
  * URL this module queries is a fixed, operator/rule-author-controlled URL
@@ -606,6 +621,17 @@ export interface PackageCheckResult {
    * for how this combines with `verdict` to decide deny vs. prompt.
    */
   knownHallucination?: { ecosystem: HallucinationEcosystem; source: string }
+  /**
+   * Set when `name` is within a small edit distance of a genuinely popular
+   * package name for this ecosystem (`popular-packages.ts`), and is not
+   * exempt (scoped npm name, allowlisted, or too short to check safely) —
+   * independent of and computed regardless of `verdict`, same discipline as
+   * `knownHallucination`. Covers all four ecosystems (unlike
+   * `knownHallucination`, which is npm/PyPI only). See `decidePackageAction`
+   * for how this combines with `verdict` — a `warn`-strength signal, never
+   * a `deny`, given similarity matching's inherent false-positive risk.
+   */
+  typosquatCandidate?: { ecosystem: Ecosystem; popularName: string; distance: number }
 }
 
 /**
@@ -1121,6 +1147,23 @@ function withKnownHallucination(result: PackageCheckResult, spec: PackageSpec): 
   return { ...result, knownHallucination: { ecosystem, source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } }
 }
 
+/**
+ * Overlay a popular-package typosquat proximity match onto a
+ * `PackageCheckResult`, conditionally so no `typosquatCandidate` key ever
+ * appears on a result that didn't match (same "no undefined-valued keys"
+ * discipline as `withDependencyConfusion`/`withKnownHallucination`). Runs
+ * regardless of `verdict` for the same reason `withKnownHallucination`
+ * does — see that function's own doc. Unlike `withKnownHallucination`,
+ * covers all four ecosystems (`findTyposquatMatch` has real popular-name
+ * data for npm/PyPI/crates/Go alike).
+ */
+function withTyposquatCandidate(result: PackageCheckResult, spec: PackageSpec): PackageCheckResult {
+  const ecosystem = ecosystemForManager(spec.manager)
+  const match = findTyposquatMatch(spec.name, ecosystem)
+  if (!match) return result
+  return { ...result, typosquatCandidate: { ecosystem, popularName: match.popularName, distance: match.distance } }
+}
+
 export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallOptions = {}): Promise<PackageCheckResult[]> {
   const now = opts.now ?? Date.now
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2000
@@ -1142,7 +1185,7 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
     const key = `${ecosystem}:${spec.name}`
     const already = seen.get(key)
     if (already) {
-      results.push(withKnownHallucination(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec), spec))
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec), spec), spec))
       continue
     }
 
@@ -1212,7 +1255,7 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
         }, now())
       }
     }
-    result = withKnownHallucination(withDependencyConfusion(result, spec), spec)
+    result = withTyposquatCandidate(withKnownHallucination(withDependencyConfusion(result, spec), spec), spec)
     seen.set(key, result)
     results.push(result)
   }
@@ -1257,19 +1300,19 @@ export function checkPackagesCacheOnly(
   for (const spec of specs) {
     const ecosystem = ecosystemForManager(spec.manager)
     if (spec.privateIndex) {
-      results.push(withKnownHallucination(withDependencyConfusion({
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: 'unverified',
         reason: spec.ambientSource ? 'ambient_private_registry' : 'private_index',
         fromCache: false,
         ...(spec.ambientSource ? { ambientSource: spec.ambientSource } : {}),
-      }, spec), spec))
+      }, spec), spec), spec))
       continue
     }
     const cached = cache.get(spec.name, t, ecosystem)
     if (cached) {
-      results.push(withKnownHallucination(withDependencyConfusion({
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: cached.verdict,
@@ -1278,15 +1321,15 @@ export function checkPackagesCacheOnly(
         createdAt: cached.createdAt,
         didYouMean: cached.didYouMean,
         fromCache: true,
-      }, spec), spec))
+      }, spec), spec), spec))
     } else {
-      results.push(withKnownHallucination(withDependencyConfusion({
+      results.push(withTyposquatCandidate(withKnownHallucination(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: 'unverified',
         reason: 'not_yet_checked',
         fromCache: false,
-      }, spec), spec))
+      }, spec), spec), spec))
       const missKey = `${ecosystem}:${spec.name}`
       if (!missSeen.has(missKey)) {
         missSeen.add(missKey)
@@ -1319,7 +1362,7 @@ export function scheduleBackgroundVerification(
   return checkPackages(misses, opts).then(() => undefined, () => undefined)
 }
 
-export type PackageDecisionReason = 'not_found' | 'known_hallucination' | 'unverified' | 'age_gate' | 'dependency_confusion' | 'ok'
+export type PackageDecisionReason = 'not_found' | 'known_hallucination' | 'unverified' | 'age_gate' | 'typosquat' | 'dependency_confusion' | 'ok'
 
 export interface PackageRuleDecision {
   reason: PackageDecisionReason
@@ -1384,6 +1427,21 @@ function buildAgeGateMessage(r: PackageCheckResult, ageThresholdDays: number): s
   return `Package "${r.name}" was published ${days ?? '?'} day(s) ago (younger than the ${ageThresholdDays}-day threshold) — verify this isn't a fresh, potentially attacker-registered release before installing.`
 }
 
+/**
+ * The similarity-heuristic warn signal — see popular-packages.ts's own
+ * header for the exemption design and package-verifier.ts's module header
+ * SEMANTICS note for why this is `warn`, not `deny`. Deliberately worded to
+ * flag it as a heuristic (not proof) and name BOTH the requested name and
+ * the popular name it landed close to, so a human reading the prompt can
+ * make the call in one glance without looking anything up.
+ */
+function buildTyposquatMessage(r: PackageCheckResult): string {
+  const m = r.typosquatCandidate
+  const distance = m?.distance ?? '?'
+  const popularName = m?.popularName ?? '(unknown)'
+  return `Package "${r.name}" is only ${distance} character edit(s) away from "${popularName}", a well-known, widely-used package — this is the shape a typosquatting attack takes (an attacker registers a name a fat-fingered human or an imprecise LLM recall might type instead of the real one). This is a SIMILARITY heuristic, not proof of malicious intent: legitimate forks, wrappers, and unrelated small packages can coincidentally land this close. Verify "${r.name}" is the exact package you intended before proceeding — if you meant "${popularName}", fix the spelling instead.`
+}
+
 function buildDependencyConfusionMessage(r: PackageCheckResult): string {
   return `dependency-confusion risk — "${r.name}" normally resolves via your ambient private-registry config (${r.ambientSource ?? 'ambient package-manager config'}), but this command explicitly forces the PUBLIC registry instead. If an attacker has squatted this name on the public registry, forcing the public registry here installs THEIR package, not your internal one. Verify this override is intentional before proceeding.`
 }
@@ -1395,7 +1453,8 @@ function buildDependencyConfusionMessage(r: PackageCheckResult): string {
  * highest confidence); otherwise a package that EXISTS but matches the
  * known-hallucination registry denies too (see below); otherwise an
  * unverified anywhere prompts; otherwise an age-gated package prompts;
- * otherwise a dependency-confusion-risked package warns; otherwise allow.
+ * otherwise a typosquat-candidate package warns; otherwise a
+ * dependency-confusion-risked package warns; otherwise allow.
  *
  * known_hallucination sits directly below not_found and ABOVE unverified/
  * age_gate/dependency_confusion — deliberately, not incidentally. It only
@@ -1412,7 +1471,28 @@ function buildDependencyConfusionMessage(r: PackageCheckResult): string {
  * documented as an LLM hallucination target is the exact slopsquatting
  * shape a plain existence check cannot see on its own.
  *
- * dependency_confusion is deliberately LAST, below every deny/prompt
+ * typosquat sits BELOW unverified/age_gate and ABOVE dependency_confusion —
+ * deliberately, not incidentally. Unlike known_hallucination (an EXACT
+ * match against a documented hallucination list — high confidence, treated
+ * as a deny), typosquat is a SIMILARITY heuristic against a shipped list of
+ * popular names — meaningfully higher false-positive risk (a real,
+ * unrelated, coincidentally-close-spelled small package is far more
+ * plausible than a coincidental exact hallucination-list hit), so it is
+ * capped at `warn` and never allowed to outrank a `deny` or `prompt`
+ * reason. It only ever fires for a result whose `verdict === 'exists'`
+ * (see the `.find` below) — a typosquat-shaped name that also doesn't
+ * exist is already covered by the not_found branch above, and a typosquat
+ * match on an `unverified` result deliberately does NOT escalate past
+ * `unverified`, same "never deny/never escalate on a network blip"
+ * discipline as known_hallucination. Checked ABOVE dependency_confusion
+ * (rather than after it) simply because it is the more general of the two
+ * warn-strength signals — dependency_confusion requires a specific ambient-
+ * config setup most commands never trigger, while typosquat can fire on
+ * any bare install — but the two are mutually exclusive per result set in
+ * practice and their relative order carries no deny-escape risk either way
+ * (both are already gated below every deny/prompt reason above).
+ *
+ * dependency_confusion is deliberately LAST, below every deny/prompt/warn
  * reason above, not first — it is a `warn`, strictly weaker than `deny` or
  * `prompt`. Checking it first would let `npm i <hallucinated-name>
  * --registry=https://registry.npmjs.org` in a repo with an ambient private
@@ -1420,10 +1500,11 @@ function buildDependencyConfusionMessage(r: PackageCheckResult): string {
  * public-registry flag would become a deny-ESCAPE for exactly the
  * hallucinated-name attack this rule exists to stop. Checked last, it only
  * ever fires when every result has already cleared not_found/
- * known_hallucination/unverified/age_gate (i.e. every package genuinely
- * exists, is old enough, and isn't a documented hallucination target) —
- * the actual squatted-name shape: a real, aged, PUBLIC package sitting
- * under a name your ambient config normally routes internally.
+ * known_hallucination/unverified/age_gate/typosquat (i.e. every package
+ * genuinely exists, is old enough, isn't a documented hallucination
+ * target, and isn't a typosquat candidate) — the actual squatted-name
+ * shape: a real, aged, PUBLIC package sitting under a name your ambient
+ * config normally routes internally.
  */
 export function decidePackageAction(results: PackageCheckResult[], ageThresholdDays: number): PackageRuleDecision {
   const notFound = results.find(r => r.verdict === 'not_found')
@@ -1439,6 +1520,9 @@ export function decidePackageAction(results: PackageCheckResult[], ageThresholdD
 
   const young = results.find(r => r.verdict === 'exists' && r.ageDays !== undefined && r.ageDays < ageThresholdDays)
   if (young) return { reason: 'age_gate', message: buildAgeGateMessage(young, ageThresholdDays), result: young }
+
+  const typosquat = results.find(r => r.verdict === 'exists' && r.typosquatCandidate)
+  if (typosquat) return { reason: 'typosquat', message: buildTyposquatMessage(typosquat), result: typosquat }
 
   const confusion = results.find(r => r.dependencyConfusionRisk)
   if (confusion) return { reason: 'dependency_confusion', message: buildDependencyConfusionMessage(confusion), result: confusion }
