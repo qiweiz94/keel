@@ -110,6 +110,8 @@ export interface PipelineConfig {
   /** Called when a rules reload failed validation; the previous hierarchy is kept. */
   onRulesError?: (errors: string[]) => void
   disableFile?: string
+  /** Path to the halt sentinel (~/.keel/HALTED by default via resolveHome()). Mirrors disableFile — lets tests and sandboxed installs redirect it. */
+  haltFile?: string
 }
 
 /**
@@ -334,6 +336,15 @@ export class EnforcementPipeline {
 
   /** The single-rule-type loop evaluateClaim() wraps. See its own header comment. */
   private evaluateClaimTier(input: EnforceInput, start: number): EnforceResult {
+    // Same halt-wins-first ordering as evaluateTiers() — without this, a
+    // halted session's Stop-hook claim-to-evidence check could still return
+    // its OWN independent deny/allow verdict (with a different rule_id and
+    // message than the halt), even though every real tool call the agent
+    // could use to actually satisfy that claim is already being denied by
+    // evaluateTiers(). Deliberately NOT applied to evaluateOutput() below —
+    // see that method's own comment for why.
+    const halted = this.checkHalt(start)
+    if (halted) return halted
     this.checkRuleVersion()
     const level = this.effectiveLevel(input)
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
@@ -391,6 +402,13 @@ export class EnforcementPipeline {
    * `MAX_OUTPUT_SCAN_CHARS` is not scanned — the result says so
    * (`truncated: true` is folded into the message) rather than silently
    * returning a clean verdict for content it never looked at.
+   *
+   * Deliberately does NOT check the halt latch (checkHalt(), below) the way
+   * evaluateTiers() and evaluateClaimTier() do. This method never blocks —
+   * it only ever returns 'allow' or 'redact' for output that already ran —
+   * so skipping it during a halt would not stop anything from executing;
+   * it would just make a leaked secret MORE likely to reach the model
+   * unredacted, which is the opposite of what a lockdown is for.
    */
   async evaluateOutput(input: EnforceInput): Promise<EnforceResult> {
     const start = Date.now()
@@ -537,8 +555,60 @@ export class EnforcementPipeline {
     return result
   }
 
+  /**
+   * The halt latch — `keel halt`'s inverse of the DISABLED kill switch
+   * below. Where DISABLED ALLOWS every call, HALTED DENIES every call, and
+   * it is checked strictly before DISABLED (see evaluateTiers()'s and
+   * evaluateClaimTier()'s call sites) so halt wins even when both
+   * sentinels are present — an agent that already ran `keel disable`
+   * cannot escape a halt set afterward, and `keel disable`'s own purpose
+   * (turn keel off) does not extend to a halt's purpose (nothing, not even
+   * keel's own controls, should un-stick this without a human).
+   *
+   * Unlike the DISABLED check, there is no expires_at to consult (a halt
+   * never auto-clears) and a corrupt sentinel does not throw — it fails
+   * closed the OTHER way: existence of the file is itself sufficient to
+   * keep denying, so a damaged JSON body degrades the DISPLAYED reason,
+   * never the verdict. Reads the file directly (readFileSync in a single
+   * try/catch) rather than existsSync()-then-readFileSync(): a bare
+   * existsSync() swallows EACCES/ELOOP identically to ENOENT, so "cannot
+   * determine" and "confirmed absent" would both read as "not halted" — a
+   * permissions glitch would silently defeat the latch. Only a confirmed
+   * ENOENT means genuinely not halted; every other read failure (missing
+   * permissions, a symlink loop, a corrupt/unparseable body) fails closed.
+   */
+  private checkHalt(start: number): EnforceResult | null {
+    const haltPath = this.config.haltFile || join(resolveHome(), '.keel', 'HALTED')
+    let raw: string
+    try {
+      raw = readFileSync(haltPath, 'utf-8')
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null
+      }
+      // Cannot confirm the sentinel is absent — fail closed rather than
+      // silently passing every call through.
+      return this.result('deny', 'keel-halted', "Keel is HALTED: unable to confirm halt state. Run 'keel resume' to clear.", start, false, 0)
+    }
+    let reason = 'Manual halt'
+    try {
+      const state = JSON.parse(raw)
+      if (state && typeof state.reason === 'string' && state.reason) reason = state.reason
+    } catch {
+      reason = 'unknown (corrupt sentinel)'
+    }
+    return this.result('deny', 'keel-halted', `Keel is HALTED: ${reason}. Run 'keel resume' to clear.`, start, false, 0)
+  }
+
   private async evaluateTiers(input: EnforceInput): Promise<EnforceResult> {
     const start = Date.now()
+    // The halt latch is checked before EVERYTHING else, including
+    // checkRuleVersion() below — a rules reload/cache invalidation/tracker
+    // flush has no reason to run on every call while halted, and checking
+    // it first is what makes halt win over the DISABLED kill switch (see
+    // checkHalt()'s own header comment).
+    const halted = this.checkHalt(start)
+    if (halted) return halted
     // The hierarchy is reloaded below (checkRuleVersion); the active level is
     // re-derived from the reloaded rules so the first call after a level change
     // (keel level / enforce --persist) evaluates at the NEW level, not the
@@ -552,7 +622,11 @@ export class EnforcementPipeline {
       rules.some(rule => rule.level === 'protect' && (rule.type === 'content' || rule.type === 'sequence' || rule.type === 'flow'))
     const reasoningChecks = depth === 'deep'
 
-    // Check global kill switch (sentinel file)
+    // Check global kill switch (sentinel file). checkHalt() above already
+    // returned if HALTED is set, so reaching this point means the call is
+    // not halted — HALTED wins over DISABLED unconditionally (see
+    // checkHalt()'s header comment for why), so this DISABLED branch only
+    // ever runs when a halt is either absent or already cleared.
     const sentinelPath = this.config.disableFile || join(resolveHome(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) {
       try {

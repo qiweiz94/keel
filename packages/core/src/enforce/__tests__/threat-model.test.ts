@@ -25,6 +25,9 @@ const HERE = fileURLToPath(new URL('.', import.meta.url))
 // Kill-switch sentinel for the test pipelines lives in a private tmp dir so
 // this suite never touches (or is touched by) the developer's real ~/.keel.
 const SENTINEL = join(mkdtempSync(join(tmpdir(), 'keel-threat-sentinel-')), 'DISABLED')
+// Same isolation for the halt sentinel — a live `~/.keel/HALTED` on the
+// developer's machine must not make every pipeline in this file deny.
+const HALT_SENTINEL = join(mkdtempSync(join(tmpdir(), 'keel-threat-halt-')), 'HALTED')
 
 // The CLI vendors core sources (packages/cli/src/core) at build time, so the
 // plugin source must be located from the nearest repo root upward.
@@ -66,6 +69,7 @@ function makeDefaultsPipeline(level: ProtectionLevel = 'balanced'): EnforcementP
     ruleVersion: 1,
     allowedFixTransforms: true,
     disableFile: SENTINEL,
+    haltFile: HALT_SENTINEL,
     // Never read the developer's real ~/.keel/overrides.json — a live
     // `keel allow <id> --once` grant would be consumed by these tests.
     overrideStore: { consume: () => false },
@@ -94,10 +98,14 @@ describe('agentic threat model (shipped defaults)', () => {
     // Mirrors pipeline.ts's own resolveHome()-based fallback.
     const sentinelPath = join(resolveHome(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) rmSync(sentinelPath)
+    // Same guard for a developer's live halt.
+    const haltPath = join(resolveHome(), '.keel', 'HALTED')
+    if (existsSync(haltPath)) rmSync(haltPath)
   })
 
   afterAll(() => {
     rmSafe(join(SENTINEL, '..'))
+    rmSafe(join(HALT_SENTINEL, '..'))
   })
 
   describe('destructive commands (BUG 1 regression)', () => {
@@ -344,6 +352,7 @@ rules:
           '/Users/tester/code/keel/.keel.local.yaml',
           '/Users/tester/.config/keel/rules.yaml',
           '/Users/tester/.keel/DISABLED',
+          '/Users/tester/.keel/HALTED',
           '/Users/tester/.opencode/plugins/keel-enforce.js',
         ]) {
           // no-rules-tampering is `level: protect` — it blocks on the FIRST
@@ -378,6 +387,8 @@ rules:
       for (const command of [
         'cat ~/.keel/DISABLED',
         'grep foo ~/.keel/DISABLED',
+        'cat ~/.keel/HALTED',
+        'grep foo ~/.keel/HALTED',
       ]) {
         const result = await p.evaluate(input('Bash', { command }, 'read-disabled'))
         expect(result.action, command).toBe('allow')
@@ -389,10 +400,42 @@ rules:
         'tee ~/.keel/DISABLED <<< x',
         'cp x ~/.keel/DISABLED',
         'mv x ~/.keel/DISABLED',
+        'echo x > ~/.keel/HALTED',
+        'tee ~/.keel/HALTED <<< x',
+        'rm ~/.keel/HALTED',
         'git config core.hooksPath /dev/null',
       ]) {
         const result = await p.evaluate(input('Bash', { command }, `write-disabled-${command}`))
         expect(result.action, command).toBe('deny')
+      }
+    })
+
+    it('no-enforcer-removal blocks rm of the halt sentinel, same as the DISABLED sentinel', async () => {
+      const p = makeDefaultsPipeline('balanced')
+      // no-enforcer-removal is `level: protect` — denies on the first hit,
+      // no warn-once grace, same as the plugin-delete case above.
+      expect((await p.evaluate(input('bash', { command: 'rm ~/.keel/HALTED' }, 'rm-halted'))).action).toBe('deny')
+      const second = await p.evaluate(input('bash', { command: 'rm ~/.keel/HALTED' }, 'rm-halted'))
+      expect(second.action).toBe('deny')
+      expect(second.rule_id).toBe('no-enforcer-removal')
+    })
+
+    it('keel-control-gate denies keel halt and keel resume the same way it denies keel disable', async () => {
+      for (const level of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
+        for (const command of ['keel halt', 'keel halt --reason "self-preservation"', 'keel resume']) {
+          const p = makeDefaultsPipeline(level)
+          expect((await p.evaluate(input('Bash', { command }, `self-halt-${level}-${command}`, level))).action).toBe('deny')
+          const second = await p.evaluate(input('Bash', { command }, `self-halt-${level}-${command}`, level))
+          expect(second.action).toBe('deny')
+          // Asserted against a pipeline that is NOT itself halted — this is
+          // the property that actually matters: an agent cannot use `keel
+          // resume` to clear a halt it is under. (Separately, pipeline.test.ts's
+          // 'Halt' describe block confirms that when a halt IS active, every
+          // call — including one that would otherwise hit keel-control-gate —
+          // denies with rule_id 'keel-halted' instead, because checkHalt()
+          // short-circuits before any rule is ever evaluated.)
+          expect(second.rule_id).toBe('keel-control-gate')
+        }
       }
     })
 

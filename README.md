@@ -144,6 +144,7 @@ Requires Node.js 22.12.0+. Install one host at a time with `--opencode`,
 | Find where an agent kept circling | `keel retrospective` |
 | Turn recurring blocks into rules | `keel gather` (proposes; never auto-applies) |
 | Check a command without running it | `keel evaluate --tool Bash --args '{"command":"git push --force"}'` |
+| Freeze all enforcement immediately, no exceptions | `keel halt` — deny everything until `keel resume` |
 
 ## Supported hosts
 
@@ -287,9 +288,9 @@ the `#fragment`); a bare `http://127.0.0.1:PORT/` will render blank by design.
 ## Self-protection
 
 Keel's control surface belongs to you, not the agent. The defaults hard-deny agents
-from running `keel disable|allow|level|enforce|install|uninstall`, from editing keel's
-rules or state, and from deleting enforcement files. These are `level: protect` floors,
-so no dial setting disables them.
+from running `keel disable|allow|level|enforce|install|uninstall|halt|resume`, from
+editing keel's rules or state, and from deleting enforcement files. These are
+`level: protect` floors, so no dial setting disables them.
 
 Every gated or blocked action is written to `<project>/.keel/receipts/` as a signed,
 hash-chained entry (`keel verify`). Keys live at `~/.keel/receipt-key.json`; rotate with

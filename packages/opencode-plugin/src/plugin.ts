@@ -36,6 +36,11 @@ const RULES_PATH = path.join(KEEL_DIR, 'rules.yaml')
 const REQUIREMENTS_PATH = path.join(KEEL_DIR, 'requirements.md')
 const DISABLED_PATH = path.join(KEEL_DIR, 'DISABLED')
 let sentinelCorrupted = false
+// `keel halt`'s sentinel — the inverse of DISABLED_PATH above. DISABLED
+// ALLOWS every call while present; HALTED DENIES every call while present.
+// Checked FIRST in the `before` gate below (ahead of isDisabled()) so a
+// halt wins even when both sentinels exist — see isHalted()'s own comment.
+const HALTED_PATH = path.join(KEEL_DIR, 'HALTED')
 // KEEL_TRACES_DIR mirrors state-manager.ts:21's KEEL_STATE_DIR — same
 // env-override-else-real-home shape — so this plugin's own traces never
 // have to land in ~/.keel/traces during a load-test or a future in-process
@@ -60,7 +65,7 @@ rules:
   # ── TIER 1: protect floor ──────────────────────────────────────────
   - id: keel-control-gate
     type: command
-    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall|promote)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
+    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall|promote|halt|resume)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
     action: deny
     level: protect
     priority: 100
@@ -81,6 +86,7 @@ rules:
       - "**/.keel.local.yaml"
       - "**/.config/keel/rules.yaml"
       - "**/.keel/DISABLED"
+      - "**/.keel/HALTED"
       - "**/.opencode/plugins/**"
       - "**/.keel/plugins/**"
       - "**/.claude/settings.json"
@@ -103,7 +109,7 @@ rules:
 
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)|rm[^|;&]*[ \t/][.]keel([ \t]|/?$)"
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED|HALTED)|rm[^|;&]*[ \t/][.]keel([ \t]|/?$)"
     action: deny
     level: protect
     priority: 90
@@ -121,7 +127,7 @@ rules:
   # ── self-protection write gate (Tier 1; supervisor paste at gate-3, secreview) ──
   - id: no-self-protection-write
     type: command
-    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/|[.]keel/DISABLED)|git +config[^|;&]*core[.]hooksPath"
+    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/|[.]keel/DISABLED|[.]keel/HALTED)|git +config[^|;&]*core[.]hooksPath"
     action: deny
     level: protect
     priority: 95
@@ -136,7 +142,7 @@ rules:
       - "Scaffolding a brand-new project's .mcp.json with a heredoc or redirect is blocked; ask the user to run it."
       - "A file literally named .mcp.json anywhere outside the project root is still matched -- the path fragments are matched anywhere in the command, not anchored to the project."
       - "A commit message that merely quotes one of these paths is NOT matched (verified: git commit -m with .mcp.json in the message passes), because a write verb must also be present."
-      - "A diagnostic READ of the sentinel or any of these config files (cat, ls, grep of .keel/DISABLED, .mcp.json, .claude/settings.json) is NOT blocked -- every path alternative here requires a preceding write verb or redirect, so reads pass and only writes are denied (verified live, v0.4 red-team)."
+      - "A diagnostic READ of the sentinel or any of these config files (cat, ls, grep of .keel/DISABLED, .keel/HALTED, .mcp.json, .claude/settings.json) is NOT blocked -- every path alternative here requires a preceding write verb or redirect, so reads pass and only writes are denied (verified live, v0.4 red-team)."
     message: "Writing to keel's own files, the agent's trust/approval config, or git hooks through a shell command is blocked -- these are user-owned."
   - id: agent-env-hijack
     type: command
@@ -1194,6 +1200,44 @@ function isDisabled(): boolean {
   }
 }
 
+/**
+ * `keel halt`'s check — the inverse polarity of isDisabled() above.
+ * isDisabled() fails closed by returning false on a corrupt sentinel
+ * (enforcement stays ON — "closed" for a control that ALLOWS everything
+ * means falling back to normal enforcement). isHalted() fails closed by
+ * returning `halted: true` on a corrupt sentinel (every call keeps being
+ * DENIED — "closed" for a latch that DENIES everything means the denial
+ * stays in force). There is no expires_at here and never will be: a halt
+ * has no restart-consumption/TTL concept, unlike DISABLED's
+ * auto_enable_on_restart — see consumeRestartDisable() below, which has no
+ * halt equivalent by design.
+ *
+ * Reads the file directly (readFileSync in one try/catch) instead of
+ * existsSync()-then-readFileSync(): a bare existsSync() swallows
+ * EACCES/ELOOP the same as ENOENT, so "cannot determine" and "confirmed
+ * absent" would both read as "not halted" — a permissions glitch would
+ * silently defeat the latch. Only a confirmed ENOENT means genuinely not
+ * halted. Never throws: the caller (before(), below) needs a plain
+ * { halted, reason } it can act on unconditionally.
+ */
+function isHalted(): { halted: boolean; reason: string } {
+  let raw: string
+  try {
+    raw = fs.readFileSync(HALTED_PATH, 'utf8')
+  } catch (err: any) {
+    if (err && err.code === 'ENOENT') return { halted: false, reason: '' }
+    // Cannot confirm absence (EACCES, ELOOP, ...) — fail closed.
+    return { halted: true, reason: 'unable to confirm halt state' }
+  }
+  try {
+    const state = JSON.parse(raw)
+    const reason = typeof state?.reason === 'string' && state.reason ? state.reason : 'Manual halt'
+    return { halted: true, reason }
+  } catch {
+    return { halted: true, reason: 'unknown (corrupt sentinel)' }
+  }
+}
+
 function consumeRestartDisable(): void {
   try {
     if (!fs.existsSync(DISABLED_PATH)) return
@@ -1583,6 +1627,25 @@ export default {
     }
 
     const before = async (input: any, output: any) => {
+      // Checked BEFORE isDisabled(): if this returned instead, an agent
+      // that had already run `keel disable` (or simply has a stale
+      // DISABLED sentinel around) would short-circuit-allow right here and
+      // pipeline.evaluate() — where the core halt-wins-over-disable check
+      // also lives — would never even run, defeating halt's entire "wins
+      // even over keel's own controls" guarantee on this host. This is a
+      // real deny, not a silent early return like isDisabled()'s branch:
+      // it throws the same [Keel]-prefixed error every other deny does, so
+      // the tool call is actually blocked, not skipped.
+      const halt = isHalted()
+      if (halt.halted) {
+        const haltArgs = projectAuditArgs(output?.args || {})
+        const message = `Keel is HALTED: ${halt.reason}. Run 'keel resume' to clear.`
+        record({ session_id: input?.sessionID, turn_number: 0, tool: input?.tool, args: haltArgs, rule_id: 'keel-halted', action: 'deny', message, hook: 'tool.execute.before' })
+        try {
+          createReceipt('opencode-plugin', input?.tool || 'unknown', haltArgs, 'deny', 'keel-halted', 'keel', input?.sessionID)
+        } catch {}
+        throw new Error(`[Keel] keel-halted: ${message}`)
+      }
       if (isDisabled()) return
       if (sentinelCorrupted) {
         sentinelCorrupted = false

@@ -115,7 +115,7 @@ rules:
     message: "Full-value secret pattern (redact_span: true — the match IS the whole secret, unlike content-protection's label-only PRIVATE_KEY above, which output redaction deliberately does NOT mutate — see types.ts's redact_span doc comment)."
   - id: keel-control-gate
     type: command
-    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
+    match: "keel (disable|allow|level|enforce|install|uninstall|halt|resume)( |$)"
     action: deny
     level: protect
     message: "keel controls are user-owned"
@@ -129,7 +129,7 @@ rules:
     message: "tampering blocked"
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)"
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED|HALTED)"
     action: deny
     level: protect
     message: "enforcer removal blocked"
@@ -375,6 +375,67 @@ if (!rulesWriteBlocked) {
   }
 }
 check('rules.yaml writes are blocked', rulesWriteBlocked)
+check('keel halt is blocked for agents', await controlGated('control-6', 'keel halt'))
+check('keel resume is blocked for agents', await controlGated('control-7', 'keel resume'))
+
+// `keel halt`'s latch — this plugin has its OWN isHalted()/HALTED_PATH
+// check (bundled separately from packages/core/src/enforce/pipeline.ts,
+// see plugin.ts's header comment on HALTED_PATH), so this is the ONLY
+// place that actually exercises the halt gate on the OpenCode host. Write
+// the real sentinel file directly (mirroring how a real `keel halt` run
+// would leave it) rather than going through the CLI — this script runs
+// under plain `node`, not a shim that can spawn the CLI binary.
+{
+  const haltPath = join(tmpHome, '.keel', 'HALTED')
+  fs.writeFileSync(haltPath, JSON.stringify({ halted_at: new Date().toISOString(), reason: 'load-test halt', auto_clear_on_restart: false }))
+  let halted = false
+  let haltMessage = ''
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-1' }, { args: { command: 'echo perfectly-harmless' } })
+  } catch (e) {
+    halted = e.message.startsWith('[Keel] keel-halted:')
+    haltMessage = e.message
+  }
+  check('a halt sentinel denies an otherwise-harmless call, on the FIRST call (no warn-once grace)', halted)
+  check('the halt deny message names the reason and keel resume', haltMessage.includes('load-test halt') && haltMessage.includes('keel resume'))
+
+  // Halt wins over DISABLED even when both sentinels are present — write
+  // DISABLED too (which alone would ALLOW every call) and confirm the
+  // halt still denies.
+  const disabledPath = join(tmpHome, '.keel', 'DISABLED')
+  fs.writeFileSync(disabledPath, JSON.stringify({ disabled_at: new Date().toISOString(), expires_at: null, reason: 'should not matter' }))
+  let stillHalted = false
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-2' }, { args: { command: 'echo also-harmless' } })
+  } catch (e) {
+    stillHalted = e.message.startsWith('[Keel] keel-halted:')
+  }
+  check('halt wins over DISABLED when both sentinels are present', stillHalted)
+  fs.rmSync(disabledPath, { force: true })
+
+  // Corrupt sentinel fails closed (stays halted), same polarity check as
+  // pipeline.test.ts's core-level assertion — verified here too because
+  // this plugin has its own separate isHalted() implementation.
+  fs.writeFileSync(haltPath, '{not-json')
+  let corruptStillHalted = false
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-3' }, { args: { command: 'echo corrupt-sentinel' } })
+  } catch (e) {
+    corruptStillHalted = e.message.startsWith('[Keel] keel-halted:')
+  }
+  check('a corrupt halt sentinel fails closed (stays halted) rather than throwing an unrelated error', corruptStillHalted)
+
+  // Clean up so the rest of this script runs under normal enforcement.
+  fs.rmSync(haltPath, { force: true })
+  let clearedAfterResume = false
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-4' }, { args: { command: 'echo normal-again' } })
+    clearedAfterResume = true
+  } catch (e) {
+    clearedAfterResume = false
+  }
+  check('removing the sentinel resumes normal enforcement', clearedAfterResume)
+}
 
 // Core rule types and metadata are evaluated by the same bundled pipeline.
 const checkRule = async (tool, args, id) => {

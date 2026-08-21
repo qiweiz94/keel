@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node
 import { join } from 'node:path'
 import chalk from 'chalk'
 import { resolveHome } from '../core/home.js'
+import { isHalted } from './halt.js'
 
 // Bonus fix alongside M1r-3b's named reader sweep: this is the WRITER of
 // the exact DISABLED sentinel that pipeline.ts's kill-switch check (and
@@ -69,16 +70,33 @@ export async function disableCommand(options: { until?: number | string; reason?
 
 /**
  * Re-enable enforcement after a disable.
+ *
+ * A `keel halt` latch is a SEPARATE, stronger control — `keel enable` only
+ * ever clears the DISABLED sentinel this file owns, never HALTED (that
+ * requires `keel resume`, run deliberately, not as a side effect of
+ * clearing a different sentinel). Both branches below check isHalted() so
+ * a user who runs `keel enable` while halted gets an honest answer instead
+ * of a false "enabled" while every call is still being denied.
  */
 export async function enableCommand() {
+  const halted = isHalted()
   if (!existsSync(disableFilePath())) {
-    console.log(chalk.green('\n  ✓ Keel is already enabled\n'))
+    if (halted) {
+      console.log(chalk.yellow('\n  Keel is enabled, but still ') + chalk.bgRed.white.bold(' HALTED ') + chalk.yellow(" — run 'keel resume' to clear the halt.\n"))
+    } else {
+      console.log(chalk.green('\n  ✓ Keel is already enabled\n'))
+    }
     return
   }
 
   rmSync(disableFilePath())
-  console.log(chalk.green('\n  ✓ Keel re-enabled\n'))
-  console.log(chalk.dim('  All rules are active again.\n'))
+  if (halted) {
+    console.log(chalk.green('\n  ✓ Keel re-enabled') + chalk.yellow(', but still ') + chalk.bgRed.white.bold(' HALTED ') + chalk.yellow("\n"))
+    console.log(chalk.dim("  Every call is still denied. Run 'keel resume' to clear the halt.\n"))
+  } else {
+    console.log(chalk.green('\n  ✓ Keel re-enabled\n'))
+    console.log(chalk.dim('  All rules are active again.\n'))
+  }
 }
 
 /**

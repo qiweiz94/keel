@@ -101,6 +101,26 @@ export async function statusCommand() {
     console.log(chalk.dim('  ') + chalk.yellow(suggestion))
   }
 
+  // ── Halt (lockdown) — checked and printed FIRST and most severely: it
+  // wins over the kill switch below, so a user must see it before anything
+  // that might read as "enforcement is on and normal." Inlined against
+  // `home` directly, the same way the DISABLED read just below is, rather
+  // than calling halt.ts's isHalted()/haltReason() (which resolve their
+  // own resolveHome() independently) — keeps every sentinel this function
+  // reads governed by the one `home` value it already resolved above. ──
+  const haltFile = join(home, '.keel', 'HALTED')
+  if (existsSync(haltFile)) {
+    let reason = 'unknown (corrupt sentinel)'
+    try {
+      const state = JSON.parse(readFileSync(haltFile, 'utf8'))
+      if (state && typeof state.reason === 'string' && state.reason) reason = state.reason
+      else reason = 'Manual halt'
+    } catch { /* keep the corrupt-sentinel default above */ }
+    console.log(`  Enforcement: ${chalk.bgRed.white.bold(' HALTED ')} ${chalk.red.bold('— every call is being denied')}`)
+    console.log(chalk.dim(`    Reason: ${reason}`))
+    console.log(chalk.dim('    Clear with: keel resume (your own terminal only)'))
+  }
+
   // ── Kill switch ──
   const disableFile = join(home, '.keel', 'DISABLED')
   if (existsSync(disableFile)) {

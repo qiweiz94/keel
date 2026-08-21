@@ -58,7 +58,7 @@ violation... warning only") on its first call under the same dial.
 
 | Rule id | Guards against |
 |---|---|
-| `keel-control-gate` | An agent running keel's own control commands (`disable`, `allow`, `level`, `install`, `uninstall`, `rules --append`) |
+| `keel-control-gate` | An agent running keel's own control commands (`disable`, `allow`, `level`, `install`, `uninstall`, `rules --append`, `halt`, `resume`) |
 | `no-rules-tampering` | Editing keel's own rules/state/plugin files, or host auto-approve config (`.claude/settings*.json`, `.mcp.json`, `.vscode/settings.json`, git hooks) |
 | `no-enforcer-removal` | Deleting keel's enforcement files |
 | `no-self-protection-write` | Shell writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `python3 -c`, `node -e`, `ln`, `git config core.hooksPath`, …) targeting keel's files, host trust/approval config, or git hooks — closes the gap `no-rules-tampering`/`no-enforcer-removal` leave open, since `filesystem`-type rules only see a tool call's declared path argument, not a shell redirect target |

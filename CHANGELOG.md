@@ -1,5 +1,71 @@
 # Changelog
 
+## Unreleased
+
+Adds `keel halt` / `keel resume`, a lockdown latch that is the deliberate inverse of
+the existing `keel disable` kill switch — where the kill switch ALLOWS every call
+while its sentinel exists, a halt DENIES every call while its sentinel exists, and
+wins if both sentinels are set at once. This is the escape hatch keel previously
+lacked: a per-call rule denial can be rephrased or retried by an agent, but a halt
+is not a rule match — it is a strict, pre-rule override.
+
+### Added
+
+- **`keel halt [--reason <text>]` / `keel resume`**, mirroring `keel disable`/`keel
+  enable`'s pattern (`packages/cli/src/commands/halt.ts`, modeled directly on
+  `disable.ts`). Writes/removes `~/.keel/HALTED` via `resolveHome()` (never
+  `process.env.HOME` directly — the same split-brain bug already fixed for
+  `disable.ts`'s sentinel writer). The sentinel JSON carries `halted_at`, `reason`,
+  and `auto_clear_on_restart: false` — deliberately no `expires_at`/`--until` of any
+  kind, unlike `disable`: an industrial e-stop requires a manual reset, and letting
+  a halt silently lapse on a timer would defeat the one property that makes it
+  different from an ordinary rule. `haltSession(reason)` is exported separately
+  from `haltCommand()` so a future rule type can trigger a halt programmatically
+  without duplicating the sentinel-write logic; no such rule exists yet, and no
+  code outside the CLI calls it in this release.
+- **`checkHalt()` in `packages/core/src/enforce/pipeline.ts`**, checked at the very
+  top of both `evaluateTiers()` (the tool-call path) and `evaluateClaimTier()` (the
+  Stop-hook claim-to-evidence path) — ahead of `checkRuleVersion()` and ahead of the
+  existing `DISABLED` kill-switch check, so a halt wins even when an agent has
+  already run `keel disable`. Every call returns `deny`/`keel-halted` while halted,
+  with no `expires_at` to consult. A corrupt `HALTED` sentinel fails closed toward
+  HALTED (still denies) rather than throwing the way a corrupt `DISABLED` sentinel
+  does — the opposite polarity, verified explicitly in
+  `packages/core/src/enforce/__tests__/pipeline.test.ts`'s new `Halt` describe
+  block. Deliberately NOT added to `evaluateOutput()` (the output-redaction path,
+  which never blocks — skipping it during a halt would make a secret leak MORE
+  likely, not less). New `haltFile?: string` config field mirrors the existing
+  `disableFile?: string` for test isolation.
+- **The OpenCode plugin (`packages/opencode-plugin/src/plugin.ts`) carries its own
+  parallel `isHalted()`/`HALTED_PATH` check**, checked before its own `isDisabled()`
+  short-circuit in the `tool.execute.before` gate. This plugin bundles its own copy
+  of the enforcement gate separately from `pipeline.ts` (esbuilt into
+  `packages/cli/templates/keel-enforce.js`), so the core-level fix alone would not
+  have covered this host — confirmed via `packages/opencode-plugin/scripts/
+  load-test.js`'s new halt checks, including one that halts with `DISABLED` also
+  present and confirms the halt still wins.
+- **Self-protection extended to the halt sentinel**: `no-rules-tampering` (paths),
+  `no-enforcer-removal` and `no-self-protection-write` (regexes) now guard
+  `~/.keel/HALTED` the same way they already guard `~/.keel/DISABLED`, and
+  `keel-control-gate`'s verb list now includes `halt|resume` — an agent cannot run
+  `keel resume` on a halt it is under, the same way it already cannot run `keel
+  disable`. Identical edits landed in both `install.ts`'s and `plugin.ts`'s copies
+  of `DEFAULT_RULES_YAML`; `packages/cli/src/__tests__/drift.test.ts` still passes,
+  confirming the two stayed field-identical.
+- **`keel status`, `keel dashboard` (terminal, `--json`, and `--web`), and `keel
+  enable` now surface halt state**, rendered more severely than the kill switch
+  (`chalk.bgRed.white.bold`) and resolved as one line rather than two — a user must
+  never see "enforcement active" while every call is actually being denied. `keel
+  enable` no longer reports a false "already enabled" while a halt is active.
+
+Verified: full test suite green across all four workspaces (`npm test`), the
+red-team harness (`node scripts/redteam/round2.mjs`) reports no floor regression
+against a captured pre-change baseline, and the drift test confirms `install.ts`
+and `plugin.ts` stayed in lockstep. Not yet live-verified against a real OpenCode
+session — verified via the built plugin bundle and its own load-test script, the
+same verification tier the existing `isDisabled()` kill-switch check in that file
+carries.
+
 ## 1.0.0
 
 `@get-keel/cli` 1.0.0 · `@get-keel/core` 1.0.0 · `@get-keel/opencode-plugin` 1.0.0
