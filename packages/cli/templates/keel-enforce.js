@@ -1,5 +1,6 @@
 // src/plugin.ts
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -6498,7 +6499,8 @@ function validateRules(rules) {
     "diagnosis",
     "claim",
     "oracle",
-    "package"
+    "package",
+    "budget"
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6570,6 +6572,9 @@ function validateRules(rules) {
           }
         }
       }
+    }
+    if (rule.type === "budget" && rule.max_tokens === void 0 && rule.max_dollars === void 0) {
+      errors.push(`Budget rule "${label}" needs max_tokens or max_dollars \u2014 remove it or add a spend ceiling`);
     }
     if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine \u2014 remove it or use a supported type`);
@@ -6842,6 +6847,9 @@ function writeHaltSentinel(haltPath, reason) {
     writeFileSync(haltPath, JSON.stringify(state, null, 2));
   } catch {
   }
+}
+function defaultHaltPath() {
+  return join2(resolveHome(), ".keel", "HALTED");
 }
 
 // ../core/src/enforce/package-verifier.ts
@@ -9135,6 +9143,13 @@ var EnforcementPipeline = class {
           }
           continue;
         }
+        if (rule.type === "budget" && this.config.budgetTracker) {
+          const deny = this.config.budgetTracker.checkDeny(rule, input);
+          if (deny) {
+            return this.violation(input, rule, deny.message, start, 3, rule.id);
+          }
+          continue;
+        }
         if (rule.type === "diagnosis" && this.config.ledger) {
           const cmdStr = commandString(input);
           if (rule.fallback_tools?.includes(input.tool) && rule.fallback_pattern && this.matchesRulePattern(rule.fallback_pattern, cmdStr)) {
@@ -9327,6 +9342,27 @@ var EnforcementPipeline = class {
       if (rule.type !== "stuck" || !rule.match) continue;
       if (!this.matchesRulePattern(rule.match, cmd)) continue;
       this.config.stuckTracker.recordOutcome(rule, input, exitCode);
+    }
+  }
+  /**
+   * Record a fresh spend MEASUREMENT for every `type: budget` rule, from a
+   * host's Stop/PostToolUse-equivalent hook — deliberately OUTSIDE
+   * evaluate()'s PreToolUse path (see BudgetTracker's own header comment
+   * for why: Claude Code's Stop hook cannot block, so this call can never
+   * itself deny anything; it only updates the persisted flag the NEXT
+   * PreToolUse call's `type: budget` branch reads). `spend` is already
+   * computed by the caller (budget/claude-transcript.ts's
+   * `measureClaudeCodeSpend`, budget/opencode-db.ts's
+   * `measureOpenCodeSpend`, or a fixture/test's own literal value) — this
+   * method never reads a transcript or database itself, only applies the
+   * measurement to every budget rule in the current ruleset.
+   */
+  recordBudgetSnapshot(input, spend) {
+    if (!this.config.budgetTracker) return;
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+    for (const rule of rules) {
+      if (rule.type !== "budget") continue;
+      this.config.budgetTracker.record(rule, input, spend);
     }
   }
   /**
@@ -10470,6 +10506,243 @@ import { readFileSync as readFileSync11, writeFileSync as writeFileSync8, exists
 import { join as join9 } from "node:path";
 var SESSION_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
+// ../core/src/enforce/budget-store.ts
+import { readFileSync as readFileSync12, writeFileSync as writeFileSync9, existsSync as existsSync12, mkdirSync as mkdirSync9, renameSync as renameSync7 } from "node:fs";
+import { join as join10 } from "node:path";
+var BUDGET_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
+var MAX_ENTRIES = 500;
+var PersistentBudgetStore = class {
+  dir;
+  lockOptions;
+  constructor(dir = stateDir(), lockOptions = {}) {
+    this.dir = dir;
+    this.lockOptions = lockOptions;
+  }
+  filePath() {
+    return join10(this.dir, "budget-tracker.json");
+  }
+  lockPath() {
+    return `${this.filePath()}.lock`;
+  }
+  load() {
+    try {
+      const p = this.filePath();
+      if (existsSync12(p)) {
+        const parsed = JSON.parse(readFileSync12(p, "utf-8"));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+    }
+    return {};
+  }
+  save(data) {
+    try {
+      mkdirSync9(this.dir, { recursive: true });
+      const p = this.filePath();
+      const tmp = `${p}.${process.pid}.tmp`;
+      writeFileSync9(tmp, JSON.stringify(data));
+      renameSync7(tmp, p);
+    } catch {
+    }
+  }
+  prune(data, now) {
+    const pruned = {};
+    for (const [key, state] of Object.entries(data)) {
+      if (!state || typeof state.measuredAt !== "number") continue;
+      if (now - state.measuredAt < BUDGET_STATE_MAX_AGE_MS) pruned[key] = state;
+    }
+    const keys = Object.keys(pruned);
+    if (keys.length > MAX_ENTRIES) {
+      const byRecency = keys.map((k) => ({ k, last: pruned[k].measuredAt })).sort((a, b) => a.last - b.last);
+      for (const { k } of byRecency.slice(0, keys.length - MAX_ENTRIES)) delete pruned[k];
+    }
+    return pruned;
+  }
+  /**
+   * Non-expired persisted state for `key`, or `null` — read-only, no lock,
+   * no directory creation, never throws. `BudgetTracker.checkDeny()` calls
+   * this on every evaluated tool call, not only ones being recorded — same
+   * hot-path requirement as `PersistentStuckStore.get()`.
+   */
+  get(key) {
+    if (!key) return null;
+    const state = this.load()[key];
+    if (!state || typeof state.measuredAt !== "number") return null;
+    if (Date.now() - state.measuredAt >= BUDGET_STATE_MAX_AGE_MS) return null;
+    return state;
+  }
+  /** Persist `state` for `key`, replacing whatever was there. Under the file lock so two concurrent measurement writers can't lose one's write to the other's. */
+  set(key, state) {
+    if (!key) return;
+    this.ensureDir();
+    withFileLock(this.lockPath(), () => {
+      const now = Date.now();
+      const data = this.prune(this.load(), now);
+      data[key] = state;
+      this.save(data);
+    }, this.lockOptions);
+  }
+  ensureDir() {
+    try {
+      mkdirSync9(this.dir, { recursive: true });
+    } catch {
+    }
+  }
+  /** Clear one bucket — used by tests and by a future `keel budget reset`. */
+  delete(key) {
+    if (!key) return;
+    this.ensureDir();
+    withFileLock(this.lockPath(), () => {
+      const data = this.load();
+      if (key in data) {
+        delete data[key];
+        this.save(data);
+      }
+    }, this.lockOptions);
+  }
+  /** Clear every bucket — test isolation helper, mirrors PersistentStuckStore.clearAll(). */
+  clearAll() {
+    this.ensureDir();
+    withFileLock(this.lockPath(), () => {
+      this.save({});
+    }, this.lockOptions);
+  }
+};
+
+// ../core/src/enforce/budget-tracker.ts
+var BudgetTracker = class {
+  store;
+  haltWriter;
+  haltFile;
+  /**
+   * `haltWriter` defaults to the real `writeHaltSentinel` (writes the
+   * sentinel via a caller-supplied path — see halt-writer.ts) but is
+   * INJECTABLE specifically so a test can assert the hard-stop escalation
+   * decision (does this measurement cross the threshold, is the rule
+   * actually enforcing) fired or didn't, WITHOUT ever writing to a real
+   * home directory — this codebase's own `override-isolation-guard.ts`
+   * exists because a test that forgets an equivalent stub for a DIFFERENT
+   * sentinel file (overrides.json) silently corrupted the developer's real
+   * `~/.keel` before; this constructor parameter is how `type: budget`'s
+   * tests avoid repeating that mistake for HALTED specifically.
+   *
+   * `haltFile` defaults to `defaultHaltPath()` (the real
+   * `~/.keel/HALTED`) but callers constructing a pipeline against an
+   * isolated `KEEL_HOME`/test path MUST pass the same path
+   * `PipelineConfig.haltFile`/`checkHalt()` resolve to, or a
+   * hard_stop_multiplier escalation would write to the wrong sentinel —
+   * see halt-writer.ts's own header comment for the full hazard.
+   */
+  constructor(store = new PersistentBudgetStore(), haltWriter = writeHaltSentinel, haltFile = defaultHaltPath()) {
+    this.store = store;
+    this.haltWriter = haltWriter;
+    this.haltFile = haltFile;
+  }
+  key(rule, input) {
+    return `budget:${rule.id}:${input.session_id || "unknown"}:${input.cwd}`;
+  }
+  /**
+   * Read-only check for the PreToolUse blocking path. Returns a deny
+   * signal only when the LAST measurement confirmed the session over
+   * budget — never derives that from anything read on this call.
+   */
+  checkDeny(rule, input) {
+    const state = this.store.get(this.key(rule, input));
+    if (!state || !state.overBudget) return null;
+    const spendDesc = state.dollarsConfident && state.spendDollars !== null ? `${state.spendTokens.toLocaleString()} tokens (~$${state.spendDollars.toFixed(2)})` : `${state.spendTokens.toLocaleString()} tokens (dollar figure unavailable \u2014 see rationale)`;
+    const staleness = state.unavailable ? " The most recent measurement attempt could not read spend data; this reflects the last CONFIRMED measurement, not a fresh read." : "";
+    return { message: `${rule.message} Last confirmed spend: ${spendDesc}.${staleness}` };
+  }
+  /**
+   * Record a fresh spend measurement, called OUTSIDE evaluate() — see this
+   * class's own header. Updates the persisted over-budget flag for `rule`
+   * against `input`'s session/cwd.
+   *
+   * `spend.unavailable === true` is handled specially: this is point 5's
+   * "never silently report under budget when the transcript can't be
+   * read" — a failed read must NEVER reset a prior over-budget flag to
+   * false (that would read as "confirmed under budget" when nothing was
+   * actually confirmed), so an unavailable measurement carries the
+   * PREVIOUS state's overBudget/spend fields forward unchanged and only
+   * flips `unavailable: true` — a loud, inspectable degraded-state signal
+   * distinct from either verdict, never a silently-passed one.
+   */
+  record(rule, input, spend) {
+    if (rule.max_tokens === void 0 && rule.max_dollars === void 0) return;
+    const key = this.key(rule, input);
+    if (spend.unavailable) {
+      const prior = this.store.get(key);
+      this.store.set(key, {
+        overBudget: prior?.overBudget ?? false,
+        measuredAt: Date.now(),
+        spendTokens: prior?.spendTokens ?? 0,
+        spendDollars: prior?.spendDollars ?? null,
+        dollarsConfident: prior?.dollarsConfident ?? false,
+        unavailable: true,
+        reason: prior ? `Spend data unreadable on this measurement attempt \u2014 carrying forward the last confirmed reading (${prior.spendTokens.toLocaleString()} tokens).` : "Spend data unreadable and no prior confirmed measurement exists for this session \u2014 budget enforcement is degraded to observe-only until a read succeeds."
+      });
+      return;
+    }
+    const overByTokens = rule.max_tokens !== void 0 && spend.tokens > rule.max_tokens;
+    const overByDollars = rule.max_dollars !== void 0 && spend.dollarsConfident && spend.dollars !== null && spend.dollars > rule.max_dollars;
+    const overBudget = overByTokens || overByDollars;
+    const state = {
+      overBudget,
+      measuredAt: Date.now(),
+      spendTokens: spend.tokens,
+      spendDollars: spend.dollars,
+      dollarsConfident: spend.dollarsConfident,
+      unavailable: false,
+      reason: overBudget ? `Measured spend ${spend.tokens.toLocaleString()} tokens${overByTokens ? ` exceeds max_tokens (${rule.max_tokens})` : ""}${overByTokens && overByDollars ? " and" : ""}${overByDollars ? ` $${spend.dollars?.toFixed(2)} exceeds max_dollars (${rule.max_dollars})` : ""}.` : `Measured spend ${spend.tokens.toLocaleString()} tokens \u2014 within budget.`
+    };
+    this.store.set(key, state);
+    if (overBudget && rule.mode !== "observe" && rule.hard_stop_multiplier !== void 0) {
+      const tokenMultiple = rule.max_tokens ? spend.tokens / rule.max_tokens : 0;
+      const dollarMultiple = rule.max_dollars && spend.dollarsConfident && spend.dollars !== null ? spend.dollars / rule.max_dollars : 0;
+      if (tokenMultiple >= rule.hard_stop_multiplier || dollarMultiple >= rule.hard_stop_multiplier) {
+        this.haltWriter(
+          this.haltFile,
+          `keel halted by rule "${rule.id}": spend reached ${rule.hard_stop_multiplier}x its configured budget ceiling (${spend.tokens.toLocaleString()} tokens). Run 'keel resume' after reviewing.`
+        );
+      }
+    }
+  }
+};
+
+// ../core/src/enforce/budget/opencode-db.ts
+async function measureOpenCodeSpend(dbPath, sessionId) {
+  if (!dbPath || !sessionId) {
+    return { tokens: 0, dollars: null, dollarsConfident: false, unavailable: true, unrecognizedModels: [] };
+  }
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const row = db.prepare(
+        "SELECT cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write FROM session WHERE id = ?"
+      ).get(sessionId);
+      if (!row) {
+        return { tokens: 0, dollars: 0, dollarsConfident: true, unavailable: false, unrecognizedModels: [] };
+      }
+      const num = (v) => typeof v === "number" && Number.isFinite(v) ? v : 0;
+      const tokens = num(row.tokens_input) + num(row.tokens_output) + num(row.tokens_reasoning) + num(row.tokens_cache_read) + num(row.tokens_cache_write);
+      const costValue = row.cost;
+      const dollarsConfident = typeof costValue === "number" && Number.isFinite(costValue);
+      return {
+        tokens,
+        dollars: dollarsConfident ? costValue : null,
+        dollarsConfident,
+        unavailable: false,
+        unrecognizedModels: []
+      };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return { tokens: 0, dollars: null, dollarsConfident: false, unavailable: true, unrecognizedModels: [] };
+  }
+}
+
 // ../core/src/enforce/research-tracker.ts
 var ResearchTracker = class {
   constructor(researchCache) {
@@ -10551,14 +10824,14 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync12, mkdirSync as mkdirSync9, readFileSync as readFileSync12, writeFileSync as writeFileSync9, renameSync as renameSync7, statSync as statSync3 } from "node:fs";
-import { join as join10 } from "node:path";
+import { existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync13, writeFileSync as writeFileSync10, renameSync as renameSync8, statSync as statSync3 } from "node:fs";
+import { join as join11 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync13, readdirSync } from "node:fs";
-import { join as join11 } from "node:path";
+import { appendFileSync, existsSync as existsSync14, mkdirSync as mkdirSync11, readFileSync as readFileSync14, readdirSync } from "node:fs";
+import { join as join12 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -10598,18 +10871,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync14, readFileSync as readFileSync14, writeFileSync as writeFileSync11, mkdirSync as mkdirSync11, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync8 } from "node:fs";
-import { join as join12 } from "node:path";
+import { existsSync as existsSync15, readFileSync as readFileSync15, writeFileSync as writeFileSync12, mkdirSync as mkdirSync12, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync9 } from "node:fs";
+import { join as join13 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join12(resolveHome(), ".keel", "receipt-key.json");
+  return join13(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join12(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join13(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync14(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync15(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -10643,20 +10916,20 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join12(resolveHome(), ".keel");
-    if (!existsSync14(dir)) mkdirSync11(dir, { recursive: true });
-    writeFileSync11(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join13(resolveHome(), ".keel");
+    if (!existsSync15(dir)) mkdirSync12(dir, { recursive: true });
+    writeFileSync12(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join12(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join13(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync14(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync15(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -10689,20 +10962,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join12(process.cwd(), ".keel", "receipts");
-    if (!existsSync14(dir)) mkdirSync11(dir, { recursive: true });
-    appendFileSync2(join12(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join13(process.cwd(), ".keel", "receipts");
+    if (!existsSync15(dir)) mkdirSync12(dir, { recursive: true });
+    appendFileSync2(join13(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync15 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join13 } from "node:path";
+import { readFileSync as readFileSync16 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join14 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join13(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join14(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -10736,7 +11009,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync15(filePath, "utf-8");
+        const source = readFileSync16(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -10746,11 +11019,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync15(filePath, "utf-8"));
+        JSON.parse(readFileSync16(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync15(filePath, "utf-8"));
+        parse(readFileSync16(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -10787,6 +11060,7 @@ var HOME_DIR = resolveHome();
 var KEEL_DIR = path.join(HOME_DIR, ".keel");
 var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
+var OPENCODE_DB_PATH = process.env.KEEL_OPENCODE_DB_PATH || path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
 var DISABLED_PATH = path.join(KEEL_DIR, "DISABLED");
 var sentinelCorrupted = false;
 var HALTED_PATH = path.join(KEEL_DIR, "HALTED");
@@ -12004,6 +12278,50 @@ rules:
       - "An overnight-idle conversation: duration_minutes is computed from first-seen wall-clock time, not active time, so a session left open idle overnight crosses the duration thresholds on elapsed time alone. This is exactly the class mode: observe exists to measure before anyone promotes it."
     message: "Session runaway trip: composite duration / call-volume / file-write-churn / consecutive-failure trip for this session."
 
+  - id: session-spend-limit
+    type: budget
+    mode: observe
+    category: resource
+    severity: medium
+    confidence: medium
+    maturity: incubating
+    max_tokens: 2000000
+    action: deny
+    rationale: >-
+      keel had NO visibility into LLM API token/dollar usage at all before
+      this rule \u2014 the two existing runaway-budget-* rules (type: rate,
+      above) only ever counted tool-call VOLUME, and their own rationale
+      says so explicitly ("token budgets are not visible to keel's
+      enforcement hook and are intentionally NOT modeled"), because usage
+      lives in the model response, which keel's hook architecture never
+      saw. This rule closes that gap by reading REAL usage from a host's
+      own local record instead \u2014 a Claude Code session transcript's
+      message.usage fields, or an OpenCode session row's own cost/tokens_*
+      columns \u2014 never a network proxy. Two-phase by construction (see
+      packages/core/src/enforce/budget-tracker.ts): a Stop/PostToolUse-
+      equivalent hook measures spend and persists an over-budget flag; only
+      the NEXT PreToolUse call can ever deny, because Claude Code's Stop
+      hook is architecturally observe-only (it cannot block the turn that
+      just completed \u2014 docs/integration-guides/claude-code.md) \u2014 the same
+      "warn on first violation, persisted state blocks on repeat" shape
+      every other deny rule in this ruleset already uses. Shipped in
+      mode: observe, not enforcing: the model-string normalization this
+      depends on has a safety-critical failure mode (short aliases like
+      claude-sonnet-5/claude-opus-4-8/claude-fable-5, observed live on real
+      sessions on the machine this rule was built on, carry real non-zero
+      usage but must never be priced as if they matched an official dated
+      model ID) and needs to burn in against real traffic before it blocks
+      anything. max_tokens alone, no max_dollars, for the related reason:
+      a session using only aliased model strings correctly degrades its
+      dollar figure to unavailable (never a guessed/partial total), so a
+      rule keyed on max_dollars risks being a control that can never fire
+      on exactly the sessions observed live on this machine.
+    remediation: "Review the session's cumulative token usage; start a fresh session if the work has drifted, or raise max_tokens for a genuinely long one."
+    false_positives:
+      - "A long but legitimate large-refactor session \u2014 token spend correlates with session LENGTH, not with anything going wrong, the same false-positive shape the existing call-volume runaway-budget-* rules above already document for themselves."
+      - "A Claude Code transcript that cannot be read (missing/rotated file, permissions) degrades that measurement to the last confirmed state rather than asserting either verdict from zero data \u2014 see BudgetTracker.record()'s own comment. Surfaces as a distinct 'unavailable' audit entry, never a false block, but this rule's real hit rate depends on transcript readability."
+    message: "This session's measured LLM token spend exceeds max_tokens \u2014 possible runaway usage. Review before continuing, or raise the ceiling for a genuinely long session."
+
 `;
 function ensureRules() {
   try {
@@ -12187,6 +12505,7 @@ var plugin_default = {
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
       sessionTracker: new SessionTracker(),
+      budgetTracker: new BudgetTracker(new PersistentBudgetStore()),
       researchTracker: new ResearchTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [
@@ -12418,6 +12737,11 @@ var plugin_default = {
           pipeline.recordAttemptOutcome(action, exit);
           record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
           await verifyEdit(input?.tool, args, input?.sessionID, action.turn_number);
+          try {
+            const spend = await measureOpenCodeSpend(OPENCODE_DB_PATH, input?.sessionID);
+            pipeline.recordBudgetSnapshot(action, spend);
+          } catch {
+          }
         } catch {
         }
       },

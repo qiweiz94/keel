@@ -291,6 +291,7 @@ export function validateRules(rules: unknown): string[] {
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
     'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim', 'oracle', 'package',
+    'budget',
   ])
   // `mask` (a rule-authorable `action: mask`) stays deliberately absent from
   // this set. CORRECTION (sprint/lane-c2): the previous version of this
@@ -416,6 +417,9 @@ export function validateRules(rules: unknown): string[] {
           }
         }
       }
+    }
+    if (rule.type === 'budget' && rule.max_tokens === undefined && rule.max_dollars === undefined) {
+      errors.push(`Budget rule "${label}" needs max_tokens or max_dollars — remove it or add a spend ceiling`)
     }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine — remove it or use a supported type`)

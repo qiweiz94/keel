@@ -13,6 +13,7 @@ import {
   SequenceDetector,
   StuckTracker,
   SessionTracker,
+  BudgetTracker,
   ResearchTracker,
   ProblemLedger,
   parseRulesContent,
@@ -134,6 +135,19 @@ interface StepDef {
   /** Exit code to report via pipeline.recordAttemptOutcome after this step
    *  (stuck/research rules only arm/escalate from the after-hook, not evaluate()). */
   exit_code?: number
+  /**
+   * A spend MEASUREMENT to record via pipeline.recordBudgetSnapshot after
+   * this step — the fixture-harness equivalent of a Stop/PostToolUse-
+   * equivalent hook (`type: budget` rules only ever arm/deny from this
+   * out-of-band measurement, never from evaluate() itself; see
+   * budget-tracker.ts's own header comment on why the deny path never
+   * reads a transcript). A two-step must-block case (step 1: `spend` over
+   * the rule's max_tokens; step 2: an ordinary call) is how a budget
+   * rule's persisted-flag deny gets exercised without any real transcript
+   * file — mirrors the `exit_code` field's role for stuck/research rules
+   * exactly.
+   */
+  spend?: { tokens: number; dollars?: number; dollars_confident?: boolean; unavailable?: boolean }
 }
 interface CaseDef {
   note?: string
@@ -225,6 +239,13 @@ function buildPipeline(rules: KeelRule[]): EnforcementPipeline {
     // model documented above (one rule/case at a time).
     stuckTracker: new StuckTracker(),
     sessionTracker: new SessionTracker(),
+    // Persisted (not bare in-memory like stuckTracker above): `type: budget`
+    // has no in-memory fast path at all — BudgetTracker.record()/checkDeny()
+    // always go through PersistentBudgetStore. KEEL_STATE_DIR is set to
+    // this file's own isolated scratch dir in beforeAll, and each case gets
+    // a fresh mkdtempSync cwd + randomized sessionId (evaluateCase), so
+    // concurrent cases never collide on the same store key.
+    budgetTracker: new BudgetTracker(),
     researchTracker: new ResearchTracker(),
     ledger: new ProblemLedger(join(scratchRoot, `ledger-${Math.random().toString(36).slice(2)}.json`)),
   }
@@ -299,6 +320,15 @@ async function evaluateCase(rules: KeelRule[], c: CaseDef, primaryRuleId?: strin
       // code, never from evaluate() itself — a no-op unless step.exit_code
       // is set.
       if (step.exit_code !== undefined) pipeline.recordAttemptOutcome(stepInput, step.exit_code)
+      if (step.spend) {
+        pipeline.recordBudgetSnapshot(stepInput, {
+          tokens: step.spend.tokens,
+          dollars: step.spend.dollars ?? null,
+          dollarsConfident: step.spend.dollars_confident ?? false,
+          unavailable: step.spend.unavailable ?? false,
+          unrecognizedModels: [],
+        })
+      }
 
       const isLast = i === steps.length - 1
       if (isLast && primaryRule && result.action === 'warn' && result.rule_id === primaryRule.id

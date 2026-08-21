@@ -14,6 +14,10 @@ export { PersistentStuckStore, STUCK_STATE_MAX_WINDOW_MS, type PersistedStuckSta
 export { SessionTracker, type SessionDimension, type SessionEscalationStep, type SessionTripEscalation } from './session-tracker.js'
 export { PersistentSessionStore, SESSION_STATE_MAX_AGE_MS, type PersistedSessionState } from './session-store.js'
 export { writeHaltSentinel, defaultHaltPath } from './halt-writer.js'
+export { BudgetTracker, type BudgetSpend, type BudgetDenyState } from './budget-tracker.js'
+export { PersistentBudgetStore, BUDGET_STATE_MAX_AGE_MS, type PersistedBudgetState } from './budget-store.js'
+export { measureClaudeCodeSpend, DEFAULT_PRICE_TABLE, type ModelPrice } from './budget/claude-transcript.js'
+export { measureOpenCodeSpend } from './budget/opencode-db.js'
 export { ResearchTracker } from './research-tracker.js'
 export { ProblemLedger, problemKey } from './problem-ledger.js'
 export {

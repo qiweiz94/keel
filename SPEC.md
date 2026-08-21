@@ -338,7 +338,8 @@ rules:
 | `content` | Scan file contents | `patterns: [{regex: "GH_TOKEN"}]` |
 | `env` | Protect environment variables | `vars: ["OPENAI_API_KEY"]` |
 | `network` | Control egress | `match: "."` with `except: [github.com]` |
-| `rate` | Rate limit tool calls | `window_seconds: 60`, `max_calls: 5` |
+| `rate` | Rate limit tool calls (call VOLUME only) | `window_seconds: 60`, `max_calls: 5` |
+| `budget` | Real LLM token/dollar spend, read from a host's own local transcript/session record (Claude Code JSONL usage fields, OpenCode's `session` table) — distinct from `rate`'s call-volume counting. Two-phase: a Stop/PostToolUse-equivalent hook measures spend and persists an over-budget flag; only the next PreToolUse call can deny, since Claude Code's Stop hook cannot block | `max_tokens: 2000000` |
 | `time` | Time-based restrictions | `schedule: {start: "09:00", end: "17:00"}` |
 | `sequence` | Forbidden multi-step action patterns | `steps: [{tool: ReadFile}, {tool: HttpRequest}]` |
 | `verification` | A source-change obligation satisfied by a successful test before a concrete boundary | `trigger`, `satisfy`, `boundaries` |

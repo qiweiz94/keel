@@ -14,6 +14,9 @@ import {
   PersistentStuckStore,
   SessionTracker,
   PersistentSessionStore,
+  BudgetTracker,
+  PersistentBudgetStore,
+  measureClaudeCodeSpend,
   loadRuleHierarchy,
   parseRulesFile,
   hashRulesFile,
@@ -171,6 +174,20 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   // plugin.ts's own construction) — they already hold one SessionTracker
   // open for the whole live session.
   const sessionTracker = new SessionTracker(new PersistentSessionStore())
+  // Two-phase deny state for `type: budget` rules (real token/dollar
+  // spend, read from a host's own local transcript/session record — see
+  // enforce/budget-tracker.ts). Same cross-process requirement as
+  // flowTracker/stuckTracker above: `keel hook <host>` is a fresh process
+  // per tool call, so the persisted-flag store (not an in-memory Map) is
+  // what lets a measurement recorded on one process's Stop/PostToolUse
+  // call actually deny the NEXT process's PreToolUse call.
+  //
+  // haltFile is threaded through explicitly (not left to writeHaltSentinel's
+  // internal default) so a hard_stop_multiplier escalation under an isolated
+  // test HOME writes to the SAME sentinel path this pipeline's own
+  // checkHalt() reads — never the real ~/.keel/HALTED.
+  const haltFile = join(resolveHome(), '.keel', 'HALTED')
+  const budgetTracker = new BudgetTracker(new PersistentBudgetStore(), undefined, haltFile)
   const cm = new ContextManager(level)
 
   // Initialize pipeline
@@ -184,6 +201,7 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     flowTracker,
     stuckTracker,
     sessionTracker,
+    budgetTracker,
     ruleHierarchy: hierarchy,
     ruleVersion,
     allowedFixTransforms: true,
@@ -404,6 +422,64 @@ export async function recordPostAction(
   }
   if (exitCode === 0) pipeline.markVerificationSatisfied(input)
   pipeline.recordAttemptOutcome(input, exitCode)
+}
+
+/**
+ * Measure Claude Code session spend from its own transcript and record it
+ * against every `type: budget` rule (v1 budget lane — see
+ * enforce/budget-tracker.ts). Called from a Stop or PostToolUse-shaped
+ * `keel hook claude-code` invocation (hook.ts), NEVER from the PreToolUse
+ * path — this is the "measure" half of the two-phase design; the "deny"
+ * half lives entirely in `pipeline.evaluate()`'s `type: budget` branch,
+ * which never calls this function or touches a transcript.
+ *
+ * `transcriptPath` MUST be `body.transcript_path` from the host's own hook
+ * payload (see hook.ts's `ParsedCall.transcriptPath`) — never a derived
+ * cwd slug (provably lossy — see measureClaudeCodeSpend's own comment).
+ *
+ * Point 5 (never silently pass as fully verified): when the transcript
+ * could not be read at all, `measureClaudeCodeSpend` returns
+ * `unavailable: true`, and `pipeline.recordBudgetSnapshot` (via
+ * `BudgetTracker.record`) carries the LAST confirmed over-budget flag
+ * forward unchanged rather than resetting it to "under budget" — but that
+ * alone is a state-file-only signal, invisible unless something reads the
+ * state file. This function additionally writes a distinct, loud audit
+ * entry for that case (`action: 'report'`, no `rule_id` — this is not a
+ * rule match, it is a measurement-infrastructure failure) so it is
+ * discoverable in `keel enforce --audit` / the trace log, the same
+ * "recorded even though nothing changed the verdict" posture
+ * `recordRedactionScanFailure` (opencode-plugin/src/plugin.ts) already
+ * uses for its own degraded-read case.
+ */
+export async function recordClaudeCodeBudgetSnapshot(
+  transcriptPath: string | undefined,
+  extra?: { cwd?: string; agent?: string; sessionId?: string },
+): Promise<void> {
+  if (!pipeline || !auditLog) {
+    throw new Error('Enforcement not initialized. Call initEnforce() first.')
+  }
+  const sessionId = extra?.sessionId || currentSessionId
+  const cwd = extra?.cwd || process.cwd()
+  const spend = measureClaudeCodeSpend(transcriptPath)
+  const input: EnforceInput = {
+    tool: 'budget-measurement',
+    args: {},
+    cwd,
+    session_id: sessionId,
+    turn_number: 0,
+    context_tokens: 0,
+    level: currentLevel,
+    context: 'local',
+    agent: extra?.agent || 'unknown',
+    subagent_of: null,
+  }
+  pipeline.recordBudgetSnapshot(input, spend)
+  if (spend.unavailable) {
+    auditLog.record(
+      { action: 'report', message: `Budget spend measurement unavailable (transcript_path missing or unreadable: ${transcriptPath || '<none>'}) — degrading to the last confirmed budget state, never silently reporting under budget.`, timestamp: new Date().toISOString() },
+      { session_id: sessionId, turn_number: 0, tool: 'budget-measurement', args: {}, level: currentLevel, context: 'local', agent: extra?.agent || 'unknown', subagent_of: null, context_tokens: 0 },
+    )
+  }
 }
 
 /**

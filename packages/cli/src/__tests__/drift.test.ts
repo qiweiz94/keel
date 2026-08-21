@@ -85,7 +85,14 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     // across five session-scoped dimensions, ships mode: observe pending
     // real hit-rate data — see session-tracker.ts, pipeline.ts's
     // session-trip branch, and docs/tiers.md).
-    expect(install.size).toBe(47)
+    // + 1 from the v1 `type: budget` lane: session-spend-limit — real
+    // token/dollar spend read from a host's own local transcript/session
+    // record (Claude Code JSONL usage fields, OpenCode's `session` table
+    // rollup columns), distinct from the pre-existing call-VOLUME
+    // runaway-budget-* rules above (`type: rate`); shipped `mode: observe`
+    // pending real-traffic burn-in of the model-string normalization it
+    // depends on — see packages/core/src/enforce/budget-tracker.ts.
+    expect(install.size).toBe(48)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

@@ -36,6 +36,7 @@ export type RuleType =
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
   | 'research' | 'stuck' | 'diagnosis' | 'claim' | 'oracle' | 'package'
+  | 'budget'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -231,6 +232,61 @@ export interface KeelRule {
   // ── Rate limit rules ──
   window_seconds?: number
   max_calls?: number
+
+  // ── Budget rules (real token/dollar spend, distinct from the `type:
+  // rate` call-VOLUME counters shipped as `runaway-budget-tool-calls`/
+  // `runaway-budget-bash-calls` — those count tool calls in a window, this
+  // measures actual LLM API token/dollar usage read from a host's own
+  // local transcript/session record) ──
+  //
+  // Two-phase, race-free by construction (see budget-tracker.ts): a spend
+  // MEASUREMENT (from a Claude Code transcript line or an OpenCode session
+  // row) is recorded OUTSIDE evaluate() — at Stop/PostToolUse-equivalent,
+  // where the turn/tool-call has already settled — via
+  // `EnforcementPipeline.recordBudgetSnapshot()`. That measurement updates
+  // a PERSISTED over-budget flag (`~/.keel/state/budget-tracker.json`,
+  // PersistentBudgetStore) keyed by rule + session + cwd. `evaluate()`'s
+  // own `type: budget` branch (PreToolUse) only ever reads that persisted
+  // flag — it never re-reads a transcript on the blocking path — because
+  // Claude Code's Stop hook is architecturally observe-only (it cannot
+  // block; the turn already completed) and the only correct enforcement
+  // point for a budget breach is the NEXT tool call, exactly the same
+  // "warn on first violation, persisted state blocks on repeat" shape
+  // every other deny rule already uses (docs/integration-guides/
+  // claude-code.md).
+  /** Token ceiling (sum of input+output+cache-creation+cache-read+thinking tokens) for the session. Always enforceable — token counts need no per-model pricing table. */
+  max_tokens?: number
+  /**
+   * Dollar ceiling for the session. Only ever enforced when the spend
+   * measurement's dollar figure is FULLY CONFIDENT — every contributing
+   * transcript line's model string matched a known pricing entry. A
+   * SINGLE unrecognized model string anywhere in the session (a short
+   * alias like `claude-sonnet-5` rather than an official dated model ID —
+   * confirmed live on real Claude Code sessions on this machine) degrades
+   * the WHOLE session's dollar figure to unavailable (null), never a
+   * partial/undercounted total presented as the true one — see
+   * budget/claude-transcript.ts's own header comment. A rule that sets
+   * `max_dollars` without `max_tokens` risks being a control that can
+   * never fire on a session using only aliased model strings; shipping a
+   * default with `max_tokens` alone sidesteps that.
+   */
+  max_dollars?: number
+  /**
+   * Escalation terminal step (mirrors `type: stuck`'s `escalation` ladder,
+   * scaled to a continuous spend measure instead of a discrete attempt
+   * count): when the measured spend exceeds `max_tokens` (or
+   * `max_dollars`, if confident) by this multiple, the pipeline calls
+   * `halt-writer.ts`'s `writeHaltSentinel()` — the SAME sentinel shape
+   * `keel halt` writes — in addition to the ordinary per-rule deny.
+   * Undefined (the default) disables this entirely. NEVER fires for a
+   * `mode: observe` rule regardless of this value — see
+   * budget-tracker.ts's own comment: a false positive on an unproven
+   * measurement latching deny-everything until a human runs `keel resume`
+   * is exactly the hazard `cli/halt.ts`'s own header comment warns
+   * against, so this is gated on the rule actually enforcing, not merely
+   * observing.
+   */
+  hard_stop_multiplier?: number
 
   // ── Time rules ──
   timezone?: string

@@ -1268,6 +1268,50 @@ rules:
       - "An overnight-idle conversation: duration_minutes is computed from first-seen wall-clock time, not active time, so a session left open idle overnight crosses the duration thresholds on elapsed time alone. This is exactly the class mode: observe exists to measure before anyone promotes it."
     message: "Session runaway trip: composite duration / call-volume / file-write-churn / consecutive-failure trip for this session."
 
+  - id: session-spend-limit
+    type: budget
+    mode: observe
+    category: resource
+    severity: medium
+    confidence: medium
+    maturity: incubating
+    max_tokens: 2000000
+    action: deny
+    rationale: >-
+      keel had NO visibility into LLM API token/dollar usage at all before
+      this rule — the two existing runaway-budget-* rules (type: rate,
+      above) only ever counted tool-call VOLUME, and their own rationale
+      says so explicitly ("token budgets are not visible to keel's
+      enforcement hook and are intentionally NOT modeled"), because usage
+      lives in the model response, which keel's hook architecture never
+      saw. This rule closes that gap by reading REAL usage from a host's
+      own local record instead — a Claude Code session transcript's
+      message.usage fields, or an OpenCode session row's own cost/tokens_*
+      columns — never a network proxy. Two-phase by construction (see
+      packages/core/src/enforce/budget-tracker.ts): a Stop/PostToolUse-
+      equivalent hook measures spend and persists an over-budget flag; only
+      the NEXT PreToolUse call can ever deny, because Claude Code's Stop
+      hook is architecturally observe-only (it cannot block the turn that
+      just completed — docs/integration-guides/claude-code.md) — the same
+      "warn on first violation, persisted state blocks on repeat" shape
+      every other deny rule in this ruleset already uses. Shipped in
+      mode: observe, not enforcing: the model-string normalization this
+      depends on has a safety-critical failure mode (short aliases like
+      claude-sonnet-5/claude-opus-4-8/claude-fable-5, observed live on real
+      sessions on the machine this rule was built on, carry real non-zero
+      usage but must never be priced as if they matched an official dated
+      model ID) and needs to burn in against real traffic before it blocks
+      anything. max_tokens alone, no max_dollars, for the related reason:
+      a session using only aliased model strings correctly degrades its
+      dollar figure to unavailable (never a guessed/partial total), so a
+      rule keyed on max_dollars risks being a control that can never fire
+      on exactly the sessions observed live on this machine.
+    remediation: "Review the session's cumulative token usage; start a fresh session if the work has drifted, or raise max_tokens for a genuinely long one."
+    false_positives:
+      - "A long but legitimate large-refactor session — token spend correlates with session LENGTH, not with anything going wrong, the same false-positive shape the existing call-volume runaway-budget-* rules above already document for themselves."
+      - "A Claude Code transcript that cannot be read (missing/rotated file, permissions) degrades that measurement to the last confirmed state rather than asserting either verdict from zero data — see BudgetTracker.record()'s own comment. Surfaces as a distinct 'unavailable' audit entry, never a false block, but this rule's real hit rate depends on transcript readability."
+    message: "This session's measured LLM token spend exceeds max_tokens — possible runaway usage. Review before continuing, or raise the ceiling for a genuinely long session."
+
 `
 
 /**
