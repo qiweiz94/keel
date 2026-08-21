@@ -7224,6 +7224,330 @@ function applyAmbientConfig(specs, cwd, env = process.env, cache = new AmbientCo
   });
 }
 
+// ../core/src/enforce/command-normalizer.ts
+var MAX_INPUT_LEN = 4e3;
+var MAX_SUBCOMMANDS = 64;
+var MAX_TOKENS_PER_SUBCOMMAND = 256;
+var MAX_INTERPRETER_DEPTH = 1;
+var SHELL_INTERPRETERS = /* @__PURE__ */ new Set(["sh", "bash", "dash", "zsh", "ksh", "fish", "csh", "tcsh", "ash"]);
+var PYTHON_INTERPRETER_RE = /^python[0-9.]*$/;
+function classifyInterpreter(basename3) {
+  if (SHELL_INTERPRETERS.has(basename3)) return "shell";
+  if (PYTHON_INTERPRETER_RE.test(basename3)) return "python";
+  if (basename3 === "node" || basename3 === "nodejs") return "node";
+  if (/^perl[0-9.]*$/.test(basename3)) return "perl";
+  return null;
+}
+function interpreterFlags(kind) {
+  switch (kind) {
+    case "shell":
+      return ["-c"];
+    case "python":
+      return ["-c"];
+    case "node":
+      return ["-e", "--eval"];
+    case "perl":
+      return ["-e", "-E", "-p"];
+  }
+}
+function basename(path2) {
+  const parts = path2.split(/[/\\]/);
+  return parts[parts.length - 1] || path2;
+}
+function isQuoteChar(c) {
+  return c === '"' || c === "'";
+}
+function tokenize(text) {
+  const tokens = [];
+  let i = 0;
+  const n = text.length;
+  let current = null;
+  const pushSegment = (seg) => {
+    if (!current) current = [];
+    current.push(seg);
+  };
+  const endToken = () => {
+    if (current) {
+      tokens.push({ segments: current });
+      current = null;
+    }
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === " " || c === "	") {
+      endToken();
+      i++;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      const next = text[i + 1];
+      pushSegment({
+        text: next,
+        quoted: false,
+        hasSpace: false,
+        quoteChar: "",
+        escapedSpace: next === " " || next === "	"
+      });
+      i += 2;
+      continue;
+    }
+    if (isQuoteChar(c)) {
+      const quoteChar = c;
+      let j2 = i + 1;
+      let inner = "";
+      while (j2 < n && text[j2] !== quoteChar) {
+        if (quoteChar === '"' && text[j2] === "\\" && j2 + 1 < n && (text[j2 + 1] === '"' || text[j2 + 1] === "\\")) {
+          inner += text[j2 + 1];
+          j2 += 2;
+          continue;
+        }
+        inner += text[j2];
+        j2++;
+      }
+      const hasSpace = /[ \t]/.test(inner);
+      pushSegment({ text: inner, quoted: true, hasSpace, quoteChar });
+      i = j2 + 1;
+      continue;
+    }
+    let j = i;
+    let buf = "";
+    while (j < n && text[j] !== " " && text[j] !== "	" && !isQuoteChar(text[j]) && text[j] !== "\\") {
+      buf += text[j];
+      j++;
+    }
+    if (j === i) {
+      buf = text[j];
+      j++;
+    }
+    pushSegment({ text: buf, quoted: false, hasSpace: false, quoteChar: "" });
+    i = j;
+  }
+  endToken();
+  if (tokens.length > MAX_TOKENS_PER_SUBCOMMAND) tokens.length = MAX_TOKENS_PER_SUBCOMMAND;
+  return tokens;
+}
+var BUILTIN_VAR_DEFAULTS = { IFS: " " };
+var VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+function expandVars(text, dict) {
+  return text.replace(VAR_RE, (whole, braced, bare) => {
+    const name = braced || bare;
+    return Object.prototype.hasOwnProperty.call(dict, name) ? dict[name] : whole;
+  });
+}
+var ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+function renderToken(token, dict) {
+  let rendered = "";
+  let value = "";
+  for (const seg of token.segments) {
+    if (seg.quoted && seg.hasSpace) {
+      rendered += seg.quoteChar + seg.text + seg.quoteChar;
+      value += seg.text;
+    } else if (seg.quoted) {
+      const expanded = expandVars(seg.text, dict);
+      rendered += expanded;
+      value += expanded;
+    } else if (seg.escapedSpace) {
+      rendered += "\\" + seg.text;
+      value += seg.text;
+    } else {
+      const expanded = expandVars(seg.text, dict);
+      rendered += expanded;
+      value += expanded;
+    }
+  }
+  return { rendered, value };
+}
+var SEPARATORS = [
+  { token: "&&", re: /^&&/ },
+  { token: "||", re: /^\|\|/ },
+  { token: ";", re: /^;/ },
+  { token: "|", re: /^\|/ },
+  { token: "&", re: /^&/ },
+  { token: "\n", re: /^\n/ }
+];
+function splitTopLevel(raw) {
+  const parts = [];
+  let buf = "";
+  let i = 0;
+  const n = raw.length;
+  let quote = null;
+  while (i < n) {
+    const c = raw[i];
+    if (quote) {
+      buf += c;
+      if (c === quote && raw[i - 1] !== "\\") quote = null;
+      i++;
+      continue;
+    }
+    if (isQuoteChar(c)) {
+      quote = c;
+      buf += c;
+      i++;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      buf += c + raw[i + 1];
+      i += 2;
+      continue;
+    }
+    let matched = null;
+    for (const s of SEPARATORS) {
+      if (s.re.test(raw.slice(i))) {
+        matched = s.token;
+        break;
+      }
+    }
+    if (matched) {
+      parts.push({ text: buf, sepAfter: matched });
+      buf = "";
+      i += matched.length;
+      if (parts.length >= MAX_SUBCOMMANDS) break;
+      continue;
+    }
+    buf += c;
+    i++;
+  }
+  parts.push({ text: buf, sepAfter: "" });
+  return parts;
+}
+function normalizeSubcommand(rawSub, dict, depth) {
+  const rawTrimmed = rawSub.trim();
+  const rawTokens = tokenize(rawSub);
+  const rendered = rawTokens.map((t) => renderToken(t, dict));
+  let cut = 0;
+  const envAssignments = {};
+  while (cut < rendered.length) {
+    const m = ASSIGNMENT_RE.exec(rendered[cut].value);
+    if (!m) break;
+    const [, name, valRaw] = m;
+    const val = expandVars(valRaw, dict);
+    envAssignments[name] = val;
+    dict[name] = val;
+    cut++;
+  }
+  const commandTokens = rawTokens.slice(cut).map((t) => renderToken(t, dict));
+  const tokens = [...rendered.slice(0, cut), ...commandTokens];
+  const normalized = tokens.map((t) => t.rendered).join(" ");
+  const normalizedCommand = commandTokens.map((t) => t.rendered).join(" ");
+  const sub = {
+    raw: rawTrimmed,
+    tokens,
+    normalized,
+    normalizedCommand,
+    envAssignments
+  };
+  if (commandTokens.length > 0) {
+    const argv0 = commandTokens[0].value;
+    const kind = classifyInterpreter(basename(argv0));
+    if (basename(argv0) === "keel" && commandTokens[1]?.value === "run") {
+      let bodyIndex = 2;
+      if (commandTokens[bodyIndex]?.value === "--") bodyIndex++;
+      const bodyTokens = commandTokens.slice(bodyIndex);
+      if (bodyTokens.length > 0) {
+        const bodyValue = bodyTokens.length === 1 ? bodyTokens[0].value : bodyTokens.map((t) => t.rendered).join(" ");
+        sub.interpreterBody = bodyValue;
+        if (depth < MAX_INTERPRETER_DEPTH) {
+          sub.nested = normalizeCommand(bodyValue, depth + 1);
+        }
+      }
+    } else if (kind) {
+      const flags = interpreterFlags(kind);
+      for (let k = 1; k < commandTokens.length - 1; k++) {
+        const tok = commandTokens[k].value;
+        const isCodeFlag = flags.includes(tok) || kind === "shell" && /^-[a-z]*c$/.test(tok);
+        if (isCodeFlag) {
+          let bodyIndex = k + 1;
+          if (kind === "shell" && commandTokens[bodyIndex]?.value === "--") {
+            bodyIndex++;
+          }
+          const bodyToken = commandTokens[bodyIndex];
+          if (bodyToken) {
+            sub.interpreterBody = bodyToken.value;
+            if (kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
+              sub.nested = normalizeCommand(bodyToken.value, depth + 1);
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+  return sub;
+}
+var HEREDOC_START_RE = /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-[A-Za-z0-9_-]*)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g;
+function extractHeredocs(raw) {
+  const results = [];
+  HEREDOC_START_RE.lastIndex = 0;
+  let m;
+  let guard = 0;
+  while (guard < MAX_SUBCOMMANDS && (m = HEREDOC_START_RE.exec(raw))) {
+    guard++;
+    const interpToken = m[1];
+    const tabStrip = m[2] === "-";
+    const delim = m[3] ?? m[4] ?? m[5];
+    const kind = delim ? classifyInterpreter(basename(interpToken)) : null;
+    if (!kind) continue;
+    const opLineEnd = raw.indexOf("\n", HEREDOC_START_RE.lastIndex);
+    if (opLineEnd === -1) continue;
+    const bodyStart = opLineEnd + 1;
+    const rest = raw.slice(bodyStart);
+    const escapedDelim = delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const delimLineRe = new RegExp("^" + (tabStrip ? "\\t*" : "") + escapedDelim + "[ \\t]*$", "m");
+    const end = delimLineRe.exec(rest);
+    if (!end) continue;
+    const body = end.index > 0 ? rest.slice(0, end.index - 1) : "";
+    results.push({ kind, body });
+    HEREDOC_START_RE.lastIndex = bodyStart + end.index + end[0].length;
+  }
+  return results;
+}
+function normalizeCommand(raw, depth = 0) {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return { raw: raw || "", normalized: raw || "", subcommands: [], surfaces: [raw || ""], truncated: false };
+  }
+  if (raw.length > MAX_INPUT_LEN) {
+    return { raw, normalized: raw, subcommands: [], surfaces: [raw], truncated: true };
+  }
+  try {
+    const parts = splitTopLevel(raw);
+    const truncated = parts.length >= MAX_SUBCOMMANDS;
+    const dict = { ...BUILTIN_VAR_DEFAULTS };
+    const subcommands = parts.filter((p) => p.text.trim().length > 0).map((p) => normalizeSubcommand(p.text, dict, depth));
+    let normalizedFull = "";
+    let si = 0;
+    for (const part of parts) {
+      if (part.text.trim().length === 0) {
+        normalizedFull += part.sepAfter;
+        continue;
+      }
+      normalizedFull += subcommands[si].normalized + part.sepAfter;
+      si++;
+    }
+    const surfaces = [raw];
+    if (normalizedFull !== raw) surfaces.push(normalizedFull);
+    for (const sub of subcommands) {
+      if (sub.normalized && !surfaces.includes(sub.normalized)) surfaces.push(sub.normalized);
+      if (sub.normalizedCommand && sub.normalizedCommand !== sub.normalized && !surfaces.includes(sub.normalizedCommand)) {
+        surfaces.push(sub.normalizedCommand);
+      }
+      if (sub.interpreterBody && !surfaces.includes(sub.interpreterBody)) surfaces.push(sub.interpreterBody);
+      if (sub.nested) {
+        for (const s of sub.nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
+      }
+    }
+    for (const hd of extractHeredocs(raw)) {
+      if (!surfaces.includes(hd.body)) surfaces.push(hd.body);
+      if (hd.kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
+        const nested = normalizeCommand(hd.body, depth + 1);
+        for (const s of nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
+      }
+    }
+    return { raw, normalized: normalizedFull, subcommands, surfaces, truncated };
+  } catch {
+    return { raw, normalized: raw, subcommands: [], surfaces: [raw], truncated: true };
+  }
+}
+
 // ../core/src/enforce/package-verifier.ts
 var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
 var MANAGER_ECOSYSTEM2 = {
@@ -7341,7 +7665,7 @@ var WATCHED_INLINE_ENV_VARS = /* @__PURE__ */ new Set([
   "GOPROXY"
 ]);
 var QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun|pip3?|uv|poetry|cargo|go)\b/;
-function tokenize(segment) {
+function tokenize2(segment) {
   const tokens = [];
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
   let m;
@@ -7420,7 +7744,7 @@ function parsePipSpec(tok) {
   return { name, requestedVersion: version || void 0 };
 }
 function extractSegmentInstalls(segment) {
-  const tokens = tokenize(segment);
+  const tokens = tokenize2(segment);
   let i = 0;
   let inlineEnv;
   while (i < tokens.length && (tokens[i] === "sudo" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) {
@@ -7435,8 +7759,8 @@ function extractSegmentInstalls(segment) {
     i++;
   }
   if (i >= tokens.length) return [];
-  const pyBase = tokens[i].split("/").pop();
-  if ((pyBase === "python" || pyBase === "python3") && tokens[i + 1] === "-m" && (tokens[i + 2] === "pip" || tokens[i + 2] === "pip3")) {
+  const pyBase = tokens[i].split("/").pop() ?? "";
+  if (PYTHON_INTERPRETER_RE.test(pyBase) && tokens[i + 1] === "-m" && (tokens[i + 2] === "pip" || tokens[i + 2] === "pip3")) {
     i += 2;
   }
   const manager = managerFromToken(tokens[i]);
@@ -7941,329 +8265,6 @@ function decidePackageAction(results, ageThresholdDays) {
   const confusion = results.find((r) => r.dependencyConfusionRisk);
   if (confusion) return { reason: "dependency_confusion", message: buildDependencyConfusionMessage(confusion), result: confusion };
   return { reason: "ok", message: "All installed packages verified against their package registries." };
-}
-
-// ../core/src/enforce/command-normalizer.ts
-var MAX_INPUT_LEN = 4e3;
-var MAX_SUBCOMMANDS = 64;
-var MAX_TOKENS_PER_SUBCOMMAND = 256;
-var MAX_INTERPRETER_DEPTH = 1;
-var SHELL_INTERPRETERS = /* @__PURE__ */ new Set(["sh", "bash", "dash", "zsh", "ksh", "fish", "csh", "tcsh", "ash"]);
-function classifyInterpreter(basename3) {
-  if (SHELL_INTERPRETERS.has(basename3)) return "shell";
-  if (/^python[0-9.]*$/.test(basename3)) return "python";
-  if (basename3 === "node" || basename3 === "nodejs") return "node";
-  if (/^perl[0-9.]*$/.test(basename3)) return "perl";
-  return null;
-}
-function interpreterFlags(kind) {
-  switch (kind) {
-    case "shell":
-      return ["-c"];
-    case "python":
-      return ["-c"];
-    case "node":
-      return ["-e", "--eval"];
-    case "perl":
-      return ["-e", "-E", "-p"];
-  }
-}
-function basename(path2) {
-  const parts = path2.split(/[/\\]/);
-  return parts[parts.length - 1] || path2;
-}
-function isQuoteChar(c) {
-  return c === '"' || c === "'";
-}
-function tokenize2(text) {
-  const tokens = [];
-  let i = 0;
-  const n = text.length;
-  let current = null;
-  const pushSegment = (seg) => {
-    if (!current) current = [];
-    current.push(seg);
-  };
-  const endToken = () => {
-    if (current) {
-      tokens.push({ segments: current });
-      current = null;
-    }
-  };
-  while (i < n) {
-    const c = text[i];
-    if (c === " " || c === "	") {
-      endToken();
-      i++;
-      continue;
-    }
-    if (c === "\\" && i + 1 < n) {
-      const next = text[i + 1];
-      pushSegment({
-        text: next,
-        quoted: false,
-        hasSpace: false,
-        quoteChar: "",
-        escapedSpace: next === " " || next === "	"
-      });
-      i += 2;
-      continue;
-    }
-    if (isQuoteChar(c)) {
-      const quoteChar = c;
-      let j2 = i + 1;
-      let inner = "";
-      while (j2 < n && text[j2] !== quoteChar) {
-        if (quoteChar === '"' && text[j2] === "\\" && j2 + 1 < n && (text[j2 + 1] === '"' || text[j2 + 1] === "\\")) {
-          inner += text[j2 + 1];
-          j2 += 2;
-          continue;
-        }
-        inner += text[j2];
-        j2++;
-      }
-      const hasSpace = /[ \t]/.test(inner);
-      pushSegment({ text: inner, quoted: true, hasSpace, quoteChar });
-      i = j2 + 1;
-      continue;
-    }
-    let j = i;
-    let buf = "";
-    while (j < n && text[j] !== " " && text[j] !== "	" && !isQuoteChar(text[j]) && text[j] !== "\\") {
-      buf += text[j];
-      j++;
-    }
-    if (j === i) {
-      buf = text[j];
-      j++;
-    }
-    pushSegment({ text: buf, quoted: false, hasSpace: false, quoteChar: "" });
-    i = j;
-  }
-  endToken();
-  if (tokens.length > MAX_TOKENS_PER_SUBCOMMAND) tokens.length = MAX_TOKENS_PER_SUBCOMMAND;
-  return tokens;
-}
-var BUILTIN_VAR_DEFAULTS = { IFS: " " };
-var VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
-function expandVars(text, dict) {
-  return text.replace(VAR_RE, (whole, braced, bare) => {
-    const name = braced || bare;
-    return Object.prototype.hasOwnProperty.call(dict, name) ? dict[name] : whole;
-  });
-}
-var ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
-function renderToken(token, dict) {
-  let rendered = "";
-  let value = "";
-  for (const seg of token.segments) {
-    if (seg.quoted && seg.hasSpace) {
-      rendered += seg.quoteChar + seg.text + seg.quoteChar;
-      value += seg.text;
-    } else if (seg.quoted) {
-      const expanded = expandVars(seg.text, dict);
-      rendered += expanded;
-      value += expanded;
-    } else if (seg.escapedSpace) {
-      rendered += "\\" + seg.text;
-      value += seg.text;
-    } else {
-      const expanded = expandVars(seg.text, dict);
-      rendered += expanded;
-      value += expanded;
-    }
-  }
-  return { rendered, value };
-}
-var SEPARATORS = [
-  { token: "&&", re: /^&&/ },
-  { token: "||", re: /^\|\|/ },
-  { token: ";", re: /^;/ },
-  { token: "|", re: /^\|/ },
-  { token: "&", re: /^&/ },
-  { token: "\n", re: /^\n/ }
-];
-function splitTopLevel(raw) {
-  const parts = [];
-  let buf = "";
-  let i = 0;
-  const n = raw.length;
-  let quote = null;
-  while (i < n) {
-    const c = raw[i];
-    if (quote) {
-      buf += c;
-      if (c === quote && raw[i - 1] !== "\\") quote = null;
-      i++;
-      continue;
-    }
-    if (isQuoteChar(c)) {
-      quote = c;
-      buf += c;
-      i++;
-      continue;
-    }
-    if (c === "\\" && i + 1 < n) {
-      buf += c + raw[i + 1];
-      i += 2;
-      continue;
-    }
-    let matched = null;
-    for (const s of SEPARATORS) {
-      if (s.re.test(raw.slice(i))) {
-        matched = s.token;
-        break;
-      }
-    }
-    if (matched) {
-      parts.push({ text: buf, sepAfter: matched });
-      buf = "";
-      i += matched.length;
-      if (parts.length >= MAX_SUBCOMMANDS) break;
-      continue;
-    }
-    buf += c;
-    i++;
-  }
-  parts.push({ text: buf, sepAfter: "" });
-  return parts;
-}
-function normalizeSubcommand(rawSub, dict, depth) {
-  const rawTrimmed = rawSub.trim();
-  const rawTokens = tokenize2(rawSub);
-  const rendered = rawTokens.map((t) => renderToken(t, dict));
-  let cut = 0;
-  const envAssignments = {};
-  while (cut < rendered.length) {
-    const m = ASSIGNMENT_RE.exec(rendered[cut].value);
-    if (!m) break;
-    const [, name, valRaw] = m;
-    const val = expandVars(valRaw, dict);
-    envAssignments[name] = val;
-    dict[name] = val;
-    cut++;
-  }
-  const commandTokens = rawTokens.slice(cut).map((t) => renderToken(t, dict));
-  const tokens = [...rendered.slice(0, cut), ...commandTokens];
-  const normalized = tokens.map((t) => t.rendered).join(" ");
-  const normalizedCommand = commandTokens.map((t) => t.rendered).join(" ");
-  const sub = {
-    raw: rawTrimmed,
-    tokens,
-    normalized,
-    normalizedCommand,
-    envAssignments
-  };
-  if (commandTokens.length > 0) {
-    const argv0 = commandTokens[0].value;
-    const kind = classifyInterpreter(basename(argv0));
-    if (basename(argv0) === "keel" && commandTokens[1]?.value === "run") {
-      let bodyIndex = 2;
-      if (commandTokens[bodyIndex]?.value === "--") bodyIndex++;
-      const bodyTokens = commandTokens.slice(bodyIndex);
-      if (bodyTokens.length > 0) {
-        const bodyValue = bodyTokens.length === 1 ? bodyTokens[0].value : bodyTokens.map((t) => t.rendered).join(" ");
-        sub.interpreterBody = bodyValue;
-        if (depth < MAX_INTERPRETER_DEPTH) {
-          sub.nested = normalizeCommand(bodyValue, depth + 1);
-        }
-      }
-    } else if (kind) {
-      const flags = interpreterFlags(kind);
-      for (let k = 1; k < commandTokens.length - 1; k++) {
-        const tok = commandTokens[k].value;
-        const isCodeFlag = flags.includes(tok) || kind === "shell" && /^-[a-z]*c$/.test(tok);
-        if (isCodeFlag) {
-          let bodyIndex = k + 1;
-          if (kind === "shell" && commandTokens[bodyIndex]?.value === "--") {
-            bodyIndex++;
-          }
-          const bodyToken = commandTokens[bodyIndex];
-          if (bodyToken) {
-            sub.interpreterBody = bodyToken.value;
-            if (kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
-              sub.nested = normalizeCommand(bodyToken.value, depth + 1);
-            }
-          }
-          break;
-        }
-      }
-    }
-  }
-  return sub;
-}
-var HEREDOC_START_RE = /(?:^|[;&|\n]|&&|\|\|)[ \t]*([A-Za-z0-9_./\\-]+)(?:[ \t]+-[A-Za-z0-9_-]*)*[ \t]*<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g;
-function extractHeredocs(raw) {
-  const results = [];
-  HEREDOC_START_RE.lastIndex = 0;
-  let m;
-  let guard = 0;
-  while (guard < MAX_SUBCOMMANDS && (m = HEREDOC_START_RE.exec(raw))) {
-    guard++;
-    const interpToken = m[1];
-    const tabStrip = m[2] === "-";
-    const delim = m[3] ?? m[4] ?? m[5];
-    const kind = delim ? classifyInterpreter(basename(interpToken)) : null;
-    if (!kind) continue;
-    const opLineEnd = raw.indexOf("\n", HEREDOC_START_RE.lastIndex);
-    if (opLineEnd === -1) continue;
-    const bodyStart = opLineEnd + 1;
-    const rest = raw.slice(bodyStart);
-    const escapedDelim = delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const delimLineRe = new RegExp("^" + (tabStrip ? "\\t*" : "") + escapedDelim + "[ \\t]*$", "m");
-    const end = delimLineRe.exec(rest);
-    if (!end) continue;
-    const body = end.index > 0 ? rest.slice(0, end.index - 1) : "";
-    results.push({ kind, body });
-    HEREDOC_START_RE.lastIndex = bodyStart + end.index + end[0].length;
-  }
-  return results;
-}
-function normalizeCommand(raw, depth = 0) {
-  if (typeof raw !== "string" || raw.length === 0) {
-    return { raw: raw || "", normalized: raw || "", subcommands: [], surfaces: [raw || ""], truncated: false };
-  }
-  if (raw.length > MAX_INPUT_LEN) {
-    return { raw, normalized: raw, subcommands: [], surfaces: [raw], truncated: true };
-  }
-  try {
-    const parts = splitTopLevel(raw);
-    const truncated = parts.length >= MAX_SUBCOMMANDS;
-    const dict = { ...BUILTIN_VAR_DEFAULTS };
-    const subcommands = parts.filter((p) => p.text.trim().length > 0).map((p) => normalizeSubcommand(p.text, dict, depth));
-    let normalizedFull = "";
-    let si = 0;
-    for (const part of parts) {
-      if (part.text.trim().length === 0) {
-        normalizedFull += part.sepAfter;
-        continue;
-      }
-      normalizedFull += subcommands[si].normalized + part.sepAfter;
-      si++;
-    }
-    const surfaces = [raw];
-    if (normalizedFull !== raw) surfaces.push(normalizedFull);
-    for (const sub of subcommands) {
-      if (sub.normalized && !surfaces.includes(sub.normalized)) surfaces.push(sub.normalized);
-      if (sub.normalizedCommand && sub.normalizedCommand !== sub.normalized && !surfaces.includes(sub.normalizedCommand)) {
-        surfaces.push(sub.normalizedCommand);
-      }
-      if (sub.interpreterBody && !surfaces.includes(sub.interpreterBody)) surfaces.push(sub.interpreterBody);
-      if (sub.nested) {
-        for (const s of sub.nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
-      }
-    }
-    for (const hd of extractHeredocs(raw)) {
-      if (!surfaces.includes(hd.body)) surfaces.push(hd.body);
-      if (hd.kind === "shell" && depth < MAX_INTERPRETER_DEPTH) {
-        const nested = normalizeCommand(hd.body, depth + 1);
-        for (const s of nested.surfaces) if (!surfaces.includes(s)) surfaces.push(s);
-      }
-    }
-    return { raw, normalized: normalizedFull, subcommands, surfaces, truncated };
-  } catch {
-    return { raw, normalized: raw, subcommands: [], surfaces: [raw], truncated: true };
-  }
 }
 
 // ../core/src/enforce/arg-utils.ts
