@@ -7435,6 +7435,10 @@ function extractSegmentInstalls(segment) {
     i++;
   }
   if (i >= tokens.length) return [];
+  const pyBase = tokens[i].split("/").pop();
+  if ((pyBase === "python" || pyBase === "python3") && tokens[i + 1] === "-m" && (tokens[i + 2] === "pip" || tokens[i + 2] === "pip3")) {
+    i += 2;
+  }
   const manager = managerFromToken(tokens[i]);
   if (!manager) return [];
   i++;

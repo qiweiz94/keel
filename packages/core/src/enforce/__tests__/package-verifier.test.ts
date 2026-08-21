@@ -840,6 +840,24 @@ describe('extractPackageInstalls: new ecosystems', () => {
     expect(extractPackageInstalls('go get')).toEqual([])
     expect(extractPackageInstalls('uv pip install')).toEqual([])
   })
+
+  it('detects python -m pip install / python3 -m pip install identically to a bare pip install', () => {
+    expect(extractPackageInstalls('python -m pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+    expect(extractPackageInstalls('python3 -m pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+    expect(extractPackageInstalls('python -m pip3 install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip3' })
+    expect(extractPackageInstalls('python -m pip install requests flask')).toHaveLength(2)
+    expect(extractPackageInstalls('python -m pip install requests==2.31.0')[0]).toMatchObject({ name: 'requests', requestedVersion: '==2.31.0' })
+  })
+
+  it('python -m pip install with no package args extracts nothing', () => {
+    expect(extractPackageInstalls('python -m pip install')).toEqual([])
+    expect(extractPackageInstalls('python -m pip install -r requirements.txt')).toEqual([])
+  })
+
+  it('does not misfire on unrelated python -m invocations', () => {
+    expect(extractPackageInstalls('python -m http.server')).toEqual([])
+    expect(extractPackageInstalls('python -m venv .venv')).toEqual([])
+  })
 })
 
 // ── finding 3a: flag-value tokens must not be misread as package names ──

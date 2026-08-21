@@ -414,6 +414,20 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
     i++
   }
   if (i >= tokens.length) return []
+  // `python -m pip install <pkg>` / `python3 -m pip install <pkg>` is a
+  // very common way agents actually invoke pip — route it through the
+  // exact same pip-handling logic as a bare `pip install`, rather than
+  // duplicating any pip-specific parsing. `managerFromToken('python')` is
+  // null by design (python itself is not a package manager), so this only
+  // consumes `python`/`python3` + `-m` as a 2-token prefix, leaving `i`
+  // pointing at `pip`/`pip3` — exactly where a bare invocation already
+  // starts, so every line below this (manager detection, the shared `i++`,
+  // matchAddSubcommand) runs completely unmodified.
+  const pyBase = tokens[i].split('/').pop()
+  if ((pyBase === 'python' || pyBase === 'python3') && tokens[i + 1] === '-m'
+    && (tokens[i + 2] === 'pip' || tokens[i + 2] === 'pip3')) {
+    i += 2
+  }
   const manager = managerFromToken(tokens[i])
   if (!manager) return []
   i++
@@ -510,8 +524,11 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
  * extractor; a real shell parse would be needed to unwrap it. This applies
  * equally to every ecosystem covered here, not just npm.
  *
- * Deliberately out of scope: `python -m pip install`, `cargo install`
- * (binary install — a different cargo subcommand than `add`).
+ * Deliberately out of scope: `cargo install` (binary install — a different
+ * cargo subcommand than `add`). `python -m pip install`/`python3 -m pip
+ * install` ARE covered — see the `isPythonModulePip` prefix check in
+ * `extractSegmentInstalls`, routed through the same pip-handling logic as
+ * a bare `pip install`.
  *
  * Ambient config files (`.npmrc`, `pip.conf`, `.cargo/config.toml`,
  * `GOPRIVATE`) that mark a name as private WITHOUT any command-line signal
