@@ -38,6 +38,23 @@ reasoning text. They are a gate, not an anti-virus engine:
   the common encodings they care about, and sensitive operations should be
   gated by rule `action: prompt` (human approval) rather than pattern-matching
   alone. **Measured, not asserted** — see the table below.
+- **`keel check` uses a simpler, less-hardened command-matching path than the
+  live enforcement path.** `keel check`/`keel check --ci` (the CI/pre-commit
+  convenience command) routes through the legacy `PolicyEngine`
+  (`packages/core/src/policy-engine.ts`), which matches the raw command
+  string with no preprocessing. It does **not** get any of
+  `command-normalizer.ts`'s hardening that `keel hook <host>`/`keel evaluate`/
+  `keel daemon` (the real per-call enforcement path) apply: no quote-strip,
+  no compound-command splitting, no inline variable expansion, no `${IFS}`
+  defeat protection, no interpreter-body extraction, no `keel run` wrapper-
+  unwrapping. Every obfuscation-bypass finding documented on this page
+  (quote-strip, `bash -lc` bundled flags, `${IFS}` word-splitting, Python
+  aliasing) that is FIXED on the real enforcement path is **still open**
+  against `keel check` specifically, since it never runs through the fixed
+  code at all. Do not rely on `keel check` for the same evasion resistance
+  as `keel hook`/`keel evaluate`/`keel daemon` — it's a fast, convenient
+  gate for CI/pre-commit, not the hardened one. See `docs/integrations.md`
+  for which command each host actually calls in production.
 
 ### Measured bypass resistance of the Tier-1 floor
 
@@ -156,18 +173,25 @@ Results (full detail and exact inputs in `session/v1/AUDIT.md`):
   literal `${IFS}` inside a quoted argument (e.g. `echo "... ${IFS}"`)
   still allows, no new false positive. Guarded by
   `shell-normalize-bypass.test.ts` and promoted to `control-catch` probes
-  in `scripts/redteam/round2.mjs`. ⚠️ **Two narrower forms remain open,
-  measured not assumed:** `rm"${IFS}"-rf"${IFS}"/` / `rm'${IFS}'-rf'${IFS}'/`
-  (quote-wrapped — `renderToken`'s whitespace-free-quoted branch strips
-  quotes but never calls `expandVars`, unlike the unquoted branch) and
-  `rm${IFS:0:1}-rf${IFS:0:1}/` (a parameter-expansion modifier —
-  `VAR_RE` requires `}` immediately after the bare name, so `${IFS:0:1}`,
-  `${IFS%x}`, `${IFS:-x}` never match). Both allow today; both are new
-  `bypass-attempt` probes in `scripts/redteam/round2.mjs` for visibility.
-  Closing the quoted form would mean expanding inside double-quoted
-  segments generally (real shell semantics: `"$X"` expands, `'$X'` does
-  not) — a wider, more invasive change than this lane's brief, deliberately
-  left open rather than rushed.
+  in `scripts/redteam/round2.mjs`. ✅ **Quote-wrapped form now closed
+  (floor-hardening lane).** `rm"${IFS}"-rf"${IFS}"/` and
+  `rm'${IFS}'-rf'${IFS}'/` previously allowed: `renderToken`'s
+  whitespace-free-quoted branch stripped quotes but never called
+  `expandVars`, unlike the unquoted branch. Fixed: the quoted branch now
+  expands too — deliberately not distinguishing single- from double-quote
+  (real shell semantics: `"$X"` expands, `'$X'` does not; this bounded,
+  floor-only matching surface treats both as obfuscation vectors, not real
+  variable data, since it's matching text a rule pattern sees, not
+  executing a shell). Verified: both quoted forms now deny via
+  `no-destructive-commands`. Guarded by `command-normalizer.test.ts` and
+  `scripts/redteam/round2.mjs`. ⚠️ **One narrower form remains open,
+  measured not assumed:** `rm${IFS:0:1}-rf${IFS:0:1}/` (a parameter-
+  expansion modifier — `VAR_RE` requires `}` immediately after the bare
+  name, so `${IFS:0:1}`, `${IFS%x}`, `${IFS:-x}` never match, quoted or
+  not). Allows today; a `bypass-attempt` probe in `scripts/redteam/
+  round2.mjs` for visibility. Closing it means generalizing `VAR_RE` to
+  recognize parameter-expansion modifiers — deliberately left open rather
+  than rushed into this lane's narrower brief.
 
 **M5 lane (2026-08-12): two `FlowTracker` fixes for `no-exfil-flow`, table
 cell above left as the historical record of the dated sweep it came from,
