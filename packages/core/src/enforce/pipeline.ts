@@ -1544,6 +1544,14 @@ export class EnforcementPipeline {
 
       if (rule.type === 'verification' || rule.type === 'claim') {
         this.verificationTracker.observeTrigger(rule, input)
+        // Race fix (docs/integrations.md's "known gap"): record the
+        // obligation's generation right now, BEFORE this call runs, so that
+        // if it turns out to be the satisfying command, markVerificationSatisfied()
+        // (called later from the post-hook, after this command's exit code is
+        // known) can tell whether a LATER edit re-armed the obligation while
+        // this command was still executing — and if so, refuse to discharge
+        // a generation this run started before and never actually covered.
+        this.verificationTracker.observeSatisfyStart(rule, input)
       }
 
       // Check flow/IFC rules (Tier 6)
