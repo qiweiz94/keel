@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "purpose": "Manually-maintained snapshot of real Anthropic model pricing, used by scripts/check-price-table-drift.mjs to detect when packages/core/src/enforce/budget/claude-transcript.ts's DEFAULT_PRICE_TABLE has drifted from what the vendor actually charges.",
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing — 'Model pricing' table",
+    "last_verified": "2026-08-21",
+    "unit": "USD per million tokens (MTok); cacheWritePerMTok is the 5-minute cache-write rate (the same duration DEFAULT_PRICE_TABLE's own fallback approximates)",
+    "update_procedure": "No live fetch. A human re-checks the source URL above against this file's `models` object and hand-edits any changed number, on some periodic cadence this repo does not yet automate. See the script's own header comment for why a live fetch isn't wired in here.",
+    "deliberately_incomplete": "Only models whose EXACT dated model-ID string (the form a real Claude Code transcript emits, e.g. 'claude-haiku-4-5-20251001') is confirmed are listed below. Sonnet 5 and Opus 5 pricing tiers are public, but this repo has no confirmed dated-ID string for them yet (only the short alias 'claude-sonnet-5', which claude-transcript.ts's own tests document as NOT a valid lookup key) — adding a guessed dated ID here would recreate exactly the guessing DEFAULT_PRICE_TABLE's exact-match design exists to prevent. Add a model only once its real dated ID has been observed in a live transcript or confirmed from Anthropic's own model list."
+  },
+  "models": {
+    "claude-haiku-4-5-20251001": {
+      "inputPerMTok": 1,
+      "outputPerMTok": 5,
+      "cacheWritePerMTok": 1.25,
+      "cacheReadPerMTok": 0.1
+    }
+  }
+}
