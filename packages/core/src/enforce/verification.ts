@@ -89,11 +89,31 @@ interface PendingVerification {
 export class VerificationTracker {
   private pending = new Map<string, PendingVerification>()
   private generations = new Map<string, number>()
+  // Generation recorded when a satisfy-matching command was OBSERVED TO
+  // START — the pre-hook `evaluate()` call, well before the command's exit
+  // code is known. `markSatisfied()` (the post-hook, called only after a
+  // zero exit) compares this "generation in effect when the run started"
+  // against the obligation's CURRENT generation. Without this, a test run
+  // that starts, then has a later edit land WHILE it is still executing (the
+  // edit's PreToolUse fires and re-arms the obligation between this test's
+  // own PreToolUse and PostToolUse), can still discharge the obligation that
+  // later edit created — a stale pass clearing an edit it never covered. See
+  // docs/integrations.md's "known gap" note this closes.
+  //
+  // Keyed per specific invocation (rule+cwd+session+turn), not just
+  // rule+cwd like `pending`/`generations`: two overlapping test runs against
+  // the same obligation (e.g. two sessions in the same cwd) must not
+  // clobber each other's start marker.
+  private satisfyStarts = new Map<string, number>()
 
   constructor(private readonly stateManager?: StateManager) {}
 
   private key(rule: KeelRule, input: EnforceInput): string {
     return `${rule.id}:${input.cwd}`
+  }
+
+  private satisfyKey(rule: KeelRule, input: EnforceInput): string {
+    return `${rule.id}:${input.cwd}:${input.session_id}:${input.turn_number}`
   }
 
   observeTrigger(rule: KeelRule, input: EnforceInput): void {
@@ -112,11 +132,41 @@ export class VerificationTracker {
     this.stateManager?.setVerification(key, { createdAt: Date.now(), generation })
   }
 
+  /**
+   * Record the obligation's generation AT THE MOMENT a satisfy-matching
+   * command is observed to start (the pre-hook `evaluate()` call, before the
+   * command runs or its exit code is known). Called unconditionally for
+   * every obligation rule on every call that matches `rule.satisfy` — a
+   * no-op if no obligation is currently armed (generation 0), which is
+   * exactly right: a run that starts with nothing pending and later has an
+   * edit arm generation 1 during its execution must not discharge that
+   * generation either.
+   */
+  observeSatisfyStart(rule: KeelRule, input: EnforceInput): void {
+    if (!isObligationRule(rule) || !matches(rule.satisfy, input)) return
+    const key = this.key(rule, input)
+    const previous = this.stateManager?.verification[key]
+    const generation = Math.max(this.generations.get(key) || 0, previous?.generation || 0)
+    this.satisfyStarts.set(this.satisfyKey(rule, input), generation)
+  }
+
   markSatisfied(rule: KeelRule, input: EnforceInput): void {
     if (!isObligationRule(rule) || !matches(rule.satisfy, input)) return
     if (this.isFakeSatisfy(input)) return
-    this.pending.delete(this.key(rule, input))
-    this.stateManager?.clearVerification(this.key(rule, input))
+    const key = this.key(rule, input)
+    const satisfyKey = this.satisfyKey(rule, input)
+    const startGeneration = this.satisfyStarts.get(satisfyKey)
+    this.satisfyStarts.delete(satisfyKey)
+    if (startGeneration !== undefined) {
+      const previous = this.stateManager?.verification[key]
+      const currentGeneration = Math.max(this.generations.get(key) || 0, previous?.generation || 0)
+      // A later edit re-armed (bumped) the obligation AFTER this run started
+      // — this run predates that edit and never actually covered it. Leave
+      // the obligation armed at its current generation; do not discharge.
+      if (currentGeneration > startGeneration) return
+    }
+    this.pending.delete(key)
+    this.stateManager?.clearVerification(key)
   }
 
   /**
@@ -193,5 +243,6 @@ export class VerificationTracker {
   clear(): void {
     this.pending.clear()
     this.generations.clear()
+    this.satisfyStarts.clear()
   }
 }

@@ -128,6 +128,38 @@ describe('Verification tracker (agentic tool names)', () => {
     expect((await p.evaluate(input('bash', { command: 'git push origin main' }))).action).toBe('allow')
   })
 
+  it('a test run started before a later edit must not discharge that edit\'s obligation (race)', async () => {
+    const p = makeVerifyPipeline('vf-race')
+    // Edit #1 arms the obligation at generation 1.
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    // The test's own PreToolUse fires ("the run starts") — it observes
+    // generation 1 as current at the moment it began.
+    await p.evaluate(input('bash', { command: 'npm run test' }))
+    // A SECOND edit lands WHILE that run is still executing (in the real
+    // race, this happens between the run's PreToolUse and PostToolUse) —
+    // re-arms the obligation to generation 2.
+    await p.evaluate(input('write', { filePath: 'src/b.ts', content: 'y' }))
+    // The run finishes and its post-hook fires markVerificationSatisfied.
+    // This run started before edit #2 and never actually covered it, so it
+    // must NOT clear generation 2's obligation.
+    p.markVerificationSatisfied(input('bash', { command: 'npm run test' }))
+    // Still armed: the push boundary still fires (warn on the first hit),
+    // proving the obligation from edit #2 was not wrongly discharged.
+    expect((await p.evaluate(input('bash', { command: 'git push origin main' }))).action).toBe('warn')
+  })
+
+  it('normal order still discharges: edit, then a test that starts and finishes after it', async () => {
+    const p = makeVerifyPipeline('vf-race-normal')
+    // Edit arms the obligation.
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    // The test starts strictly AFTER the edit and no further edit lands
+    // before it finishes — the common, correct-order case.
+    await p.evaluate(input('bash', { command: 'npm run test' }))
+    p.markVerificationSatisfied(input('bash', { command: 'npm run test' }))
+    // Discharged: no boundary warning left to fire.
+    expect((await p.evaluate(input('bash', { command: 'git push origin main' }))).action).toBe('allow')
+  })
+
   it('pathFromPatch extracts the target from Add/Update/Delete/Move markers', () => {
     expect(pathFromPatch('*** Add File: src/x.ts\n+code\n')).toBe('src/x.ts')
     expect(pathFromPatch('*** Update File: docs/readme.md\n-old\n+new\n')).toBe('docs/readme.md')
