@@ -65,10 +65,10 @@ const probes = [
 
   // NEW bypass attempts — break argv0 interpreter identification or the
   // literal `shutil.rmtree` token the floor regex requires:
-  { group: 'interpreter-body', kind: 'bypass-attempt',
-    cmd: `python3 -c "__import__('shutil').rmtree('/')"`, note: 'alias: no literal shutil.rmtree token' },
-  { group: 'interpreter-body', kind: 'bypass-attempt',
-    cmd: `python3 -c "getattr(__import__('shutil'),'rmtree')('/')"`, note: 'getattr alias' },
+  { group: 'interpreter-body', kind: 'control-catch',
+    cmd: `python3 -c "__import__('shutil').rmtree('/')"`, note: 'FIXED (M6-fix): no-destructive-interpreter-body match widened to also accept __import__(\'shutil\') in place of a plain shutil name; denies' },
+  { group: 'interpreter-body', kind: 'control-catch',
+    cmd: `python3 -c "getattr(__import__('shutil'),'rmtree')('/')"`, note: 'FIXED (M6-fix): no-destructive-interpreter-body match widened to also accept getattr(<module>, \'rmtree\')(...) in place of dot notation; denies' },
   { group: 'interpreter-body', kind: 'bypass-attempt',
     cmd: `env python3 -c "import shutil; shutil.rmtree('/')"`, note: 'env prefix breaks argv0=python3' },
   { group: 'interpreter-body', kind: 'bypass-attempt',
@@ -93,10 +93,10 @@ const probes = [
     cmd: `rm\${IFS}-rf\${IFS}/`, note: 'FIXED (A2 IFS seed): was a DISCLOSED miss; command-normalizer.ts now seeds expandVars with a known-default IFS=" " so this normalizes to "rm -rf /" and denies' },
   { group: 'destructive-commands', kind: 'control-catch',
     cmd: `rm\$IFS-rf\$IFS/`, note: 'FIXED (A2 IFS seed): unbraced form, same VAR_RE, same dict entry' },
-  { group: 'destructive-commands', kind: 'bypass-attempt',
-    cmd: `rm"\${IFS}"-rf"\${IFS}"/`, note: 'IFS word-split, DOUBLE-quoted — DISCLOSED residual: renderToken only calls expandVars in the unquoted branch, so a whitespace-free double-quoted run is stripped of its quotes but never expanded' },
-  { group: 'destructive-commands', kind: 'bypass-attempt',
-    cmd: `rm'\${IFS}'-rf'\${IFS}'/`, note: 'IFS word-split, SINGLE-quoted — DISCLOSED residual, same cause as the double-quoted form' },
+  { group: 'destructive-commands', kind: 'control-catch',
+    cmd: `rm"\${IFS}"-rf"\${IFS}"/`, note: 'FIXED (M6-fix): renderToken now calls expandVars on the quoted-run branch too, not just the unquoted branch, so this normalizes to "rm -rf /" and denies' },
+  { group: 'destructive-commands', kind: 'control-catch',
+    cmd: `rm'\${IFS}'-rf'\${IFS}'/`, note: 'FIXED (M6-fix): same quoted-run expandVars fix as the double-quoted form; denies' },
   { group: 'destructive-commands', kind: 'bypass-attempt',
     cmd: `rm\${IFS:0:1}-rf\${IFS:0:1}/`, note: 'IFS with a parameter-expansion modifier — DISCLOSED residual: VAR_RE requires "}" immediately after the bare name, so ${IFS:0:1}/${IFS%x}/${IFS:-x} never match and never resolve' },
 
