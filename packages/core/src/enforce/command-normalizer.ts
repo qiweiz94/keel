@@ -326,9 +326,21 @@ function renderToken(token: Token, dict: Record<string, string>): NormalizedToke
       value += seg.text
     } else if (seg.quoted) {
       // Whitespace-free quoting only ever obfuscates a token
-      // (`r"m"` -> `rm`, `"--force"` -> `--force`); strip it.
-      rendered += seg.text
-      value += seg.text
+      // (`r"m"` -> `rm`, `"--force"` -> `--force`); strip it. Also expand
+      // any ${VAR}/$VAR reference inside, same as the unquoted branch
+      // below: a quoted "${IFS}"/'${IFS}' segment previously had its
+      // quotes stripped here but the variable reference itself was never
+      // resolved, leaving the literal text `${IFS}` on the matching
+      // surface and evading no-destructive-commands the same way the
+      // unquoted form did before BUILTIN_VAR_DEFAULTS seeded IFS. Real
+      // shell semantics would expand inside double quotes but not single
+      // quotes; this bounded, floor-only expansion deliberately does not
+      // distinguish the two (both are obfuscation vectors for this
+      // regex-matching surface, not real variable data), consistent with
+      // how the unquoted branch already treats both.
+      const expanded = expandVars(seg.text, dict)
+      rendered += expanded
+      value += expanded
     } else if (seg.escapedSpace) {
       // A backslash-escaped space/tab is DATA inside this token, not a word
       // boundary — but normalizeSubcommand joins tokens' `rendered` with a

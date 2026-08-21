@@ -8049,8 +8049,9 @@ function renderToken(token, dict) {
       rendered += seg.quoteChar + seg.text + seg.quoteChar;
       value += seg.text;
     } else if (seg.quoted) {
-      rendered += seg.text;
-      value += seg.text;
+      const expanded = expandVars(seg.text, dict);
+      rendered += expanded;
+      value += expanded;
     } else if (seg.escapedSpace) {
       rendered += "\\" + seg.text;
       value += seg.text;
@@ -12000,7 +12001,7 @@ rules:
 
   - id: no-destructive-interpreter-body
     type: command
-    match: 'shutil[.]rmtree[(][ ]*[''"]?/[''"]?[ ]*[,)]|shutil[.]rmtree[(][ ]*[''"]?~/?[''"]?[ ]*[,)]|os[.]system[(][ ]*[''"][^''"]*rm[ ]+-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[ ]+(/|~)|subprocess[.](run|call|Popen|check_call|check_output)[(][ ]*[''"][^''"]*rm[ ]+-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[ ]+(/|~)|subprocess[.](run|call|Popen|check_call|check_output)[(][^)]*[''"]rm[''"][^)]*[''"]-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[''"][^)]*[''"](/|~)[''"]|(rmSync|rmdirSync)[(][ ]*[''"]?/[''"]?[ ]*[,)]|(rmSync|rmdirSync)[(][ ]*[''"]?~/?[''"]?[ ]*[,)]|os[.]remove[(][ ]*[''"]?/[''"]?[ ]*[,)]'
+    match: '(shutil|__import__[(][ ]*[''"]shutil[''"][ ]*[)])[.]rmtree[(][ ]*[''"]?/[''"]?[ ]*[,)]|(shutil|__import__[(][ ]*[''"]shutil[''"][ ]*[)])[.]rmtree[(][ ]*[''"]?~/?[''"]?[ ]*[,)]|getattr[(][ ]*(shutil|__import__[(][ ]*[''"]shutil[''"][ ]*[)])[ ]*,[ ]*[''"]rmtree[''"][ ]*[)][(][ ]*[''"]?/[''"]?[ ]*[,)]|getattr[(][ ]*(shutil|__import__[(][ ]*[''"]shutil[''"][ ]*[)])[ ]*,[ ]*[''"]rmtree[''"][ ]*[)][(][ ]*[''"]?~/?[''"]?[ ]*[,)]|os[.]system[(][ ]*[''"][^''"]*rm[ ]+-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[ ]+(/|~)|subprocess[.](run|call|Popen|check_call|check_output)[(][ ]*[''"][^''"]*rm[ ]+-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[ ]+(/|~)|subprocess[.](run|call|Popen|check_call|check_output)[(][^)]*[''"]rm[''"][^)]*[''"]-[a-zA-Z-]*r[a-zA-Z-]*f[a-zA-Z-]*[''"][^)]*[''"](/|~)[''"]|(rmSync|rmdirSync)[(][ ]*[''"]?/[''"]?[ ]*[,)]|(rmSync|rmdirSync)[(][ ]*[''"]?~/?[''"]?[ ]*[,)]|os[.]remove[(][ ]*[''"]?/[''"]?[ ]*[,)]'
     action: deny
     level: protect
     priority: 88
@@ -12008,7 +12009,7 @@ rules:
     severity: critical
     confidence: high
     mode: block
-    rationale: "M1 follow-up to the A2 shell-parse layer: command-normalizer.ts now exposes an interpreter one-liner's decoded body (python -c, node -e, perl -e) as its own matching surface, but until this rule shipped no default pattern targeted destructive calls written IN that body instead of as a shell verb \u2014 python3 -c with shutil.rmtree('/') denied nothing. Scoped to a literal root or home target only (shutil.rmtree, os.system/subprocess running rm -rf against / or ~, os.remove('/'), fs.rmSync/rmdirSync against / or ~), mirroring no-destructive-commands' own root/home scoping so ordinary cleanup code (shutil.rmtree of a build dir, os.remove of a temp file) is untouched."
+    rationale: "M1 follow-up to the A2 shell-parse layer: command-normalizer.ts now exposes an interpreter one-liner's decoded body (python -c, node -e, perl -e) as its own matching surface, but until this rule shipped no default pattern targeted destructive calls written IN that body instead of as a shell verb \u2014 python3 -c with shutil.rmtree('/') denied nothing. Scoped to a literal root or home target only (shutil.rmtree, os.system/subprocess running rm -rf against / or ~, os.remove('/'), fs.rmSync/rmdirSync against / or ~), mirroring no-destructive-commands' own root/home scoping so ordinary cleanup code (shutil.rmtree of a build dir, os.remove of a temp file) is untouched. Widened post-audit (SECURITY.md's disclosed Python-aliasing residual) to also match the module obtained via __import__('shutil') instead of a normal import, and rmtree invoked through getattr(shutil, 'rmtree')(...)/getattr(__import__('shutil'), 'rmtree')(...) instead of dot notation \u2014 both previously evaded the literal shutil.rmtree token this regex required."
     remediation: "Call the interpreter body against a specific named path inside the project instead of the filesystem root or home directory."
     false_positives:
       - "shutil.rmtree('./build'), shutil.rmtree(tmp_dir), os.remove('/tmp/tempfile.txt'), fs.rmSync('./dist') \u2014 all allowed: the target is not the literal root or home path."

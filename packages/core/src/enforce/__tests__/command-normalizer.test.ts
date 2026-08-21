@@ -73,13 +73,25 @@ describe('bounded variable expansion', () => {
     expect(n.surfaces.some(s => s.includes('$UNSET_VAR'))).toBe(true)
   })
 
-  it('does not expand inside a single-quoted span (documented conservative limitation)', () => {
+  it('expands a whitespace-free quoted span too, matching the unquoted branch (closes the quoted-IFS bypass)', () => {
+    // Previously a documented limitation: the quoted span's quotes were
+    // stripped for the matching surface but the variable reference inside
+    // was never expanded, so `rm"${IFS}"-rf"${IFS}"/` normalized to the
+    // literal (unmatched) text `rm${IFS}-rf${IFS}/` instead of `rm -rf /`.
+    // Fixed: renderToken now calls expandVars on quoted segments too, the
+    // same as the unquoted branch — real shell semantics distinguish
+    // double-quote (expands) from single-quote (does not), but this
+    // bounded, floor-only matching surface deliberately does not, since
+    // both are obfuscation vectors here, not real variable data.
     const n = normalizeCommand("T=/; echo '$T'")
-    // The quoted span has no whitespace, so its quotes ARE stripped for
-    // the surface — but expansion is skipped because it came from a
-    // quoted segment, so the literal text `$T` survives unexpanded.
-    expect(n.surfaces.some(s => s.includes('$T'))).toBe(true)
-    expect(n.surfaces.some(s => s.includes('echo /'))).toBe(false)
+    expect(n.surfaces.some(s => s.includes('echo /'))).toBe(true)
+  })
+
+  it('single-quoted and double-quoted IFS references both expand identically (redteam probe)', () => {
+    const double = normalizeCommand('rm"${IFS}"-rf"${IFS}"/')
+    const single = normalizeCommand("rm'${IFS}'-rf'${IFS}'/")
+    expect(double.surfaces).toContain('rm -rf /')
+    expect(single.surfaces).toContain('rm -rf /')
   })
 
   it('strips a leading env-assignment prefix so the command starts at the real argv0', () => {
