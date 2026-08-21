@@ -593,13 +593,18 @@ rules:
     # EnforcementPipeline.evaluateOutput() (output redaction, a DIFFERENT
     # consumer than the deny-on-write check below — this field has no
     # effect on that check) to replace in place. The last three patterns
-    # here deliberately do NOT set it: they match only a LABEL or HEADER
-    # (aws_secret_access_key=, a PEM BEGIN line) — the real secret sits
-    # AFTER the match, uncovered by it. Redacting just the label would
-    # strip the label and leave the actual key/PEM body sitting right next
-    # to a "[redacted]" marker — a false-confidence signal worse than no
-    # redaction at all. See types.ts's redact_span doc comment and
-    # docs/exfil.md's "Output redaction" section.
+    # here match only a LABEL or HEADER (aws_secret_access_key=, a PEM
+    # BEGIN line) — the real secret sits AFTER the match, uncovered by it —
+    # so they do NOT set redact_span. Redacting just the label would strip
+    # the label and leave the actual key/PEM body sitting right next to a
+    # "[redacted]" marker — a false-confidence signal worse than no
+    # redaction at all. redact_widen (opt-in, output-path-only, same "no
+    # effect on the deny-on-write check below" scoping as redact_span) is
+    # the fix: it tells evaluateOutput() how to extend a label/header match
+    # forward, bounded, to cover the value/body that follows it, so the
+    # WHOLE span gets redacted instead of just the label. See types.ts's
+    # redact_span and redact_widen doc comments and docs/exfil.md's "Output
+    # redaction" section.
     patterns:
       - regex: "AKIA[0-9A-Z]{16}"
         redact_span: true
@@ -612,8 +617,11 @@ rules:
       - regex: "sk-[A-Za-z0-9_]{24,}"
         redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
+        redact_widen: pem
       - regex: "-----BEGIN PRIVATE KEY-----"
+        redact_widen: pem
       - regex: "aws_secret_access_key[\t ]*[:=]"
+        redact_widen: line
     action: deny
     level: sprint
     priority: 75
