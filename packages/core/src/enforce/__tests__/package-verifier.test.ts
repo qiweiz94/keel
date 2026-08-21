@@ -840,6 +840,24 @@ describe('extractPackageInstalls: new ecosystems', () => {
     expect(extractPackageInstalls('go get')).toEqual([])
     expect(extractPackageInstalls('uv pip install')).toEqual([])
   })
+
+  it('detects python -m pip install / python3 -m pip install identically to a bare pip install', () => {
+    expect(extractPackageInstalls('python -m pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+    expect(extractPackageInstalls('python3 -m pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+    expect(extractPackageInstalls('python -m pip3 install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip3' })
+    expect(extractPackageInstalls('python -m pip install requests flask')).toHaveLength(2)
+    expect(extractPackageInstalls('python -m pip install requests==2.31.0')[0]).toMatchObject({ name: 'requests', requestedVersion: '==2.31.0' })
+  })
+
+  it('python -m pip install with no package args extracts nothing', () => {
+    expect(extractPackageInstalls('python -m pip install')).toEqual([])
+    expect(extractPackageInstalls('python -m pip install -r requirements.txt')).toEqual([])
+  })
+
+  it('does not misfire on unrelated python -m invocations', () => {
+    expect(extractPackageInstalls('python -m http.server')).toEqual([])
+    expect(extractPackageInstalls('python -m venv .venv')).toEqual([])
+  })
 })
 
 // ── finding 3a: flag-value tokens must not be misread as package names ──
@@ -1667,6 +1685,79 @@ describe('ambient config: dependency-confusion detection — ambient private + e
       await cap.settled()
       const second = await pipeline.evaluate(input)
       expect(second.action).toBe('deny') // unaffected by --registry=; still a hard deny on retry
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+})
+
+// `${VAR}` interpolation in `.npmrc` — real npm resolves `${NPM_TOKEN}`-
+// style placeholders (auth tokens, and occasionally registry URLs) against
+// the environment; the parser here used to leave them as literal,
+// unexpanded text. See ambient-registry-config.ts's `interpolateEnvVars`
+// and `hostOf`'s guard against a STILL-unresolved `${...}` being misread as
+// a real hostname.
+describe('ambient config: .npmrc ${VAR} interpolation', () => {
+  it('resolves ${VAR} in a scoped registry value when the env var IS set, alongside an (untracked) auth-token line', () => {
+    const cwd = makeScratchDir('keel-ambient-npmrc-interp-set-')
+    writeFileSync(
+      join(cwd, '.npmrc'),
+      [
+        'registry=https://npm.corp.example/',
+        '//registry.corp.com/:_authToken=${NPM_TOKEN_FOR_KEEL_TEST}',
+        '@myorg:registry=https://${NPM_REGISTRY_HOST_FOR_KEEL_TEST}/npm/',
+      ].join('\n') + '\n',
+    )
+    try {
+      const env = { ...TEST_ENV, NPM_TOKEN_FOR_KEEL_TEST: 'secret-token-abc', NPM_REGISTRY_HOST_FOR_KEEL_TEST: 'internal.corp.example' }
+      const ambient = resolveNpmAmbient(cwd, env)
+      expect(ambient.defaultRegistry).toBe('https://npm.corp.example/')
+      expect(ambient.scoped.get('@myorg')).toBe('https://internal.corp.example/npm/')
+
+      // End-to-end: the resolved (not literal-placeholder) host correctly
+      // downgrades a scoped install to privateIndex.
+      const specs = applyAmbientConfig(extractPackageInstalls('npm install @myorg/internal-tool'), cwd, env)
+      expect(specs[0].privateIndex).toBe(true)
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('an UNSET ${VAR} is left as literal text, never crashes, and never gets misread as a valid private registry host', () => {
+    const cwd = makeScratchDir('keel-ambient-npmrc-interp-unset-')
+    writeFileSync(
+      join(cwd, '.npmrc'),
+      [
+        '//registry.corp.com/:_authToken=${NPM_TOKEN_FOR_KEEL_TEST}', // untracked key — must not crash
+        '@myorg:registry=https://${NPM_REGISTRY_HOST_FOR_KEEL_TEST}/npm/', // env var deliberately NOT set
+      ].join('\n') + '\n',
+    )
+    try {
+      expect(() => resolveNpmAmbient(cwd, TEST_ENV)).not.toThrow()
+      const ambient = resolveNpmAmbient(cwd, TEST_ENV)
+      // Literal placeholder preserved — NOT substituted with '' (which would
+      // have silently turned the URL into "https:///npm/").
+      expect(ambient.scoped.get('@myorg')).toBe('https://${NPM_REGISTRY_HOST_FOR_KEEL_TEST}/npm/')
+
+      // The registry-URL determination must not be corrupted by the literal
+      // "${...}" text: a value hostOf can't cleanly parse is treated as
+      // unparseable (fail-open toward "not private"), so this must NOT
+      // downgrade the install — same "no behavior change" as no .npmrc at all.
+      const specs = applyAmbientConfig(extractPackageInstalls('npm install @myorg/internal-tool'), cwd, TEST_ENV)
+      expect(specs[0]).not.toHaveProperty('privateIndex')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('a malicious project .npmrc cannot use an unresolved ${VAR} to manufacture a fake ambient-private downgrade for an unscoped hard-deny package', () => {
+    const cwd = makeScratchDir('keel-ambient-npmrc-interp-attack-')
+    // Crafted to make the default registry LOOK non-public if ${...} were
+    // ever read as a literal hostname instead of being treated as unparseable.
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://${SOME_UNDEFINED_REGISTRY_VAR}/\n')
+    try {
+      const specs = applyAmbientConfig(extractPackageInstalls('npm install totally-hallucinated-name'), cwd, TEST_ENV)
+      expect(specs[0]).not.toHaveProperty('privateIndex') // still eligible for the normal not_found -> deny path
     } finally {
       rmSafe(cwd)
     }

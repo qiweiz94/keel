@@ -42,8 +42,13 @@ import type { Ecosystem, PackageManager, PackageSpec } from './package-verifier.
  *   - `.npmrc`'s cascade precedence is project > user > global (closer
  *     file wins) — see `resolveNpmAmbient`.
  *   - `${VAR}` interpolation in a real `.npmrc` (`_authToken=${NPM_TOKEN}`)
- *     is never resolved, but the plain-string line parser here can't throw
- *     on it either — it's just left as literal text in the value.
+ *     IS resolved, against `process.env`/the injected test `env` — see
+ *     `interpolateEnvVars`. An unset variable is left as the literal
+ *     `${VAR_NAME}` text (never substituted with `''`, which could corrupt
+ *     a registry URL in a different, worse way), and `hostOf` separately
+ *     refuses to treat any value that STILL contains an unresolved
+ *     `${...}` as a real hostname, so a leftover placeholder can never be
+ *     misread as "this is a private registry" — see `hostOf`'s own comment.
  *   - Cached PER CWD (`AmbientConfigCache`, one instance per
  *     `EnforcementPipeline`, mirroring `PackageVerifierCache`'s own
  *     per-pipeline-instance lifetime) so repeated evaluations in the same
@@ -91,6 +96,15 @@ function ambientHomeDir(env: NodeJS.ProcessEnv): string | null {
 
 function hostOf(url: string | undefined): string | undefined {
   if (!url) return undefined
+  // An unresolved `${VAR_NAME}` left over from `interpolateEnvVars` (env var
+  // not set) must NEVER be read as a real hostname — a crafted project
+  // `.npmrc` with `registry=https://${SOME_UNDEFINED_VAR}/` could otherwise
+  // manufacture a host that merely fails to equal 'registry.npmjs.org',
+  // which is exactly the "ambient private" shape that downgrades a would-be
+  // deny. Treating it as unparseable instead routes through the same
+  // fail-open-toward-"no behavior change" path every other unparseable
+  // value already takes (see `isPublicNpmRegistry`'s own comment).
+  if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(url)) return undefined
   const m = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)/i.exec(url.trim())
   if (!m) return undefined
   return m[1].split('@').pop()?.toLowerCase()
@@ -117,7 +131,27 @@ function isExactPublicPypiHost(url: string | undefined): boolean {
 
 // ── npm: .npmrc cascade ─────────────────────────────────────────────
 
-function parseNpmrc(text: string): { defaultRegistry?: string; scoped: Map<string, string> } {
+/**
+ * Basic `${VAR_NAME}`-style env interpolation, matching real npm's `.npmrc`
+ * behavior for lines like `//registry.corp.com/:_authToken=${NPM_TOKEN}`.
+ * Resolves each `${VAR_NAME}` against `env`; a variable that ISN'T set is
+ * left as the literal `${VAR_NAME}` text rather than substituted with an
+ * empty string — an empty substitution could silently turn
+ * `https://${REGISTRY_HOST}/` into `https:///`, a value `hostOf` would then
+ * mis-parse in some OTHER way, which is worse than just leaving the
+ * original placeholder in place. See `hostOf`'s own guard for the other
+ * half of this safety story: a value that STILL contains an unresolved
+ * `${...}` after this pass is treated as unparseable there, never as a
+ * literal (and coincidentally non-matching) hostname.
+ */
+function interpolateEnvVars(value: string, env: NodeJS.ProcessEnv): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, name: string) => {
+    const resolved = env[name]
+    return resolved !== undefined ? resolved : whole
+  })
+}
+
+function parseNpmrc(text: string, env: NodeJS.ProcessEnv): { defaultRegistry?: string; scoped: Map<string, string> } {
   const scoped = new Map<string, string>()
   let defaultRegistry: string | undefined
   for (const raw of text.split(/\r?\n/)) {
@@ -130,6 +164,7 @@ function parseNpmrc(text: string): { defaultRegistry?: string; scoped: Map<strin
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1)
     }
+    value = interpolateEnvVars(value, env)
     if (key === 'registry') { defaultRegistry = value; continue }
     const m = /^(@[^:]+):registry$/i.exec(key)
     if (m) scoped.set(m[1], value)
@@ -161,7 +196,7 @@ export function resolveNpmAmbient(cwd: string, env: NodeJS.ProcessEnv): NpmAmbie
 
   const apply = (text: string | null, label: string) => {
     if (!text) return
-    const p = parseNpmrc(text)
+    const p = parseNpmrc(text, env)
     if (p.defaultRegistry) { defaultRegistry = p.defaultRegistry; source = label }
     for (const [k, v] of p.scoped) scoped.set(k, v)
   }
