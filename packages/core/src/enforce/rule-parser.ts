@@ -543,6 +543,17 @@ export function validateRules(rules: unknown): string[] {
         errors.push(`Rule "${label}" has an invalid context: ${JSON.stringify(rule.context)} (expected a non-empty array of local, ci, both)`)
       }
     }
+    // `agents` (host identity, e.g. claude-code/opencode/cline) is
+    // deliberately an OPEN set, unlike `context`'s fixed local/ci/both
+    // enum — see types.ts's `EnforceInput.agent` field comment ("'opencode'
+    // | 'claude-code' | 'cline' | etc.") for why there is no fixed list of
+    // valid hosts to check membership against. Only shape is validated
+    // here: a non-empty array of non-empty strings.
+    if (rule.agents !== undefined) {
+      if (!Array.isArray(rule.agents) || rule.agents.length === 0 || rule.agents.some(a => typeof a !== 'string' || !a.trim())) {
+        errors.push(`Rule "${label}" has an invalid agents: ${JSON.stringify(rule.agents)} (expected a non-empty array of host-identity strings, e.g. claude-code, opencode)`)
+      }
+    }
     if (typeof rule.message !== 'string' || !rule.message.trim()) errors.push(`Rule "${label}" is missing a non-empty message`)
     if (rule.type === 'filesystem' && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`)
     if (rule.type === 'content' && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`)
@@ -1010,7 +1021,23 @@ function floorTightensOrEqual(existing: KeelRule, candidate: KeelRule): boolean 
  * nothing for a hierarchy with no floor AND no observe-mode rule
  * involved, and does not touch same-id override arbitration above.
  */
-export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext): KeelRule[] {
+/**
+ * `agent` is OPTIONAL and deliberately so, unlike `context` above: every
+ * real enforcement call site (pipeline.ts) has a concrete `input.agent`
+ * and MUST pass it — omitting it there is not uniformly fail-safe, because
+ * an `agents`-scoped rule with `action: allow`/`warn` that escapes
+ * filtering becomes a BROADER allow than the rule author intended (the
+ * same different-id priority-shadowing vector this file's mergeRules doc
+ * comment already documents for floors). The administrative/introspection
+ * call sites (`keel status`, `validate`, `dashboard`, `suggest`,
+ * `conformance`, `level` diff, `enforce --dry-run`) are not evaluating a
+ * call from any specific host, so they intentionally omit `agent` —
+ * `undefined` means "no agent filter," i.e. show/count agent-scoped rules
+ * as active regardless of which host they're scoped to, which is the
+ * correct behavior for a tool auditing the whole ruleset rather than one
+ * live call.
+ */
+export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, context: RuleContext, agent?: string): KeelRule[] {
   const all: KeelRule[] = []
 
   // Rule `level` is a minimum-dial filter AND a floor marker:
@@ -1035,6 +1062,28 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
       }
       // Filter by context
       if (rule.context && !rule.context.includes(context) && !rule.context.includes('both')) continue
+      // Filter by agent (host identity — see KeelRule.agents' doc comment
+      // in types.ts). `agent === undefined` (the admin/introspection call
+      // sites) never filters — see this function's own doc comment above.
+      //
+      // KNOWN GAP, documented rather than fixed here: this filter runs at
+      // PUSH time, before the same-id dedup/floor-arbitration loop below
+      // ever sees the rule. If a `level: protect` floor declares
+      // `agents: [...]` and a lower scope declares a WEAKER override under
+      // the SAME id with no `agents` field, then on a call from a host not
+      // in the floor's list, the floor is filtered out here entirely and
+      // the weak override reaches the merged list unarbitrated — the floor
+      // never gets a chance to reject it, because it was never pushed. The
+      // reverse direction is already safe without extra work: an override
+      // that itself ADDS `agents` differs from the floor's `agents` field
+      // under sameEnforcementSurface's exclusion-based comparison, so it is
+      // rejected as a surface change automatically, before this filter
+      // even runs. A project that needs a floor scoped to specific hosts
+      // should scope EVERY same-id override the same way, for the same
+      // reason `sameEnforcementSurface`'s own doc comment gives for not
+      // trying to auto-detect "legitimate narrowing" vs. an adversarial
+      // no-op from inside mergeRules alone.
+      if (rule.agents && agent !== undefined && !rule.agents.includes(agent)) continue
 
       all.push({ ...rule, scope: rule.scope || scope })
     }
@@ -1315,6 +1364,14 @@ export function detectConflicts(rules: KeelRule[]): RuleConflict[] {
     for (let j = i + 1; j < rules.length; j++) {
       const a = rules[i]
       const b = rules[j]
+
+      // Two rules scoped to disjoint host sets can never both evaluate on
+      // the same call — not a real conflict. Admin call sites pass no
+      // `agent` to mergeRules (see mergeRules' doc comment), so a rule pair
+      // like "deny for claude-code" / "allow for opencode" on the same
+      // match text would otherwise reach here still carrying both
+      // `agents` arrays and false-positive as a conflict.
+      if (a.agents && b.agents && !a.agents.some(x => b.agents!.includes(x))) continue
 
       // Same match pattern, different actions
       if (a.match && b.match && a.match === b.match) {

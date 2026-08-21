@@ -140,7 +140,7 @@ runtime without requiring a separate process.
 | `command`, `filesystem`, `content`, `network`, `rate`, `time`, `sequence`, `verification`, `flow` rules | Supported |
 | `session` rules | Supported — a composite runaway-loop trip across five session-scoped dimensions (wall-clock duration, cumulative tool-call count, cumulative Bash-call count, distinct-file-write churn, consecutive-failure count), escalating `warn → prompt → halt`. Volume-only dimensions cap at `prompt` by construction; only `consecutive_failures` may reach `halt`. Ships as the default `session-runaway-trip` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Session-scoping depends on the calling host sending a real session id; a host that cannot is surfaced at `keel validate`/`keel status`, not silently degraded. |
 | `oscillation` rules | Supported — a short repeating cycle of >= 2 distinct command fingerprints (A→B→A→B) within a session's small rolling window, complementary to (never redundant with) `stuck`'s exact-repeat detection. Ships as the default `command-oscillation` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Same session-id dependency as `session` rules above. |
-| Rule metadata: `level`, `scope`, `context`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
+| Rule metadata: `level`, `scope`, `context`, `agents`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
 | `.keel/rules.yaml` project rules | Supported and recommended |
 | `AGENTS.md` OpenCode rule frontmatter | Supported |
 | `CLAUDE.md` rule frontmatter | Supported as Claude Code compatibility fallback |
@@ -360,6 +360,7 @@ rules:
 | `level` | No | `sprint` \| `balanced` \| `protect` (default: `balanced`) |
 | `scope` | No | `global` \| `user` \| `project` \| `folder` \| `session` |
 | `context` | No | `[local]` \| `[ci]` \| `[local, ci]` (default: both) |
+| `agents` | No | Array of host-identity strings, e.g. `[claude-code]` (default: applies to every host). See "Per-Agent Integration" below — `agent` is HOST identity (`opencode`/`claude-code`/`cline`/etc, the string a host's own integration declares itself as), not a true multi-agent-fleet identity concept; no host today emits a distinct identity per agent INSTANCE. |
 | `action` | Yes for enforcing rules; optional for context/meta marker rules | `report` \| `warn` \| `deny` \| `prompt` \| `fix` |
 | `message` | Yes | Human-readable description |
 | `priority` | No | Higher = evaluated first (default: 0) |
@@ -458,7 +459,7 @@ Tiers 6-7 only run in `deep` mode (protect level) or for ambiguous cases.
 
 ### Caching
 
-**Session cache**: `SHA-256(tool + recursively canonicalized args + cwd + level + context + depth + action + rule_fingerprint)` → verdict. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
+**Session cache**: `SHA-256(tool + recursively canonicalized args + cwd + level + context + agent + depth + action + rule_fingerprint)` → verdict. `agent` (host identity) is part of the key so an `agents`-scoped rule can't leak one host's cached verdict to a different host's otherwise-identical call. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
 
 **No persistent cache**: verdicts are session-scoped (LRU, in-memory). Rules are re-validated and re-hashed on every evaluation via the rule fingerprint (hashes of rules.yaml, AGENTS.md, CLAUDE.md, and .keel.local.yaml), so changes take effect without a watcher.
 

@@ -256,6 +256,10 @@ export function classifyScenario(
     }
   }
 
+  // No `agent` arg — this only checks whether the rule is active in the
+  // ruleset AT ALL, not for the synthetic `keel-conformance` host used a
+  // few lines below by the real evaluateToolCall() scenario run (which
+  // does carry a concrete agent and is where agent-scoping actually bites).
   const active = new Set(mergeRules(hierarchy, level, CONTEXT).map(r => r.id))
   if (!active.has(scenario.expect_rule)) {
     return {

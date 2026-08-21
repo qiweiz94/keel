@@ -10,6 +10,12 @@ export interface CacheContext {
   depth: string
   action?: string
   rules_hash?: string
+  /**
+   * Host identity (EnforceInput.agent) — included so an `agents`-scoped
+   * rule can't leak one host's cached verdict to a different host's
+   * otherwise-identical call. See pipeline.ts's cacheContext() comment.
+   */
+  agent?: string
 }
 
 export class ActionCache {

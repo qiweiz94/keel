@@ -213,6 +213,13 @@ suggested next step) · `research` (block on a stale knowledge-freshness gate) �
 `time`, `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
 problem-solving types below (`stuck`, `oscillation`, `research`, `diagnosis`, `claim`, `oracle`).
 
+Any rule can also be scoped to specific hosts with `agents: [claude-code]` — no
+`agents` field (the default) means the rule applies everywhere, unchanged. `agent`
+here is HOST identity (`opencode` / `claude-code` / `cline` / etc — the string a
+host's own integration declares itself as), not a true multi-agent-fleet identity
+concept — no host today emits a distinct identity per agent instance. See
+[docs/custom-rules.md](docs/custom-rules.md#scoping-a-rule-to-specific-hosts-agents).
+
 `keel install` ships 49 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,

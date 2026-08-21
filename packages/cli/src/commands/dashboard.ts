@@ -98,6 +98,8 @@ export function collectState(dir: string, home: string): DashboardState {
     total += scope.rules.length
     rules.push({ scope: name, count: scope.rules.length, issues: issues.length, source: scope.sourcePath })
   }
+  // No `agent` arg — dashboard reports the whole ruleset's active count,
+  // not one host's live view. See mergeRules' doc comment (rule-parser.ts).
   const active = mergeRules(hierarchy, dial, 'local').length
 
   const today = new Date().toISOString().slice(0, 10)

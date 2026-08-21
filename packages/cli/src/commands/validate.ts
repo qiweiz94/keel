@@ -66,6 +66,9 @@ export async function validateCommand() {
 
   // Check for conflicts
   const hierarchy = loadRuleHierarchy(dir)
+  // No `agent` arg — `keel validate` checks the whole ruleset, not one
+  // host's view; detectConflicts() has its own disjoint-agents guard so
+  // two rules legitimately scoped to different hosts don't false-positive.
   const merged = mergeRules(hierarchy, 'balanced', 'local')
   const conflicts = detectConflicts(merged)
 
