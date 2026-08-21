@@ -232,11 +232,21 @@ describe('injection-taint corpus — measured counts (not a completeness claim)'
       + `\nunrelated-set true negatives: ${trueNegative}/10 (false positives, all sources: ${falsePositive})\n`,
     )
 
-    // Loose floors, per the design's own instruction — not completeness claims:
-    // at least 7 of 10 genuinely-derived cases correlate...
+    // Loose floor, per the design's own instruction — not a completeness
+    // claim: at least 7 of 10 genuinely-derived cases correlate.
     expect(truePositive, 'must correlate at least 7/10 genuinely-derived cases').toBeGreaterThanOrEqual(7)
 
-    // ...and ZERO false positives specifically on the stoplisted-host and
+    // Exact pin on the CURRENTLY measured counts — SECURITY.md cites these
+    // two numbers by name (10/10 derived, 8/10 unrelated-silent) as the
+    // evidence behind the shipped rule's `confidence: medium`/`maturity:
+    // incubating` tier. This assertion exists so that number can't drift
+    // silently: if a future extractor change moves either count, THIS
+    // assertion fails first and both SECURITY.md and this test must be
+    // updated together, deliberately, rather than one going stale.
+    expect(truePositive, 'SECURITY.md cites 10/10 derived — update both together if this moves').toBe(10)
+    expect(trueNegative, 'SECURITY.md cites 8/10 unrelated-silent — update both together if this moves').toBe(8)
+
+    // ZERO false positives specifically on the stoplisted-host and
     // generic-token cases (checked by name, not by the aggregate count,
     // since the two KNOWN-false-positive cases are expected to correlate
     // and must not be conflated with a real precision failure).

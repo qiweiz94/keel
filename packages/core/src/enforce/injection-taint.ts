@@ -201,17 +201,30 @@ function pushCandidate(out: InjectionArtifact[], kind: ArtifactKind, rawValue: s
 function extractCandidates(text: string): InjectionArtifact[] {
   const out: InjectionArtifact[] = []
   try {
-    for (const raw of text.match(URL_RE) || []) {
+    const urlMatches = text.match(URL_RE) || []
+    for (const raw of urlMatches) {
       const parts = parseUrlParts(stripTrailingPunct(raw))
       if (!parts) continue
       pushCandidate(out, 'url', parts.url)
       pushCandidate(out, 'host', parts.host)
     }
-    for (const raw of text.match(HOST_RE) || []) pushCandidate(out, 'host', stripTrailingPunct(raw))
-    for (const raw of text.match(IPV4_RE) || []) pushCandidate(out, 'host', stripTrailingPunct(raw))
-    for (const raw of text.match(WIN_PATH_RE) || []) pushCandidate(out, 'path', stripTrailingPunct(raw))
-    for (const raw of text.match(POSIX_PATH_RE) || []) pushCandidate(out, 'path', stripTrailingPunct(raw))
-    for (const raw of text.match(EMAIL_RE) || []) pushCandidate(out, 'email', stripTrailingPunct(raw))
+    // Blank out matched URL spans before running the host/path/email
+    // extractors below — a bare-slash path regex (or the bare-hostname
+    // regex) would otherwise match INSIDE a URL's own authority/path
+    // segment (e.g. "//evil.example.com/a.sh" as a bogus "path"),
+    // producing meaningless slices of the same URL that both waste
+    // MAX_ARTIFACTS_PER_TAG slots a real second artifact could have used
+    // and dilute the correlated warning message's evidence value. The
+    // URL's own host is already pushed explicitly above via
+    // `parseUrlParts`, so nothing real is lost by blanking it out here.
+    let rest = text
+    for (const raw of urlMatches) rest = rest.split(raw).join(' '.repeat(raw.length))
+
+    for (const raw of rest.match(HOST_RE) || []) pushCandidate(out, 'host', stripTrailingPunct(raw))
+    for (const raw of rest.match(IPV4_RE) || []) pushCandidate(out, 'host', stripTrailingPunct(raw))
+    for (const raw of rest.match(WIN_PATH_RE) || []) pushCandidate(out, 'path', stripTrailingPunct(raw))
+    for (const raw of rest.match(POSIX_PATH_RE) || []) pushCandidate(out, 'path', stripTrailingPunct(raw))
+    for (const raw of rest.match(EMAIL_RE) || []) pushCandidate(out, 'email', stripTrailingPunct(raw))
   } catch {
     return []
   }
