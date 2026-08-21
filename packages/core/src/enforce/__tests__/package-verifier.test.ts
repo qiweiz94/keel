@@ -21,6 +21,12 @@ import {
   HALLUCINATED_PACKAGE_REGISTRY_SOURCE,
 } from '../known-hallucinated-packages.js'
 import {
+  levenshtein,
+  findTyposquatMatch,
+  POPULAR_PACKAGES,
+  TYPOSQUAT_EXEMPT_NAMES,
+} from '../popular-packages.js'
+import {
   applyAmbientConfig,
   AmbientConfigCache,
   resolveNpmAmbient,
@@ -2060,5 +2066,322 @@ describe('pipeline: known_hallucination denies end-to-end (through the two-phase
     expect(second.action).toBe('deny')
     expect(second.message).toContain('hallucination')
     expect(second.message).toContain('slopsquatting')
+  })
+})
+
+// ── popular-packages.ts: levenshtein + findTyposquatMatch (pure) ───────
+
+describe('levenshtein', () => {
+  it('is 0 for identical strings', () => {
+    expect(levenshtein('express', 'express')).toBe(0)
+  })
+
+  it('is the length of the other string against an empty string', () => {
+    expect(levenshtein('', 'abc')).toBe(3)
+    expect(levenshtein('abc', '')).toBe(3)
+  })
+
+  it('counts a single deletion as distance 1', () => {
+    expect(levenshtein('express', 'expres')).toBe(1)
+  })
+
+  it('counts a single insertion as distance 1', () => {
+    expect(levenshtein('numpy', 'numpyy')).toBe(1)
+  })
+
+  it('counts a single substitution as distance 1', () => {
+    expect(levenshtein('tokio', 'tokia')).toBe(1)
+  })
+
+  it('counts an adjacent-character transposition as distance 2 (this is plain Levenshtein, not Damerau-Levenshtein)', () => {
+    expect(levenshtein('requests', 'reqeusts')).toBe(2)
+  })
+
+  it('is symmetric', () => {
+    expect(levenshtein('flask', 'flaks')).toBe(levenshtein('flaks', 'flask'))
+  })
+})
+
+describe('POPULAR_PACKAGES: data shape', () => {
+  it('ships a non-trivial, real-looking list for all four ecosystems', () => {
+    for (const eco of ['npm', 'pypi', 'crates', 'go'] as const) {
+      expect(POPULAR_PACKAGES[eco].length).toBeGreaterThanOrEqual(10)
+      for (const name of POPULAR_PACKAGES[eco]) expect(name.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('contains no duplicate names within an ecosystem', () => {
+    for (const eco of ['npm', 'pypi', 'crates', 'go'] as const) {
+      const normalized = POPULAR_PACKAGES[eco].map(n => n.toLowerCase())
+      expect(new Set(normalized).size).toBe(normalized.length)
+    }
+  })
+})
+
+describe('TYPOSQUAT_EXEMPT_NAMES: ships empty (no fabricated exemption data), mechanism proven independently below', () => {
+  it('is an empty Set per ecosystem in the shipped build', () => {
+    for (const eco of ['npm', 'pypi', 'crates', 'go'] as const) {
+      expect(TYPOSQUAT_EXEMPT_NAMES[eco].size).toBe(0)
+    }
+  })
+})
+
+describe('findTyposquatMatch', () => {
+  it('flags a genuinely typosquat-shaped name (missing-letter typo of a popular npm package)', () => {
+    const m = findTyposquatMatch('expres', 'npm')
+    expect(m).toBeDefined()
+    expect(m?.popularName).toBe('express')
+    expect(m?.distance).toBe(1)
+  })
+
+  it('flags a transposition typo within the threshold on PyPI', () => {
+    const m = findTyposquatMatch('reqeusts', 'pypi')
+    expect(m).toBeDefined()
+    expect(m?.popularName).toBe('requests')
+    expect(m?.distance).toBe(2)
+  })
+
+  it('flags a missing-letter typo of a crates.io package at the exact minimum-length boundary (4 chars)', () => {
+    const m = findTyposquatMatch('toko', 'crates')
+    expect(m).toBeDefined()
+    expect(m?.popularName).toBe('tokio')
+    expect(m?.distance).toBe(1)
+  })
+
+  it('flags a missing-letter typo of a Go module path', () => {
+    const m = findTyposquatMatch('github.com/gin-gonic/gn', 'go')
+    expect(m).toBeDefined()
+    expect(m?.popularName).toBe('github.com/gin-gonic/gin')
+    expect(m?.distance).toBe(1)
+  })
+
+  it('never flags a popular package against itself (exact match short-circuits)', () => {
+    for (const eco of ['npm', 'pypi', 'crates', 'go'] as const) {
+      for (const name of POPULAR_PACKAGES[eco]) {
+        expect(findTyposquatMatch(name, eco)).toBeUndefined()
+      }
+    }
+  })
+
+  it('never flags a popular package against itself even with different casing', () => {
+    expect(findTyposquatMatch('EXPRESS', 'npm')).toBeUndefined()
+  })
+
+  it('does not false-flag a genuinely unrelated package name', () => {
+    expect(findTyposquatMatch('totally-unrelated-internal-tool', 'npm')).toBeUndefined()
+  })
+
+  it('does not false-flag a legitimate, structurally-longer extension package (edit distance exceeds threshold)', () => {
+    // "lodash-es" differs from "lodash" by 3 insertions ("-es") — outside
+    // MAX_EDIT_DISTANCE, and correctly so: a suffixed variant is a
+    // different, larger edit than the 1-2 char substitution/deletion/
+    // transposition typosquatting shape this check targets.
+    expect(findTyposquatMatch('lodash-es', 'npm')).toBeUndefined()
+  })
+
+  it('minimum-length guard: a short name is exempt from the check entirely, even one edit away from a popular name', () => {
+    // "jog" is distance 1 from the (short, 3-char) popular crates entry
+    // "log", but 3 chars is below MIN_NAME_LENGTH_FOR_CHECK — too short for
+    // a distance-based signal to mean anything at that length.
+    expect(findTyposquatMatch('jog', 'crates')).toBeUndefined()
+  })
+
+  it('exemption: npm scoped names are exempt entirely, even when the scoped name would otherwise land within threshold of a "popular" name', () => {
+    // Deliberately constructs a popularNames fixture where the FULL scoped
+    // string (including "@types/") would match within distance 1, to prove
+    // the scoped-name exemption is a real short-circuit and not just an
+    // incidental "the @scope/ prefix makes it far away" side effect.
+    const m = findTyposquatMatch('@types/express', 'npm', { popularNames: ['@types/expres'] })
+    expect(m).toBeUndefined()
+  })
+
+  it('exemption: an unscoped name in the exemptNames allowlist is never flagged, even within threshold', () => {
+    const withoutExemption = findTyposquatMatch('expres', 'npm', { popularNames: ['express'] })
+    expect(withoutExemption).toBeDefined() // sanity: would match without the allowlist
+
+    const withExemption = findTyposquatMatch('expres', 'npm', {
+      popularNames: ['express'],
+      exemptNames: new Set(['expres']),
+    })
+    expect(withExemption).toBeUndefined()
+  })
+
+  it('ecosystem-scoped: a name shaped like a typo of one ecosystem\'s popular package does not match under a different ecosystem', () => {
+    // "expres" only lands close to npm's "express" — PyPI's popular list
+    // has no near neighbor for it.
+    expect(findTyposquatMatch('expres', 'pypi')).toBeUndefined()
+    // "reqeusts" only lands close to PyPI's "requests" — npm's popular
+    // list has no near neighbor for it.
+    expect(findTyposquatMatch('reqeusts', 'npm')).toBeUndefined()
+  })
+
+  it('picks the closest match when multiple popular names are within threshold', () => {
+    // "reqix" is distance 2 from "req" (2 insertions) but only distance 1
+    // from "reqix2" (1 insertion) — the closer one must win.
+    const m = findTyposquatMatch('reqix', 'npm', { popularNames: ['req', 'reqix2'] })
+    expect(m).toEqual({ popularName: 'reqix2', distance: 1 })
+  })
+})
+
+// ── decidePackageAction: typosquat signal (pure) ────────────────────────
+
+describe('decidePackageAction: typosquat signal', () => {
+  it('a package that EXISTS and matches a typosquat candidate -> reason typosquat, warn-worthy message', () => {
+    const d = decidePackageAction([result({
+      name: 'expres',
+      verdict: 'exists',
+      ageDays: 5000,
+      typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 },
+    })], 30)
+    expect(d.reason).toBe('typosquat')
+    expect(d.message).toContain('expres')
+    expect(d.message).toContain('express')
+    expect(d.message).toContain('1 character')
+  })
+
+  it('a not_found package that ALSO has a typosquatCandidate stays reason not_found (already denies)', () => {
+    const d = decidePackageAction([result({
+      name: 'expres',
+      verdict: 'not_found',
+      typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 },
+    })], 30)
+    expect(d.reason).toBe('not_found')
+  })
+
+  it('an unverified result with a typosquatCandidate stays reason unverified (never escalates on a network blip)', () => {
+    const d = decidePackageAction([result({
+      name: 'expres',
+      verdict: 'unverified',
+      reason: 'timeout',
+      typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 },
+    })], 30)
+    expect(d.reason).toBe('unverified')
+  })
+
+  it('priority: not_found still beats typosquat when both are present in one command', () => {
+    const d = decidePackageAction([
+      result({ name: 'expres', verdict: 'exists', typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 } }),
+      result({ name: 'fake-pkg', verdict: 'not_found' }),
+    ], 30)
+    expect(d.reason).toBe('not_found')
+  })
+
+  it('priority: known_hallucination beats typosquat', () => {
+    const d = decidePackageAction([
+      result({ name: 'expres', verdict: 'exists', typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 } }),
+      result({ name: 'squatted-exists-pkg', verdict: 'exists', knownHallucination: { ecosystem: 'npm', source: HALLUCINATED_PACKAGE_REGISTRY_SOURCE } }),
+    ], 30)
+    expect(d.reason).toBe('known_hallucination')
+  })
+
+  it('priority: unverified beats typosquat', () => {
+    const d = decidePackageAction([
+      result({ name: 'expres', verdict: 'exists', typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 } }),
+      result({ name: 'unreachable-pkg', verdict: 'unverified', reason: 'timeout' }),
+    ], 30)
+    expect(d.reason).toBe('unverified')
+  })
+
+  it('priority: age_gate beats typosquat', () => {
+    const d = decidePackageAction([
+      result({ name: 'expres', verdict: 'exists', typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 } }),
+      result({ name: 'young-pkg', verdict: 'exists', ageDays: 1 }),
+    ], 30)
+    expect(d.reason).toBe('age_gate')
+  })
+
+  it('priority: typosquat beats dependency_confusion', () => {
+    const d = decidePackageAction([
+      result({ name: 'expres', verdict: 'exists', typosquatCandidate: { ecosystem: 'npm', popularName: 'express', distance: 1 } }),
+      result({ name: 'confused-pkg', verdict: 'exists', ageDays: 2000, dependencyConfusionRisk: true, ambientSource: '.npmrc' }),
+    ], 30)
+    expect(d.reason).toBe('typosquat')
+  })
+
+  it('regression: a package with no typosquatCandidate field is completely unaffected', () => {
+    const d = decidePackageAction([result({ verdict: 'exists', ageDays: 2000 })], 30)
+    expect(d.reason).toBe('ok')
+    expect(d.message).not.toContain('character edit')
+  })
+})
+
+// ── checkPackages: typosquat wiring end-to-end ──────────────────────────
+
+describe('checkPackages: typosquat wiring end-to-end', () => {
+  let stateDir: string
+  beforeEach(() => { stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-typo-')) })
+  afterEach(() => { rmSafe(stateDir) })
+
+  it('an npm install of a typosquat-shaped name that EXISTS sets typosquatCandidate and warns via decidePackageAction', async () => {
+    const { fetchImpl } = makeMockRegistry({ expres: { existsDaysAgo: 400 } })
+    const [r] = await checkPackages(
+      [{ name: 'expres', manager: 'npm', raw: 'expres' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(r.typosquatCandidate).toEqual({ ecosystem: 'npm', popularName: 'express', distance: 1 })
+    expect(decidePackageAction([r], 30).reason).toBe('typosquat')
+  })
+
+  it('installing the popular package itself never sets typosquatCandidate', async () => {
+    const { fetchImpl } = makeMockRegistry({ express: { existsDaysAgo: 2000 } })
+    const [r] = await checkPackages(
+      [{ name: 'express', manager: 'npm', raw: 'express' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.typosquatCandidate).toBeUndefined()
+    expect(decidePackageAction([r], 30).reason).toBe('ok')
+  })
+
+  it('a PyPI-shaped typosquat name installed via npm never false-positive-matches across ecosystems', async () => {
+    const { fetchImpl } = makeMockRegistry({ reqeusts: { existsDaysAgo: 2000 } })
+    const [r] = await checkPackages(
+      [{ name: 'reqeusts', manager: 'npm', raw: 'reqeusts' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.typosquatCandidate).toBeUndefined()
+    expect(decidePackageAction([r], 30).reason).toBe('ok')
+  })
+
+  it('a scoped npm name never sets typosquatCandidate even if it exists', async () => {
+    const { fetchImpl } = makeMockRegistry({ '@myorg/expres': { existsDaysAgo: 2000 } })
+    const [r] = await checkPackages(
+      [{ name: '@myorg/expres', manager: 'npm', raw: '@myorg/expres' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), registryBaseUrl: 'https://mock.invalid' },
+    )
+    expect(r.typosquatCandidate).toBeUndefined()
+  })
+
+  it('checkPackagesCacheOnly carries typosquatCandidate through a warm cache entry too', () => {
+    const cache = new PackageVerifierCache(stateDir)
+    const now = Date.now()
+    cache.set({ name: 'expres', ecosystem: 'npm', verdict: 'exists', ageDays: 3000, checkedAt: now }, now)
+    const { results, misses } = checkPackagesCacheOnly(
+      [{ name: 'expres', manager: 'npm', raw: 'expres' }],
+      cache,
+      () => now,
+    )
+    expect(misses).toEqual([])
+    expect(results[0].typosquatCandidate).toEqual({ ecosystem: 'npm', popularName: 'express', distance: 1 })
+    expect(decidePackageAction(results, 30).reason).toBe('typosquat')
+  })
+})
+
+describe('pipeline: typosquat warns end-to-end (through the two-phase cache-first design)', () => {
+  it('phase 1 prompts as not-yet-checked; phase 2 WARNS (not deny) once the background fill confirms the typosquat-shaped name exists', async () => {
+    const { fetchImpl } = makeMockRegistry({ expres: { existsDaysAgo: 2000 } })
+    const cap = backgroundCapture()
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+    const cmd = 'npm install expres'
+
+    const first = await pipeline.evaluate(makeInput(cmd))
+    expect(first.action).toBe('prompt')
+    expect(first.message).toContain('not yet checked')
+
+    await cap.settled()
+    const second = await pipeline.evaluate(makeInput(cmd))
+    expect(second.action).toBe('warn')
+    expect(second.message).toContain('express')
+    expect(second.message).toContain('character edit')
   })
 })

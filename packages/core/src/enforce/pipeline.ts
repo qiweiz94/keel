@@ -1325,16 +1325,25 @@ export class EnforcementPipeline {
         if (decision.reason === 'unverified') {
           return this.violation(input, { ...rule, action: 'prompt' }, decision.message, start, 3)
         }
+        if (decision.reason === 'typosquat') {
+          // Forced 'warn' — a similarity heuristic against popular package
+          // names carries real false-positive risk (unlike known_hallucination's
+          // exact match), so it is deliberately capped below deny/prompt —
+          // see decidePackageAction's own priority-order comment and
+          // popular-packages.ts's header for the exemption design that
+          // keeps this signal's false-positive rate down.
+          return this.violation(input, { ...rule, action: 'warn' }, decision.message, start, 3)
+        }
         if (decision.reason === 'dependency_confusion') {
           // Forced 'warn' — deliberately weaker than deny/prompt, and only
           // ever reached (per decidePackageAction's own priority order)
           // once every package in the command has ALREADY cleared
-          // not_found/unverified/age_gate. See ambient-registry-config.ts's
-          // header and decidePackageAction's own comment for why this must
-          // never outrank a deny.
+          // not_found/unverified/age_gate/typosquat. See ambient-registry-
+          // config.ts's header and decidePackageAction's own comment for
+          // why this must never outrank a deny.
           return this.violation(input, { ...rule, action: 'warn' }, decision.message, start, 3)
         }
-        // age_gate — rule.action stands as declared.
+        // age_gate — the only remaining reason — rule.action stands as declared.
         return this.violation(input, rule, decision.message, start, 3)
       }
 
