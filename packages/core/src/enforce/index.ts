@@ -43,6 +43,19 @@ export {
   type EvaluateInstallOptions,
 } from './package-verifier.js'
 export {
+  applyAmbientConfig,
+  AmbientConfigCache,
+  resolveNpmAmbient,
+  resolvePipAmbient,
+  resolveCargoAmbient,
+  resolveGoAmbient,
+  matchesGoPrivate,
+  type NpmAmbient,
+  type PipAmbient,
+  type CargoAmbient,
+  type GoAmbient,
+} from './ambient-registry-config.js'
+export {
   detectSandbox,
   detectContainer,
   detectAnthropicSandboxRuntime,

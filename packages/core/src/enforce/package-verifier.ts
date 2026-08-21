@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveHome } from '../home.js'
+import { applyAmbientConfig } from './ambient-registry-config.js'
 
 /**
  * Slopsquatting install gate.
@@ -92,13 +93,40 @@ export interface PackageSpec {
   /**
    * Set (to `true`) only when a pip-family command (`pip`/`pip3`/`uv add`/
    * `uv pip install`) passed `--index-url`/`--extra-index-url`/`-i`
-   * anywhere on the command line — see the module header's private-index
-   * rationale. Deliberately OMITTED (not set to `false`) on every other
-   * spec, including all npm/pnpm/yarn/bun/poetry/cargo/go specs, so
-   * pre-existing hand-built `PackageSpec` fixtures (predating this field)
-   * stay structurally identical.
+   * anywhere on the command line, OR when `applyAmbientConfig`
+   * (ambient-registry-config.ts) found the name resolving to a private
+   * registry via `.npmrc`/`pip.conf`/`.cargo/config.toml`/`GOPRIVATE` — see
+   * the module header's private-index rationale and
+   * ambient-registry-config.ts's own header for the ambient-config half.
+   * Deliberately OMITTED (not set to `false`) on every spec this doesn't
+   * apply to, so pre-existing hand-built `PackageSpec` fixtures (predating
+   * this field) stay structurally identical.
    */
   privateIndex?: boolean
+  /**
+   * The VALUE of an explicit registry/index override on the command line —
+   * npm's `--registry=<url>` (`=`-joined form only, matching npm-family's
+   * existing flag-skip behavior), pip's `-i`/`--index-url` (its PRIMARY
+   * index flag only, never `--extra-index-url` — see
+   * ambient-registry-config.ts's `PIP_PRIMARY_INDEX_FLAGS` note on why),
+   * or cargo's `--registry <name>` (a registry NAME, not a URL). Consumed
+   * by `applyAmbientConfig` to detect the dependency-confusion attack
+   * shape: ambient config says this name is private, but the command
+   * itself explicitly forces the public registry.
+   */
+  explicitRegistryOverride?: string
+  /**
+   * Inline per-command env var assignments (`GOPRIVATE=github.com/corp/*
+   * go get ...`) for the handful of ambient-config-relevant var NAMES this
+   * module watches for — captured at extraction time because the generic
+   * leading env-assignment skip (just below) has no other way to hand a
+   * matched var back to the caller before discarding the token.
+   */
+  inlineEnv?: Record<string, string>
+  /** Set by `applyAmbientConfig` (ambient-registry-config.ts), never by `extractPackageInstalls` itself — free-text description of the ambient signal (npmrc tier, GOPRIVATE pattern, cargo replace-with, ...) that produced `privateIndex: true` or `dependencyConfusionRisk: true`, threaded through to the rule's message. */
+  ambientSource?: string
+  /** Set by `applyAmbientConfig` — ambient config marks this name as normally resolving to a PRIVATE registry, but the command's own explicit registry/index flag forces the PUBLIC one: the dependency-confusion attack shape (see `decidePackageAction` / `buildDependencyConfusionMessage`). */
+  dependencyConfusionRisk?: boolean
 }
 
 const MANAGERS = new Set<PackageManager>(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'uv', 'poetry', 'cargo', 'go'])
@@ -215,6 +243,46 @@ function isPipIndexFlag(tok: string): boolean {
   return PIP_INDEX_FLAGS.has(tok.split('=')[0])
 }
 
+// pip's PRIMARY index flag only — `-i`/`--index-url` REPLACES the default
+// index; `--extra-index-url` only ADDS a fallback while the ambient private
+// index (if any) stays primary. Used to capture `explicitRegistryOverride`
+// for the dependency-confusion check in ambient-registry-config.ts: only a
+// flag that actually FORCES a different primary index is a candidate for
+// "this command forced the public registry", never an additive fallback.
+const PIP_PRIMARY_INDEX_FLAGS = new Set(['-i', '--index-url'])
+function isPipPrimaryIndexFlag(tok: string): boolean {
+  return PIP_PRIMARY_INDEX_FLAGS.has(tok.split('=')[0])
+}
+
+/** Find the value of a flag whose value is a SEPARATE next token OR `=`-joined, scanning `tokens[from..]`. Used to capture `explicitRegistryOverride` for pip's index flags and cargo's `--registry`, both already members of their manager's `FLAG_VALUE_CONSUMING` table (next-token form) but which can also appear `=`-joined in practice. */
+function findFlagValue(tokens: string[], from: number, matchFlag: (tok: string) => boolean): string | undefined {
+  for (let j = from; j < tokens.length; j++) {
+    const tok = tokens[j]
+    if (!matchFlag(tok)) continue
+    const eq = tok.indexOf('=')
+    if (eq !== -1) return tok.slice(eq + 1)
+    return tokens[j + 1]
+  }
+  return undefined
+}
+
+/** `=`-joined-only flag value lookup — npm-family flags are always `=`-joined in practice (see `FLAG_VALUE_CONSUMING`'s own header note on why npm has no next-token table entry); a space-separated `--registry <url>` is deliberately NOT matched here, matching npm-family's existing "no consuming table" behavior byte-for-byte (see the "npm flag-skip behavior is byte-identical to before" test). */
+function findEqJoinedFlagValue(tokens: string[], from: number, flagName: string): string | undefined {
+  const prefix = `${flagName}=`
+  for (let j = from; j < tokens.length; j++) {
+    if (tokens[j].startsWith(prefix)) return tokens[j].slice(prefix.length)
+  }
+  return undefined
+}
+
+// Env var names this module captures when they appear as an inline
+// per-command prefix (`GOPRIVATE=github.com/corp/* go get ...`) — see
+// PackageSpec.inlineEnv's own doc and ambient-registry-config.ts's header.
+const WATCHED_INLINE_ENV_VARS = new Set([
+  'NPM_CONFIG_REGISTRY', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL',
+  'GOPRIVATE', 'GONOSUMCHECK', 'GOPROXY',
+])
+
 // Cheap reject before any tokenizing — the vast majority of commands never
 // mention a package manager at all, and this is the check that makes
 // "only commands matching an install pattern pay any cost" literally true.
@@ -328,8 +396,23 @@ function parsePipSpec(tok: string): { name: string; requestedVersion?: string } 
 function extractSegmentInstalls(segment: string): PackageSpec[] {
   const tokens = tokenize(segment)
   let i = 0
-  // Skip leading `sudo` and inline env assignments (`FOO=bar npm install x`).
-  while (i < tokens.length && (tokens[i] === 'sudo' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) i++
+  let inlineEnv: Record<string, string> | undefined
+  // Skip leading `sudo` and inline env assignments (`FOO=bar npm install x`)
+  // — the skip itself is UNCHANGED; this only additionally captures the
+  // handful of ambient-config-relevant var NAMES along the way (see
+  // WATCHED_INLINE_ENV_VARS) before the token is discarded, since this loop
+  // has no other way to hand a match back to the caller.
+  while (i < tokens.length && (tokens[i] === 'sudo' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) {
+    const eq = tokens[i].indexOf('=')
+    if (eq > 0) {
+      const varName = tokens[i].slice(0, eq)
+      if (WATCHED_INLINE_ENV_VARS.has(varName)) {
+        inlineEnv ??= {}
+        inlineEnv[varName] = tokens[i].slice(eq + 1)
+      }
+    }
+    i++
+  }
   if (i >= tokens.length) return []
   const manager = managerFromToken(tokens[i])
   if (!manager) return []
@@ -348,6 +431,23 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
   // mypkg --index-url https://...` and `pip install --index-url
   // https://... mypkg` must both be caught regardless of flag order.
   const privateIndex = grammar === 'pip' && tokens.slice(i).some(isPipIndexFlag)
+
+  // explicitRegistryOverride: the VALUE of an explicit registry/index flag,
+  // for the dependency-confusion check in ambient-registry-config.ts. Pip
+  // uses its PRIMARY index flag only (never --extra-index-url — see
+  // isPipPrimaryIndexFlag's own note); npm-family only the `=`-joined
+  // `--registry=` form (matching npm's existing byte-identical flag-skip
+  // behavior — no next-token consumption); cargo's `--registry <name>`
+  // reuses its existing FLAG_VALUE_CONSUMING entry's next-token/`=`-joined
+  // shape.
+  let explicitRegistryOverride: string | undefined
+  if (grammar === 'pip') {
+    explicitRegistryOverride = findFlagValue(tokens, i, isPipPrimaryIndexFlag)
+  } else if (manager === 'npm' || manager === 'pnpm' || manager === 'yarn' || manager === 'bun') {
+    explicitRegistryOverride = findEqJoinedFlagValue(tokens, i, '--registry')
+  } else if (manager === 'cargo') {
+    explicitRegistryOverride = findFlagValue(tokens, i, tok => tok.split('=')[0] === '--registry')
+  }
 
   const specs: PackageSpec[] = []
   for (; i < tokens.length; i++) {
@@ -368,12 +468,21 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
       if (tokens[i + 1] === '@') { i += 2; continue }
       if (isNonRegistrySpec(tok)) continue
       const parsed = parsePipSpec(tok)
-      if (parsed) specs.push({ ...parsed, manager, raw: tok, ...(privateIndex ? { privateIndex: true } : {}) })
+      if (parsed) specs.push({
+        ...parsed, manager, raw: tok,
+        ...(privateIndex ? { privateIndex: true } : {}),
+        ...(explicitRegistryOverride !== undefined ? { explicitRegistryOverride } : {}),
+        ...(inlineEnv ? { inlineEnv } : {}),
+      })
       continue
     }
     if (isNonRegistrySpec(tok)) continue
     const parsed = parseSpec(tok, ecosystem)
-    if (parsed) specs.push({ ...parsed, manager, raw: tok })
+    if (parsed) specs.push({
+      ...parsed, manager, raw: tok,
+      ...(explicitRegistryOverride !== undefined ? { explicitRegistryOverride } : {}),
+      ...(inlineEnv ? { inlineEnv } : {}),
+    })
   }
   return specs
 }
@@ -401,12 +510,18 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
  * extractor; a real shell parse would be needed to unwrap it. This applies
  * equally to every ecosystem covered here, not just npm.
  *
- * Deliberately out of scope (see this feature's own scoping notes):
- * `python -m pip install`, `cargo install` (binary install — a different
- * cargo subcommand than `add`), and ambient config files (`.npmrc`,
- * `.cargo/config.toml`, `GOPRIVATE`) that could mark a name as private
- * without any command-line signal — the same inherited gap npm's own
- * `.npmrc` already has today.
+ * Deliberately out of scope: `python -m pip install`, `cargo install`
+ * (binary install — a different cargo subcommand than `add`).
+ *
+ * Ambient config files (`.npmrc`, `pip.conf`, `.cargo/config.toml`,
+ * `GOPRIVATE`) that mark a name as private WITHOUT any command-line signal
+ * are NOT handled by this pure/sync extraction pass — they require
+ * filesystem reads, which this function deliberately never does (see this
+ * function's own "cheap, sync, regex/tokenizer only" contract above). They
+ * ARE handled, one layer up, by `applyAmbientConfig`
+ * (ambient-registry-config.ts), a separate pass pipeline.ts runs over
+ * exactly the specs this function returns — see that module's header for
+ * the full rationale and the false-deny bug it closes.
  */
 export function extractPackageInstalls(command: string): PackageSpec[] {
   if (!command || !QUICK_PREFILTER.test(command)) return []
@@ -421,7 +536,7 @@ export function extractPackageInstalls(command: string): PackageSpec[] {
 export type PackageVerdict = 'exists' | 'not_found' | 'unverified'
 export type UnverifiedReason =
   | 'timeout' | 'network_error' | 'scoped_not_public' | 'budget_exhausted' | 'too_large' | 'not_yet_checked'
-  | 'private_index' | 'go_ambiguous'
+  | 'private_index' | 'go_ambiguous' | 'ambient_private_registry'
 
 export interface PackageCheckResult {
   name: string
@@ -432,6 +547,10 @@ export interface PackageCheckResult {
   createdAt?: string
   didYouMean?: string[]
   fromCache: boolean
+  /** Threaded through from `PackageSpec.ambientSource` when `reason` is `ambient_private_registry`, or when `dependencyConfusionRisk` is set — free-text description of the ambient config signal, for the rule message. */
+  ambientSource?: string
+  /** Threaded through from `PackageSpec.dependencyConfusionRisk` — see that field's own doc and `decidePackageAction`. */
+  dependencyConfusionRisk?: boolean
 }
 
 /**
@@ -922,6 +1041,13 @@ export interface EvaluateInstallOptions {
  * through unverified without saying so, whereas 'unverified' correctly
  * downgrades to prompt.
  */
+/** Overlay `PackageSpec.dependencyConfusionRisk`/`ambientSource` onto a `PackageCheckResult`, conditionally so no `undefined`-valued keys ever appear (matches every other conditional-spread field in this module — keeps hand-built test fixtures and pre-existing exact-shape assertions unaffected when the flag isn't set). Shared by `checkPackages` and `checkPackagesCacheOnly` so both the network path and the cache-only hot path carry it identically. */
+function withDependencyConfusion(result: PackageCheckResult, spec: PackageSpec): PackageCheckResult {
+  return spec.dependencyConfusionRisk
+    ? { ...result, dependencyConfusionRisk: true, ambientSource: spec.ambientSource }
+    : result
+}
+
 export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallOptions = {}): Promise<PackageCheckResult[]> {
   const now = opts.now ?? Date.now
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2000
@@ -943,7 +1069,7 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
     const key = `${ecosystem}:${spec.name}`
     const already = seen.get(key)
     if (already) {
-      results.push({ ...already, requestedVersion: spec.requestedVersion })
+      results.push(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec))
       continue
     }
 
@@ -953,8 +1079,18 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
       // (finding 3b): the URL a `--index-url` flag names comes from the
       // AGENT's command line, not the rule author, and fetching it would
       // reopen exactly the SSRF surface this module's header explains it
-      // otherwise doesn't have to defend against.
-      result = { name: spec.name, requestedVersion: spec.requestedVersion, verdict: 'unverified', reason: 'private_index', fromCache: false }
+      // otherwise doesn't have to defend against. Ambient-config-sourced
+      // private-index specs (see ambient-registry-config.ts) get the same
+      // never-queried treatment, distinguished only by `reason` (so the
+      // rule message can name the actual ambient signal that fired).
+      result = {
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: 'unverified',
+        reason: spec.ambientSource ? 'ambient_private_registry' : 'private_index',
+        fromCache: false,
+        ...(spec.ambientSource ? { ambientSource: spec.ambientSource } : {}),
+      }
     } else {
       const cached = cache.get(spec.name, now(), ecosystem)
       if (cached) {
@@ -1003,6 +1139,7 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
         }, now())
       }
     }
+    result = withDependencyConfusion(result, spec)
     seen.set(key, result)
     results.push(result)
   }
@@ -1047,12 +1184,19 @@ export function checkPackagesCacheOnly(
   for (const spec of specs) {
     const ecosystem = ecosystemForManager(spec.manager)
     if (spec.privateIndex) {
-      results.push({ name: spec.name, requestedVersion: spec.requestedVersion, verdict: 'unverified', reason: 'private_index', fromCache: false })
+      results.push(withDependencyConfusion({
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: 'unverified',
+        reason: spec.ambientSource ? 'ambient_private_registry' : 'private_index',
+        fromCache: false,
+        ...(spec.ambientSource ? { ambientSource: spec.ambientSource } : {}),
+      }, spec))
       continue
     }
     const cached = cache.get(spec.name, t, ecosystem)
     if (cached) {
-      results.push({
+      results.push(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: cached.verdict,
@@ -1061,15 +1205,15 @@ export function checkPackagesCacheOnly(
         createdAt: cached.createdAt,
         didYouMean: cached.didYouMean,
         fromCache: true,
-      })
+      }, spec))
     } else {
-      results.push({
+      results.push(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: 'unverified',
         reason: 'not_yet_checked',
         fromCache: false,
-      })
+      }, spec))
       const missKey = `${ecosystem}:${spec.name}`
       if (!missSeen.has(missKey)) {
         missSeen.add(missKey)
@@ -1102,7 +1246,7 @@ export function scheduleBackgroundVerification(
   return checkPackages(misses, opts).then(() => undefined, () => undefined)
 }
 
-export type PackageDecisionReason = 'not_found' | 'unverified' | 'age_gate' | 'ok'
+export type PackageDecisionReason = 'not_found' | 'unverified' | 'age_gate' | 'dependency_confusion' | 'ok'
 
 export interface PackageRuleDecision {
   reason: PackageDecisionReason
@@ -1121,6 +1265,9 @@ function buildUnverifiedMessage(r: PackageCheckResult): string {
   }
   if (r.reason === 'private_index') {
     return `unverified — "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) — approve only if you recognize and trust this index.`
+  }
+  if (r.reason === 'ambient_private_registry') {
+    return `unverified — "${r.name}" resolves to a private/internal registry per your ambient package-manager config (${r.ambientSource ?? 'local .npmrc/pip.conf/.cargo/config.toml/GOPRIVATE'}), not the public registry. keel does not query ambient-configured private registries (same SSRF-avoidance rationale as an explicit --index-url) — approve only if you recognize and trust this registry.`
   }
   if (r.reason === 'go_ambiguous') {
     return `unverified — "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence — the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`
@@ -1142,12 +1289,29 @@ function buildAgeGateMessage(r: PackageCheckResult, ageThresholdDays: number): s
   return `Package "${r.name}" was published ${days ?? '?'} day(s) ago (younger than the ${ageThresholdDays}-day threshold) — verify this isn't a fresh, potentially attacker-registered release before installing.`
 }
 
+function buildDependencyConfusionMessage(r: PackageCheckResult): string {
+  return `dependency-confusion risk — "${r.name}" normally resolves via your ambient private-registry config (${r.ambientSource ?? 'ambient package-manager config'}), but this command explicitly forces the PUBLIC registry instead. If an attacker has squatted this name on the public registry, forcing the public registry here installs THEIR package, not your internal one. Verify this override is intentional before proceeding.`
+}
+
 /**
  * Pure decision function — no I/O, easy to test independently of the
  * network layer. Priority order across a multi-package command mirrors
  * severity: a not_found ANYWHERE denies the whole command (deterministic,
  * highest confidence); otherwise an unverified anywhere prompts; otherwise
- * an age-gated package prompts; otherwise allow.
+ * an age-gated package prompts; otherwise a dependency-confusion-risked
+ * package warns; otherwise allow.
+ *
+ * dependency_confusion is deliberately LAST, below not_found/unverified/
+ * age_gate, not first — it is a `warn`, strictly weaker than `deny` or
+ * `prompt`. Checking it first would let `npm i <hallucinated-name>
+ * --registry=https://registry.npmjs.org` in a repo with an ambient private
+ * `.npmrc` DOWNGRADE a deterministic not_found deny to a warn — an explicit
+ * public-registry flag would become a deny-ESCAPE for exactly the
+ * hallucinated-name attack this rule exists to stop. Checked last, it only
+ * ever fires when every result has already cleared not_found/unverified/
+ * age_gate (i.e. every package genuinely exists and is old enough) — the
+ * actual squatted-name shape: a real, aged, PUBLIC package sitting under a
+ * name your ambient config normally routes internally.
  */
 export function decidePackageAction(results: PackageCheckResult[], ageThresholdDays: number): PackageRuleDecision {
   const notFound = results.find(r => r.verdict === 'not_found')
@@ -1159,13 +1323,17 @@ export function decidePackageAction(results: PackageCheckResult[], ageThresholdD
   const young = results.find(r => r.verdict === 'exists' && r.ageDays !== undefined && r.ageDays < ageThresholdDays)
   if (young) return { reason: 'age_gate', message: buildAgeGateMessage(young, ageThresholdDays), result: young }
 
+  const confusion = results.find(r => r.dependencyConfusionRisk)
+  if (confusion) return { reason: 'dependency_confusion', message: buildDependencyConfusionMessage(confusion), result: confusion }
+
   return { reason: 'ok', message: 'All installed packages verified against their package registries.' }
 }
 
-/** Convenience: extract + check + decide in one call. Primarily for tests/CLI use; the pipeline calls the three steps separately to keep the cheap extraction gate visible. */
-export async function evaluateInstallCommand(command: string, opts: EvaluateInstallOptions & { ageThresholdDays?: number } = {}): Promise<PackageRuleDecision> {
-  const specs = extractPackageInstalls(command)
-  if (!specs.length) return { reason: 'ok', message: 'No package installs in this command.' }
+/** Convenience: extract + check + decide in one call. Primarily for tests/CLI use; the pipeline calls the three steps separately to keep the cheap extraction gate visible. `cwd` defaults to `process.cwd()` for `applyAmbientConfig`'s project-tier `.npmrc`/`.cargo/config.toml` lookup — see ambient-registry-config.ts. */
+export async function evaluateInstallCommand(command: string, opts: EvaluateInstallOptions & { ageThresholdDays?: number; cwd?: string } = {}): Promise<PackageRuleDecision> {
+  const rawSpecs = extractPackageInstalls(command)
+  if (!rawSpecs.length) return { reason: 'ok', message: 'No package installs in this command.' }
+  const specs = applyAmbientConfig(rawSpecs, opts.cwd ?? process.cwd())
   const results = await checkPackages(specs, opts)
   return decidePackageAction(results, opts.ageThresholdDays ?? 30)
 }
