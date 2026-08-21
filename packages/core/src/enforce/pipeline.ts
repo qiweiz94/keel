@@ -12,6 +12,7 @@ import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validate
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
+import { OscillationTracker } from './oscillation-tracker.js'
 import { SessionTracker } from './session-tracker.js'
 import { writeHaltSentinel } from './halt-writer.js'
 import { BudgetTracker, type BudgetSpend } from './budget-tracker.js'
@@ -90,6 +91,8 @@ export interface PipelineConfig {
   researchCache?: ResearchCache
   researchTracker?: ResearchTracker
   stuckTracker?: StuckTracker
+  /** Rolling-window A→B→A cycle detector behind `type: oscillation` rules (oscillation-tracker.ts) — sibling of stuckTracker's exact-repeat detection, not a replacement. Optional, same pattern: a rules.yaml with no `type: oscillation` rule never touches it. */
+  oscillationTracker?: OscillationTracker
   /** Composite runaway-loop trip behind `type: session` rules (session-tracker.ts). Optional, same pattern as stuckTracker: a rules.yaml with no `type: session` rule never touches it. */
   sessionTracker?: SessionTracker
   /** Two-phase deny state for `type: budget` rules — see budget-tracker.ts's own header comment. `checkDeny` is read from evaluate()'s PreToolUse branch; `record` is called from `recordBudgetSnapshot()`, OUTSIDE evaluate(), by a host's Stop/PostToolUse-equivalent hook. */
@@ -662,7 +665,7 @@ export class EnforcementPipeline {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
     const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
-      ['verification', 'claim', 'research', 'stuck', 'rate', 'time'].includes(rule.type)
+      ['verification', 'claim', 'research', 'stuck', 'oscillation', 'rate', 'time'].includes(rule.type)
       || (deepChecks && ['sequence', 'flow', 'oracle'].includes(rule.type))
     )
     // Approval-gated rules are re-evaluated on every call: the user may grant
@@ -1215,6 +1218,47 @@ export class EnforcementPipeline {
         continue
       }
 
+      // Match against oscillation rules: a short repeating CYCLE of >= 2
+      // DISTINCT recent command fingerprints (A→B→A→B) within one session's
+      // rolling window — the sibling of the stuck-loop branch above, not a
+      // duplicate of it: that branch only ever fires on the SAME fingerprint
+      // repeated (bucketed per fingerprint), so a genuine A→B→A→B never
+      // accumulates a count there at all, and this branch's own
+      // distinct-fingerprint guard (oscillation-tracker.ts's `check()`)
+      // means a pure exact-repeat never satisfies IT either — the two are
+      // complementary, never double-counting the same evidence. Scoped to
+      // Bash calls and WRITE_TOOL_NAMES (the same curated write-tool set the
+      // session-runaway-trip branch below already uses for its own
+      // file_write_churn dimension — see its own comment for why the looser
+      // `!/^read/i` heuristic was tried and rejected): oscillation is about
+      // commands/edits that actually DO something, not read-only
+      // exploration. `rule.match`, if declared, is an ADDITIONAL filter on
+      // top of that scope (unlike `type: stuck`, where `match` is the ONLY
+      // gate) — optional because a session-scoped detector watching "every
+      // mutating call" is a coherent default with no filter at all.
+      if (rule.type === 'oscillation' && this.config.oscillationTracker) {
+        const isTrackedTool = input.tool === 'Bash' || WRITE_TOOL_NAMES.has(input.tool.toLowerCase())
+        if (!isTrackedTool) continue
+        if (rule.match) {
+          const cmdStr = commandString(input)
+          if (!this.matchesRulePattern(rule.match, cmdStr)) continue
+        }
+        const escalation = this.config.oscillationTracker.check(rule, input)
+        if (escalation) {
+          const directive: RedirectDirective = {
+            kind: 'oscillation',
+            required_tools: ['keel_research', 'keel_hypothesis'],
+            target: `oscillating pattern: ${escalation.cycle.join(' → ')} (repeated ${escalation.attempts} times)`,
+            rationale: rule.message,
+            rule_id: rule.id,
+            attempts: escalation.attempts,
+            suggested_call: 'keel_research({ query: "<why this keeps reverting>" })',
+          }
+          return this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, directive, true)
+        }
+        continue
+      }
+
       // Match against budget rules (real token/dollar spend — distinct
       // from the call-VOLUME `type: rate` runaway-budget-* rules). This is
       // the ENTIRE blocking-path contract for `type: budget`: it only
@@ -1581,6 +1625,24 @@ export class EnforcementPipeline {
         if (rule.type === 'session' && rule.session_escalation?.length) {
           this.config.sessionTracker.recordOutcome(rule, input, exitCode)
         }
+      }
+    }
+
+    // Oscillation rolling window: fed by the SAME after-hook exit code as
+    // the stuck-loop detector below, but appended regardless of which
+    // fingerprint it is (the window holds a SEQUENCE of recent fingerprints,
+    // not one bucket per fingerprint) — see oscillation-tracker.ts's
+    // recordOutcome for the require_failure discriminator. Scoped to the
+    // same Bash/WRITE_TOOL_NAMES tool set the evaluate()-side branch checks,
+    // so a Read/Grep/exploration call never dilutes the window. Must run
+    // before the stuckTracker early-return below, same reasoning as the
+    // oracle/session blocks above.
+    if (this.config.oscillationTracker && (input.tool === 'Bash' || WRITE_TOOL_NAMES.has(input.tool.toLowerCase()))) {
+      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      for (const rule of rules) {
+        if (rule.type !== 'oscillation') continue
+        if (rule.match && !this.matchesRulePattern(rule.match, cmd)) continue
+        this.config.oscillationTracker.recordOutcome(rule, input, exitCode)
       }
     }
 

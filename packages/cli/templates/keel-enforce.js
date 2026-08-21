@@ -6500,7 +6500,8 @@ function validateRules(rules) {
     "claim",
     "oracle",
     "package",
-    "budget"
+    "budget",
+    "oscillation"
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6575,6 +6576,20 @@ function validateRules(rules) {
     }
     if (rule.type === "budget" && rule.max_tokens === void 0 && rule.max_dollars === void 0) {
       errors.push(`Budget rule "${label}" needs max_tokens or max_dollars \u2014 remove it or add a spend ceiling`);
+    }
+    if (rule.type === "oscillation") {
+      if (rule.min_cycle_length !== void 0 && (typeof rule.min_cycle_length !== "number" || rule.min_cycle_length < 2)) {
+        errors.push(`Oscillation rule "${label}" has an invalid min_cycle_length (must be a number >= 2 \u2014 a length-1 "cycle" is exact repetition, type: stuck's territory)`);
+      }
+      if (rule.max_cycle_length !== void 0 && (typeof rule.max_cycle_length !== "number" || rule.max_cycle_length < (rule.min_cycle_length ?? 2))) {
+        errors.push(`Oscillation rule "${label}" has an invalid max_cycle_length (must be a number >= min_cycle_length)`);
+      }
+      if (rule.min_cycle_repeats !== void 0 && (typeof rule.min_cycle_repeats !== "number" || rule.min_cycle_repeats < 2)) {
+        errors.push(`Oscillation rule "${label}" has an invalid min_cycle_repeats (must be a number >= 2 \u2014 A\u2192B\u2192A\u2192B is the minimum evidence of a cycle)`);
+      }
+      if (rule.oscillation_window_size !== void 0 && (typeof rule.oscillation_window_size !== "number" || rule.oscillation_window_size < 4)) {
+        errors.push(`Oscillation rule "${label}" has an invalid oscillation_window_size (must be a number >= 4 \u2014 too small to ever hold two repeats of even the shortest cycle)`);
+      }
     }
     if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine \u2014 remove it or use a supported type`);
@@ -8866,7 +8881,7 @@ var EnforcementPipeline = class {
     const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
-      (rule) => ["verification", "claim", "research", "stuck", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow", "oracle"].includes(rule.type)
+      (rule) => ["verification", "claim", "research", "stuck", "oscillation", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow", "oracle"].includes(rule.type)
     );
     const gatedRules = rules.filter((rule) => this.effectiveAction(rule, input) === "prompt");
     if (statefulRules.length) {
@@ -9143,6 +9158,28 @@ var EnforcementPipeline = class {
           }
           continue;
         }
+        if (rule.type === "oscillation" && this.config.oscillationTracker) {
+          const isTrackedTool = input.tool === "Bash" || WRITE_TOOL_NAMES.has(input.tool.toLowerCase());
+          if (!isTrackedTool) continue;
+          if (rule.match) {
+            const cmdStr = commandString(input);
+            if (!this.matchesRulePattern(rule.match, cmdStr)) continue;
+          }
+          const escalation = this.config.oscillationTracker.check(rule, input);
+          if (escalation) {
+            const directive = {
+              kind: "oscillation",
+              required_tools: ["keel_research", "keel_hypothesis"],
+              target: `oscillating pattern: ${escalation.cycle.join(" \u2192 ")} (repeated ${escalation.attempts} times)`,
+              rationale: rule.message,
+              rule_id: rule.id,
+              attempts: escalation.attempts,
+              suggested_call: 'keel_research({ query: "<why this keeps reverting>" })'
+            };
+            return this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, directive, true);
+          }
+          continue;
+        }
         if (rule.type === "budget" && this.config.budgetTracker) {
           const deny = this.config.budgetTracker.checkDeny(rule, input);
           if (deny) {
@@ -9334,6 +9371,14 @@ var EnforcementPipeline = class {
         if (rule.type === "session" && rule.session_escalation?.length) {
           this.config.sessionTracker.recordOutcome(rule, input, exitCode);
         }
+      }
+    }
+    if (this.config.oscillationTracker && (input.tool === "Bash" || WRITE_TOOL_NAMES.has(input.tool.toLowerCase()))) {
+      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      for (const rule of rules2) {
+        if (rule.type !== "oscillation") continue;
+        if (rule.match && !this.matchesRulePattern(rule.match, cmd)) continue;
+        this.config.oscillationTracker.recordOutcome(rule, input, exitCode);
       }
     }
     if (!this.config.stuckTracker) return;
@@ -10352,6 +10397,167 @@ import { readFileSync as readFileSync10, writeFileSync as writeFileSync7, exists
 import { join as join8 } from "node:path";
 var STUCK_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
+// ../core/src/enforce/oscillation-tracker.ts
+var DEFAULT_WINDOW_SECONDS = 900;
+var DEFAULT_BUFFER_SIZE = 8;
+var DEFAULT_MIN_CYCLE_LENGTH = 2;
+var DEFAULT_MAX_CYCLE_LENGTH = 4;
+var DEFAULT_MIN_CYCLE_REPEATS = 2;
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+var OscillationTracker = class {
+  constructor(persistentStore) {
+    this.persistentStore = persistentStore;
+  }
+  persistentStore;
+  memory = /* @__PURE__ */ new Map();
+  key(ruleId, sessionId) {
+    return `osc:${ruleId}:${sessionId}`;
+  }
+  fingerprintOf(rule, cmd) {
+    return rule.fingerprint === "exact" ? cmd : commandFingerprint(cmd);
+  }
+  /**
+   * Record one more attempt's fingerprint into `input.session_id`'s rolling
+   * window — or don't, per the require_failure discriminator (see this
+   * file's header). Unlike StuckTracker.recordOutcome, a SUCCESS does not
+   * clear the window: a success on some UNRELATED command is routine
+   * session noise (most calls in a healthy session succeed), not evidence
+   * that THIS particular candidate cycle resolved — it simply is never
+   * appended, so it cannot itself become part of a detected cycle, but it
+   * also does not erase whatever failing history came before it. Only a
+   * `require_failure: false` rule appends every outcome, success included.
+   */
+  recordOutcome(rule, input, exitCode) {
+    if (!input.session_id) return;
+    const cmd = commandString(input);
+    if (!cmd) return;
+    const requireFailure = rule.require_failure !== false;
+    if (requireFailure) {
+      if (exitCode === null) return;
+      if (exitCode === 0) return;
+    }
+    const fp = this.fingerprintOf(rule, cmd);
+    const key = this.key(rule.id, input.session_id);
+    const windowMs = (rule.window_seconds || DEFAULT_WINDOW_SECONDS) * 1e3;
+    const bufferSize = rule.oscillation_window_size || DEFAULT_BUFFER_SIZE;
+    const entry = { fp, at: Date.now(), exit: exitCode };
+    if (this.persistentStore) {
+      const next = this.persistentStore.append(key, entry, windowMs, bufferSize);
+      this.memory.set(key, next);
+      return;
+    }
+    const now = Date.now();
+    const existing = this.memory.get(key);
+    const fresh = (existing?.entries || []).filter((e) => now - e.at < windowMs);
+    const nextEntries = [...fresh, entry].slice(-bufferSize);
+    this.memory.set(key, { entries: nextEntries, windowMs });
+  }
+  /**
+   * Resolve the current escalation for `input`'s session, or `null` if no
+   * cycle is detected (or the ladder's lowest threshold isn't met yet).
+   *
+   * Algorithm: re-derive the LIVE window (TTL-pruned against the calling
+   * rule's current `window_seconds`, same "never trust the stored value
+   * alone" posture as StuckTracker.check()), then scan candidate cycle
+   * lengths ascending from `min_cycle_length` to `max_cycle_length`. For
+   * each length `p`, take the last `p * min_cycle_repeats` fingerprints,
+   * split into `min_cycle_repeats` chunks of size `p`, and require every
+   * chunk to equal the first (the candidate "unit"). The smallest `p` that
+   * matches wins — a genuine A→B→A→B (p=2) is reported as p=2, never
+   * mis-reported as its own p=4 double-repetition.
+   *
+   * Distinct-fingerprint guard: a unit whose own elements are not at least
+   * 2 distinct fingerprints (e.g. p=2 with unit [A, A]) is skipped — that is
+   * exact repetition, `no-repeat-loops`' territory, and this detector must
+   * never double-count it as a "cycle" of its own.
+   */
+  check(rule, input) {
+    if (!input.session_id) return null;
+    const key = this.key(rule.id, input.session_id);
+    let state = this.memory.get(key);
+    if (this.persistentStore) {
+      const persisted = this.persistentStore.get(key);
+      if (persisted && (!state || persisted.entries.length >= state.entries.length)) {
+        state = persisted;
+        this.memory.set(key, state);
+      }
+    }
+    if (!state || state.entries.length === 0) return null;
+    const windowMs = (rule.window_seconds || DEFAULT_WINDOW_SECONDS) * 1e3;
+    const now = Date.now();
+    const fresh = state.entries.filter((e) => now - e.at < windowMs);
+    if (fresh.length !== state.entries.length) {
+      state = { ...state, entries: fresh };
+      this.memory.set(key, state);
+    }
+    if (fresh.length === 0) return null;
+    const minLen = Math.max(2, rule.min_cycle_length || DEFAULT_MIN_CYCLE_LENGTH);
+    const maxLen = Math.max(minLen, rule.max_cycle_length || DEFAULT_MAX_CYCLE_LENGTH);
+    const minRepeats = Math.max(2, rule.min_cycle_repeats || DEFAULT_MIN_CYCLE_REPEATS);
+    const fps = fresh.map((e) => e.fp);
+    for (let period = minLen; period <= maxLen; period++) {
+      const need = period * minRepeats;
+      if (fps.length < need) continue;
+      const tail = fps.slice(-need);
+      const unit = tail.slice(0, period);
+      if (new Set(unit).size < 2) continue;
+      let matches2 = true;
+      for (let i2 = period; i2 < tail.length; i2 += period) {
+        if (!arraysEqual(tail.slice(i2, i2 + period), unit)) {
+          matches2 = false;
+          break;
+        }
+      }
+      if (!matches2) continue;
+      let attempts = 0;
+      let i = fps.length;
+      while (i >= period && arraysEqual(fps.slice(i - period, i), unit)) {
+        attempts++;
+        i -= period;
+      }
+      const ladder = rule.escalation?.length ? [...rule.escalation].sort((a, b) => b.at - a.at) : [
+        { at: minRepeats + 1, action: "deny", message: "" },
+        { at: minRepeats, action: "redirect", message: "" }
+      ];
+      for (const step of ladder) {
+        if (attempts >= step.at) {
+          const message = step.message || defaultMessage2(unit, attempts, step.action);
+          return { action: step.action, message, attempts, period, cycle: unit };
+        }
+      }
+      return null;
+    }
+    return null;
+  }
+  clear(sessionId) {
+    if (sessionId) {
+      for (const [k] of this.memory) {
+        if (k.endsWith(`:${sessionId}`)) this.memory.delete(k);
+      }
+      if (this.persistentStore) this.persistentStore.deleteBySession(sessionId);
+    } else {
+      this.memory.clear();
+      if (this.persistentStore) this.persistentStore.clearAll();
+    }
+  }
+};
+function defaultMessage2(unit, attempts, action) {
+  const cycleDesc = unit.map((u) => `"${u}"`).join(" \u2192 ");
+  if (action === "redirect") {
+    return `Oscillating pattern detected: ${cycleDesc} \u2192 (repeating) has cycled ${attempts} times without resolving. Stop alternating between these steps \u2014 research why neither one is holding, state a root-cause hypothesis, then change approach.`;
+  }
+  return `${attempts} repeats of the oscillating pattern ${cycleDesc} \u2192 (repeating) \u2014 continuing without new information is blocked. Record a hypothesis or ask the user.`;
+}
+
+// ../core/src/enforce/oscillation-store.ts
+import { readFileSync as readFileSync11, writeFileSync as writeFileSync8, existsSync as existsSync11, mkdirSync as mkdirSync8, renameSync as renameSync6 } from "node:fs";
+import { join as join9 } from "node:path";
+var OSCILLATION_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
+
 // ../core/src/enforce/session-tracker.ts
 function stepSeverity(step) {
   const base = step.action === "deny" || step.action === "block" ? 3 : step.action === "prompt" ? 2 : 1;
@@ -10472,7 +10678,7 @@ var SessionTracker = class {
       }
     }
     if (!best) return null;
-    const message = best.step.message || defaultMessage2(best.step, best.value);
+    const message = best.step.message || defaultMessage3(best.step, best.value);
     return {
       action: best.step.action,
       message,
@@ -10489,7 +10695,7 @@ var SessionTracker = class {
     };
   }
 };
-function defaultMessage2(step, value) {
+function defaultMessage3(step, value) {
   const rounded = Math.round(value * 10) / 10;
   const labels = {
     duration_minutes: `session duration ${rounded}m`,
@@ -10502,13 +10708,13 @@ function defaultMessage2(step, value) {
 }
 
 // ../core/src/enforce/session-store.ts
-import { readFileSync as readFileSync11, writeFileSync as writeFileSync8, existsSync as existsSync11, mkdirSync as mkdirSync8, renameSync as renameSync6 } from "node:fs";
-import { join as join9 } from "node:path";
+import { readFileSync as readFileSync12, writeFileSync as writeFileSync9, existsSync as existsSync12, mkdirSync as mkdirSync9, renameSync as renameSync7 } from "node:fs";
+import { join as join10 } from "node:path";
 var SESSION_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/budget-store.ts
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync9, existsSync as existsSync12, mkdirSync as mkdirSync9, renameSync as renameSync7 } from "node:fs";
-import { join as join10 } from "node:path";
+import { readFileSync as readFileSync13, writeFileSync as writeFileSync10, existsSync as existsSync13, mkdirSync as mkdirSync10, renameSync as renameSync8 } from "node:fs";
+import { join as join11 } from "node:path";
 var BUDGET_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 var MAX_ENTRIES = 500;
 var PersistentBudgetStore = class {
@@ -10519,7 +10725,7 @@ var PersistentBudgetStore = class {
     this.lockOptions = lockOptions;
   }
   filePath() {
-    return join10(this.dir, "budget-tracker.json");
+    return join11(this.dir, "budget-tracker.json");
   }
   lockPath() {
     return `${this.filePath()}.lock`;
@@ -10527,8 +10733,8 @@ var PersistentBudgetStore = class {
   load() {
     try {
       const p = this.filePath();
-      if (existsSync12(p)) {
-        const parsed = JSON.parse(readFileSync12(p, "utf-8"));
+      if (existsSync13(p)) {
+        const parsed = JSON.parse(readFileSync13(p, "utf-8"));
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
       }
     } catch {
@@ -10537,11 +10743,11 @@ var PersistentBudgetStore = class {
   }
   save(data) {
     try {
-      mkdirSync9(this.dir, { recursive: true });
+      mkdirSync10(this.dir, { recursive: true });
       const p = this.filePath();
       const tmp = `${p}.${process.pid}.tmp`;
-      writeFileSync9(tmp, JSON.stringify(data));
-      renameSync7(tmp, p);
+      writeFileSync10(tmp, JSON.stringify(data));
+      renameSync8(tmp, p);
     } catch {
     }
   }
@@ -10584,7 +10790,7 @@ var PersistentBudgetStore = class {
   }
   ensureDir() {
     try {
-      mkdirSync9(this.dir, { recursive: true });
+      mkdirSync10(this.dir, { recursive: true });
     } catch {
     }
   }
@@ -10824,14 +11030,14 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync13, writeFileSync as writeFileSync10, renameSync as renameSync8, statSync as statSync3 } from "node:fs";
-import { join as join11 } from "node:path";
+import { existsSync as existsSync14, mkdirSync as mkdirSync11, readFileSync as readFileSync14, writeFileSync as writeFileSync11, renameSync as renameSync9, statSync as statSync3 } from "node:fs";
+import { join as join12 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync14, mkdirSync as mkdirSync11, readFileSync as readFileSync14, readdirSync } from "node:fs";
-import { join as join12 } from "node:path";
+import { appendFileSync, existsSync as existsSync15, mkdirSync as mkdirSync12, readFileSync as readFileSync15, readdirSync } from "node:fs";
+import { join as join13 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -10871,18 +11077,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync15, readFileSync as readFileSync15, writeFileSync as writeFileSync12, mkdirSync as mkdirSync12, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync9 } from "node:fs";
-import { join as join13 } from "node:path";
+import { existsSync as existsSync16, readFileSync as readFileSync16, writeFileSync as writeFileSync13, mkdirSync as mkdirSync13, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync10 } from "node:fs";
+import { join as join14 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join13(resolveHome(), ".keel", "receipt-key.json");
+  return join14(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join13(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join14(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync15(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync16(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -10916,20 +11122,20 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join13(resolveHome(), ".keel");
-    if (!existsSync15(dir)) mkdirSync12(dir, { recursive: true });
-    writeFileSync12(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join14(resolveHome(), ".keel");
+    if (!existsSync16(dir)) mkdirSync13(dir, { recursive: true });
+    writeFileSync13(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join13(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join14(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync15(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync16(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -10962,20 +11168,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join13(process.cwd(), ".keel", "receipts");
-    if (!existsSync15(dir)) mkdirSync12(dir, { recursive: true });
-    appendFileSync2(join13(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join14(process.cwd(), ".keel", "receipts");
+    if (!existsSync16(dir)) mkdirSync13(dir, { recursive: true });
+    appendFileSync2(join14(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync16 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join14 } from "node:path";
+import { readFileSync as readFileSync17 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join15 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join14(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join15(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -11009,7 +11215,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync16(filePath, "utf-8");
+        const source = readFileSync17(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -11019,11 +11225,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync16(filePath, "utf-8"));
+        JSON.parse(readFileSync17(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync16(filePath, "utf-8"));
+        parse(readFileSync17(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -12322,6 +12528,70 @@ rules:
       - "A Claude Code transcript that cannot be read (missing/rotated file, permissions) degrades that measurement to the last confirmed state rather than asserting either verdict from zero data \u2014 see BudgetTracker.record()'s own comment. Surfaces as a distinct 'unavailable' audit entry, never a false block, but this rule's real hit rate depends on transcript readability."
     message: "This session's measured LLM token spend exceeds max_tokens \u2014 possible runaway usage. Review before continuing, or raise the ceiling for a genuinely long session."
 
+  - id: command-oscillation
+    type: oscillation
+    mode: observe
+    category: workflow
+    severity: medium
+    confidence: medium
+    maturity: incubating
+    priority: -10
+    window_seconds: 900
+    oscillation_window_size: 8
+    min_cycle_length: 2
+    max_cycle_length: 4
+    min_cycle_repeats: 2
+    fingerprint: auto
+    require_failure: true
+    escalation:
+      - at: 2
+        action: redirect
+        message: "This session has cycled through the same short sequence of failing commands/edits at least twice without resolving. Stop alternating between them. Research the exact error, state a root-cause hypothesis, then change approach."
+      - at: 3
+        action: deny
+        message: "3+ repeats of the same oscillating pattern. Retrying without new information is blocked \u2014 record a hypothesis or ask the user."
+    action: warn
+    rationale: >-
+      ROADMAP.md named this a planned-but-unbuilt sibling of no-repeat-loops
+      (type: stuck): "oscillation (A\u2192B\u2192A)". no-repeat-loops only catches the
+      SAME failing command retried \u2014 it does NOT catch an agent alternating
+      between two or three DIFFERENT failing commands or edits that never
+      converge (edit file A, edit file B undoing A's change, edit A again), a
+      real stuck pattern that looks like "activity" but is actually going
+      nowhere. This rule tracks a SHORT rolling window of recent command
+      fingerprints per session (default: last 8, not the whole session
+      history \u2014 oscillation is a LOCAL pattern) and detects a repeating CYCLE
+      of length >= 2 (A\u2192B\u2192A\u2192B, or A\u2192B\u2192C\u2192A\u2192B\u2192C), not merely "any command seen
+      before in the window" \u2014 the latter would false-positive on completely
+      normal workflows like alternating between running a test and editing
+      the file it tests. Complementary to no-repeat-loops by construction,
+      never redundant with it: a pure exact-repeat (period 1) never satisfies
+      this rule's distinct-fingerprint-within-the-unit requirement, and a
+      genuine A\u2192B\u2192A\u2192B cycle never accumulates a count in no-repeat-loops'
+      per-fingerprint buckets either \u2014 see oscillation-tracker.ts's check().
+      require_failure defaults to true, mirroring no-repeat-loops' own
+      discriminator, deliberately: a legitimate TDD red-green-refactor loop
+      (edit test, edit code, edit test, edit code) is LITERALLY period-2
+      alternation between two fingerprints, and the only thing distinguishing
+      it from a genuine stuck oscillation is that each step succeeds \u2014
+      requiring failure excludes it by construction (the edit calls report
+      exitCode 0 and are never appended to the window; the one command that
+      legitimately repeats on every red iteration, the test runner, is the
+      SAME fingerprint each time \u2014 period 1 \u2014 no-repeat-loops' territory, not
+      this rule's). Ships in mode: observe, exactly like session-runaway-trip
+      and session-spend-limit started: this is a brand-new detector with zero
+      measured hit-rate evidence, and no-repeat-loops is the only rule in this
+      catalog that has ever earned promotion out of observe, on real evidence
+      (41 distinct repeat loops across 20 sessions, zero recorded
+      false-positives) via keel retrospective + a human running keel
+      promote \u2014 this rule follows the identical evidence-gated path, not a
+      shortcut around it.
+    remediation: "Stop alternating between the same short sequence of commands or edits. Research why neither approach is holding, state a root-cause hypothesis, then try something genuinely different."
+    false_positives:
+      - "A legitimate edit/verify alternation (e.g. edit a config, re-run a linter, edit again) where every step SUCCEEDS \u2014 excluded by require_failure: true, since a clean exit is never appended to the window."
+      - "KNOWN GAP, not a false positive but a documented miss: an agent oscillating between two edits that each individually SUCCEED (e.g. reverting a file to a prior state each time) is invisible to this rule as shipped \u2014 catching that needs a content-state ('did this file's content actually change vs. a prior version') signal no tracker in this codebase feeds into this detector today. See oscillation-tracker.ts's header."
+    message: "Oscillating pattern detected: cycling between the same short sequence of failing commands/edits without resolving."
+
 `;
 function ensureRules() {
   try {
@@ -12504,6 +12774,7 @@ var plugin_default = {
       allowedFixTransforms: true,
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
+      oscillationTracker: new OscillationTracker(),
       sessionTracker: new SessionTracker(),
       budgetTracker: new BudgetTracker(new PersistentBudgetStore()),
       researchTracker: new ResearchTracker(),

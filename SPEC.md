@@ -139,6 +139,7 @@ runtime without requiring a separate process.
 |------------|------------------|
 | `command`, `filesystem`, `content`, `network`, `rate`, `time`, `sequence`, `verification`, `flow` rules | Supported |
 | `session` rules | Supported — a composite runaway-loop trip across five session-scoped dimensions (wall-clock duration, cumulative tool-call count, cumulative Bash-call count, distinct-file-write churn, consecutive-failure count), escalating `warn → prompt → halt`. Volume-only dimensions cap at `prompt` by construction; only `consecutive_failures` may reach `halt`. Ships as the default `session-runaway-trip` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Session-scoping depends on the calling host sending a real session id; a host that cannot is surfaced at `keel validate`/`keel status`, not silently degraded. |
+| `oscillation` rules | Supported — a short repeating cycle of >= 2 distinct command fingerprints (A→B→A→B) within a session's small rolling window, complementary to (never redundant with) `stuck`'s exact-repeat detection. Ships as the default `command-oscillation` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Same session-id dependency as `session` rules above. |
 | Rule metadata: `level`, `scope`, `context`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
 | `.keel/rules.yaml` project rules | Supported and recommended |
 | `AGENTS.md` OpenCode rule frontmatter | Supported |
@@ -346,6 +347,7 @@ rules:
 | `flow` | Information flow control | `sources: [".env"]`, `sinks: ["network"]` |
 | `mcp` | MCP-specific threats | `mcp_check: tool_descriptions` — **not implemented**: rejected at `keel validate` |
 | `session` | Composite runaway-loop trip: wall-clock duration, cumulative tool-call/Bash-call counts, distinct-file-write churn, and consecutive-failure count, escalating `warn → prompt → halt`. Volume-only dimensions are structurally barred (`validateRules`) from escalating past `prompt`; only `consecutive_failures` may reach `halt` (trips `keel halt`'s lockdown latch — no auto-expiry). See `session-tracker.ts`/`session-store.ts`. | `session_escalation: [{dimension: consecutive_failures, at: 8, action: deny, halt: true}, ...]` |
+| `oscillation` | A→B→A→B cycle detector: a short repeating SEQUENCE of >= 2 DISTINCT recent command fingerprints within a session's small rolling window (default: last 8 calls), escalating on an author-declared ladder. Sibling of `stuck`'s exact-repeat detection (same fingerprinting, same `require_failure`/`escalation` shape), not a replacement — the two never double-count the same evidence. Ships as the default `command-oscillation` rule, `mode: observe`. See `oscillation-tracker.ts`/`oscillation-store.ts`. | `min_cycle_length: 2`, `max_cycle_length: 4`, `min_cycle_repeats: 2` |
 | `inheritance` | Subagent rule propagation | `propagate_rules: all` — **not implemented**: rejected at `keel validate` |
 | `context` | Context management | Re-injection thresholds |
 

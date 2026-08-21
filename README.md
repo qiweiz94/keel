@@ -211,9 +211,9 @@ suggested next step) · `research` (block on a stale knowledge-freshness gate) �
 
 **Rule types:** `command`, `filesystem`, `content`, `network`, `env`, `rate`, `budget`,
 `time`, `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
-problem-solving types below (`stuck`, `research`, `diagnosis`, `claim`, `oracle`).
+problem-solving types below (`stuck`, `oscillation`, `research`, `diagnosis`, `claim`, `oracle`).
 
-`keel install` ships 48 rules by default, split into three tiers — what's an
+`keel install` ships 49 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
 `curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
@@ -223,15 +223,20 @@ publishing, and `npx`/`bunx` of unpinned packages. Run `keel validate` after edi
 ### Stopping agents that circle
 
 Several rule types target the failure everyone recognises — an agent retrying the same
-broken command forever. Three ship as part of the default 48:
+broken command forever, or circling between a couple of broken approaches without ever
+landing one. Four ship as part of the default 49:
 
 - **`stuck`** (`no-repeat-loops`) — N identical failures in a window → redirect, then deny
+- **`oscillation`** (`command-oscillation`) — a short repeating CYCLE of 2+ *different*
+  failing commands/edits (A→B→A→B), not the same one retried — the sibling `stuck`
+  doesn't cover: alternating between two broken approaches instead of hammering one
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
 - **`diagnosis`** (`root-cause-before-refactor`) — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
 
-`research-before-fix` and `root-cause-before-refactor` — plus nine more behavioural
+`research-before-fix` and `root-cause-before-refactor` — plus ten more behavioural
 rules (`claim`, `oracle` ×2, two verification checks, the rate-based
-`runaway-budget-*` pair, `session`, and the new `type: budget` rule) — ship as
+`runaway-budget-*` pair, `session`, the `type: budget` rule, and `command-oscillation`
+above) — ship as
 `mode: observe`: evaluated and recorded on every matching call, never interrupting
 anything, until a human decides otherwise. `no-repeat-loops` has since been PROMOTED
 out of observe: this project's own traces cite 41 distinct repeat loops across 20

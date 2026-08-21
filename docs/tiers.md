@@ -1,9 +1,9 @@
 # The three tiers
 
-`keel install` writes 48 default rules into `~/.keel/rules.yaml`, split into three
+`keel install` writes 49 default rules into `~/.keel/rules.yaml`, split into three
 tiers: 13 rules in Tier 1 carry a hard `level: protect` floor, plus one more Tier-1-
 positioned sibling rule that doesn't (see the note under Tier 1 below); 22 rules sit in
-Tier 2 (balanced); 10 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
+Tier 2 (balanced); 12 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
 has since been promoted out of Tier 3 into active enforcement (see below). This page
 explains what each tier does, how the "speed dial" (`keel level`) interacts with them,
 and how a rule moves from silently watching to actually blocking.
@@ -39,7 +39,7 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   ladder is the wrong shape — the first hit *is* the incident.
 
 Three tiers resolve that tension by giving each rule the posture its own evidence
-earns it, instead of applying one policy to all 48.
+earns it, instead of applying one policy to all 49.
 
 | Tier | What it does | Can the dial soften it? | Example rules |
 |---|---|---|---|
@@ -149,7 +149,7 @@ it doesn't fit Tier 1 or Tier 2's simple action column cleanly:
 |---|---|---|---|
 | `no-repeat-loops` | stuck | warn (base) → **redirect** at 3 identical failures → **deny** at 5, in a 15-minute window; `sprint` downgrades the 5th-attempt deny to warn, the 3rd-attempt redirect never softens | An identical failing command retried 3× / 5× in a 15-minute window |
 
-## Tier 3 — observe (10 rules)
+## Tier 3 — observe (12 rules)
 
 Every rule below ships with `mode: observe`. The pipeline evaluates them on every
 matching call and records what it *would* have done — the `observed_action` field on
@@ -169,6 +169,7 @@ to the host is always `allow`. Nothing here interrupts anyone yet.
 | `runaway-budget-bash-calls` | rate | warn | >500 Bash calls in the last 4 hours of a session — same call-VOLUME-only caveat |
 | `session-runaway-trip` | session | warn → prompt → **deny+halt** (consecutive_failures only) | A composite runaway-loop trip: session duration, cumulative tool/Bash-call counts, distinct-file-write churn, and consecutive-failure count. See below. |
 | `session-spend-limit` | **budget** | deny | Measured session spend (real tokens, read from a host's own local transcript/session record — a Claude Code transcript's usage fields or an OpenCode session row's cost/token columns) over `max_tokens`. NOT the same mechanism as the two `runaway-budget-*` rows above: this reads actual usage instead of counting calls. Ships `mode: observe` for a narrower, safety-specific reason than "unmeasured": its Claude Code reader depends on model-string normalization with a real failure mode (a short alias like `claude-sonnet-5` must never be priced as an official dated model ID), and that needs to survive real traffic before this rule denies anything. Two-phase by construction — see `packages/core/src/enforce/budget-tracker.ts` — because Claude Code's Stop hook cannot block. |
+| `command-oscillation` | **oscillation** | warn (base) → **redirect** at 2 repeats → **deny** at 3 repeats, in a 15-minute rolling window of the last 8 tracked calls | A short repeating CYCLE of >= 2 DIFFERENT recent command fingerprints (A→B→A→B, or A→B→C→A→B→C) — an agent alternating between two or three failing commands/edits that never converge, not the SAME command repeated (that's `no-repeat-loops`, above). See below. |
 
 `session-runaway-trip` is `type: session`'s first real handler — a composite
 runaway-loop trip across five session-scoped dimensions (wall-clock duration,
@@ -188,6 +189,24 @@ escalate all the way to a `keel halt` lockdown latch with no auto-expiry. Unlike
 in `mode: observe` for the same reason the `runaway-budget-*` rules above still sit
 there, not because it was promoted and then held back.
 
+`command-oscillation` (`type: oscillation`) is the sibling ROADMAP.md named alongside
+`no-repeat-loops`: a short rolling window of recent command fingerprints per session
+(default: last 8, not the whole session history — oscillation is a LOCAL pattern),
+checked for a repeating cycle of length >= 2 rather than one fingerprint repeated.
+Complementary to `no-repeat-loops` by construction, never redundant with it: a pure
+exact-repeat never satisfies this rule's distinct-fingerprint-within-the-unit
+requirement, and a genuine A→B→A→B cycle never accumulates a count in
+`no-repeat-loops`' own per-fingerprint buckets either. `require_failure` defaults to
+`true`, the same discriminator `no-repeat-loops` already relies on: a legitimate TDD
+red-green-refactor loop (edit test, edit code, edit test, edit code) is literally
+period-2 alternation between two fingerprints, and only the fact that each step
+succeeds distinguishes it from a genuine stuck oscillation — requiring failure excludes
+it by construction. Known gap, left undone rather than force-fit: an agent oscillating
+between edits that each individually SUCCEED (e.g. reverting a file to a prior state
+each time) needs a content-state signal no tracker in this codebase feeds into this
+detector today. Ships with no measured hit-rate evidence, same posture as
+`session-runaway-trip` above.
+
 `test-oracle-tampering` and `test-oracle-env-introspection` are the two Tier-3 rules
 that carry an explicit `level: sprint` (every other Tier-3 rule leaves `level` unset) —
 both mean "no floor, obey the dial" per this page's own opening distinction, so neither
@@ -196,8 +215,8 @@ soften either). Confirmed live, from a clean isolated install (`keel level sprin
 `protect`): 5 rules soften from deny/block to warn (`source-change-requires-test`,
 `session-spend-limit`, `no-secrets-in-code`, `no-secret-files`, `no-credential-echo`)
 but none are DEACTIVATED — every rule stays present and evaluated at every dial, only
-the deny-tier ones get weaker. `keel status` reports `Active at current dial: 48 of
-48` at sprint, confirming no rule drops out of the active set — "active at every dial"
+the deny-tier ones get weaker. `keel status` reports `Active at current dial: 49 of
+49` at sprint, confirming no rule drops out of the active set — "active at every dial"
 means present and evaluated, not unaffected by the dial.
 
 ## The speed dial

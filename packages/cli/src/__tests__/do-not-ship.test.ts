@@ -284,6 +284,7 @@ describe('do-not-ship: false-positive guardrail patterns', () => {
       'package',  // registry metadata lookup (existence/age), no model call
       'session',  // deterministic call/duration/failure counters, no model call
       'budget',   // arithmetic sum over transcript usage fields / a db row's own columns, no model call
+      'oscillation', // deterministic fingerprint-sequence cycle detection, no model call
     ])
 
     // Heuristic: look for operation-level keywords that indicate model invocation
