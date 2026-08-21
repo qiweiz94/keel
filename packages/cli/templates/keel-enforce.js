@@ -11,8 +11,8 @@ function resolveHome() {
 }
 
 // ../core/src/enforce/pipeline.ts
-import { existsSync as existsSync5, readFileSync as readFileSync5, rmSync, statSync as statSync2 } from "node:fs";
-import { join as join5 } from "node:path";
+import { existsSync as existsSync6, readFileSync as readFileSync6, rmSync, statSync as statSync2 } from "node:fs";
+import { join as join6 } from "node:path";
 
 // ../core/src/enforce/path-normalize.ts
 import { win32, posix } from "node:path";
@@ -6853,9 +6853,281 @@ function defaultHaltPath() {
 }
 
 // ../core/src/enforce/package-verifier.ts
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, renameSync } from "node:fs";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync2, renameSync } from "node:fs";
+import { join as join4 } from "node:path";
+
+// ../core/src/enforce/ambient-registry-config.ts
+import { readFileSync as readFileSync2, existsSync as existsSync3 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
 import { join as join3 } from "node:path";
-var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
+function readTextFile(path2) {
+  try {
+    if (!existsSync3(path2)) return null;
+    return readFileSync2(path2, "utf-8");
+  } catch {
+    return null;
+  }
+}
+function ambientEnabled(env) {
+  return !env.VITEST || !!env.KEEL_HOME;
+}
+function ambientHomeDir(env) {
+  if (env.KEEL_HOME) return env.KEEL_HOME;
+  if (env.VITEST) return null;
+  return env.HOME || homedir2();
+}
+function hostOf(url) {
+  if (!url) return void 0;
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)/i.exec(url.trim());
+  if (!m) return void 0;
+  return m[1].split("@").pop()?.toLowerCase();
+}
+function isPublicNpmRegistry(url) {
+  const h = hostOf(url);
+  return !h || h === "registry.npmjs.org";
+}
+function isPublicPypiIndex(url) {
+  const h = hostOf(url);
+  return !h || h === "pypi.org" || h === "files.pythonhosted.org";
+}
+function isExactPublicNpmHost(url) {
+  return hostOf(url) === "registry.npmjs.org";
+}
+function isExactPublicPypiHost(url) {
+  const h = hostOf(url);
+  return h === "pypi.org" || h === "files.pythonhosted.org";
+}
+function parseNpmrc(text) {
+  const scoped = /* @__PURE__ */ new Map();
+  let defaultRegistry;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+      value = value.slice(1, -1);
+    }
+    if (key === "registry") {
+      defaultRegistry = value;
+      continue;
+    }
+    const m = /^(@[^:]+):registry$/i.exec(key);
+    if (m) scoped.set(m[1], value);
+  }
+  return { defaultRegistry, scoped };
+}
+function resolveNpmAmbient(cwd, env) {
+  const scoped = /* @__PURE__ */ new Map();
+  let defaultRegistry;
+  let source;
+  const apply = (text, label) => {
+    if (!text) return;
+    const p = parseNpmrc(text);
+    if (p.defaultRegistry) {
+      defaultRegistry = p.defaultRegistry;
+      source = label;
+    }
+    for (const [k, v] of p.scoped) scoped.set(k, v);
+  };
+  if (ambientEnabled(env) && env.NPM_CONFIG_GLOBALCONFIG) {
+    apply(readTextFile(env.NPM_CONFIG_GLOBALCONFIG), "global .npmrc");
+  }
+  const home = ambientHomeDir(env);
+  if (home) apply(readTextFile(join3(home, ".npmrc")), "user .npmrc");
+  apply(readTextFile(join3(cwd, ".npmrc")), "project .npmrc");
+  if (ambientEnabled(env) && env.NPM_CONFIG_REGISTRY) {
+    defaultRegistry = env.NPM_CONFIG_REGISTRY;
+    source = "NPM_CONFIG_REGISTRY";
+  }
+  return { defaultRegistry, scoped, source };
+}
+function parsePipConf(text) {
+  const urls = [];
+  let inGlobal = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const section = /^\[([^\]]+)\]$/.exec(line);
+    if (section) {
+      inGlobal = section[1].trim().toLowerCase() === "global";
+      continue;
+    }
+    if (!inGlobal) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim().toLowerCase();
+    if (key !== "index-url" && key !== "extra-index-url") continue;
+    for (const u of line.slice(eq + 1).trim().split(/\s+/)) if (u) urls.push(u);
+  }
+  return urls;
+}
+function resolvePipAmbient(cwd, env) {
+  const urls = [];
+  let source;
+  const add = (text, label) => {
+    if (!text) return;
+    const found = parsePipConf(text);
+    if (found.length) {
+      urls.push(...found);
+      source = source ?? label;
+    }
+  };
+  if (ambientEnabled(env) && env.VIRTUAL_ENV) add(readTextFile(join3(env.VIRTUAL_ENV, "pip.conf")), "venv pip.conf");
+  const home = ambientHomeDir(env);
+  if (home) {
+    add(readTextFile(join3(home, ".config", "pip", "pip.conf")), "user pip.conf");
+    add(readTextFile(join3(home, ".pip", "pip.ini")), "user pip.ini");
+  }
+  if (ambientEnabled(env)) add(readTextFile("/etc/pip.conf"), "/etc/pip.conf");
+  if (ambientEnabled(env)) {
+    if (env.PIP_INDEX_URL) {
+      urls.push(env.PIP_INDEX_URL);
+      source = "PIP_INDEX_URL";
+    }
+    if (env.PIP_EXTRA_INDEX_URL) {
+      const extra = env.PIP_EXTRA_INDEX_URL.split(/\s+/).filter(Boolean);
+      urls.push(...extra);
+      source = source ?? "PIP_EXTRA_INDEX_URL";
+    }
+  }
+  return { indexUrls: urls, source };
+}
+function parseSimpleToml(text) {
+  const sections = /* @__PURE__ */ new Map();
+  let current = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const section = /^\[([^\]]+)\]$/.exec(line);
+    if (section) {
+      current = {};
+      sections.set(section[1].trim(), current);
+      continue;
+    }
+    if (!current) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+      value = value.slice(1, -1);
+    }
+    current[key] = value;
+  }
+  return sections;
+}
+function followSourceReplacement(sections, start, maxHops = 5) {
+  let name = start;
+  for (let hop = 0; hop < maxHops; hop++) {
+    const table = sections.get(`source.${name}`);
+    if (!table) return { finalName: name };
+    const next = table["replace-with"];
+    if (next && next !== name) {
+      name = next;
+      continue;
+    }
+    return { finalName: name, registryUrl: table.registry };
+  }
+  return { finalName: name };
+}
+function resolveCargoAmbient(cwd, env) {
+  const registries = /* @__PURE__ */ new Map();
+  let replacementRegistry;
+  let source;
+  const files = [];
+  const home = ambientHomeDir(env);
+  if (home) files.push(["user", join3(home, ".cargo", "config.toml")]);
+  files.push(["project", join3(cwd, ".cargo", "config.toml")]);
+  let sections = /* @__PURE__ */ new Map();
+  for (const [, path2] of files) {
+    const text = readTextFile(path2);
+    if (!text) continue;
+    const parsed = parseSimpleToml(text);
+    for (const [k, v] of parsed) sections.set(k, v);
+  }
+  for (const [name, table] of sections) {
+    const m = /^registries\.(.+)$/.exec(name);
+    if (m) registries.set(m[1], table.index ?? "");
+  }
+  const crateIo = sections.get("source.crates-io");
+  if (crateIo?.["replace-with"]) {
+    const chain = followSourceReplacement(sections, crateIo["replace-with"]);
+    replacementRegistry = chain.registryUrl ?? chain.finalName;
+    source = "source.crates-io replace-with";
+  }
+  return { replacementRegistry, registries, source };
+}
+var DEFAULT_GOPROXY = "https://proxy.golang.org,direct";
+function resolveGoAmbient(env) {
+  if (!ambientEnabled(env)) return { privatePatterns: [], hasCustomProxy: false };
+  const privatePatterns = (env.GOPRIVATE || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const hasCustomProxy = !!(env.GOPROXY && env.GOPROXY !== DEFAULT_GOPROXY && env.GOPROXY !== "off") || !!env.GONOSUMCHECK;
+  const source = privatePatterns.length ? "GOPRIVATE" : env.GOPROXY ? "GOPROXY" : env.GONOSUMCHECK ? "GONOSUMCHECK" : void 0;
+  return { privatePatterns, hasCustomProxy, source };
+}
+function matchesGoPrivate(modulePath, patterns) {
+  try {
+    return patterns.some((p) => {
+      const escaped = p.split("/").map(
+        (seg) => seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, ".")
+      ).join("/");
+      const re = new RegExp("^" + escaped + "(/.*)?$");
+      return re.test(modulePath);
+    });
+  } catch {
+    return false;
+  }
+}
+function safeResolve(fn, fallback) {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+var AmbientConfigCache = class {
+  byKey = /* @__PURE__ */ new Map();
+  goByKey = /* @__PURE__ */ new Map();
+  resolveBundle(cwd, env) {
+    const key = `${cwd}\0${env.KEEL_HOME ?? ""}`;
+    let bundle = this.byKey.get(key);
+    if (!bundle) {
+      bundle = {
+        npm: safeResolve(() => resolveNpmAmbient(cwd, env), { scoped: /* @__PURE__ */ new Map() }),
+        pip: safeResolve(() => resolvePipAmbient(cwd, env), { indexUrls: [] }),
+        cargo: safeResolve(() => resolveCargoAmbient(cwd, env), { registries: /* @__PURE__ */ new Map() })
+      };
+      this.byKey.set(key, bundle);
+    }
+    return bundle;
+  }
+  npm(cwd, env) {
+    return this.resolveBundle(cwd, env).npm;
+  }
+  pip(cwd, env) {
+    return this.resolveBundle(cwd, env).pip;
+  }
+  cargo(cwd, env) {
+    return this.resolveBundle(cwd, env).cargo;
+  }
+  // Go's ambient signal is env-only, never cwd-scoped, so it gets its OWN
+  // small keyed cache rather than riding along in the cwd-keyed npm/pip/
+  // cargo bundle above — piggybacking it on an arbitrary cwd would mean a
+  // Go-only command wastefully (if harmlessly) reads files under that cwd
+  // it has no use for at all.
+  go(env) {
+    const key = env.KEEL_HOME ?? "";
+    let ambient = this.goByKey.get(key);
+    if (!ambient) {
+      ambient = safeResolve(() => resolveGoAmbient(env), { privatePatterns: [], hasCustomProxy: false });
+      this.goByKey.set(key, ambient);
+    }
+    return ambient;
+  }
+};
 var MANAGER_ECOSYSTEM = {
   npm: "npm",
   pnpm: "npm",
@@ -6868,8 +7140,86 @@ var MANAGER_ECOSYSTEM = {
   cargo: "crates",
   go: "go"
 };
+function applySpecAmbient(spec, cwd, env, cache) {
+  const ecosystem = MANAGER_ECOSYSTEM[spec.manager];
+  if (ecosystem === "npm") {
+    const ambient = cache.npm(cwd, env);
+    const scope = spec.name.startsWith("@") ? spec.name.split("/")[0] : void 0;
+    const effective = (scope && ambient.scoped.get(scope)) ?? ambient.defaultRegistry;
+    const ambientPrivate = !!effective && !isPublicNpmRegistry(effective);
+    if (spec.explicitRegistryOverride !== void 0) {
+      if (ambientPrivate && isExactPublicNpmHost(spec.explicitRegistryOverride)) {
+        return { ...spec, dependencyConfusionRisk: true, ambientSource: ambient.source };
+      }
+      if (!isPublicNpmRegistry(spec.explicitRegistryOverride)) {
+        return { ...spec, privateIndex: true, ambientSource: "explicit --registry flag" };
+      }
+      return spec;
+    }
+    if (ambientPrivate) return { ...spec, privateIndex: true, ambientSource: ambient.source };
+    return spec;
+  }
+  if (ecosystem === "pypi") {
+    const ambient = cache.pip(cwd, env);
+    const ambientPrivate = ambient.indexUrls.some((u) => !isPublicPypiIndex(u));
+    if (spec.explicitRegistryOverride !== void 0) {
+      if (ambientPrivate && isExactPublicPypiHost(spec.explicitRegistryOverride)) {
+        return { ...spec, privateIndex: false, dependencyConfusionRisk: true, ambientSource: ambient.source };
+      }
+      return spec;
+    }
+    if (!spec.privateIndex && ambientPrivate) return { ...spec, privateIndex: true, ambientSource: ambient.source };
+    return spec;
+  }
+  if (ecosystem === "crates") {
+    const ambient = cache.cargo(cwd, env);
+    if (spec.explicitRegistryOverride !== void 0) {
+      if (ambient.registries.has(spec.explicitRegistryOverride)) {
+        return { ...spec, privateIndex: true, ambientSource: `--registry ${spec.explicitRegistryOverride}` };
+      }
+      return spec;
+    }
+    if (ambient.replacementRegistry) return { ...spec, privateIndex: true, ambientSource: ambient.source };
+    return spec;
+  }
+  const inlineGoPrivate = spec.inlineEnv?.GOPRIVATE;
+  const inlinePatterns = inlineGoPrivate ? inlineGoPrivate.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  const patterns = inlinePatterns.length ? inlinePatterns : cache.go(env).privatePatterns;
+  if (patterns.length && matchesGoPrivate(spec.name, patterns)) {
+    return {
+      ...spec,
+      privateIndex: true,
+      ambientSource: inlinePatterns.length ? `inline GOPRIVATE=${inlineGoPrivate}` : "GOPRIVATE"
+    };
+  }
+  return spec;
+}
+function applyAmbientConfig(specs, cwd, env = process.env, cache = new AmbientConfigCache()) {
+  return specs.map((spec) => {
+    try {
+      return applySpecAmbient(spec, cwd, env, cache);
+    } catch {
+      return spec;
+    }
+  });
+}
+
+// ../core/src/enforce/package-verifier.ts
+var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
+var MANAGER_ECOSYSTEM2 = {
+  npm: "npm",
+  pnpm: "npm",
+  yarn: "npm",
+  bun: "npm",
+  pip: "pypi",
+  pip3: "pypi",
+  uv: "pypi",
+  poetry: "pypi",
+  cargo: "crates",
+  go: "go"
+};
 function ecosystemForManager(manager) {
-  return MANAGER_ECOSYSTEM[manager];
+  return MANAGER_ECOSYSTEM2[manager];
 }
 var ADD_SUBCOMMANDS = {
   npm: /* @__PURE__ */ new Set(["install", "i"]),
@@ -6941,6 +7291,35 @@ var PIP_INDEX_FLAGS = /* @__PURE__ */ new Set(["-i", "--index-url", "--extra-ind
 function isPipIndexFlag(tok) {
   return PIP_INDEX_FLAGS.has(tok.split("=")[0]);
 }
+var PIP_PRIMARY_INDEX_FLAGS = /* @__PURE__ */ new Set(["-i", "--index-url"]);
+function isPipPrimaryIndexFlag(tok) {
+  return PIP_PRIMARY_INDEX_FLAGS.has(tok.split("=")[0]);
+}
+function findFlagValue(tokens, from, matchFlag) {
+  for (let j = from; j < tokens.length; j++) {
+    const tok = tokens[j];
+    if (!matchFlag(tok)) continue;
+    const eq = tok.indexOf("=");
+    if (eq !== -1) return tok.slice(eq + 1);
+    return tokens[j + 1];
+  }
+  return void 0;
+}
+function findEqJoinedFlagValue(tokens, from, flagName) {
+  const prefix = `${flagName}=`;
+  for (let j = from; j < tokens.length; j++) {
+    if (tokens[j].startsWith(prefix)) return tokens[j].slice(prefix.length);
+  }
+  return void 0;
+}
+var WATCHED_INLINE_ENV_VARS = /* @__PURE__ */ new Set([
+  "NPM_CONFIG_REGISTRY",
+  "PIP_INDEX_URL",
+  "PIP_EXTRA_INDEX_URL",
+  "GOPRIVATE",
+  "GONOSUMCHECK",
+  "GOPROXY"
+]);
 var QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun|pip3?|uv|poetry|cargo|go)\b/;
 function tokenize(segment) {
   const tokens = [];
@@ -7023,7 +7402,18 @@ function parsePipSpec(tok) {
 function extractSegmentInstalls(segment) {
   const tokens = tokenize(segment);
   let i = 0;
-  while (i < tokens.length && (tokens[i] === "sudo" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) i++;
+  let inlineEnv;
+  while (i < tokens.length && (tokens[i] === "sudo" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) {
+    const eq = tokens[i].indexOf("=");
+    if (eq > 0) {
+      const varName = tokens[i].slice(0, eq);
+      if (WATCHED_INLINE_ENV_VARS.has(varName)) {
+        inlineEnv ??= {};
+        inlineEnv[varName] = tokens[i].slice(eq + 1);
+      }
+    }
+    i++;
+  }
   if (i >= tokens.length) return [];
   const manager = managerFromToken(tokens[i]);
   if (!manager) return [];
@@ -7032,10 +7422,18 @@ function extractSegmentInstalls(segment) {
   const consumed = matchAddSubcommand(manager, tokens, i);
   if (consumed === null) return [];
   i += consumed;
-  const ecosystem = MANAGER_ECOSYSTEM[manager];
+  const ecosystem = MANAGER_ECOSYSTEM2[manager];
   const grammar = PIP_GRAMMAR_MANAGERS.has(manager) ? "pip" : "default";
   const flagValues = FLAG_VALUE_CONSUMING[manager];
   const privateIndex = grammar === "pip" && tokens.slice(i).some(isPipIndexFlag);
+  let explicitRegistryOverride;
+  if (grammar === "pip") {
+    explicitRegistryOverride = findFlagValue(tokens, i, isPipPrimaryIndexFlag);
+  } else if (manager === "npm" || manager === "pnpm" || manager === "yarn" || manager === "bun") {
+    explicitRegistryOverride = findEqJoinedFlagValue(tokens, i, "--registry");
+  } else if (manager === "cargo") {
+    explicitRegistryOverride = findFlagValue(tokens, i, (tok) => tok.split("=")[0] === "--registry");
+  }
   const specs = [];
   for (; i < tokens.length; i++) {
     const tok = tokens[i];
@@ -7051,12 +7449,25 @@ function extractSegmentInstalls(segment) {
       }
       if (isNonRegistrySpec(tok)) continue;
       const parsed2 = parsePipSpec(tok);
-      if (parsed2) specs.push({ ...parsed2, manager, raw: tok, ...privateIndex ? { privateIndex: true } : {} });
+      if (parsed2) specs.push({
+        ...parsed2,
+        manager,
+        raw: tok,
+        ...privateIndex ? { privateIndex: true } : {},
+        ...explicitRegistryOverride !== void 0 ? { explicitRegistryOverride } : {},
+        ...inlineEnv ? { inlineEnv } : {}
+      });
       continue;
     }
     if (isNonRegistrySpec(tok)) continue;
     const parsed = parseSpec(tok, ecosystem);
-    if (parsed) specs.push({ ...parsed, manager, raw: tok });
+    if (parsed) specs.push({
+      ...parsed,
+      manager,
+      raw: tok,
+      ...explicitRegistryOverride !== void 0 ? { explicitRegistryOverride } : {},
+      ...inlineEnv ? { inlineEnv } : {}
+    });
   }
   return specs;
 }
@@ -7269,7 +7680,7 @@ var CACHE_TTL_MS = {
   unverified: 5 * 60 * 1e3
 };
 function packageVerifierStateDir() {
-  return process.env.KEEL_STATE_DIR || join3(resolveHome(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join4(resolveHome(), ".keel", "state");
 }
 var PackageVerifierCache = class {
   constructor(stateDir2 = packageVerifierStateDir()) {
@@ -7277,13 +7688,13 @@ var PackageVerifierCache = class {
   }
   stateDir;
   filePath() {
-    return join3(this.stateDir, "package-verifier.json");
+    return join4(this.stateDir, "package-verifier.json");
   }
   load() {
     try {
       const p = this.filePath();
-      if (!existsSync3(p)) return {};
-      return JSON.parse(readFileSync2(p, "utf-8"));
+      if (!existsSync4(p)) return {};
+      return JSON.parse(readFileSync3(p, "utf-8"));
     } catch {
       return {};
     }
@@ -7327,6 +7738,9 @@ var PackageVerifierCache = class {
     this.save(all);
   }
 };
+function withDependencyConfusion(result, spec) {
+  return spec.dependencyConfusionRisk ? { ...result, dependencyConfusionRisk: true, ambientSource: spec.ambientSource } : result;
+}
 async function checkPackages(specs, opts = {}) {
   const now = opts.now ?? Date.now;
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2e3;
@@ -7346,12 +7760,19 @@ async function checkPackages(specs, opts = {}) {
     const key = `${ecosystem}:${spec.name}`;
     const already = seen.get(key);
     if (already) {
-      results.push({ ...already, requestedVersion: spec.requestedVersion });
+      results.push(withDependencyConfusion({ ...already, requestedVersion: spec.requestedVersion }, spec));
       continue;
     }
     let result;
     if (spec.privateIndex) {
-      result = { name: spec.name, requestedVersion: spec.requestedVersion, verdict: "unverified", reason: "private_index", fromCache: false };
+      result = {
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: "unverified",
+        reason: spec.ambientSource ? "ambient_private_registry" : "private_index",
+        fromCache: false,
+        ...spec.ambientSource ? { ambientSource: spec.ambientSource } : {}
+      };
     } else {
       const cached = cache.get(spec.name, now(), ecosystem);
       if (cached) {
@@ -7394,6 +7815,7 @@ async function checkPackages(specs, opts = {}) {
         }, now());
       }
     }
+    result = withDependencyConfusion(result, spec);
     seen.set(key, result);
     results.push(result);
   }
@@ -7407,12 +7829,19 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
   for (const spec of specs) {
     const ecosystem = ecosystemForManager(spec.manager);
     if (spec.privateIndex) {
-      results.push({ name: spec.name, requestedVersion: spec.requestedVersion, verdict: "unverified", reason: "private_index", fromCache: false });
+      results.push(withDependencyConfusion({
+        name: spec.name,
+        requestedVersion: spec.requestedVersion,
+        verdict: "unverified",
+        reason: spec.ambientSource ? "ambient_private_registry" : "private_index",
+        fromCache: false,
+        ...spec.ambientSource ? { ambientSource: spec.ambientSource } : {}
+      }, spec));
       continue;
     }
     const cached = cache.get(spec.name, t, ecosystem);
     if (cached) {
-      results.push({
+      results.push(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: cached.verdict,
@@ -7421,15 +7850,15 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
         createdAt: cached.createdAt,
         didYouMean: cached.didYouMean,
         fromCache: true
-      });
+      }, spec));
     } else {
-      results.push({
+      results.push(withDependencyConfusion({
         name: spec.name,
         requestedVersion: spec.requestedVersion,
         verdict: "unverified",
         reason: "not_yet_checked",
         fromCache: false
-      });
+      }, spec));
       const missKey = `${ecosystem}:${spec.name}`;
       if (!missSeen.has(missKey)) {
         missSeen.add(missKey);
@@ -7454,6 +7883,9 @@ function buildUnverifiedMessage(r) {
   if (r.reason === "private_index") {
     return `unverified \u2014 "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) \u2014 approve only if you recognize and trust this index.`;
   }
+  if (r.reason === "ambient_private_registry") {
+    return `unverified \u2014 "${r.name}" resolves to a private/internal registry per your ambient package-manager config (${r.ambientSource ?? "local .npmrc/pip.conf/.cargo/config.toml/GOPRIVATE"}), not the public registry. keel does not query ambient-configured private registries (same SSRF-avoidance rationale as an explicit --index-url) \u2014 approve only if you recognize and trust this registry.`;
+  }
   if (r.reason === "go_ambiguous") {
     return `unverified \u2014 "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence \u2014 the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`;
   }
@@ -7472,6 +7904,9 @@ function buildAgeGateMessage(r, ageThresholdDays) {
   const days = r.ageDays !== void 0 ? Math.max(0, Math.floor(r.ageDays)) : void 0;
   return `Package "${r.name}" was published ${days ?? "?"} day(s) ago (younger than the ${ageThresholdDays}-day threshold) \u2014 verify this isn't a fresh, potentially attacker-registered release before installing.`;
 }
+function buildDependencyConfusionMessage(r) {
+  return `dependency-confusion risk \u2014 "${r.name}" normally resolves via your ambient private-registry config (${r.ambientSource ?? "ambient package-manager config"}), but this command explicitly forces the PUBLIC registry instead. If an attacker has squatted this name on the public registry, forcing the public registry here installs THEIR package, not your internal one. Verify this override is intentional before proceeding.`;
+}
 function decidePackageAction(results, ageThresholdDays) {
   const notFound = results.find((r) => r.verdict === "not_found");
   if (notFound) return { reason: "not_found", message: buildNotFoundMessage(notFound), result: notFound };
@@ -7479,6 +7914,8 @@ function decidePackageAction(results, ageThresholdDays) {
   if (unverified) return { reason: "unverified", message: buildUnverifiedMessage(unverified), result: unverified };
   const young = results.find((r) => r.verdict === "exists" && r.ageDays !== void 0 && r.ageDays < ageThresholdDays);
   if (young) return { reason: "age_gate", message: buildAgeGateMessage(young, ageThresholdDays), result: young };
+  const confusion = results.find((r) => r.dependencyConfusionRisk);
+  if (confusion) return { reason: "dependency_confusion", message: buildDependencyConfusionMessage(confusion), result: confusion };
   return { reason: "ok", message: "All installed packages verified against their package registries." };
 }
 
@@ -8181,11 +8618,11 @@ function matchesAnyTestGlob(value, patterns) {
 }
 
 // ../core/src/enforce/overrides.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join4 } from "node:path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join5 } from "node:path";
 
 // ../core/src/enforce/file-lock.ts
-import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync as readFileSync3 } from "node:fs";
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync as readFileSync4 } from "node:fs";
 var DEFAULT_TIMEOUT_MS = 5e3;
 var DEFAULT_STALE_MS = 8e3;
 var INITIAL_BACKOFF_MS = 4;
@@ -8264,7 +8701,7 @@ function acquireLock(lockPath, options = {}) {
 function releaseLock(lockPath, token) {
   try {
     if (token !== void 0) {
-      const current = readFileSync3(lockPath, "utf-8");
+      const current = readFileSync4(lockPath, "utf-8");
       if (current !== token) return;
     }
     unlinkWithRetry(lockPath);
@@ -8296,8 +8733,8 @@ var FileRuleOverrideStore = class {
    * default doesn't have to grow to accommodate.
    */
   constructor(home = resolveHome(), lockOptions = {}) {
-    this.directory = process.env.KEEL_OVERRIDES_DIR || join4(home, ".keel");
-    this.file = join4(this.directory, "overrides.json");
+    this.directory = process.env.KEEL_OVERRIDES_DIR || join5(home, ".keel");
+    this.file = join5(this.directory, "overrides.json");
     this.lock = `${this.file}.lock`;
     this.lockOptions = lockOptions;
   }
@@ -8383,9 +8820,9 @@ var FileRuleOverrideStore = class {
     }
   }
   read() {
-    if (!existsSync4(this.file)) return {};
+    if (!existsSync5(this.file)) return {};
     try {
-      const parsed = JSON.parse(readFileSync4(this.file, "utf8"));
+      const parsed = JSON.parse(readFileSync5(this.file, "utf8"));
       if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
         return parsed;
       }
@@ -8491,12 +8928,14 @@ var EnforcementPipeline = class {
   observedMatches = [];
   overrideStore;
   packageVerifierCache;
+  ambientConfigCache;
   constructor(config) {
     this.config = config;
     this.verificationTracker = config.verificationTracker || new VerificationTracker(config.stateManager);
     this.oracleTracker = config.oracleTracker || new OracleTracker(config.stateManager);
     this.overrideStore = config.overrideStore || new FileRuleOverrideStore();
     this.packageVerifierCache = config.packageVerifierCache || new PackageVerifierCache();
+    this.ambientConfigCache = config.ambientConfigCache || new AmbientConfigCache();
     this.lastRulesHash = this.computeRulesHash();
     this.loadState();
   }
@@ -8818,10 +9257,10 @@ var EnforcementPipeline = class {
    * permissions, a symlink loop, a corrupt/unparseable body) fails closed.
    */
   checkHalt(start) {
-    const haltPath = this.config.haltFile || join5(resolveHome(), ".keel", "HALTED");
+    const haltPath = this.config.haltFile || join6(resolveHome(), ".keel", "HALTED");
     let raw;
     try {
-      raw = readFileSync5(haltPath, "utf-8");
+      raw = readFileSync6(haltPath, "utf-8");
     } catch (err) {
       if (err instanceof Error && "code" in err && err.code === "ENOENT") {
         return null;
@@ -8846,10 +9285,10 @@ var EnforcementPipeline = class {
     const depth = input.depth || (level === "protect" ? "deep" : level === "sprint" ? "fast" : "full");
     const protectFloor = (rules2) => rules2.some((rule) => rule.level === "protect" && (rule.type === "content" || rule.type === "sequence" || rule.type === "flow"));
     const reasoningChecks = depth === "deep";
-    const sentinelPath = this.config.disableFile || join5(resolveHome(), ".keel", "DISABLED");
-    if (existsSync5(sentinelPath)) {
+    const sentinelPath = this.config.disableFile || join6(resolveHome(), ".keel", "DISABLED");
+    if (existsSync6(sentinelPath)) {
       try {
-        const sentinel = JSON.parse(readFileSync5(sentinelPath, "utf-8"));
+        const sentinel = JSON.parse(readFileSync6(sentinelPath, "utf-8"));
         if (sentinel.expires_at && new Date(sentinel.expires_at) < /* @__PURE__ */ new Date()) {
           rmSync(sentinelPath);
         } else {
@@ -9102,8 +9541,9 @@ var EnforcementPipeline = class {
         }
         if (rule.type === "package") {
           const cmdStr = commandString(input);
-          const specs = extractPackageInstalls(cmdStr);
-          if (specs.length === 0) continue;
+          const rawSpecs = extractPackageInstalls(cmdStr);
+          if (rawSpecs.length === 0) continue;
+          const specs = applyAmbientConfig(rawSpecs, input.cwd, process.env, this.ambientConfigCache);
           const ageThresholdDays = rule.age_days ?? 30;
           const { results, misses } = checkPackagesCacheOnly(specs, this.packageVerifierCache);
           if (misses.length > 0) {
@@ -9122,6 +9562,9 @@ var EnforcementPipeline = class {
           }
           if (decision.reason === "unverified") {
             return this.violation(input, { ...rule, action: "prompt" }, decision.message, start, 3);
+          }
+          if (decision.reason === "dependency_confusion") {
+            return this.violation(input, { ...rule, action: "warn" }, decision.message, start, 3);
           }
           return this.violation(input, rule, decision.message, start, 3);
         }
@@ -9207,11 +9650,11 @@ var EnforcementPipeline = class {
           const resolvedPath = resolveMaybeRelative(pathStr, input.cwd);
           const patchText = String(args.patchText || "");
           const inlineContent = String(args.content || args.text || args.newString || args.new_string || patchText || "");
-          const isFile = resolvedPath && existsSync5(resolvedPath) && statSync2(resolvedPath).isFile();
+          const isFile = resolvedPath && existsSync6(resolvedPath) && statSync2(resolvedPath).isFile();
           const diskChanged = isFile && this.config.contentTracker.hasChanged(resolvedPath);
           if (inlineContent || diskChanged) {
             for (const pattern of rule.patterns) {
-              const content = inlineContent || (isFile ? readFileSync5(resolvedPath, "utf-8") : "");
+              const content = inlineContent || (isFile ? readFileSync6(resolvedPath, "utf-8") : "");
               if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
                 return this.violation(input, rule, rule.message, start, 5);
               }
@@ -9239,8 +9682,8 @@ var EnforcementPipeline = class {
               const patchText = String(args.patchText || "");
               const newText = String(args.content ?? args.text ?? args.newString ?? args.new_string ?? patchText ?? "");
               const explicitOld = typeof args.oldString === "string" ? args.oldString : typeof args.old_string === "string" ? args.old_string : void 0;
-              const isFile = explicitOld === void 0 && existsSync5(resolvedPath) && statSync2(resolvedPath).isFile();
-              const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync5(resolvedPath, "utf-8") : "";
+              const isFile = explicitOld === void 0 && existsSync6(resolvedPath) && statSync2(resolvedPath).isFile();
+              const oldText = explicitOld !== void 0 ? explicitOld : isFile ? readFileSync6(resolvedPath, "utf-8") : "";
               if (newText || oldText) {
                 const signals = detectWeakening(oldText, newText, resolvedPath || pathStr);
                 if (signals.length) {
@@ -9287,7 +9730,7 @@ var EnforcementPipeline = class {
           if (escalation) {
             const result = this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, void 0, true);
             if (escalation.halt && (result.action === "deny" || result.action === "block")) {
-              writeHaltSentinel(this.config.haltFile || join5(resolveHome(), ".keel", "HALTED"), escalation.message);
+              writeHaltSentinel(this.config.haltFile || join6(resolveHome(), ".keel", "HALTED"), escalation.message);
             }
             return result;
           }
@@ -9592,7 +10035,7 @@ var EnforcementPipeline = class {
 };
 
 // ../core/src/enforce/cache.ts
-import { readFileSync as readFileSync6, existsSync as existsSync6, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync7, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4 } from "node:fs";
 import { createHash } from "node:crypto";
 var ActionCache = class {
   session = /* @__PURE__ */ new Map();
@@ -9603,9 +10046,9 @@ var ActionCache = class {
   constructor(opts) {
     this.maxSize = opts?.maxSize || 1e4;
     this.persistentPath = opts?.persistentPath || null;
-    if (this.persistentPath && existsSync6(this.persistentPath)) {
+    if (this.persistentPath && existsSync7(this.persistentPath)) {
       try {
-        const data = JSON.parse(readFileSync6(this.persistentPath, "utf-8"));
+        const data = JSON.parse(readFileSync7(this.persistentPath, "utf-8"));
         if (typeof data === "object") {
           for (const [k, v] of Object.entries(data)) {
             this.persistent.set(k, v);
@@ -9660,7 +10103,7 @@ var ActionCache = class {
   flush() {
     if (!this.persistentPath) return;
     const dir = this.persistentPath.substring(0, this.persistentPath.lastIndexOf("/"));
-    if (!existsSync6(dir)) mkdirSync4(dir, { recursive: true });
+    if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
     const data = {};
     for (const [k, v] of this.persistent) {
       data[k] = v;
@@ -9698,8 +10141,8 @@ var ActionCache = class {
 var ContentTracker = class {
   hashes = /* @__PURE__ */ new Map();
   hasChanged(filePath) {
-    if (!existsSync6(filePath)) return true;
-    const content = readFileSync6(filePath, "utf-8");
+    if (!existsSync7(filePath)) return true;
+    const content = readFileSync7(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
       h = (h << 5) - h + content.charCodeAt(i);
@@ -9711,8 +10154,8 @@ var ContentTracker = class {
     return prev !== hash;
   }
   markUnchanged(filePath) {
-    if (!existsSync6(filePath)) return;
-    const content = readFileSync6(filePath, "utf-8");
+    if (!existsSync7(filePath)) return;
+    const content = readFileSync7(filePath, "utf-8");
     let h = 0;
     for (let i = 0; i < content.length; i++) {
       h = (h << 5) - h + content.charCodeAt(i);
@@ -9806,7 +10249,7 @@ var SequenceDetector = class {
 };
 
 // ../core/src/enforce/flow-tracker.ts
-import { existsSync as existsSync7 } from "node:fs";
+import { existsSync as existsSync8 } from "node:fs";
 var FlowTracker = class {
   constructor(persistentStore) {
     this.persistentStore = persistentStore;
@@ -9823,7 +10266,7 @@ var FlowTracker = class {
     const args = input.args;
     const rawPath = argPath(args);
     const path2 = resolveMaybeRelative(rawPath, input.cwd);
-    if (path2 && existsSync7(path2)) {
+    if (path2 && existsSync8(path2)) {
       const configuredSources = typeof rule === "object" ? rule.sources : void 0;
       const matchedRule = configuredSources?.find((source) => this.pathMatches(path2, source)) || (!configuredSources ? this.matchesSensitivePath(path2) : null);
       if (matchedRule) {
@@ -10011,14 +10454,14 @@ var FlowTracker = class {
 };
 
 // ../core/src/enforce/flow-store.ts
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync6, existsSync as existsSync9, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
-import { join as join7 } from "node:path";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync10, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
+import { join as join8 } from "node:path";
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync5, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync3 } from "node:fs";
-import { join as join6 } from "node:path";
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync5, existsSync as existsSync9, mkdirSync as mkdirSync5, renameSync as renameSync3 } from "node:fs";
+import { join as join7 } from "node:path";
 function stateDir() {
-  return process.env.KEEL_STATE_DIR || join6(resolveHome(), ".keel", "state");
+  return process.env.KEEL_STATE_DIR || join7(resolveHome(), ".keel", "state");
 }
 var TTL_MS = 24 * 60 * 60 * 1e3;
 var StateManager = class {
@@ -10043,7 +10486,7 @@ var StateManager = class {
     this.load();
   }
   statePath(name) {
-    return join6(this.dir, `${name}.json`);
+    return join7(this.dir, `${name}.json`);
   }
   lockPath(name) {
     return this.statePath(name) + ".lock";
@@ -10073,8 +10516,8 @@ var StateManager = class {
   loadFile(name, fallback) {
     const p = this.statePath(name);
     try {
-      if (existsSync8(p)) {
-        const parsed = JSON.parse(readFileSync8(p, "utf-8"));
+      if (existsSync9(p)) {
+        const parsed = JSON.parse(readFileSync9(p, "utf-8"));
         if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
           return parsed;
         }
@@ -10348,8 +10791,8 @@ function defaultMessage(ruleId, fingerprint, attempts, action) {
 }
 
 // ../core/src/enforce/stuck-store.ts
-import { readFileSync as readFileSync10, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
-import { join as join8 } from "node:path";
+import { readFileSync as readFileSync11, writeFileSync as writeFileSync7, existsSync as existsSync11, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
+import { join as join9 } from "node:path";
 var STUCK_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/session-tracker.ts
@@ -10502,13 +10945,13 @@ function defaultMessage2(step, value) {
 }
 
 // ../core/src/enforce/session-store.ts
-import { readFileSync as readFileSync11, writeFileSync as writeFileSync8, existsSync as existsSync11, mkdirSync as mkdirSync8, renameSync as renameSync6 } from "node:fs";
-import { join as join9 } from "node:path";
+import { readFileSync as readFileSync12, writeFileSync as writeFileSync8, existsSync as existsSync12, mkdirSync as mkdirSync8, renameSync as renameSync6 } from "node:fs";
+import { join as join10 } from "node:path";
 var SESSION_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/budget-store.ts
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync9, existsSync as existsSync12, mkdirSync as mkdirSync9, renameSync as renameSync7 } from "node:fs";
-import { join as join10 } from "node:path";
+import { readFileSync as readFileSync13, writeFileSync as writeFileSync9, existsSync as existsSync13, mkdirSync as mkdirSync9, renameSync as renameSync7 } from "node:fs";
+import { join as join11 } from "node:path";
 var BUDGET_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 var MAX_ENTRIES = 500;
 var PersistentBudgetStore = class {
@@ -10519,7 +10962,7 @@ var PersistentBudgetStore = class {
     this.lockOptions = lockOptions;
   }
   filePath() {
-    return join10(this.dir, "budget-tracker.json");
+    return join11(this.dir, "budget-tracker.json");
   }
   lockPath() {
     return `${this.filePath()}.lock`;
@@ -10527,8 +10970,8 @@ var PersistentBudgetStore = class {
   load() {
     try {
       const p = this.filePath();
-      if (existsSync12(p)) {
-        const parsed = JSON.parse(readFileSync12(p, "utf-8"));
+      if (existsSync13(p)) {
+        const parsed = JSON.parse(readFileSync13(p, "utf-8"));
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
       }
     } catch {
@@ -10824,14 +11267,14 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync13, writeFileSync as writeFileSync10, renameSync as renameSync8, statSync as statSync3 } from "node:fs";
-import { join as join11 } from "node:path";
+import { existsSync as existsSync14, mkdirSync as mkdirSync10, readFileSync as readFileSync14, writeFileSync as writeFileSync10, renameSync as renameSync8, statSync as statSync3 } from "node:fs";
+import { join as join12 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync14, mkdirSync as mkdirSync11, readFileSync as readFileSync14, readdirSync } from "node:fs";
-import { join as join12 } from "node:path";
+import { appendFileSync, existsSync as existsSync15, mkdirSync as mkdirSync11, readFileSync as readFileSync15, readdirSync } from "node:fs";
+import { join as join13 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -10871,18 +11314,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync15, readFileSync as readFileSync15, writeFileSync as writeFileSync12, mkdirSync as mkdirSync12, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync9 } from "node:fs";
-import { join as join13 } from "node:path";
+import { existsSync as existsSync16, readFileSync as readFileSync16, writeFileSync as writeFileSync12, mkdirSync as mkdirSync12, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync9 } from "node:fs";
+import { join as join14 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join13(resolveHome(), ".keel", "receipt-key.json");
+  return join14(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join13(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join14(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync15(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync16(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -10916,8 +11359,8 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join13(resolveHome(), ".keel");
-    if (!existsSync15(dir)) mkdirSync12(dir, { recursive: true });
+    const dir = join14(resolveHome(), ".keel");
+    if (!existsSync16(dir)) mkdirSync12(dir, { recursive: true });
     writeFileSync12(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
@@ -10925,11 +11368,11 @@ function initReceiptKey() {
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join13(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join14(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync15(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync16(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -10962,20 +11405,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join13(process.cwd(), ".keel", "receipts");
-    if (!existsSync15(dir)) mkdirSync12(dir, { recursive: true });
-    appendFileSync2(join13(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join14(process.cwd(), ".keel", "receipts");
+    if (!existsSync16(dir)) mkdirSync12(dir, { recursive: true });
+    appendFileSync2(join14(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync16 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join14 } from "node:path";
+import { readFileSync as readFileSync17 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join15 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join14(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join15(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -11009,7 +11452,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync16(filePath, "utf-8");
+        const source = readFileSync17(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -11019,11 +11462,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync16(filePath, "utf-8"));
+        JSON.parse(readFileSync17(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync16(filePath, "utf-8"));
+        parse(readFileSync17(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -11791,6 +12234,7 @@ rules:
     false_positives:
       - 'Private or org-scoped registry packages (Verdaccio, Artifactory, GitHub Packages) that 404 against the public npm registry by construction \u2014 these prompt as unverified, never deny (see package-verifier.ts scoped-404 handling)'
       - 'A pip install that targets a private or company package index via --index-url, --extra-index-url, or -i \u2014 these always prompt as unverified without querying the custom index, since PyPI has no scoped-name convention like npm to signal "private" by name alone'
+      - 'An internal package whose only "private" signal is ambient config (.npmrc registry=/@scope:registry=, pip.conf index-url, .cargo/config.toml replace-with, GOPRIVATE) with NO command-line flag at all \u2014 keel reads the same config files/env vars the package manager itself would and prompts as unverified instead of denying (see ambient-registry-config.ts)'
       - 'A legitimate package published in the last 30 days (the age-gate default) \u2014 prompts for a second look, not a hard block'
       - 'Registry timeouts or outages, on any of the four covered ecosystems \u2014 network failures always downgrade to unverified, never deny'
     message: "This package install could not be verified against its package registry \u2014 confirm the name and publisher before proceeding."

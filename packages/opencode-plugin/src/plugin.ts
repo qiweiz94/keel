@@ -790,6 +790,7 @@ rules:
     false_positives:
       - 'Private or org-scoped registry packages (Verdaccio, Artifactory, GitHub Packages) that 404 against the public npm registry by construction — these prompt as unverified, never deny (see package-verifier.ts scoped-404 handling)'
       - 'A pip install that targets a private or company package index via --index-url, --extra-index-url, or -i — these always prompt as unverified without querying the custom index, since PyPI has no scoped-name convention like npm to signal "private" by name alone'
+      - 'An internal package whose only "private" signal is ambient config (.npmrc registry=/@scope:registry=, pip.conf index-url, .cargo/config.toml replace-with, GOPRIVATE) with NO command-line flag at all — keel reads the same config files/env vars the package manager itself would and prompts as unverified instead of denying (see ambient-registry-config.ts)'
       - 'A legitimate package published in the last 30 days (the age-gate default) — prompts for a second look, not a hard block'
       - 'Registry timeouts or outages, on any of the four covered ecosystems — network failures always downgrade to unverified, never deny'
     message: "This package install could not be verified against its package registry — confirm the name and publisher before proceeding."

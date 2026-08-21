@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -15,6 +15,13 @@ import {
   defaultGoProxyBaseUrl,
   type PackageCheckResult,
 } from '../package-verifier.js'
+import {
+  applyAmbientConfig,
+  AmbientConfigCache,
+  resolveNpmAmbient,
+  resolveCargoAmbient,
+  matchesGoPrivate,
+} from '../ambient-registry-config.js'
 import { rmSafe } from './helpers/fs-safe.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import type { PipelineConfig } from '../pipeline.js'
@@ -914,11 +921,21 @@ describe('finding 3f: pip-specific spec grammar', () => {
 
 describe('finding 3b: private-index flag detection at extraction time', () => {
   it('marks every spec privateIndex when --index-url is present, regardless of flag order', () => {
+    // explicitRegistryOverride (new, ambient-config lane): the flag's VALUE,
+    // captured alongside privateIndex so applyAmbientConfig can tell an
+    // ordinary private-index install apart from the dependency-confusion
+    // shape (see ambient-registry-config.ts).
     const before = extractPackageInstalls('pip install --index-url https://pypi.mycompany.com/simple mycompany-tool')
-    expect(before).toEqual([{ name: 'mycompany-tool', requestedVersion: undefined, manager: 'pip', raw: 'mycompany-tool', privateIndex: true }])
+    expect(before).toEqual([{
+      name: 'mycompany-tool', requestedVersion: undefined, manager: 'pip', raw: 'mycompany-tool',
+      privateIndex: true, explicitRegistryOverride: 'https://pypi.mycompany.com/simple',
+    }])
 
     const after = extractPackageInstalls('pip install mycompany-tool --index-url https://pypi.mycompany.com/simple')
-    expect(after).toEqual([{ name: 'mycompany-tool', requestedVersion: undefined, manager: 'pip', raw: 'mycompany-tool', privateIndex: true }])
+    expect(after).toEqual([{
+      name: 'mycompany-tool', requestedVersion: undefined, manager: 'pip', raw: 'mycompany-tool',
+      privateIndex: true, explicitRegistryOverride: 'https://pypi.mycompany.com/simple',
+    }])
   })
 
   it('-i and --extra-index-url both trigger it too', () => {
@@ -1269,5 +1286,357 @@ describe('pipeline: finding 3b end-to-end — a private-index pip install never 
     const res = await pipeline.evaluate(makeInput('pip install -r requirements.txt'))
     expect(res.action).toBe('allow')
     expect(called).toBe(false)
+  })
+})
+
+// ── ambient-config lane: closes the confirmed false-deny bug ───────────
+//
+// unverified-package-install ships with no mode/level and pipeline.ts's
+// not_found branch applies a hard, first-strike deny (skipFirstWarning) —
+// a team whose internal registry is configured ONLY through .npmrc/
+// pip.conf/.cargo/config.toml/GOPRIVATE, with no command-line signal, got
+// its own legitimate packages denied on the first try. applyAmbientConfig
+// (ambient-registry-config.ts) reads the same ambient config a real
+// package manager would and downgrades the name via the EXISTING
+// privateIndex path — see that module's header for the full rationale.
+
+function makeScratchDir(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), prefix))
+}
+
+/**
+ * Same VITEST-aware safety net every ambient-config read is gated behind
+ * (see ambient-registry-config.ts's own header) — passed explicitly here
+ * because these tests call `applyAmbientConfig`/`resolveNpmAmbient`/
+ * `resolveCargoAmbient` DIRECTLY with a hand-built env object, which (unlike
+ * `process.env` under a real vitest run) has no `VITEST` key of its own.
+ * Without this, `ambientEnabled`/`ambientHomeDir` would fall through to the
+ * REAL machine's `$HOME` for any test that doesn't also set `KEEL_HOME` —
+ * exactly the test-determinism failure mode this module's header warns
+ * about, just one level up (test code forgetting to opt in, rather than
+ * the module itself reading ambient state by default).
+ */
+const TEST_ENV: NodeJS.ProcessEnv = { VITEST: process.env.VITEST ?? '1' }
+
+describe('ambient config: npm .npmrc downgrades a would-be-404 to unverified, never deny', () => {
+  it('a project .npmrc registry= entry marks an unscoped name privateIndex, and decidePackageAction never reaches not_found', async () => {
+    const cwd = makeScratchDir('keel-ambient-npmrc-')
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://npm.corp.example/\n')
+    try {
+      const rawSpecs = extractPackageInstalls('npm install internal-build-tool')
+      expect(rawSpecs[0]).not.toHaveProperty('privateIndex') // proves the extraction layer itself is untouched
+
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0].privateIndex).toBe(true)
+      expect(specs[0].ambientSource).toBe('project .npmrc')
+
+      // Would 404 -> not_found -> deny WITHOUT the ambient fix; the mock
+      // would throw if ever called, proving privateIndex's existing
+      // never-queried contract still holds for an ambient-sourced flag.
+      const angryFetch = (async () => { throw new Error('must never query an ambient-marked private registry') }) as unknown as typeof fetch
+      const results = await checkPackages(specs, { fetchImpl: angryFetch, cache: new PackageVerifierCache(makeScratchDir('keel-ambient-state-')) })
+      expect(results[0].verdict).toBe('unverified')
+      expect(results[0].reason).toBe('ambient_private_registry')
+
+      const decision = decidePackageAction(results, 30)
+      expect(decision.reason).toBe('unverified') // NOT not_found/deny
+      expect(decision.message).toContain('ambient package-manager config')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('a scoped name resolves via @scope:registry=, independent of the default registry', () => {
+    const cwd = makeScratchDir('keel-ambient-npmrc-scoped-')
+    writeFileSync(join(cwd, '.npmrc'), '@myorg:registry=https://npm.corp.example/\n')
+    try {
+      const rawSpecs = extractPackageInstalls('npm install @myorg/internal-tool')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0].privateIndex).toBe(true)
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('no ambient config at all leaves the spec byte-identical (no behavior change)', () => {
+    const cwd = makeScratchDir('keel-ambient-none-')
+    try {
+      const rawSpecs = extractPackageInstalls('npm install lodash')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs).toEqual(rawSpecs)
+      expect(specs[0]).not.toHaveProperty('privateIndex')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+})
+
+describe('ambient config: correctness discipline — malformed/unreadable config never crashes or changes behavior', () => {
+  it('a directory sitting at the .npmrc path (unreadable as a file) does not throw, and the package is still evaluated normally (deny on a real 404)', async () => {
+    const cwd = makeScratchDir('keel-ambient-badconfig-')
+    mkdirSync(join(cwd, '.npmrc')) // a directory, not a file — readFileSync must throw EISDIR
+    try {
+      const rawSpecs = extractPackageInstalls('npm install totally-hallucinated-pkg-ambient-test')
+      expect(() => applyAmbientConfig(rawSpecs, cwd, TEST_ENV)).not.toThrow()
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0]).not.toHaveProperty('privateIndex') // "assume public", no behavior change
+
+      const { fetchImpl } = makeMockRegistry({}) // 404 for everything
+      const results = await checkPackages(specs, { fetchImpl, cache: new PackageVerifierCache(makeScratchDir('keel-ambient-badconfig-state-')), registryBaseUrl: 'https://mock.invalid' })
+      expect(decidePackageAction(results, 30).reason).toBe('not_found') // unaffected — still denies a real hallucination
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('applyAmbientConfig itself never throws even given a pathological spec', () => {
+    const cwd = makeScratchDir('keel-ambient-safety-')
+    try {
+      expect(() => applyAmbientConfig([{ name: 'x', manager: 'go', raw: 'x', inlineEnv: { GOPRIVATE: '[[[' } }], cwd, TEST_ENV)).not.toThrow()
+      expect(matchesGoPrivate('anything', ['[[['])).toBe(false) // malformed glob -> no match, never a thrown error
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+})
+
+describe('ambient config: cargo replace-with indirection', () => {
+  it('a single-hop [source.crates-io] replace-with is followed to its target registry URL', () => {
+    const cwd = makeScratchDir('keel-ambient-cargo-')
+    mkdirSync(join(cwd, '.cargo'))
+    writeFileSync(join(cwd, '.cargo', 'config.toml'), [
+      '[source.crates-io]',
+      'replace-with = "corp-mirror"',
+      '',
+      '[source.corp-mirror]',
+      'registry = "sparse+https://corp.example/cargo/"',
+      '',
+    ].join('\n'))
+    try {
+      const ambient = resolveCargoAmbient(cwd, TEST_ENV)
+      expect(ambient.replacementRegistry).toBe('sparse+https://corp.example/cargo/')
+
+      const rawSpecs = extractPackageInstalls('cargo add internal-crate')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0].privateIndex).toBe(true)
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('a multi-hop replace-with chain (crates-io -> mirror-a -> mirror-b) is followed to the end', () => {
+    const cwd = makeScratchDir('keel-ambient-cargo-chain-')
+    mkdirSync(join(cwd, '.cargo'))
+    writeFileSync(join(cwd, '.cargo', 'config.toml'), [
+      '[source.crates-io]',
+      'replace-with = "mirror-a"',
+      '[source.mirror-a]',
+      'replace-with = "mirror-b"',
+      '[source.mirror-b]',
+      'registry = "https://final.example/cargo/"',
+      '',
+    ].join('\n'))
+    try {
+      const ambient = resolveCargoAmbient(cwd, TEST_ENV)
+      expect(ambient.replacementRegistry).toBe('https://final.example/cargo/')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('no replace-with -> replacementRegistry is undefined, no downgrade', () => {
+    const cwd = makeScratchDir('keel-ambient-cargo-none-')
+    try {
+      expect(resolveCargoAmbient(cwd, TEST_ENV).replacementRegistry).toBeUndefined()
+      const specs = applyAmbientConfig(extractPackageInstalls('cargo add serde'), cwd, TEST_ENV)
+      expect(specs[0]).not.toHaveProperty('privateIndex')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+})
+
+describe('ambient config: GOPRIVATE inline on the command is extracted, not swallowed by the generic env-prefix skip', () => {
+  it('captures inlineEnv.GOPRIVATE from an inline per-command assignment', () => {
+    const specs = extractPackageInstalls('GOPRIVATE=github.com/corp/* go get github.com/corp/internal-tool')
+    expect(specs[0].inlineEnv).toEqual({ GOPRIVATE: 'github.com/corp/*' })
+  })
+
+  it('a matching inline GOPRIVATE pattern marks the module privateIndex via applyAmbientConfig', () => {
+    const cwd = makeScratchDir('keel-ambient-goprivate-')
+    try {
+      const rawSpecs = extractPackageInstalls('GOPRIVATE=github.com/corp/* go get github.com/corp/internal-tool')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0].privateIndex).toBe(true)
+      expect(specs[0].ambientSource).toContain('inline GOPRIVATE=')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('a non-matching inline GOPRIVATE pattern does NOT mark the module private (discriminating case)', () => {
+    const cwd = makeScratchDir('keel-ambient-goprivate-nomatch-')
+    try {
+      const rawSpecs = extractPackageInstalls('GOPRIVATE=github.com/other/* go get github.com/corp/internal-tool')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0]).not.toHaveProperty('privateIndex')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('matchesGoPrivate: a pattern matches the module and everything under it, per Go\'s own glob semantics', () => {
+    expect(matchesGoPrivate('github.com/corp/tool', ['github.com/corp/*'])).toBe(true)
+    expect(matchesGoPrivate('github.com/corp/tool/sub', ['github.com/corp/*'])).toBe(true)
+    expect(matchesGoPrivate('github.com/other/tool', ['github.com/corp/*'])).toBe(false)
+  })
+
+  it('an inline assignment for an UNRELATED var is never captured (only the watched ambient-config names are)', () => {
+    const specs = extractPackageInstalls('CI=true GOPRIVATE=github.com/corp/* go get github.com/corp/tool')
+    expect(specs[0].inlineEnv).toEqual({ GOPRIVATE: 'github.com/corp/*' })
+    expect(specs[0].inlineEnv).not.toHaveProperty('CI')
+  })
+})
+
+describe('ambient config: dependency-confusion detection — ambient private + explicit public override', () => {
+  it('npm: an ambient-private name force-installed with --registry=<public> is flagged dependencyConfusionRisk, and decidePackageAction returns dependency_confusion only when the package genuinely exists publicly', async () => {
+    const cwd = makeScratchDir('keel-ambient-confusion-npm-')
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://npm.corp.example/\n')
+    try {
+      const rawSpecs = extractPackageInstalls('npm install internal-tool --registry=https://registry.npmjs.org')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0].dependencyConfusionRisk).toBe(true)
+      expect(specs[0].privateIndex).not.toBe(true) // NOT the ordinary private-index path — it must still be queried
+
+      // The squatted-name shape: the name genuinely EXISTS on the public
+      // registry (old enough to clear the age gate too) -> warn.
+      const { fetchImpl } = makeMockRegistry({ 'internal-tool': { existsDaysAgo: 2000 } })
+      const results = await checkPackages(specs, { fetchImpl, cache: new PackageVerifierCache(makeScratchDir('keel-ambient-confusion-state-')), registryBaseUrl: 'https://mock.invalid' })
+      const decision = decidePackageAction(results, 30)
+      expect(decision.reason).toBe('dependency_confusion')
+      expect(decision.message).toContain('dependency-confusion')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('SECURITY INVARIANT: dependency_confusion never outranks not_found — a hallucinated name forced to the public registry still denies', async () => {
+    const cwd = makeScratchDir('keel-ambient-confusion-security-')
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://npm.corp.example/\n')
+    try {
+      const rawSpecs = extractPackageInstalls('npm install totally-hallucinated-name --registry=https://registry.npmjs.org')
+      const specs = applyAmbientConfig(rawSpecs, cwd, TEST_ENV)
+      expect(specs[0].dependencyConfusionRisk).toBe(true) // the flag IS set...
+
+      const { fetchImpl } = makeMockRegistry({}) // ...but the name does NOT exist publicly
+      const results = await checkPackages(specs, { fetchImpl, cache: new PackageVerifierCache(makeScratchDir('keel-ambient-confusion-security-state-')), registryBaseUrl: 'https://mock.invalid' })
+      const decision = decidePackageAction(results, 30)
+      expect(decision.reason).toBe('not_found') // ...and not_found MUST win — see decidePackageAction's own priority comment
+      expect(decision.reason).not.toBe('dependency_confusion')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('pip: -i/--index-url forcing pypi.org triggers confusion; --extra-index-url (additive, not a replacement) never does', () => {
+    const cwd = makeScratchDir('keel-ambient-confusion-pip-')
+    mkdirSync(join(cwd, '.config', 'pip'), { recursive: true })
+    writeFileSync(join(cwd, '.config', 'pip', 'pip.conf'), '[global]\nindex-url = https://pypi.corp.example/simple\n')
+    try {
+      // -i forces the primary index to the public one -> confusion.
+      const forced = applyAmbientConfig(extractPackageInstalls('pip install internal-tool -i https://pypi.org/simple'), cwd, { KEEL_HOME: cwd })
+      expect(forced[0].dependencyConfusionRisk).toBe(true)
+
+      // --extra-index-url only ADDS pypi.org as a fallback; the ambient
+      // private index stays primary — must stay the ordinary private_index
+      // path, never confusion.
+      const extra = applyAmbientConfig(extractPackageInstalls('pip install internal-tool --extra-index-url https://pypi.org/simple'), cwd, { KEEL_HOME: cwd })
+      expect(extra[0].dependencyConfusionRisk).toBeUndefined()
+      expect(extra[0].privateIndex).toBe(true)
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('pipeline end-to-end: an ambient-private package force-installed from the public registry warns on retry, where the no-override control denies', async () => {
+    const cwd = makeScratchDir('keel-ambient-confusion-pipeline-')
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://npm.corp.example/\n')
+    try {
+      const { fetchImpl } = makeMockRegistry({ 'confusable-tool': { existsDaysAgo: 2000 } })
+      const cap = backgroundCapture()
+      const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl, { packageVerifierOnBackgroundStart: cap.hook })
+      const input = { ...makeInput('npm install confusable-tool --registry=https://registry.npmjs.org'), cwd }
+
+      const first = await pipeline.evaluate(input)
+      expect(first.action).toBe('prompt') // not_yet_checked on the first attempt, same two-phase design as every other package verdict
+
+      await cap.settled()
+      const second = await pipeline.evaluate(input)
+      expect(second.action).toBe('warn')
+      expect(second.message).toContain('dependency-confusion')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+})
+
+describe('ambient config: npm .npmrc cascade precedence — project overrides user overrides global', () => {
+  it('project wins over user wins over global, and NPM_CONFIG_REGISTRY env wins over all', () => {
+    const cwd = makeScratchDir('keel-ambient-cascade-cwd-')
+    const home = makeScratchDir('keel-ambient-cascade-home-')
+    const globalPath = join(makeScratchDir('keel-ambient-cascade-global-'), 'npmrc')
+    writeFileSync(globalPath, 'registry=https://global.example/\n')
+    try {
+      const envBase = { NPM_CONFIG_GLOBALCONFIG: globalPath, KEEL_HOME: home }
+
+      // Only global set -> global wins.
+      expect(resolveNpmAmbient(cwd, envBase).defaultRegistry).toBe('https://global.example/')
+
+      // Add user tier -> user overrides global.
+      writeFileSync(join(home, '.npmrc'), 'registry=https://user.example/\n')
+      expect(resolveNpmAmbient(cwd, envBase).defaultRegistry).toBe('https://user.example/')
+
+      // Add project tier -> project overrides user (and global).
+      writeFileSync(join(cwd, '.npmrc'), 'registry=https://project.example/\n')
+      expect(resolveNpmAmbient(cwd, envBase).defaultRegistry).toBe('https://project.example/')
+
+      // NPM_CONFIG_REGISTRY env outranks every file tier.
+      expect(resolveNpmAmbient(cwd, { ...envBase, NPM_CONFIG_REGISTRY: 'https://env.example/' }).defaultRegistry).toBe('https://env.example/')
+    } finally {
+      rmSafe(cwd)
+      rmSafe(home)
+    }
+  })
+})
+
+describe('ambient config: per-cwd caching (AmbientConfigCache)', () => {
+  it('caches per cwd — a second call for the same cwd does not require re-reading a mutated file (proves the cache is actually used)', () => {
+    const cwd = makeScratchDir('keel-ambient-cache-')
+    writeFileSync(join(cwd, '.npmrc'), 'registry=https://first.example/\n')
+    try {
+      const cache = new AmbientConfigCache()
+      expect(cache.npm(cwd, TEST_ENV).defaultRegistry).toBe('https://first.example/')
+
+      // Mutate the file WITHOUT constructing a fresh cache — the cache
+      // should still serve the pre-mutation parse for this same cwd/env key.
+      writeFileSync(join(cwd, '.npmrc'), 'registry=https://second.example/\n')
+      expect(cache.npm(cwd, TEST_ENV).defaultRegistry).toBe('https://first.example/')
+    } finally {
+      rmSafe(cwd)
+    }
+  })
+
+  it('never leaks one cwd\'s config into a different cwd on the same cache instance', () => {
+    const cwdA = makeScratchDir('keel-ambient-cache-a-')
+    const cwdB = makeScratchDir('keel-ambient-cache-b-')
+    writeFileSync(join(cwdA, '.npmrc'), 'registry=https://a.example/\n')
+    try {
+      const cache = new AmbientConfigCache()
+      expect(cache.npm(cwdA, TEST_ENV).defaultRegistry).toBe('https://a.example/')
+      expect(cache.npm(cwdB, TEST_ENV).defaultRegistry).toBeUndefined()
+    } finally {
+      rmSafe(cwdA)
+      rmSafe(cwdB)
+    }
   })
 })

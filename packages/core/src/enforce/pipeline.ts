@@ -19,6 +19,7 @@ import { ProblemLedger } from './problem-ledger.js'
 import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
 import { extractPackageInstalls, checkPackagesCacheOnly, scheduleBackgroundVerification, decidePackageAction, PackageVerifierCache } from './package-verifier.js'
+import { applyAmbientConfig, AmbientConfigCache } from './ambient-registry-config.js'
 import { StateManager } from './state-manager.js'
 import { VerificationTracker, WRITE_TOOL_NAMES } from './verification.js'
 import { OracleTracker } from './oracle-tracker.js'
@@ -97,6 +98,8 @@ export interface PipelineConfig {
   oracleTracker?: OracleTracker
   /** Disk-backed verdict cache for `type: package` rules. Defaults to KEEL_STATE_DIR/package-verifier.json. */
   packageVerifierCache?: PackageVerifierCache
+  /** Per-cwd, in-memory ambient package-manager config cache (`.npmrc`/`pip.conf`/`.cargo/config.toml`/`GOPRIVATE` — see ambient-registry-config.ts). Defaults to a fresh instance per pipeline, mirroring packageVerifierCache's own lifetime. Injectable so tests can reuse or reset it explicitly. */
+  ambientConfigCache?: AmbientConfigCache
   /** Injection point for tests — never hits the real registry unless explicitly provided (or KEEL_NPM_REGISTRY is set outside vitest). */
   packageVerifierFetch?: typeof fetch
   /**
@@ -158,6 +161,7 @@ export class EnforcementPipeline {
   private observedMatches: Array<{ rule_id: string; observed_action: EnforcementAction; message: string }> = []
   private readonly overrideStore
   private readonly packageVerifierCache: PackageVerifierCache
+  private readonly ambientConfigCache: AmbientConfigCache
 
   constructor(config: PipelineConfig) {
     this.config = config
@@ -169,6 +173,7 @@ export class EnforcementPipeline {
     this.oracleTracker = config.oracleTracker || new OracleTracker(config.stateManager)
     this.overrideStore = config.overrideStore || new FileRuleOverrideStore()
     this.packageVerifierCache = config.packageVerifierCache || new PackageVerifierCache()
+    this.ambientConfigCache = config.ambientConfigCache || new AmbientConfigCache()
     this.lastRulesHash = this.computeRulesHash()
     this.loadState()
   }
@@ -1165,8 +1170,15 @@ export class EnforcementPipeline {
       // here for anyone reconfiguring it.
       if (rule.type === 'package') {
         const cmdStr = commandString(input)
-        const specs = extractPackageInstalls(cmdStr)
-        if (specs.length === 0) continue
+        const rawSpecs = extractPackageInstalls(cmdStr)
+        if (rawSpecs.length === 0) continue
+        // Ambient package-manager config (.npmrc/pip.conf/.cargo/config.toml/
+        // GOPRIVATE) — offline, synchronous, only runs for a command that
+        // already matched an install pattern. See ambient-registry-config.ts
+        // for the false-deny bug this closes: a name that resolves via a
+        // team's internal registry, with NO command-line signal at all, no
+        // longer hard-denies on the first try.
+        const specs = applyAmbientConfig(rawSpecs, input.cwd, process.env, this.ambientConfigCache)
         const ageThresholdDays = rule.age_days ?? 30
         const { results, misses } = checkPackagesCacheOnly(specs, this.packageVerifierCache)
         if (misses.length > 0) {
@@ -1188,6 +1200,15 @@ export class EnforcementPipeline {
         }
         if (decision.reason === 'unverified') {
           return this.violation(input, { ...rule, action: 'prompt' }, decision.message, start, 3)
+        }
+        if (decision.reason === 'dependency_confusion') {
+          // Forced 'warn' — deliberately weaker than deny/prompt, and only
+          // ever reached (per decidePackageAction's own priority order)
+          // once every package in the command has ALREADY cleared
+          // not_found/unverified/age_gate. See ambient-registry-config.ts's
+          // header and decidePackageAction's own comment for why this must
+          // never outrank a deny.
+          return this.violation(input, { ...rule, action: 'warn' }, decision.message, start, 3)
         }
         // age_gate — rule.action stands as declared.
         return this.violation(input, rule, decision.message, start, 3)
