@@ -61,10 +61,16 @@ async function daemon(path, payload) {
 }
 
 // ── Circuit breaker ───────────────────────────────────────────────────
-// OpenClaw fails open: a plugin that throws or fails to load is logged and
-// skipped, and every tool call proceeds unguarded (issue #20914, closed as
-// stale without a fix). keel fails closed. A thin client cannot bundle the
-// engine, so when the daemon is unreachable neither extreme is right:
+// OpenClaw fails open on a load-time failure: a plugin that fails to load
+// (crashes at import/register time) is logged and skipped, and every tool
+// call proceeds unguarded (issue #20914, closed as stale without a fix).
+// That is a different case from THIS handler throwing mid-call — reading
+// the installed 2026.4.15 runtime shows before_tool_call handler
+// exceptions are caught by OpenClaw's own hook runner and turned into a
+// block, i.e. fail-closed there. Either way, when the DAEMON is
+// unreachable (the case this breaker exists for), neither host-level
+// extreme is what fires: this catch block runs first, so nothing throws
+// up to OpenClaw at all. A thin client cannot bundle the engine, so
 // silent fail-open means protection vanishes while the user believes they
 // have it; blocking everything gets the plugin uninstalled the first time
 // the daemon is not running.

@@ -17,43 +17,83 @@ to bundle). You then need to:
 
 1. Start the daemon: `keel daemon` (idles out after 10 minutes of
    inactivity and respawns on demand).
-2. Enable the plugin in your OpenClaw config and restart OpenClaw:
+2. Enable the plugin in your OpenClaw config and restart the gateway. `keel install
+   --openclaw` prints the exact commands (with your real install path filled in); they
+   look like this:
+   ```bash
+   openclaw config set plugins.load.paths '["~/.openclaw/plugins/keel"]' --strict-json
+   openclaw config set plugins.allow '["keel"]' --strict-json   # pins trust; clears OpenClaw's provenance warning
    ```
-   plugins.load.paths += "~/.openclaw/plugins/keel"
-   plugins.allow       += "keel"   # pins trust; clears OpenClaw's provenance warning
-   ```
+   These **replace** the array at that path rather than appending — verified against a
+   real installed OpenClaw (2026.4.15). If you already have other entries in either array,
+   run `openclaw config get plugins` first and include the existing values in the JSON, or
+   they will be dropped. `openclaw config set` also validates that each load path actually
+   exists on disk before writing, so a typo fails loudly instead of silently no-op'ing.
 
 ## How it works
 
 ```
 Tool call → before_tool_call plugin hook → asks the keel daemon
           → daemon reachable    → block: true / requireApproval per your rules
-          → daemon unreachable  → FAILS OPEN by design (see below), but the
-                                   local circuit breaker still blocks
-                                   catastrophic operations and prints a loud
-                                   DEGRADED notice
+          → daemon unreachable  → keel's OWN circuit breaker (below), not
+                                   an OpenClaw fail-open path — the daemon
+                                   call is caught inside the plugin and
+                                   never throws up to OpenClaw at all
 ```
 
-**OpenClaw fails open, not closed, when the daemon can't be reached** — a
-throwing plugin is skipped by OpenClaw itself. Keel's plugin carries a local
-circuit breaker for catastrophic-only coverage during an outage rather than
-relying on OpenClaw's own behavior, but this is a materially different
-failure mode from Claude Code/Codex/Gemini's hook contract, where a keel
-process failure denies. See [`README.md`](../../README.md#limits) and
-[`SECURITY.md`](../../SECURITY.md).
+**Two separate fail-open/fail-closed questions, easy to conflate — keep them apart:**
+
+1. **Daemon unreachable.** This never reaches OpenClaw's own error handling —
+   `daemon()` in `index.mjs` catches the fetch failure internally and returns `null`.
+   What runs next is keel's *own* policy choice, not something OpenClaw forces: a local
+   circuit breaker that blocks only catastrophic, irreversible operations (`rm -rf /`,
+   force-push to a protected branch, `DROP TABLE`, fork bombs, `mkfs`, raw block-device
+   writes), allows the rest, and prints a loud DEGRADED notice. Blocking everything
+   during an outage is what gets a plugin uninstalled; blocking nothing is what makes it
+   a lie.
+2. **OpenClaw's own load/throw handling** — a genuinely different layer, and it splits
+   in two, not one blanket "fails open":
+   - A plugin that fails to *load* (crashes at import/register time) is skipped
+     entirely and every tool call proceeds with zero coverage from it —
+     openclaw/openclaw#20914, closed as stale without a fix. This is why `keel install
+     --openclaw` copies three already-tested static files rather than generating
+     anything, and why confirming `openclaw plugins inspect keel` shows it loaded (not
+     just `plugins list`, which reports `hookNames: []` for hook-only plugins even when
+     registration succeeded) is worth doing once after install.
+   - A plugin that loads and registers `before_tool_call` fine, but whose *handler
+     throws during an actual call*, is the opposite: reading the installed 2026.4.15
+     runtime (`dist/pi-tools.before-tool-call-*.js`) shows that path wrapped in a
+     try/catch that returns `{blocked: true, reason: "Tool call blocked because
+     before_tool_call hook failed"}` — fail-**closed**. keel's handler is written
+     defensively enough (the daemon call never throws; `translate()` guards on
+     unexpected shapes) that this path is not expected to trigger in normal operation.
+
+   This is a materially different failure surface from Claude Code/Codex/Gemini's hook
+   contract, where a keel process failure denies by construction rather than by a
+   host-side catch block. See [`README.md`](../../README.md#limits) and
+   [`SECURITY.md`](../../SECURITY.md).
 
 ## Verification status
 
-`live`¹ for the block path — `openclaw plugins list` confirms the plugin
-loads under an isolated `HOME`. That is a **load-time** check, not a
-per-call one: a separate, still-open upstream issue
-(openclaw/openclaw#5943) suggests `before_tool_call` may not fire in some
-OpenClaw versions/builds at all, and wiring the plugin into a running
-OpenClaw session to reproduce even the load-time check live was not
-completed as of this release (`session/v1/EVIDENCE/m4-hostbreadth.md`). The
-warn path (`api.logger.warn`) is `docs`-level — whether it reaches the chat
-UI or only an operator/gateway log is unconfirmed. Current matrix, every
-footnote: [`docs/integrations.md`](../integrations.md).
+`live`¹ for the block path — plugin loads and `before_tool_call` registers,
+confirmed with `openclaw plugins inspect keel --json` (not just `plugins
+list`) under an isolated `HOME`. That is still not an exercised call: no
+actual tool call has been run through a real agent turn and observed
+reaching keel's daemon (no model-provider credentials in any environment
+this project has run in). What has changed: the upstream issue this caveat
+is built on (openclaw/openclaw#5943, "Wire up `before_tool_call` plugin
+hook in tool execution pipeline") is **closed** (2026-02-03), before the
+2026.4.15 build this repo tests against, and reading that build's actual
+compiled source confirms the wiring the issue describes is present — the
+tool-execution wrappers this lane inspected call `runBeforeToolCallHook(...)`
+before `tool.execute()` runs, and `block: true` throws before it. The
+load-time config-wiring gap this file used to flag as "not completed" is
+closed too — see the Install section above and `installOpenClaw()` in
+`packages/cli/src/commands/install.ts`. Full evidence and exact commands
+run: [`docs/integrations.md`](../integrations.md) footnote 1. The gap
+described above (an exercised call) is narrowed, not closed, by any of
+this. The warn path (`api.logger.warn`) is still `docs`-level — whether it
+reaches the chat UI or only an operator/gateway log is unconfirmed.
 
 ## Requirements
 

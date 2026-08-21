@@ -33,7 +33,7 @@ Every one of these evaluates a tool call **before it runs** and can stop it.
 | Host | Install | Interception point | How it blocks / warns | Block Verified | Warn Verified |
 |---|---|---|---|---|---|
 | OpenCode | `keel install --opencode` | `tool.execute.before` plugin | throws / `client.app.log({level:'warn'})` | **live** | **live** — M4: `opencode-warn.sh`, marker captured in OpenCode's own `opencode.log` (not the `--format json` stream — confirmed empirically that channel carries no app-log events headlessly); `session/transcripts/opencode-warn-no-verify-bypass.txt` |
-| OpenClaw | `keel install --openclaw` | `before_tool_call` plugin | `block: true` / `requireApproval` / `api.logger.warn` | **live**¹ — `openclaw plugins list` reports it loaded | **docs** — `api.logger.warn` wired wave-3; reaching the chat UI vs. only an operator/gateway log is unconfirmed |
+| OpenClaw | `keel install --openclaw` | `before_tool_call` plugin | `block: true` / `requireApproval` / `api.logger.warn` | **live**¹ — plugin loads, `before_tool_call` registers (`plugins inspect`); per-call firing not exercised | **docs** — `api.logger.warn` wired wave-3; reaching the chat UI vs. only an operator/gateway log is unconfirmed |
 | Claude Code | `keel install --claude-code` | `PreToolUse` hook | exit 2 / `hookSpecificOutput.additionalContext` + `systemMessage` | **live**² — `claude -p` child blocked `git push --force origin main`; see `session/transcripts/claude-code-force-push.txt` | **docs** — M4: `claude-warn.sh` exists and is ready; this environment's isolated `CLAUDE_CONFIG_DIR` is AUTH-BLOCKED (see footnote 2), so it correctly early-exits rather than fabricate a pass |
 | Cline | `keel install --cline` | `PreToolUse` hook | `HOOK_CONTROL` + `cancel: true` / `systemMessage` | types — read from installed `@cline/core` | docs, best-effort — see footnote 3 |
 | Gemini CLI | `keel install --gemini` | `PreToolUse` hook | exit 2 / same envelope as Claude Code | types — Claude-Code-compatible per `gemini hooks migrate --from-claude` | **docs** — M4: `gemini-warn.sh` exists; this environment is AUTH-BLOCKED (no OAuth session, no `GEMINI_API_KEY`), correctly early-exits |
@@ -43,16 +43,40 @@ Every one of these evaluates a tool call **before it runs** and can stop it.
 
 `keel install --all` installs every one of them.
 
-¹ **Not the same claim as "the hook fires per call."** `openclaw plugins list` reporting
-the plugin loaded is a load-time check, not a per-call one; `session/EVIDENCE/wave3-warnsurface.md`
-§2 already flagged a GitHub issue (openclaw/openclaw#5943, "Wire up `before_tool_call`
-plugin hook in tool execution pipeline") suggesting the hook may not fire in some
-versions/builds at all. Not re-verified or downgraded this lane — restated here so the
-matrix carries the caveat, not just a linked evidence file. `openclaw` (2026.4.15) is
-installed in this M4 environment and keel's plugin installs cleanly under an isolated
-`HOME`, but wiring it into OpenClaw's own config (`plugins.load.paths`) to reproduce even
-the load-time check was not completed this lane — flagged as a follow-up, not attempted
-further, in `session/v1/EVIDENCE/m4-hostbreadth.md`.
+¹ **Not the same claim as "the hook fires per call" — but the specific concern behind that
+caveat is now resolved for the installed version.** `openclaw plugins list` reporting the
+plugin loaded is only a load-time check; `session/EVIDENCE/wave3-warnsurface.md` §2 flagged
+a GitHub issue (openclaw/openclaw#5943, "Wire up `before_tool_call` plugin hook in tool
+execution pipeline") suggesting the hook might not fire at all. That issue is **closed**
+(2026-02-03), ~2.5 months before the `openclaw` 2026.4.15 build installed in this
+environment. Re-verified this lane, three ways, strongest first:
+  1. **Read the installed runtime's actual compiled source** (not docs, not type defs):
+     every tool-execution path this lane inspected — `toToolDefinitions` and
+     `toClientToolDefinitions` in `dist/pi-tool-definition-adapter-*.js`, and
+     `dist/tools-invoke-http-*.js` — calls `runBeforeToolCallHook(...)` before
+     `tool.execute()` runs (with a guard against double-invocation on a tool already
+     wrapped elsewhere), and a `block: true` result throws before execution reaches the
+     tool. This is the exact wiring #5943 says was missing, confirmed present by reading
+     the shipped code, not by trusting a changelog.
+  2. `openclaw plugins inspect keel --json` (one level deeper than `plugins list`) shows
+     `"typedHooks": [{"name":"after_tool_call"},{"name":"before_tool_call","priority":100}]`
+     — OpenClaw's loader parsed and registered the hook, not just the plugin file. Note:
+     `plugins list --json` alone shows `"hookNames": []` / `"hookCount": 0` for this same
+     plugin — #5943's own bug report used exactly that field ("hook appears in `hookNames`
+     when listing plugins") as its evidence the hook wasn't wired, so checking `list`
+     instead of `inspect` would have reproduced a false negative here. Use `inspect`.
+  3. **The load-time config-wiring follow-up flagged in `session/v1/EVIDENCE/m4-hostbreadth.md`
+     as "not completed" is now completed and reproducible**: `openclaw config schema` confirms
+     `plugins.load.paths` / `plugins.allow` are the real dot paths, and
+     `openclaw config set plugins.load.paths '[...]' --strict-json` (same for `plugins.allow`)
+     wires the plugin into an isolated `--profile` non-interactively — see
+     `packages/cli/src/commands/install.ts`'s `installOpenClaw()`, which now prints these
+     exact commands instead of a hand-edit sketch.
+  None of this is the same as **live** by this table's own definition: no actual tool call
+  was run through a real agent turn and observed reaching keel's daemon, because this
+  environment has no model-provider credentials (same AUTH-BLOCKED pattern as every other
+  host row here). That gap is real and unclosed — the four points above narrow it, they do
+  not close it.
 
 ² **Two different trust boundaries, not one.** The committed block transcript was
 captured via a REAL, non-isolated `~/.claude` login (a privileged supervisor session —
@@ -367,9 +391,19 @@ triggered it (resolved from the most recent session_id in the audit trail), rath
 than every session for the next 24h. It never leaks to a different session_id, even
 a concurrent one — see the same evidence file for the lifecycle.
 
-**Hermes and OpenClaw fail open by design** — a plugin that throws is skipped and the
-call proceeds. Since a thin client cannot bundle the rule engine, both keel plugins
-carry a local circuit breaker: if the daemon is unreachable they block only catastrophic
+**Hermes fails open by design; OpenClaw's failure mode splits in two.** A plugin that
+fails to *load* (crashes at import/register time) is skipped entirely and every tool call
+proceeds unguarded by it — openclaw/openclaw#20914, closed as stale without a fix. But a
+plugin that loads and registers `before_tool_call` fine, and then *throws from inside the
+handler during an actual call*, is different: reading the installed 2026.4.15 runtime
+(`dist/pi-tools.before-tool-call-*.js`), that path is wrapped in a try/catch that returns
+`{blocked: true, reason: "Tool call blocked because before_tool_call hook failed"}` — i.e.
+fail-**closed** for that call. keel's own OpenClaw handler is defensive enough (`daemon()`
+swallows its own errors into `null`, `translate()` guards on unexpected shapes) that it is
+not expected to hit this path in practice, but the blanket "fails open" claim was only ever
+true for the load-failure case, not this one. Since a thin client cannot bundle the rule
+engine, both keel plugins (Hermes and OpenClaw) carry a local circuit breaker regardless:
+if the daemon is unreachable they block only catastrophic
 irreversible operations (`rm -rf /`, force-push to a protected branch, `DROP TABLE`,
 fork bombs, `mkfs`, raw block-device writes), allow ordinary work, and print a loud
 DEGRADED notice. Blocking everything when the daemon is down is what gets a plugin

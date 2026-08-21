@@ -246,15 +246,17 @@ next live-verified (as Claude Code and OpenCode already were, for the
    only an operator/gateway-side log. If it's the latter, OpenClaw
    currently has **no** confirmed non-blocking user-visible channel at
    all, and that should be recorded as a real gap in `docs/integrations.md`
-   rather than left implied by the presence of `emitFor`. While there,
-   also check the openclaw/openclaw#5943 finding from this lane's research
-   (title: "Wire up `before_tool_call` plugin hook in tool execution
-   pipeline") — if `before_tool_call` doesn't fire in the installed
-   OpenClaw version, that's a bigger, pre-existing problem than
-   warn-visibility (it would affect the block path too), and
-   `docs/integrations.md`'s current "live" rating for OpenClaw (justified
-   only by `openclaw plugins list` reporting the plugin loaded) should be
-   revisited.
+   rather than left implied by the presence of `emitFor`. This item is
+   STILL OPEN. **The openclaw/openclaw#5943 half of this item is DONE, not
+   open** — a later lane found the issue closed (2026-02-03) and confirmed,
+   by reading the installed 2026.4.15 runtime's actual compiled source
+   (not by trusting the closure), that `before_tool_call` is wired into
+   every tool-execution path that lane inspected, with `block: true`
+   throwing before `tool.execute()`. `docs/integrations.md` footnote 1 has
+   the full trace. What that lane could NOT do (still open, needs a human
+   or a credentialed environment): run an actual tool call through a real
+   `openclaw agent` turn and observe it reach keel's daemon — the
+   registration/wiring evidence above is not the same as an exercised call.
 6. **`keel allow --session` cross-host**: pick any live-verified host,
    trigger a warn, run `keel allow <id> --session` in a separate terminal,
    and confirm the NEXT violation from that same agent session is allowed
@@ -355,18 +357,27 @@ spend beyond the one $0.025 confirmation probe. Whoever picks this up next:
 3. Also resolve the `sessionId` field guess (see item 4 in the Wave-3 list above) —
    real payload capture would settle it in the same run.
 
-### OpenClaw — plugin installs cleanly under isolation, config wiring not finished
+### OpenClaw — config wiring DONE; the exercised-call gap is what's left
 
-`openclaw` (2026.4.15) is installed in the M4 environment. `keel install
---openclaw` under an isolated `HOME` installs the three plugin files cleanly. What
-was NOT completed this lane: wiring `plugins.load.paths`/`plugins.allow` into
-OpenClaw's own config format under an isolated profile (`openclaw --profile
-<name>` isolates `OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`) and confirming
-`openclaw plugins list` reports it loaded — which would only reproduce the
-EXISTING claim, not close the openclaw#5943 hook-fires-per-call gap noted above.
-A human with time budget for this should also attempt a real `openclaw agent` turn
-against a configured provider to test the block/warn paths end-to-end, which no
-lane has done yet.
+`openclaw` (2026.4.15) is installed in this environment. `keel install --openclaw`
+under an isolated `HOME` installs the three plugin files cleanly (unchanged from
+before). **What this item used to flag as not completed — wiring
+`plugins.load.paths`/`plugins.allow` into OpenClaw's own config format under an
+isolated profile — is now done and reproducible**: `openclaw config schema`
+confirms the real dot paths, and `openclaw config set plugins.load.paths '[...]'
+--strict-json` (same for `plugins.allow`) writes them non-interactively under
+`openclaw --profile <name>` (isolates `OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`).
+`installOpenClaw()` in `packages/cli/src/commands/install.ts` now prints these
+exact commands. Going one level past `openclaw plugins list`, `openclaw plugins
+inspect keel --json` confirms `before_tool_call` actually registers as a typed
+hook (`plugins list` alone reports `hookNames: []` for this same plugin — use
+`inspect`, not `list`). Reading the installed runtime's compiled source also
+confirms the hook is wired into the tool-execution call graph, not just
+registered — full trace in `docs/integrations.md` footnote 1. **Still open, and
+still needs a human or a credentialed environment**: a real `openclaw agent` turn
+against a configured provider, to test the block/warn paths end-to-end with an
+actual tool call observed reaching keel's daemon. Nothing done so far is a
+substitute for that — it narrows the gap, it does not close it.
 
 ---
 
