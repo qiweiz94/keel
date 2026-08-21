@@ -54,7 +54,7 @@ per host rather than letting a single "supported" cell imply otherwise.
 "Not wired" is a real answer, not a placeholder. A row that claimed
 coverage the code does not have would be worse than the gap itself.
 
-## The three shipped rules
+## The four shipped rules
 
 - **`injected-instructions-in-tool-output`** (`mode: warn`) — the
   higher-confidence marker family above. Matches, warns, and on OpenCode
@@ -70,6 +70,10 @@ coverage the code does not have would be worse than the gap itself.
   catalog follows.
 - **`untrusted-content-next-call`** (`next_call_scrutiny: true`,
   `mode: warn`) — the compensating control described below.
+- **`untrusted-content-derived-call`** (`next_call_scrutiny: true`,
+  `taint_correlation: true`, `mode: warn`) — the narrower, artifact-
+  correlated sibling ("Lane G") described in "Cross-turn taint
+  correlation" below.
 
 **Expect self-referential false positives.** Every one of these markers
 appears in security documentation, prompt-injection research, red-team
@@ -109,6 +113,95 @@ Armed on EVERY host, including OpenCode — neutralization there is
 heuristic, so elevated scrutiny on the next action is still warranted even
 where the marker text itself was defanged.
 
+## Cross-turn taint correlation ("Lane G")
+
+`untrusted-content-next-call`'s own false positive is structural: it has no
+payload correlation, so any consequential call within the TTL fires it,
+whether or not that call has anything to do with the flagged result.
+`untrusted-content-derived-call` is the narrower sibling that closes part
+of that gap with real evidence instead of a wider net.
+
+**Mechanism: windowed artifact extraction, exact match.** At detection
+time, `enforce/injection-taint.ts` pulls a small set of structured
+"artifacts" — URLs, hostnames, file paths, email addresses — from a
+±400-character window around each enforcing marker span (`extractOriginArtifacts`,
+`ARTIFACT_WINDOW_CHARS`). Each candidate is normalized (lowercased, a
+Windows path canonicalized to the same form as its `/`-separated
+equivalent, a URL's query string and fragment stripped), filtered through
+a stoplist of generic values (`github.com`, `package.json`, `localhost`,
+`.env`, ...), length-floored, then DEFANGED before it is ever persisted —
+`defangArtifact` breaks `.`/`:`/`/`/`@` and the literal `http`/`https`
+scheme word so a stored artifact can never become a live, copy-pasteable
+URL, even inside an audit log or a warning message surfaced back to the
+model on its next turn. Up to 8 artifacts are kept per detection.
+
+When a later CONSEQUENTIAL call happens (the same write/shell predicate
+`untrusted-content-next-call` uses), `extractCallArtifacts` runs the
+IDENTICAL four extractors against that call's own command surfaces
+(`commandSurfaces()` — quote-obfuscation and compound-command splitting
+included), target path, `url`/`uri`/`host` arguments, and inline write
+content (`content`/`text`/`newString`/`new_string`/`patchText`). If any
+extracted value exactly matches a stored artifact, that is a real
+correlation hit: `untrusted-content-derived-call` fires, naming the
+matched (still-defanged) artifact in its message, and consumes ONLY the
+tag(s) it matched — every other pending tag, including ones from the SAME
+detection that had no match, stays fully armed for the broad sibling rule
+to still cover.
+
+**Why exact-match on structured artifacts, not raw substring search.** A
+256KB flagged result substring-matched against every later call's command
+text produces constant false positives on generic tokens (`npm`, `src/`,
+`http`) at that scale, and gives a warning nothing specific to name.
+Windowed structured extraction trades recall for a small, nameable,
+verifiable piece of evidence.
+
+**Scope: single-hop, deliberately.** This tracks exactly one hop — flagged
+result → next call that references one of its artifacts — never a value
+propagated across three or more calls. Multi-hop propagation would need
+confidence-decay modeling with no real hit-rate data to base it on yet;
+see "What this does NOT cover" below and ROADMAP.md.
+
+**Per-rule consumption, not delete-on-consume.** Two `next_call_scrutiny`
+rules now share `injection-store.ts`'s persisted store. A tag is MARKED
+per rule id that consumes it (`PersistedInjectionTag.consumedBy`), never
+deleted — only TTL expiry removes it. This is what lets the broad rule
+fire on an unrelated call and the correlated rule STILL fire later on the
+same detection, on a genuinely-derived call; the earlier delete-on-consume
+design would have let whichever rule's consequential call happened first
+blind the other to every tag it hadn't yet checked.
+
+**Still `action: warn` only.** `rule-parser.ts`'s validation forbids
+anything stronger than `warn` on any `type: injection` rule, correlated
+evidence or not — see that file's `validActions` comment. Promoting a
+CORRELATED hit specifically to `action: prompt` is a named, explicit
+follow-up requiring a parser change plus real hit-rate data, not shipped
+here.
+
+**Honest limits of the correlation itself:**
+- **Exact-match only.** A paraphrased or restructured reference to the
+  same target — a different case, a URL shortener, a renamed variable
+  holding the same path — does not correlate. This closes part of the
+  broad rule's imprecision, not all of it; the broad rule still exists for
+  exactly this reason.
+- **Four artifact classes only.** URLs, hostnames, file paths, and email
+  addresses. A flagged directive naming something else entirely — a
+  numeric account id, a free-text instruction with no structured target —
+  produces no artifact to correlate on, and only the broad sibling covers
+  it.
+- **The 400-character window is a real precision/recall tradeoff.** An
+  artifact further from the marker than that is never extracted, by
+  design — the window IS the precision mechanism (see injection-taint.ts's
+  own header). A payload that describes its target far from the marker
+  text is missed.
+- **"Storing is indistinguishable from obeying."** If the agent SAVES the
+  flagged result (writes the fetched page to disk, edits a document that
+  quotes it), the write content carries the same artifacts and this rule
+  fires — the evidence is "the agent filed it", not "the agent obeyed it".
+  This is the dominant false-positive shape on the write-content channel,
+  and it is measured, not hypothetical — see the corpus counts in
+  `injection-taint-corpus.test.ts` / SECURITY.md.
+- **Single-hop only.** No propagation across a third call. See ROADMAP.md.
+
 ## What this does NOT cover
 
 - **Paraphrase, translation, and encoding evasion.** Every pattern here
@@ -127,13 +220,18 @@ where the marker text itself was defanged.
   further object or array is not covered (the same scope decision
   docs/exfil.md's output-redaction section already documents for the
   secret-scan side of the same write-back path).
-- **No cross-turn provenance / taint tracking.** The next-call gate knows
-  "a detection happened this session, recently" — it does not track WHICH
-  value came from WHICH tool result, or follow that value across
-  transformations. A real taint-tracking system ("Lane G") is future work;
-  `PersistedInjectionTag`'s shape (`injection-store.ts`) is deliberately a
-  superset of `PersistedFlowTag`'s so that future lane can extend the same
-  store without a migration, but nothing here implements it.
+- **Cross-turn taint correlation is now SINGLE-HOP, exact-match, and
+  narrow — not general provenance tracking.** `untrusted-content-derived-call`
+  ("Lane G", above) closes part of the broad gate's imprecision: it knows
+  whether a LATER call's own arguments/content reference one of four
+  artifact classes (URL, host, path, email) found within 400 characters of
+  an enforcing marker, and fires only on that. It does NOT catch a
+  paraphrased or restructured reference to the same target, does NOT
+  propagate a value across a third call, and "storing" a flagged result
+  (saving it to disk) is indistinguishable from "obeying" it on the
+  write-content channel — see "Cross-turn taint correlation" above for the
+  full honest-limits list. The broad `untrusted-content-next-call` gate
+  still exists specifically for what this narrower rule cannot correlate.
 - **`generic` and `keel daemon`.** Neither host's output channel is wired
   at all — see the per-host table above.
 - **A tool call's own ARGUMENTS.** This scans tool OUTPUT only. An
@@ -141,9 +239,12 @@ where the marker text itself was defanged.
   different channel, out of scope for this lane — see
   `packages/cli/conformance/ASI01.yaml`'s documented scenario and
   docs/owasp-agentic-top10.md's ASI01 section.
-- **Promoting `untrusted-content-role-markers` out of observe**, or the
-  next-call gate from `warn` to `prompt` — both are explicit future
-  follow-ups, gated on real hit-rate evidence, not shipped here.
+- **Promoting `untrusted-content-role-markers` out of observe**, promoting
+  either next-call gate rule from `warn` to `prompt` (rule-parser.ts forbids
+  this today regardless — see below), or building multi-hop taint
+  propagation (tracking a value across three or more calls, with
+  confidence decay) — all explicit future follow-ups, gated on real
+  hit-rate evidence, not shipped here.
 
 See docs/exfil.md's "Output redaction" section for the sibling secret-scan
 mechanism this lane shares its scan pass with (`evaluateToolResult()`),

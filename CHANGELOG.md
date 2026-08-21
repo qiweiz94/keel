@@ -448,6 +448,35 @@ exercised call on either host.
   completeness claim — a paraphrased, translated, or encoded payload still
   passes. See `docs/injection.md` for the full per-host honesty table and
   what this deliberately does NOT cover.
+- **Cross-turn taint correlation ("Lane G") — a new `untrusted-content-derived-call`
+  gate rule (`taint_correlation: true`), the narrower, artifact-correlated
+  sibling of Lane F's `untrusted-content-next-call`.** Fires only when a
+  LATER consequential call's own arguments or content reference a URL,
+  hostname, file path, or email address found within 400 characters of an
+  enforcing marker in an earlier flagged tool result this session, instead
+  of the broad rule's "any consequential call in the TTL window, no
+  payload correlation" trigger. New standalone, pure module `packages/
+  core/src/enforce/injection-taint.ts` (`extractOriginArtifacts`,
+  `extractCallArtifacts`, `correlateTags`, `defangArtifact` — the latter
+  stronger than `injection-scan.ts`'s `defangExcerpt`, additionally
+  breaking the `http`/`https` scheme word so a stored artifact can never
+  become a live URL). `PersistedInjectionTag` (`injection-store.ts`) gains
+  three optional fields — `id`, `artifacts`, `consumedBy` — read
+  correctly by pre-Lane-G code (which just ignores them) and reading
+  pre-Lane-G tags correctly in turn (no artifacts to correlate against, so
+  the new rule stays silently inert on them). `consumePending` now MARKS
+  per rule id instead of deleting outright, the correctness fix required
+  the moment a second `next_call_scrutiny` rule shares this store — the
+  earlier delete-all-on-consume behavior would let whichever rule's
+  consequential call happened first blind the other to every pending tag.
+  Still `action: warn` only, like every `type: injection` rule; promoting
+  a correlated hit to `prompt` is a named future follow-up. Measured, not
+  asserted: a 20-scenario corpus (`injection-taint-corpus.test.ts`) backs
+  the shipped `confidence: medium`/`maturity: incubating` tier — see
+  SECURITY.md for the counts and `docs/injection.md`'s "Cross-turn taint
+  correlation" section for the honest limits (exact-match only, four
+  artifact classes, single-hop, "storing is indistinguishable from
+  obeying").
 
 ## 1.0.0
 

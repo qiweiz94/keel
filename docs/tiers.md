@@ -117,7 +117,8 @@ are never downgraded by any dial.
 | `verify-format-before-decision` | warn | Choosing a format/convention without checking the project's own |
 | `unverified-package-install` * | prompt | A package name that doesn't resolve against its package registry (npm, PyPI, crates.io, or the Go module proxy) |
 | `injected-instructions-in-tool-output` | warn | A completed tool result matching a literal prompt-injection marker shape (chat-template control tokens, "ignore previous instructions", role-marker impersonation, Unicode tag-character smuggling). Never blocks by construction — see `docs/injection.md`. |
-| `untrusted-content-next-call` | warn | The compensating control for the above on every host except OpenCode: arms on a detection, fires once on the session's next write/shell call. See below. |
+| `untrusted-content-next-call` | warn | The compensating control for the above on every host except OpenCode: arms on a detection, fires once on the session's next write/shell call, no payload correlation. See below. |
+| `untrusted-content-derived-call` | warn | The narrower, artifact-correlated sibling ("Lane G") of the row above: fires only when the next call's own arguments/content reference a URL/host/path/email found near the flagged marker. See below. |
 
 \* `unverified-package-install` ships with no `level:` or `mode:` field at all — it
 isn't under either tier's YAML comment header in `install.ts`. It's listed here because
@@ -210,19 +211,22 @@ each time) needs a content-state signal no tracker in this codebase feeds into t
 detector today. Ships with no measured hit-rate evidence, same posture as
 `session-runaway-trip` above.
 
-The three `type: injection` rules (Lane F — tool-result prompt-injection scanning)
-span two tiers by design, not by accident: `injected-instructions-in-tool-output`
-(Tier 2, warn) and `untrusted-content-next-call` (Tier 2, warn, the compensating
-next-call scrutiny gate) are the higher-confidence detector and its paired gate;
-`untrusted-content-role-markers` (Tier 3, observe, listed above) is a materially
-higher-false-positive-rate sibling matched against the exact same tool-result text,
-burning in separately before it can ever speak. None of the three can ever declare an
-action stronger than `warn` — `rule-parser.ts`'s `validateRules` rejects any other
-`action` on a `type: injection` rule, because a rewrite of the flagged tool result only
-actually reaches the model on one host (OpenCode); every other host is detection-only,
-post-hoc. See `docs/injection.md` for the full per-host honesty table and what this
-detection deliberately does NOT cover (paraphrase/translation/encoding evasion chief
-among them).
+The four `type: injection` rules (Lane F — tool-result prompt-injection scanning —
+plus Lane G's correlated gate) span two tiers by design, not by accident:
+`injected-instructions-in-tool-output` (Tier 2, warn), `untrusted-content-next-call`
+(Tier 2, warn, the broad next-call scrutiny gate), and `untrusted-content-derived-call`
+(Tier 2, warn, the narrower gate that additionally requires the next call's own
+arguments/content to reference an artifact found near the flagged marker — see
+`docs/injection.md`'s "Cross-turn taint correlation") are the higher-confidence
+detector and its two paired gates; `untrusted-content-role-markers` (Tier 3, observe,
+listed above) is a materially higher-false-positive-rate sibling matched against the
+exact same tool-result text, burning in separately before it can ever speak. None of
+the four can ever declare an action stronger than `warn` — `rule-parser.ts`'s
+`validateRules` rejects any other `action` on a `type: injection` rule, because a
+rewrite of the flagged tool result only actually reaches the model on one host
+(OpenCode); every other host is detection-only, post-hoc. See `docs/injection.md` for
+the full per-host honesty table and what this detection deliberately does NOT cover
+(paraphrase/translation/encoding evasion chief among them).
 
 `test-oracle-tampering` and `test-oracle-env-introspection` are the two Tier-3 rules
 that carry an explicit `level: sprint` (every other Tier-3 rule leaves `level` unset) —
@@ -233,12 +237,13 @@ soften either). Confirmed live, from a clean isolated install (`keel level sprin
 `session-spend-limit`, `no-secrets-in-code`, `no-secret-files`, `no-credential-echo`)
 but none are DEACTIVATED — every rule stays present and evaluated at every dial, only
 the deny-tier ones get weaker. `keel status` reported `Active at current dial: 49 of
-49` at sprint before Lane F's three new rules landed (confirming no rule drops out of
-the active set at that ruleset size — "active at every dial" means present and
-evaluated, not unaffected by the dial); re-confirmed live against the current shipped
-ruleset (`keel level sprint --project` from a clean isolated install, same 5-rule
-soften/13-floor dial diff as before): `keel status` reports `Active at current dial:
-52 of 52`.
+49` at sprint before Lane F's three new rules landed, then `52 of 52` after Lane F
+landed (confirming no rule drops out of the active set at that ruleset size — "active
+at every dial" means present and evaluated, not unaffected by the dial); re-confirmed
+live against the current shipped ruleset, after Lane G's one additional rule
+(`untrusted-content-derived-call`) landed (`keel level sprint --project` from a clean
+isolated install, same 5-rule soften/13-floor dial diff as before): `keel status`
+reports `Active at current dial: 53 of 53`.
 
 ## The speed dial
 

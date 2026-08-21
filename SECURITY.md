@@ -285,6 +285,42 @@ the honest residual (deny-tier correlation on `keel hook` hosts is still
 not closed) are in `docs/exfil.md`; test evidence in
 `session/v1/EVIDENCE/b1-exfil.md`.
 
+**Lane F/G — tool-result prompt-injection scanning and its correlated
+next-call gate, measured, not asserted.** `type: injection` (`docs/
+injection.md`) ships a heuristic marker-shape detector, a broad
+payload-blind next-call gate (`untrusted-content-next-call`), and — Lane
+G — a narrower, artifact-correlated sibling (`untrusted-content-derived-call`,
+`taint_correlation: true`) that fires only when a LATER call's own
+arguments/content reference a URL/host/path/email found within 400
+characters of an enforcing marker in an earlier flagged result
+(`packages/core/src/enforce/injection-taint.ts`). Its `confidence: medium`
+/ `maturity: incubating` tier is backed by a measured 20-scenario corpus
+(`injection-taint-corpus.test.ts`), not a vibe: 10/10 genuinely-derived
+scenarios (URL fetch, path write, host-only derivation, quote-obfuscated
+command, write-content echo, an MCP-shaped nested-arg call, email
+derivation, both `newString`/`new_string` write-content spellings,
+`patchText`, dotted-relative path) correlated correctly; of 10
+unrelated-but-consequential scenarios (`npm test`, an unrelated file edit,
+`git commit`, a fetch of a stoplisted host, a write sharing only generic
+tokens, an unrelated domain, a read, a package install), 8 correctly stay
+silent on the correlated rule and 2 are labeled, EXPECTED false positives
+— saving the flagged content to disk (storing is indistinguishable from
+obeying on the write-content channel) and editing `docs/injection.md`
+itself after reading it (the self-referential false positive Lane F
+already documents, with a Lane G twin). Zero UNLABELED false positives on
+the stoplisted-host and generic-token cases specifically — asserted by
+name in the corpus test, not folded into an aggregate count. Both gate
+rules share one persisted store (`injection-store.ts`) via per-rule
+MARK-not-delete consumption (`consumedBy`), verified under a real
+concurrent-process race (`injection-store-concurrency.test.ts`) and at the
+pipeline level (`injection-taint-gate.test.ts`'s regression guard: the
+broad rule consuming a tag first must not blind the correlated sibling on
+a later, genuinely-derived call) — the correctness bug the earlier
+delete-all-on-consume design would have produced the moment a second
+`next_call_scrutiny` rule existed. `action: warn` only, same as every
+`type: injection` rule (`rule-parser.ts`'s `validActions`); promoting a
+correlated hit to `prompt` is a named future follow-up, not shipped here.
+
 The v0.4 hardening landed three fixes, each verified adversarially in
 `session/v04/EVIDENCE/phase-3-redteam.md`: (1) `argPath()` now reads `file_path`
 / `notebook_path`, so `filesystem` floors (`no-rules-tampering`,

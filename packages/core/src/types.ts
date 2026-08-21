@@ -461,6 +461,26 @@ export interface KeelRule {
   // injection rule with neither, since it could never fire.
   next_call_scrutiny?: boolean
 
+  // `taint_correlation` narrows a `next_call_scrutiny: true` gate rule from
+  // "fires on ANY consequential call" (the broad Lane F behavior above) to
+  // "fires only on a consequential call whose OWN arguments or content
+  // reference a correlated artifact" — a URL, hostname, file path, or email
+  // address that appeared within `ARTIFACT_WINDOW_CHARS` of an enforcing
+  // marker in an earlier flagged tool result this session (enforce/
+  // injection-taint.ts's extraction + `correlateTags()`). REQUIRES
+  // `next_call_scrutiny: true` on the same rule — inert alone, since there
+  // is nothing to narrow without the gate it modifies; rule-parser.ts's
+  // validateRules rejects `taint_correlation: true` with no
+  // `next_call_scrutiny`, and rejects this field on any non-`injection`
+  // rule. Still `action: warn` only, like every injection rule — rule-
+  // parser.ts's validActions comment covers why nothing stronger is
+  // rule-authorable on this type, correlated evidence or not. Promoting a
+  // CORRELATED hit specifically to `action: prompt` is a separate,
+  // explicit future decision requiring a parser change plus real hit-rate
+  // data — not shipped here. See install.ts's `untrusted-content-
+  // derived-call` and docs/injection.md.
+  taint_correlation?: boolean
+
   // ── Session composite-trip rules (`type: session`) ──
   //
   // A composite runaway-loop trip across five session-scoped dimensions:
@@ -719,9 +739,10 @@ export interface EnforceResult {
 
   // ── Injection-scan fields (Lane F — `type: injection`, `EnforcementPipeline.
   // evaluateInjection()` / `evaluateToolResult()`, pipeline.ts and
-  // enforce/injection-scan.ts) ──
+  // enforce/injection-scan.ts; `injection_artifacts` is Lane G's addition
+  // to this same family) ──
   //
-  // All four are absent (never present-but-empty) when the injection pass
+  // All five are absent (never present-but-empty) when the injection pass
   // found nothing, mirroring `scan_truncated`/`redacted_rule_ids` above —
   // old trace lines and JSON.stringify output stay byte-identical for any
   // reader not yet aware of this field.
@@ -781,6 +802,23 @@ export interface EnforceResult {
    * redaction.
    */
   injection_scan_truncated?: boolean
+  /**
+   * Correlatable artifacts (URLs, hostnames, file paths, email addresses)
+   * found within `ARTIFACT_WINDOW_CHARS` of an ENFORCING injection marker
+   * — the same restriction `injection_markers` has, and absent whenever
+   * `injection_markers` is (never present-but-empty, same convention as
+   * every other field in this section). Already DEFANGED, same reasoning
+   * as `injection_markers.excerpt`: this field is written into audit logs
+   * and can be surfaced back to the model via a warning message on its
+   * next turn, so an undefanged value would re-deliver a working URL/path
+   * through keel's own tooling. This is Lane G's raw extraction output —
+   * callers persist it onto `PersistedInjectionTag.artifacts`
+   * (injection-store.ts) to arm the correlated gate rule
+   * (`taint_correlation`, above); the pipeline itself never reads this
+   * field back for its own gate decisions on the SAME call, only a later
+   * one. See enforce/injection-taint.ts.
+   */
+  injection_artifacts?: Array<{ kind: 'url' | 'host' | 'path' | 'email'; value: string }>
 }
 
 export interface RedirectDirective {

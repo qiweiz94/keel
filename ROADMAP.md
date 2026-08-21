@@ -67,13 +67,19 @@ release and covered by tests; anything under **Planned** is not built yet.
   "ignore previous instructions", role-marker impersonation, Unicode
   tag-character smuggling), not a detector with a completeness claim — a
   paraphrased or encoded payload still passes. `action` is restricted to
-  `warn` for every rule of this type. Ships three default rules:
+  `warn` for every rule of this type. Ships four default rules:
   `injected-instructions-in-tool-output` (warn),
   `untrusted-content-role-markers` (`mode: observe`, weaker-confidence
-  sibling), `untrusted-content-next-call` (the gate). See
+  sibling), `untrusted-content-next-call` (the broad, payload-blind gate),
+  and `untrusted-content-derived-call` (`taint_correlation: true` — "Lane
+  G", the narrower gate that fires only when a later call's own arguments
+  or content reference a URL/host/path/email found within 400 characters
+  of an enforcing marker in an earlier flagged result; single-hop,
+  exact-match, both gate rules sharing one persisted store via per-rule
+  mark-not-delete consumption so neither blinds the other). See
   [docs/injection.md](docs/injection.md) for the full per-host honesty
   table and `packages/core/src/enforce/injection-scan.ts`/
-  `injection-store.ts`.
+  `injection-store.ts`/`injection-taint.ts`.
 - Standalone Rego/WASM policy tools (`keel policy init|build|eval`) — **EXPERIMENTAL,
   unsupported, not part of real-time enforcement.** `.rego`/`.wasm` policies are never
   consulted by `keel hook`, the OpenCode plugin, or `keel daemon` — only YAML `rules.yaml`
@@ -138,17 +144,26 @@ bullet above.
   normal work and was rejected rather than shipped. The other half of this
   item, oscillation (A→B→A), is built — see the `type: oscillation` bullet
   under Shipped above.
-- Cross-turn taint tracking for injected content ("Lane G") — following a
-  value from the tool result it was flagged in through later
-  transformations, rather than the current session-wide, payload-blind
-  next-call scrutiny gate. Not designed or implemented yet; the only
-  forward accommodation already shipped is `PersistedInjectionTag`'s shape
-  (`injection-store.ts`) being a deliberate superset of `PersistedFlowTag`'s
-  so this can extend the same store without a migration. Also planned,
-  same evidence-gated path as every other observe-mode promotion:
-  `untrusted-content-role-markers` out of `mode: observe`, and the
-  next-call gate from `action: warn` to `prompt`, both pending real
-  hit-rate data — see [docs/injection.md](docs/injection.md).
+- Cross-turn taint tracking for injected content ("Lane G") —
+  SINGLE-HOP correlation shipped (`untrusted-content-derived-call`, above):
+  a later call whose own arguments/content reference an artifact found
+  within 400 characters of an enforcing marker now gets a narrower,
+  correlated warning instead of only the broad session-wide one.
+  **Remaining, explicitly NOT shipped:**
+  - **Multi-hop propagation** — following a value across three or more
+    calls (flagged result → call A → call B), rather than exactly one hop.
+    Needs confidence-decay modeling with no real hit-rate data to base it
+    on yet. `PersistedInjectionTag.id` (`injection-store.ts`) is the one
+    accommodation already shipped toward this — a stable per-tag identity
+    a future multi-hop lane could chain from — deliberately without a
+    `derivedFrom`/`hops` field, which would be speculative infrastructure
+    for a feature not yet built.
+  - **Promoting a correlated hit to `action: prompt`** — rule-parser.ts
+    forbids anything stronger than `warn` on any `type: injection` rule
+    today; this needs a parser change plus real hit-rate data first.
+  Also still planned, same evidence-gated path as every other observe-mode
+  promotion: `untrusted-content-role-markers` out of `mode: observe` —
+  see [docs/injection.md](docs/injection.md).
 - Week-over-week deltas in `keel retrospective`
 - Windows test coverage. Fixture plumbing is portable now (Node APIs, not `mktemp`/
   `rm -rf`) and CRLF is fixed at the root via `.gitattributes`. Two real blockers

@@ -1467,6 +1467,27 @@ rules:
       - "A single BOM or zero-width character in legitimately internationalized text — hence the '{2,}' repetition requirement, not a bare single-character match."
     message: "The last tool result contained a weaker-confidence prompt-injection heuristic match. Recorded for review; not yet enforced."
 
+  - id: untrusted-content-derived-call
+    type: injection
+    next_call_scrutiny: true
+    taint_correlation: true
+    action: warn
+    level: sprint
+    priority: 76
+    category: injection
+    severity: high
+    confidence: medium
+    maturity: incubating
+    mode: warn
+    rationale: "Lane G. The narrower, correlated sibling of untrusted-content-next-call. Fires only when this call's OWN arguments or content reference an artifact — a URL, host, file path, or address — that appeared within 400 characters of an injected marker in an earlier flagged tool result this session. That is materially stronger evidence of actual derivation than 'a detection happened and now a write is happening', which is all the broad sibling has. Consumes only the tags it actually matched, so the broad sibling still covers the payloads whose directive names nothing extractable. Still action: warn — rule-parser.ts makes anything stronger unauthorable on any injection rule, deliberately; promoting a CORRELATED hit to prompt needs that parser change plus real hit-rate data, and is a named follow-up, not shipped here. Backed by the same fail-open-on-corruption store as the broad sibling (injection-store.ts), which is the other reason this is warn and never a level: protect floor."
+    remediation: "Look at where the named artifact came from. If it appeared in a web page, file, or API response the agent read — rather than in something you asked for — stop this call: the agent is acting on a directive from untrusted content."
+    false_positives:
+      - "Storing, not obeying. If the agent SAVES the flagged result (writes the fetched page to disk) or edits a document that quotes it, the write content carries the same artifacts and this rule fires — but the evidence is 'the agent filed it', not 'the agent obeyed it'. This is the dominant false-positive shape on the write-content channel."
+      - "Self-referential, again. Reading this repository's docs/injection.md already trips injected-instructions-in-tool-output (documented there). Editing that same file afterward puts every URL in it into the write content and trips this rule too — Lane F's self-referential false positive has a Lane G twin."
+      - "Shared infrastructure. A flagged result and an unrelated later call can legitimately name the same host or path. The COMMON_ARTIFACTS stoplist (injection-taint.ts) drops the frequent ones (github.com, registry.npmjs.org, package.json, localhost, ...), but a project-specific internal host or path is not on it and will correlate."
+      - "This rule fires IN ADDITION to untrusted-content-next-call across a session, not instead of it: one detection can produce at most one broad warn and at most one correlated warn. If you see both, they are describing the same detection at two different evidence strengths."
+    message: "This call references content that appeared beside prompt-injection markers in an earlier tool result. Verify this is something YOU asked for, not something that result told the agent to do."
+
   - id: untrusted-content-next-call
     type: injection
     next_call_scrutiny: true
@@ -1483,6 +1504,7 @@ rules:
     false_positives:
       - "Any detection by injected-instructions-in-tool-output arms this rule, including the documented self-referential case where the agent read security documentation. Expect this to fire immediately after any such read."
       - "The next consequential call is often entirely unrelated to the flagged result — this rule has no payload correlation, only 'a detection happened this session, within the TTL, and now a write/shell call is happening'. Same class of imprecision as no-exfil-flow-cross-call, and the same reason it warns."
+      - "A narrower sibling, untrusted-content-derived-call, fires separately when the call actually references something from the flagged result. This rule is the broad backstop for everything that sibling cannot correlate — seeing both in one session means the same detection matched at two evidence strengths, not two separate injections."
     message: "The previous tool result matched prompt-injection markers. Verify this call is something YOU asked for, not something that result told the agent to do."
 
 `
@@ -1912,6 +1934,10 @@ export default {
           // called right after a real write-back — see this function's
           // own header comment.
           neutralized: true,
+          // Lane G: correlatable artifacts near the enforcing marker(s), when
+          // any were found — arms the narrower `untrusted-content-derived-call`
+          // gate rule alongside the broad one above.
+          ...(result.injection_artifacts?.length ? { artifacts: result.injection_artifacts } : {}),
         })
       }
     }
