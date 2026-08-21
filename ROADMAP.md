@@ -27,6 +27,7 @@ release and covered by tests; anything under **Planned** is not built yet.
 - Signed, hash-chained receipts (`keel verify`, `keel receipts rotate`)
 - `keel dashboard` (terminal and `--web`), human-owned by construction
 - `keel retrospective` — where agents repeated themselves or skipped research
+- [docs/compliance-mappings.md](docs/compliance-mappings.md) — rule-level mapping to NIST AI RMF, the EU AI Act, and ISO/IEC 42001
 
 **Learning**
 - `keel suggest` / `keel lessons` / `keel gather` — proposes rules from the audit
@@ -60,7 +61,6 @@ these shipped as defaults.
 **Later**
 - Rule catalog with severity/confidence metadata and a promotion workflow
 - Team and organisation rule distribution
-- Compliance mappings for common frameworks
 
 ## Non-goals
 

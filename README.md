@@ -321,6 +321,7 @@ More in [SECURITY.md](SECURITY.md).
 - [docs/integration-guides/](docs/integration-guides/) — per-host setup, one guide per agent
 - [docs/comparison.md](docs/comparison.md) — how keel relates to Cupcake, agentsh, Semgrep, and others
 - [docs/owasp-agentic-top10.md](docs/owasp-agentic-top10.md) — how keel's rules map to the OWASP Agentic AI Top 10, category by category, including where keel has no coverage
+- [docs/compliance-mappings.md](docs/compliance-mappings.md) — how keel's rules map to NIST AI RMF, the EU AI Act, and ISO/IEC 42001, including where keel has no coverage
 - [SECURITY.md](SECURITY.md) — threat model, enforcement limits, reporting
 - [CONTRIBUTING.md](CONTRIBUTING.md) — build, test, adding a rule type or host
 - [CHANGELOG.md](CHANGELOG.md)
