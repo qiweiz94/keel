@@ -15,11 +15,12 @@ import { homedir } from 'node:os'
  *     `KEEL_HOME` while every reader resolved a bare `homedir()`
  *     independently, so an install with `KEEL_HOME` set wrote to the
  *     redirected location while readers kept looking under the real home
- *     directory. As of this writing a few call sites (`level.ts`,
- *     `validate.ts`, `enforce.ts`'s rule-fingerprint watcher) still
- *     resolve `process.env.HOME` directly instead of calling this
- *     function, so the split-brain isn't fully closed yet — see
- *     CHANGELOG.md's "Known remaining gap" note.
+ *     directory. `level.ts`, `validate.ts`, and `enforce.ts`'s
+ *     rule-fingerprint watcher were the last holdouts resolving
+ *     `process.env.HOME` directly instead of calling this function; all
+ *     three now call `resolveHome()`, closing the split-brain — see
+ *     CHANGELOG.md's "Known remaining gap" note, which has been updated to
+ *     reflect this.
  *   - `HOME` is checked next, not left to `os.homedir()` alone, because
  *     `os.homedir()` ignores `$HOME` on Windows (it reads `USERPROFILE`
  *     instead) — several tests across this repo sandbox by setting

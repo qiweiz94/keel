@@ -373,13 +373,13 @@ the rule-count correction: `session/v1/EVIDENCE/m5-release.md`.
   unset — worse than a bare `homedir()`, and the writer of the exact kill-switch
   file every reader above now trusts. A new install→read consistency test drives
   the real built CLI as separate processes with two distinct `HOME`/`KEEL_HOME`
-  temp dirs to prove nothing leaks across the boundary in either direction. **Known
-  remaining gap:** `level.ts`, `validate.ts`, and `enforce.ts`'s rule-fingerprint
-  watcher still resolve `process.env.HOME || '~'` directly instead of
-  `resolveHome()`, the same bare-fallback pattern `disable.ts` had — `keel level`,
-  `keel validate`, and the enforce pipeline's reload watcher do not yet honor
-  `KEEL_HOME`. See `session/v1/EVIDENCE/m1r-3-install.md` and
-  `session/v1/EVIDENCE/reader-home.md`.
+  temp dirs to prove nothing leaks across the boundary in either direction. **Gap
+  closed:** `level.ts`, `validate.ts`, and `enforce.ts`'s rule-fingerprint watcher
+  were the last call sites resolving `process.env.HOME || '~'` directly instead of
+  `resolveHome()`, the same bare-fallback pattern `disable.ts` had — all three now
+  call `resolveHome()`, so `keel level`, `keel validate`, and the enforce pipeline's
+  reload watcher honor `KEEL_HOME` like every other reader. See
+  `session/v1/EVIDENCE/m1r-3-install.md` and `session/v1/EVIDENCE/reader-home.md`.
 - **Verification-obligation discharge now works on Claude Code, Codex, and Gemini,
   not only OpenCode.** There was previously exactly one call site in the whole
   codebase (OpenCode's `tool.execute.after`) that could mark a `verification` rule's
