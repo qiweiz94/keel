@@ -1618,11 +1618,23 @@ async function installOpenClaw() {
   console.log(chalk.dim('      and the plugin says so loudly — it never silently stops enforcing'))
   console.log(chalk.dim('    • approval gates fail CLOSED: an unanswered prompt denies, never allows'))
   console.log()
-  console.log(chalk.yellow('  Enable it in your OpenClaw config, then restart:'))
-  console.log(chalk.dim('    plugins.load.paths  += "~/.openclaw/plugins/keel"'))
+  console.log(chalk.yellow('  Enable it in your OpenClaw config, then restart the gateway:'))
+  // Verified against `openclaw config schema` and a real `openclaw config
+  // set` round-trip (2026.4.15): plugins.load.paths / plugins.allow are the
+  // real dot paths, and `openclaw config set <path> <json> --strict-json`
+  // is the non-interactive way to write them without hand-editing
+  // openclaw.json. keel does not run these for you — same reason no other
+  // installer in this file shells out to mutate a host's own config.
+  console.log(chalk.dim(`    openclaw config set plugins.load.paths '["${dir}"]' --strict-json`))
   // OpenClaw's own doctor flags a plugin loaded without provenance as
   // untracked local code. Pinning it in plugins.allow is what clears that.
-  console.log(chalk.dim('    plugins.allow       += "keel"      (pins trust; clears the provenance warning)'))
+  console.log(chalk.dim('    openclaw config set plugins.allow \'["keel"]\' --strict-json   (pins trust; clears the provenance warning)'))
+  // `config set` REPLACES the array at that path, it does not append —
+  // confirmed by testing against a real installed OpenClaw (2026.4.15).
+  // Anyone with other entries already in either array must include them
+  // in the JSON, or they will be dropped.
+  console.log(chalk.dim('  (these REPLACE the array at that path — if you already have other plugins.load.paths or plugins.allow entries,'))
+  console.log(chalk.dim('   run `openclaw config get plugins` first and include the existing values in the JSON above)'))
 }
 
 /**
