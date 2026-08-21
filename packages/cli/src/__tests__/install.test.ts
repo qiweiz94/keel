@@ -387,17 +387,43 @@ describe('install --cursor preserves user customization on reinstall', () => {
     expect(second.stdout).toMatch(/already configured/)
   })
 
-  it('appends the keel marker rather than overwriting when keel.mdc exists but was never keel-managed', () => {
+  it('writes keel rules to a separate file rather than appending into keel.mdc when it exists but was never keel-managed', () => {
+    // MDC/YAML frontmatter is only recognized at position 0 of a file.
+    // Appending keel's own '---...---' block into the middle of a
+    // pre-existing keel.mdc would never be parsed as frontmatter, silently
+    // making 'alwaysApply: true' inert — so the fix writes a separate file
+    // with its own frontmatter at position 0 instead of appending.
     const rulesDir = join(dir, '.cursor', 'rules')
     mkdirSync(rulesDir, { recursive: true })
     const rulePath = join(rulesDir, 'keel.mdc')
-    writeFileSync(rulePath, '# Some unrelated pre-existing rule\nDo the thing.\n', 'utf-8')
+    const untouched = '# Some unrelated pre-existing rule\nDo the thing.\n'
+    writeFileSync(rulePath, untouched, 'utf-8')
 
     const out = run('install --cursor')
-    const after = readFileSync(rulePath, 'utf-8')
-    expect(after).toContain('Some unrelated pre-existing rule')
-    expect(after).toContain('# Keel enforcement')
-    expect(out.stdout).toMatch(/Appended Keel rules/)
+
+    // The pre-existing file must be left completely untouched.
+    expect(readFileSync(rulePath, 'utf-8')).toBe(untouched)
+
+    // Keel's rules land in their own file, with valid frontmatter at position 0.
+    const ownRulePath = join(rulesDir, 'keel-enforcement.mdc')
+    expect(existsSync(ownRulePath)).toBe(true)
+    const ownContent = readFileSync(ownRulePath, 'utf-8')
+    expect(ownContent.startsWith('---\n')).toBe(true)
+    expect(ownContent).toContain('alwaysApply: true')
+    expect(ownContent).toContain('# Keel enforcement')
+    expect(out.stdout).toMatch(/Created.*keel-enforcement\.mdc/)
+  })
+
+  it('does not create a duplicate keel-enforcement.mdc on repeated installs', () => {
+    const rulesDir = join(dir, '.cursor', 'rules')
+    mkdirSync(rulesDir, { recursive: true })
+    writeFileSync(join(rulesDir, 'keel.mdc'), '# Unrelated\n', 'utf-8')
+
+    run('install --cursor')
+    const out = run('install --cursor')
+
+    expect(out.stdout).toMatch(/already configured/)
+    expect(out.stdout).not.toMatch(/✓ Created.*keel-enforcement\.mdc/)
   })
 })
 
@@ -482,5 +508,69 @@ describe('install --claude-code merges hooks instead of replacing them wholesale
     const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
     expect(preCommands).toContain('.other-tool/hooks/pre.sh')
     expect(preCommands.filter((c: string) => c === '.claude/hooks/PreToolUse/keel-enforce')).toHaveLength(1)
+  })
+
+  it('does not delete a user hook script merely because its basename starts with "keel-"', () => {
+    // isKeelHookCommand used to match on a loose basename prefix, so a
+    // project's own hook coincidentally named e.g. keel-audit-log would be
+    // silently deleted on reinstall even though keel never wrote it.
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const seeded = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: '.claude/hooks/PreToolUse/keel-audit-log' }],
+          },
+        ],
+      },
+    }
+    writeFileSync(settingsPath, JSON.stringify(seeded, null, 2) + '\n', 'utf-8')
+
+    run('install --claude-code')
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-audit-log')
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-enforce')
+  })
+
+  it('warns and does not crash when hooks.PreToolUse is present but not an array', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { PreToolUse: 'not-an-array' } }, null, 2) + '\n', 'utf-8')
+
+    const out = run('install --claude-code')
+
+    expect(out.code).toBe(0)
+    expect(out.stdout).toMatch(/not an array/)
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-enforce')
+  })
+
+  it('preserves keel\'s original position in the hook array across reinstall, instead of always moving it to the end', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+
+    // Keel installs first, occupying slot 0.
+    run('install --claude-code')
+    let settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+
+    // Another tool's group is added AFTER keel's.
+    settings.hooks.PreToolUse.push({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: '.other-tool/hooks/pre.sh' }],
+    })
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
+
+    // Reinstall must not silently move keel's group past the other tool's.
+    run('install --claude-code')
+    settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const groups = settings.hooks.PreToolUse
+    const keelIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.claude/hooks/PreToolUse/keel-enforce'))
+    const otherIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.other-tool/hooks/pre.sh'))
+    expect(keelIndex).toBeLessThan(otherIndex)
   })
 })
