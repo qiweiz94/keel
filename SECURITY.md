@@ -38,23 +38,38 @@ reasoning text. They are a gate, not an anti-virus engine:
   the common encodings they care about, and sensitive operations should be
   gated by rule `action: prompt` (human approval) rather than pattern-matching
   alone. **Measured, not asserted** — see the table below.
-- **`keel check` uses a simpler, less-hardened command-matching path than the
-  live enforcement path.** `keel check`/`keel check --ci` (the CI/pre-commit
-  convenience command) routes through the legacy `PolicyEngine`
-  (`packages/core/src/policy-engine.ts`), which matches the raw command
-  string with no preprocessing. It does **not** get any of
-  `command-normalizer.ts`'s hardening that `keel hook <host>`/`keel evaluate`/
-  `keel daemon` (the real per-call enforcement path) apply: no quote-strip,
-  no compound-command splitting, no inline variable expansion, no `${IFS}`
-  defeat protection, no interpreter-body extraction, no `keel run` wrapper-
-  unwrapping. Every obfuscation-bypass finding documented on this page
-  (quote-strip, `bash -lc` bundled flags, `${IFS}` word-splitting, Python
-  aliasing) that is FIXED on the real enforcement path is **still open**
-  against `keel check` specifically, since it never runs through the fixed
-  code at all. Do not rely on `keel check` for the same evasion resistance
-  as `keel hook`/`keel evaluate`/`keel daemon` — it's a fast, convenient
-  gate for CI/pre-commit, not the hardened one. See `docs/integrations.md`
-  for which command each host actually calls in production.
+- **`keel check` now shares the same enforcement path as everything else.**
+  `keel check`/`keel check --ci` (the CI/pre-commit convenience command)
+  routes through the same `EnforcementPipeline` and `.keel/rules.yaml` rule
+  hierarchy as `keel hook <host>`, `keel evaluate`, and `keel daemon` — the
+  same `command-normalizer.ts` hardening (quote-strip, compound-command
+  splitting, inline variable expansion, `${IFS}` defeat protection,
+  interpreter-body extraction, `keel run` wrapper-unwrapping) applies
+  identically. It no longer reads the legacy `PolicyEngine`/`.keel.yaml`
+  path at all — only CLI-specific ergonomics (the `--ci` staged-file loop,
+  `--analyze-reasoning`) remain distinct from the other hosts.
+  Two behaviors differ deliberately from the legacy `keel check`:
+  - A plain `keel check --file <path>` read (no `--write`) no longer gets
+    content-based secret scanning — content (`type: content`) rules are
+    write-side only, matching every other host's read/write split.
+    `--write`/`--ci` still scan content.
+  - The legacy MCP-github-specific bypass message
+    (`mcp__github__*` writes bypassing local git hooks) and the
+    `HUSKY=0`/`LEFTHOOK=0`/`SKIP=`-prefixed env-var hook-bypass detection
+    were dropped — there is no default-rule equivalent for either
+    anywhere in the platform yet. `--no-verify`/`core.hooksPath` bypass
+    detection itself is still covered, via the `no-verify-bypass` rule.
+  See `docs/integrations.md` for which command each host actually calls in
+  production. One further consequence: `keel check` no longer emits the
+  legacy signed, hash-chained receipts/audit log
+  (`.keel/audit/audit.log`, `.keel/receipts/`) — but no enforcement host
+  ever fed that log from `EnforcementPipeline`; it was always a
+  `PolicyEngine`-only artifact. `keel check` still produces the same
+  unsigned per-call audit trail every other host does
+  (`~/.keel/traces/`, rendered by `keel enforce --audit`); it just no
+  longer has a second, signed copy that nothing else in the platform
+  wrote to either. `keel verify`'s receipt/chain-verification half only
+  ever had legacy-path coverage to begin with.
 
 ### Measured bypass resistance of the Tier-1 floor
 

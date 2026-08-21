@@ -60,7 +60,7 @@ program
 
 program
   .command('check')
-  .description('Check a file or command against the policy')
+  .description("Check a file or command against Keel's enforcement rules (.keel/rules.yaml)")
   .argument('[target]', 'File path or command string to check')
   .option('-f, --file <path>', 'Check a specific file')
   .option('-c, --command <cmd>', 'Check a specific command')

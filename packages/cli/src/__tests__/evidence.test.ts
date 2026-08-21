@@ -13,10 +13,26 @@ import { rmSafe } from './helpers/fs-safe.js'
  * invisible at runtime: the chains reset every process, receipt signing threw
  * on every call behind a best-effort catch, and verification could not load a
  * key. Signed-but-unverifiable evidence is indistinguishable from no evidence.
+ *
+ * This signed, hash-chained trail (`.keel/audit/audit.log`,
+ * `.keel/receipts/`) is written exclusively by `PolicyEngine.evaluate()`'s
+ * private `audit()` method (policy-engine.ts) — no other production code
+ * path calls it. It used to be reachable from the CLI via `keel check`
+ * (check.ts constructed a `PolicyEngine` directly), but check.ts now routes
+ * through the EnforcementPipeline/`.keel/rules.yaml` path instead, same as
+ * `keel hook`/`keel evaluate`/`keel daemon` — none of which ever fed this
+ * log either (see SECURITY.md's "Enforcement limits" section). `PolicyEngine`
+ * itself is unaffected and still fully live (kept for other callers), so
+ * these tests now drive it directly, one real subprocess per call — the
+ * same pattern the "rotation keeps old receipts verifiable" test below
+ * already used — instead of through the now-migrated `keel check` CLI
+ * surface. What is under test here (chain hashing, signing, tamper
+ * detection, rotation) is unchanged.
  */
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
+const CORE = JSON.stringify(join(HERE, '..', '..', '..', 'core', 'dist', 'index.js'))
 
 let dir: string
 
@@ -26,6 +42,29 @@ function cli(args: string) {
   } catch (err: any) {
     return (err.stdout || '') + (err.stderr || '')
   }
+}
+
+/**
+ * Runs one `PolicyEngine.evaluate()` call, in its own real subprocess (cwd
+ * = the test's `dir`), against a command the default policy denies —
+ * exercising the exact `audit()`/`createReceipt()` write path
+ * `keel check` used to trigger, without going through the CLI at all.
+ */
+function evaluatePolicyEngine() {
+  // Written to a real temp file (like the rotation test below), not passed
+  // via `node -e "<string>"` — a shell-quoted `-e` argument mangles the
+  // embedded newlines between statements into literal backslash-n bytes,
+  // which is invalid JS syntax outside a string literal.
+  const script = [
+    `const { PolicyEngine } = require(${CORE})`,
+    `const path = require('node:path')`,
+    `const engine = new PolicyEngine(path.join(${JSON.stringify(dir)}, '.keel.yaml'))`,
+    `engine.loadPolicy()`,
+    `engine.evaluate({ tool_name: 'bash', args: { command: 'rm -rf /' }, cwd: ${JSON.stringify(dir)}, timestamp: new Date().toISOString() })`,
+  ].join('\n')
+  const scriptFile = join(dir, `evaluate-${Date.now()}-${Math.random().toString(36).slice(2)}.cjs`)
+  writeFileSync(scriptFile, script, 'utf-8')
+  execSync(`node "${scriptFile}"`, { encoding: 'utf-8', cwd: dir, timeout: 10000 })
 }
 
 const auditLines = () =>
@@ -39,7 +78,7 @@ beforeEach(() => {
   cli('init')
   // Three SEPARATE processes — the case an in-memory chain cannot span, and
   // the only case that occurs in real use.
-  for (let i = 0; i < 3; i++) cli('check --command "rm -rf /"')
+  for (let i = 0; i < 3; i++) evaluatePolicyEngine()
 })
 
 afterEach(() => {

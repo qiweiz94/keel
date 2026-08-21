@@ -6,7 +6,8 @@ import type { AuditEntry } from '../types.js'
 export async function auditCommand(options: { json?: boolean; tail?: string }) {
   const logPath = join(process.cwd(), '.keel', 'audit', 'audit.log')
   if (!existsSync(logPath)) {
-    console.log(chalk.yellow('No audit log found. Run keel check to generate one.'))
+    console.log(chalk.yellow('No audit log found.'))
+    console.log(chalk.dim('  This reads the legacy signed .keel/audit/audit.log, which nothing in the current enforcement path writes to (keel check included). Use `keel enforce --audit` for the live per-call trail.'))
     return
   }
 
