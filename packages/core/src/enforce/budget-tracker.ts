@@ -1,6 +1,6 @@
 import type { KeelRule, EnforceInput } from '../types.js'
 import { PersistentBudgetStore, type PersistedBudgetState } from './budget-store.js'
-import { writeHaltSentinel } from './halt-writer.js'
+import { writeHaltSentinel, defaultHaltPath } from './halt-writer.js'
 
 /**
  * One measurement of cumulative session spend, from WHATEVER host-specific
@@ -73,23 +73,36 @@ export interface BudgetDenyState {
  */
 export class BudgetTracker {
   private readonly store: PersistentBudgetStore
-  private readonly haltWriter: (reason: string) => void
+  private readonly haltWriter: (haltPath: string, reason: string) => void
+  private readonly haltFile: string
 
   /**
-   * `haltWriter` defaults to the real `writeHaltSentinel` (writes
-   * `~/.keel/HALTED` via `resolveHome()`) but is INJECTABLE specifically so
-   * a test can assert the hard-stop escalation decision (does this
-   * measurement cross the threshold, is the rule actually enforcing) fired
-   * or didn't, WITHOUT ever writing to a real home directory — this
-   * codebase's own `override-isolation-guard.ts` exists because a test
-   * that forgets an equivalent stub for a DIFFERENT sentinel file
-   * (overrides.json) silently corrupted the developer's real `~/.keel`
-   * before; this constructor parameter is how `type: budget`'s tests avoid
-   * repeating that mistake for HALTED specifically.
+   * `haltWriter` defaults to the real `writeHaltSentinel` (writes the
+   * sentinel via a caller-supplied path — see halt-writer.ts) but is
+   * INJECTABLE specifically so a test can assert the hard-stop escalation
+   * decision (does this measurement cross the threshold, is the rule
+   * actually enforcing) fired or didn't, WITHOUT ever writing to a real
+   * home directory — this codebase's own `override-isolation-guard.ts`
+   * exists because a test that forgets an equivalent stub for a DIFFERENT
+   * sentinel file (overrides.json) silently corrupted the developer's real
+   * `~/.keel` before; this constructor parameter is how `type: budget`'s
+   * tests avoid repeating that mistake for HALTED specifically.
+   *
+   * `haltFile` defaults to `defaultHaltPath()` (the real
+   * `~/.keel/HALTED`) but callers constructing a pipeline against an
+   * isolated `KEEL_HOME`/test path MUST pass the same path
+   * `PipelineConfig.haltFile`/`checkHalt()` resolve to, or a
+   * hard_stop_multiplier escalation would write to the wrong sentinel —
+   * see halt-writer.ts's own header comment for the full hazard.
    */
-  constructor(store: PersistentBudgetStore = new PersistentBudgetStore(), haltWriter: (reason: string) => void = writeHaltSentinel) {
+  constructor(
+    store: PersistentBudgetStore = new PersistentBudgetStore(),
+    haltWriter: (haltPath: string, reason: string) => void = writeHaltSentinel,
+    haltFile: string = defaultHaltPath(),
+  ) {
     this.store = store
     this.haltWriter = haltWriter
+    this.haltFile = haltFile
   }
 
   private key(rule: KeelRule, input: EnforceInput): string {
@@ -179,6 +192,7 @@ export class BudgetTracker {
         ? spend.dollars / rule.max_dollars : 0
       if (tokenMultiple >= rule.hard_stop_multiplier || dollarMultiple >= rule.hard_stop_multiplier) {
         this.haltWriter(
+          this.haltFile,
           `keel halted by rule "${rule.id}": spend reached ${rule.hard_stop_multiplier}x its configured budget ceiling (${spend.tokens.toLocaleString()} tokens). Run 'keel resume' after reviewing.`,
         )
       }

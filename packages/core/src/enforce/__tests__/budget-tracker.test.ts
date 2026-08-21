@@ -90,9 +90,9 @@ afterEach(() => {
  * `override-isolation-guard.ts` (this directory) exists to catch for a
  * different sentinel file.
  */
-function haltSpy(): { calls: string[]; fn: (reason: string) => void } {
+function haltSpy(): { calls: string[]; fn: (haltPath: string, reason: string) => void } {
   const calls: string[] = []
-  return { calls, fn: (reason: string) => { calls.push(reason) } }
+  return { calls, fn: (_haltPath: string, reason: string) => { calls.push(reason) } }
 }
 
 describe('BudgetTracker — two-phase deny (point 4)', () => {
@@ -217,7 +217,7 @@ describe('writeHaltSentinel (real, default halt writer) — shape parity with cl
     const { writeHaltSentinel } = await import('../halt-writer.js')
     const { readFileSync } = await import('node:fs')
     const path = join(dir, 'HALTED')
-    writeHaltSentinel('test reason', path)
+    writeHaltSentinel(path, 'test reason')
     const body = JSON.parse(readFileSync(path, 'utf-8'))
     expect(body).toEqual({
       halted_at: expect.any(String),
