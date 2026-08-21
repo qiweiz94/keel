@@ -107,6 +107,7 @@ export {
   detectConflicts,
   validateRules,
   hashRulesFile,
+  ruleFileSources,
   sprintExpiryStatus,
   resolvedLevel,
   winningLevelConfig,

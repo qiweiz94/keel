@@ -8,7 +8,7 @@ import type {
 } from '../types.js'
 import { ActionCache, ContentTracker, type CacheContext } from './cache.js'
 import type { RuleHierarchy } from './rule-parser.js'
-import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules, effectiveHierarchyLevel, dialAction } from './rule-parser.js'
+import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validateRules, effectiveHierarchyLevel, dialAction, ruleFileSources } from './rule-parser.js'
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
@@ -266,11 +266,24 @@ export class EnforcementPipeline {
   private computeRulesHash(): string {
     if (this.config.ruleFingerprint) return this.config.ruleFingerprint()
     const h = this.config.ruleHierarchy
+    // ruleFileSources() returns more than [sourcePath] whenever a tier's
+    // rules.yaml resolves an `extends:` chain — hashing sourcePath alone
+    // would leave an edit to an extended base file (tightening a floor,
+    // or otherwise) permanently invisible to this reload check. See
+    // ParsedRules.composedFrom's doc comment (rule-parser.ts).
+    //
+    // `user` is included alongside global/project/local here (it wasn't
+    // before this change) — a `~/.config/keel/rules.yaml` that itself
+    // `extends:` a shared org policy is exactly the case this feature
+    // exists for, and there is no reason for one of the four hierarchy
+    // tiers to silently sit outside reload detection while the other
+    // three are covered.
     return [
-      h.global ? hashRulesFile(h.global.sourcePath) : '',
-      h.project ? hashRulesFile(h.project.sourcePath) : '',
-      h.local ? hashRulesFile(h.local.sourcePath) : '',
-    ].join(':')
+      ...ruleFileSources(h.global),
+      ...ruleFileSources(h.user),
+      ...ruleFileSources(h.project),
+      ...ruleFileSources(h.local),
+    ].map(hashRulesFile).join(':')
   }
 
   /**

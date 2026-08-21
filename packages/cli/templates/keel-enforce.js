@@ -50,7 +50,7 @@ function normalizeForMatch(p, flavor = currentFlavor()) {
 
 // ../core/src/enforce/rule-parser.ts
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
 
 // ../../node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -6323,7 +6323,8 @@ function parse(src, reviver, options) {
 function parseRulesFile(filePath) {
   if (!existsSync(filePath)) return null;
   const content = readFileSync(filePath, "utf-8");
-  return parseRulesContent(content, filePath);
+  const parsed = parseRulesContent(content, filePath);
+  return resolveExtendsChain(parsed, [filePath]);
 }
 var DEFAULT_SIMPLE_RULE_LEVEL = "sprint";
 var DEFAULT_SIMPLE_RULE_CONTEXT = ["both"];
@@ -6431,7 +6432,7 @@ function parseRulesContent(content, sourcePath) {
       } else {
         errors.push("Keel configuration must be an object");
       }
-    } else if (parsed && typeof parsed === "object" && ("rules" in parsed || "simple_rules" in parsed)) {
+    } else if (parsed && typeof parsed === "object" && ("rules" in parsed || "simple_rules" in parsed || "extends" in parsed)) {
       config = parsed;
     } else if (parsed && typeof parsed === "object" && Object.keys(parsed).length === 0) {
     }
@@ -6440,6 +6441,12 @@ function parseRulesContent(content, sourcePath) {
   }
   if (config.rules !== void 0 && !Array.isArray(config.rules)) {
     errors.push("Rules must be an array");
+  }
+  if (config.extends !== void 0) {
+    const extendsList = Array.isArray(config.extends) ? config.extends : [config.extends];
+    if (extendsList.length === 0 || extendsList.some((p) => typeof p !== "string" || !p.trim())) {
+      errors.push("extends must be a non-empty path string or a non-empty array of non-empty path strings");
+    }
   }
   if (typeof config.version !== "number") errors.push("Keel version must be a number");
   if (config.level !== void 0 && !["sprint", "balanced", "protect"].includes(String(config.level))) {
@@ -6474,6 +6481,16 @@ function parseRulesContent(content, sourcePath) {
     markdown: markdown.trim(),
     ...errors.length ? { errors } : {}
   };
+}
+function findDuplicateRuleIds(rules) {
+  const ids = rules.map((rule) => typeof rule?.id === "string" ? rule.id : "");
+  const seen = /* @__PURE__ */ new Set();
+  const dups = /* @__PURE__ */ new Set();
+  for (const id of ids) {
+    if (id && seen.has(id)) dups.add(id);
+    seen.add(id);
+  }
+  return [...dups];
 }
 function validateRules(rules) {
   const errors = [];
@@ -6686,14 +6703,8 @@ function validateRules(rules) {
       errors.push(`Rule "${label}" has an invalid fix transform`);
     }
   }
-  const ids = rules.map((rule) => typeof rule?.id === "string" ? rule.id : "");
-  const seen = /* @__PURE__ */ new Set();
-  const dups = /* @__PURE__ */ new Set();
-  for (const id of ids) {
-    if (id && seen.has(id)) dups.add(id);
-    seen.add(id);
-  }
-  if (dups.size) errors.push(`Duplicate rule id(s) in the same file: ${[...dups].join(", ")}`);
+  const dups = findDuplicateRuleIds(rules);
+  if (dups.length) errors.push(`Duplicate rule id(s) in the same file: ${dups.join(", ")}`);
   return errors;
 }
 var DEFAULT_SPRINT_EXPIRY_HOURS = 4;
@@ -6782,6 +6793,13 @@ function sameEnforcementSurface(existing, candidate) {
   };
   return JSON.stringify(strip(existing)) === JSON.stringify(strip(candidate));
 }
+function floorTightensOrEqual(existing, candidate) {
+  if (existing.level !== "protect") return true;
+  const actionOk = candidate.level === "protect" && ACTION_STRENGTH[candidate.action] >= ACTION_STRENGTH[existing.action];
+  const modeOk = modeStrength(candidate.mode) >= modeStrength(existing.mode);
+  const surfaceOk = sameEnforcementSurface(existing, candidate);
+  return actionOk && modeOk && surfaceOk;
+}
 function mergeRules(hierarchy, level, context) {
   const all = [];
   const dialRank = { sprint: 0, balanced: 1, protect: 2 };
@@ -6811,13 +6829,7 @@ function mergeRules(hierarchy, level, context) {
     }
     const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || "global"];
     if (!moreSpecific) continue;
-    if (existing.level === "protect") {
-      const actionOk = rule.level === "protect" && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action];
-      const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode);
-      const surfaceOk = sameEnforcementSurface(existing, rule);
-      const tightensOrEqual = actionOk && modeOk && surfaceOk;
-      if (!tightensOrEqual) continue;
-    }
+    if (!floorTightensOrEqual(existing, rule)) continue;
     deduped.set(rule.id, rule);
   }
   const rank = (rule) => {
@@ -6830,6 +6842,68 @@ function mergeRules(hierarchy, level, context) {
     if (rankDiff !== 0) return rankDiff;
     return (b.priority || 0) - (a.priority || 0);
   });
+}
+var MAX_EXTENDS_DEPTH = 10;
+function applyExtendsOverrides(base, overrides, errors, overridingSource) {
+  const merged = new Map(base.map((rule) => [rule.id, rule]));
+  for (const rule of overrides) {
+    const existing = merged.get(rule.id);
+    if (existing && existing.level === "protect" && !floorTightensOrEqual(existing, rule)) {
+      errors.push(
+        `Rule "${rule.id}" in "${overridingSource}" attempts to weaken a level:protect floor inherited via extends (inherited action: ${existing.action}${existing.mode ? `, mode: ${existing.mode}` : ""}) \u2014 a protect floor can only be tightened or left as-is across extends, never weakened, on action, mode, or match/scope surface. The inherited floor was kept; fix or remove the override in "${overridingSource}".`
+      );
+      continue;
+    }
+    merged.set(rule.id, rule);
+  }
+  return [...merged.values()];
+}
+function resolveExtendsChain(parsed, chain) {
+  const errors = [...parsed.errors || []];
+  const ownDupes = findDuplicateRuleIds(parsed.rules);
+  if (ownDupes.length) errors.push(`Duplicate rule id(s) in the same file: ${ownDupes.join(", ")} (${parsed.sourcePath})`);
+  const raw = parsed.config.extends;
+  const extendsList = raw === void 0 ? [] : Array.isArray(raw) ? raw : [raw];
+  const composed = /* @__PURE__ */ new Set([parsed.sourcePath]);
+  let baseRules = [];
+  for (const entry of extendsList) {
+    if (typeof entry !== "string" || !entry.trim()) continue;
+    const resolvedPath = resolve(dirname(parsed.sourcePath), entry);
+    if (chain.includes(resolvedPath)) {
+      errors.push(`Circular extends: "${parsed.sourcePath}" extends "${entry}" (${resolvedPath}), which is already in this extends chain: ${[...chain, resolvedPath].join(" -> ")}`);
+      continue;
+    }
+    if (chain.length >= MAX_EXTENDS_DEPTH) {
+      errors.push(`"${parsed.sourcePath}" extends "${entry}": extends chain exceeds the maximum depth of ${MAX_EXTENDS_DEPTH} \u2014 check for an unintended long or circular chain`);
+      continue;
+    }
+    if (!existsSync(resolvedPath)) {
+      errors.push(`"${parsed.sourcePath}" extends "${entry}", which does not exist (resolved to ${resolvedPath})`);
+      continue;
+    }
+    let baseContent;
+    try {
+      baseContent = readFileSync(resolvedPath, "utf-8");
+    } catch (error) {
+      errors.push(`"${parsed.sourcePath}" extends "${entry}" (resolved to ${resolvedPath}), which could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    const baseParsed = resolveExtendsChain(parseRulesContent(baseContent, resolvedPath), [...chain, resolvedPath]);
+    errors.push(...baseParsed.errors || []);
+    for (const source of baseParsed.composedFrom ?? [resolvedPath]) composed.add(source);
+    baseRules = applyExtendsOverrides(baseRules, baseParsed.rules, errors, resolvedPath);
+  }
+  const finalRules = applyExtendsOverrides(baseRules, parsed.rules, errors, parsed.sourcePath);
+  return {
+    ...parsed,
+    rules: finalRules,
+    composedFrom: [...composed],
+    ...errors.length ? { errors } : {}
+  };
+}
+function ruleFileSources(parsed) {
+  if (!parsed) return [];
+  return parsed.composedFrom ?? [parsed.sourcePath];
 }
 function extractFrontmatter(content) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
@@ -9392,10 +9466,11 @@ var EnforcementPipeline = class {
     if (this.config.ruleFingerprint) return this.config.ruleFingerprint();
     const h = this.config.ruleHierarchy;
     return [
-      h.global ? hashRulesFile(h.global.sourcePath) : "",
-      h.project ? hashRulesFile(h.project.sourcePath) : "",
-      h.local ? hashRulesFile(h.local.sourcePath) : ""
-    ].join(":");
+      ...ruleFileSources(h.global),
+      ...ruleFileSources(h.user),
+      ...ruleFileSources(h.project),
+      ...ruleFileSources(h.local)
+    ].map(hashRulesFile).join(":");
   }
   /**
    * Check if rules have changed since last evaluation.
@@ -12074,10 +12149,10 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
 
 // ../core/src/file-verify.ts
 import { readFileSync as readFileSync18 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join16 } from "node:path";
+import { extname, basename as basename2, dirname as dirname2, join as join16 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join16(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join16(dirname2(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;

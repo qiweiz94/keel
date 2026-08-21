@@ -851,6 +851,66 @@ rules:
       expect((await call('sprint')).action).toBe('warn')
       rmSafe(dir)
     })
+
+    // Regression coverage for a gap the extends: feature could otherwise
+    // introduce: pipeline.ts's default computeRulesHash() used to hash
+    // only each tier's own sourcePath. A project's .keel/rules.yaml that
+    // `extends:` a shared base file now depends on a SECOND file that
+    // isn't sourcePath — without ruleFileSources() folding the extends
+    // chain into the hash, editing the base file would never trigger a
+    // reload and a long-lived pipeline (the daemon, primarily) would keep
+    // enforcing a stale copy of the base rule indefinitely. This test
+    // exercises the pipeline's OWN default computeRulesHash (no custom
+    // ruleFingerprint supplied), so it proves the real fix, not just the
+    // ruleFileSources() unit behavior.
+    it('editing an EXTENDED base file (not the project file itself) is picked up on the next call', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'keel-reload-extends-'))
+      mkdirSync(join(dir, '.keel'), { recursive: true })
+      const basePath = join(dir, '.keel', 'base.yaml')
+      const rulesPath = join(dir, '.keel', 'rules.yaml')
+      const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const writeBase = (action: string) => writeFileSync(basePath, `version: 1
+rules:
+  - id: shared-rule
+    type: command
+    match: "reload-token-${uid}"
+    action: ${action}
+    message: "m"
+`)
+      writeBase('warn')
+      // The project file itself never changes after this — only `base.yaml`
+      // (its extends target) does.
+      writeFileSync(rulesPath, `version: 1
+level: balanced
+extends: base.yaml
+`)
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 1000 }),
+        contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(), ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
+        allowedFixTransforms: true, disableFile: SENTINEL,
+        reloadRules: () => loadRuleHierarchy(dir),
+        // No `ruleFingerprint` override — this exercises pipeline.ts's own
+        // default computeRulesHash(), the thing under test.
+      })
+      const call = () => pipeline.evaluate({
+        tool: 'Bash', args: { command: `reload-token-${uid}` }, cwd: dir,
+        session_id: 's1', turn_number: 1, context_tokens: 0,
+        level: 'balanced', context: 'local', agent: 't', subagent_of: null, depth: 'full',
+      } as Parameters<EnforcementPipeline['evaluate']>[0])
+      expect((await call()).action).toBe('warn')
+      writeBase('deny')
+      // A hash change resets warn-once-then-deny escalation tracking (see
+      // the "live reload mid-session" test above, same pattern): the first
+      // hit under the newly-reloaded hash still just warns ("first
+      // violation... next time will be blocked"); the SECOND hit under
+      // that same hash is what proves the reload actually landed the new
+      // `action: deny`. Two calls, not one, is what distinguishes "the
+      // base-file edit was picked up" from "it wasn't" here.
+      expect((await call()).action).toBe('warn')
+      expect((await call()).action).toBe('deny')
+      rmSafe(dir)
+    })
   })
 
   describe('kill switch and one-time overrides', () => {

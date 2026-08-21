@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { resolveHome } from '../home.js'
 import type { EnforcementAction, KeelConfig, KeelRule, ProtectionLevel, RuleContext, RuleMode, SimpleRule, SimpleRuleType } from '../types.js'
@@ -11,6 +11,29 @@ export interface ParsedRules {
   version: number
   markdown: string        // the markdown portion (for re-injection)
   errors?: string[]
+  /**
+   * Every file this ParsedRules' `rules` were actually assembled from:
+   * `sourcePath` itself plus, when `extends:` is used, every file
+   * resolved anywhere in its extends chain (recursively). Set by
+   * resolveExtendsChain(); absent (`undefined`) for a ParsedRules built
+   * by a bare parseRulesContent() call with no on-disk resolution (e.g.
+   * the shipped DEFAULT_RULES_YAML constant, or a hand-built ParsedRules
+   * in a test) — callers that care should fall back to `[sourcePath]` in
+   * that case, which ruleFileSources() below does.
+   *
+   * Exists because `sourcePath` alone is no longer sufficient to detect
+   * "did this tier's effective rules change": pipeline.ts's
+   * computeRulesHash() (and the CLI's own ruleFingerprint()
+   * implementations in daemon.ts/enforce.ts) used to hash each tier's
+   * lone `sourcePath` to decide whether to reload. A tier whose rules.yaml
+   * declares `extends:` now depends on files that are NOT `sourcePath` —
+   * without this, editing an extended base file (tightening OR loosening
+   * a rule) would never change the computed hash, and a long-lived
+   * process (the daemon, primarily) would keep enforcing stale rules
+   * indefinitely. See ruleFileSources() and computeRulesHash()'s own
+   * comment in pipeline.ts.
+   */
+  composedFrom?: string[]
 }
 
 /**
@@ -21,7 +44,17 @@ export function parseRulesFile(filePath: string): ParsedRules | null {
   if (!existsSync(filePath)) return null
 
   const content = readFileSync(filePath, 'utf-8')
-  return parseRulesContent(content, filePath)
+  const parsed = parseRulesContent(content, filePath)
+  // `extends:` resolution happens here, not inside parseRulesContent —
+  // extends targets are resolved relative to a real file's own directory
+  // (dirname(filePath)), which a bare content+sourcePath call (e.g. the
+  // synthetic 'keel:defaults' sourcePath used for the shipped default
+  // rules — see daemon.ts/allow.ts) has no meaningful directory for. Every
+  // real on-disk rules.yaml goes through parseRulesFile (loadRuleHierarchy,
+  // level.ts, validate.ts, enforce.ts all call it directly), so this is the
+  // one choke point that needs to resolve extends for the feature to work
+  // across all 4 hierarchy tiers.
+  return resolveExtendsChain(parsed, [filePath])
 }
 
 // ── Minimal / beginner-friendly rule format ──────────────────────────
@@ -222,12 +255,19 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
       } else {
         errors.push('Keel configuration must be an object')
       }
-    } else if (parsed && typeof parsed === 'object' && ('rules' in parsed || 'simple_rules' in parsed)) {
+    } else if (parsed && typeof parsed === 'object' && ('rules' in parsed || 'simple_rules' in parsed || 'extends' in parsed)) {
       // Direct rules object (standalone .keel.yaml or pure YAML) — a file
       // that declares ONLY `simple_rules:` (no full-form `rules:` at all)
       // must still be picked up here, or the minimal-form-only case falls
       // through to the "no config keys we recognize" branch below and
-      // every simple_rules entry is silently dropped.
+      // every simple_rules entry is silently dropped. Same reasoning for
+      // `extends:`: a file that ONLY extends a base (adding no rules of
+      // its own — e.g. a thin per-project pointer at a shared org policy,
+      // or an intermediate link in a longer chain) has neither `rules`
+      // nor `simple_rules`, and without this arm its `extends` field (and
+      // everything else in `config`, including `level`) would silently
+      // fall through to the untouched `{ version: 1 }` default below —
+      // extends resolution would just never run, with no error at all.
       config = parsed as KeelConfig
     } else if (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) {
       // Empty file or just comments — use defaults
@@ -238,6 +278,12 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
 
   if (config.rules !== undefined && !Array.isArray(config.rules)) {
     errors.push('Rules must be an array')
+  }
+  if (config.extends !== undefined) {
+    const extendsList = Array.isArray(config.extends) ? config.extends : [config.extends]
+    if (extendsList.length === 0 || extendsList.some(p => typeof p !== 'string' || !p.trim())) {
+      errors.push('extends must be a non-empty path string or a non-empty array of non-empty path strings')
+    }
   }
   if (typeof config.version !== 'number') errors.push('Keel version must be a number')
   if (config.level !== undefined && !['sprint', 'balanced', 'protect'].includes(String(config.level))) {
@@ -281,6 +327,26 @@ export function parseRulesContent(content: string, sourcePath: string): ParsedRu
     markdown: markdown.trim(),
     ...(errors.length ? { errors } : {}),
   }
+}
+
+/**
+ * Duplicate rule ids within a single flat rule array. Shared by
+ * validateRules() (a duplicate id within ONE physically-parsed file's own
+ * `rules:` list is always a copy-paste mistake) and resolveExtendsChain()
+ * below, which runs this on each individual file's own rules BEFORE that
+ * file gets folded into a cross-file extends merge — where a repeated id
+ * across DIFFERENT files is the whole point (an intentional override), not
+ * a bug, and must not be flagged the same way.
+ */
+function findDuplicateRuleIds(rules: unknown[]): string[] {
+  const ids = rules.map(rule => typeof (rule as Partial<KeelRule>)?.id === 'string' ? (rule as Partial<KeelRule>).id as string : '')
+  const seen = new Set<string>()
+  const dups = new Set<string>()
+  for (const id of ids) {
+    if (id && seen.has(id)) dups.add(id)
+    seen.add(id)
+  }
+  return [...dups]
 }
 
 export function validateRules(rules: unknown): string[] {
@@ -547,14 +613,8 @@ export function validateRules(rules: unknown): string[] {
   // Duplicate ids within ONE file are always a mistake (cross-scope overrides
   // are legal and handled by mergeRules, but a duplicated id in a single
   // scope silently drops one of the two rules).
-  const ids = rules.map(rule => typeof (rule as Partial<KeelRule>)?.id === 'string' ? (rule as Partial<KeelRule>).id as string : '')
-  const seen = new Set<string>()
-  const dups = new Set<string>()
-  for (const id of ids) {
-    if (id && seen.has(id)) dups.add(id)
-    seen.add(id)
-  }
-  if (dups.size) errors.push(`Duplicate rule id(s) in the same file: ${[...dups].join(', ')}`)
+  const dups = findDuplicateRuleIds(rules)
+  if (dups.length) errors.push(`Duplicate rule id(s) in the same file: ${dups.join(', ')}`)
 
   return errors
 }
@@ -851,6 +911,31 @@ function sameEnforcementSurface(existing: KeelRule, candidate: KeelRule): boolea
 }
 
 /**
+ * Whether `candidate` tightens-or-ties `existing` on all three axes a
+ * `level: protect` floor must never be weakened on — action
+ * (ACTION_STRENGTH), mode (MODE_STRENGTH via modeStrength), and
+ * enforcement surface (sameEnforcementSurface). Always true when
+ * `existing` is not itself a floor (nothing to protect).
+ *
+ * The SINGLE shared implementation of this check: mergeRules' own same-id
+ * dedup loop (below, for cross-SCOPE overrides across the global/user/
+ * project/local hierarchy) and resolveExtendsChain's applyExtendsOverrides
+ * (for same-id overrides introduced via `extends:`) both call this rather
+ * than each maintaining their own copy of the tightening logic — the two
+ * callers differ only in what they DO with a `false` result (mergeRules
+ * silently keeps the floor and drops the weakening override; extends
+ * treats it as a load-time error — see resolveExtendsChain's doc comment
+ * for why).
+ */
+function floorTightensOrEqual(existing: KeelRule, candidate: KeelRule): boolean {
+  if (existing.level !== 'protect') return true
+  const actionOk = candidate.level === 'protect' && ACTION_STRENGTH[candidate.action] >= ACTION_STRENGTH[existing.action]
+  const modeOk = modeStrength(candidate.mode) >= modeStrength(existing.mode)
+  const surfaceOk = sameEnforcementSurface(existing, candidate)
+  return actionOk && modeOk && surfaceOk
+}
+
+/**
  * Merge rules from hierarchy into a single flat list.
  * More specific scopes override less specific ones for same rule id —
  * UNLESS the existing rule is a `level: protect` floor and the override
@@ -962,8 +1047,9 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
 
   // Deduplicate: more specific scope wins for same rule id, but a
   // level:protect floor can only be tightened or tied, never weakened —
-  // on action, mode, AND enforcement surface. See ACTION_STRENGTH,
-  // MODE_STRENGTH, sameEnforcementSurface, and this function's doc comment.
+  // on action, mode, AND enforcement surface. See floorTightensOrEqual
+  // (ACTION_STRENGTH, MODE_STRENGTH, sameEnforcementSurface) and this
+  // function's doc comment.
   const scopeOrder: Record<string, number> = { global: 0, user: 1, project: 2, folder: 3, session: 4 }
   const deduped = new Map<string, KeelRule>()
   for (const rule of all) {
@@ -974,13 +1060,7 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
     }
     const moreSpecific = rule.scope && scopeOrder[rule.scope] > scopeOrder[existing.scope || 'global']
     if (!moreSpecific) continue
-    if (existing.level === 'protect') {
-      const actionOk = rule.level === 'protect' && ACTION_STRENGTH[rule.action] >= ACTION_STRENGTH[existing.action]
-      const modeOk = modeStrength(rule.mode) >= modeStrength(existing.mode)
-      const surfaceOk = sameEnforcementSurface(existing, rule)
-      const tightensOrEqual = actionOk && modeOk && surfaceOk
-      if (!tightensOrEqual) continue  // weakening override on some axis — keep the floor
-    }
+    if (!floorTightensOrEqual(existing, rule)) continue  // weakening override on some axis — keep the floor
     deduped.set(rule.id, rule)
   }
 
@@ -1022,6 +1102,200 @@ export function mergeRules(hierarchy: RuleHierarchy, level: ProtectionLevel, con
     if (rankDiff !== 0) return rankDiff
     return (b.priority || 0) - (a.priority || 0)
   })
+}
+
+// ── extends: rule composition ─────────────────────────────────────────
+//
+// A rules.yaml (or CLAUDE.md/AGENTS.md frontmatter) may declare
+// `extends:` — see KeelConfig.extends' doc comment in types.ts for the
+// schema. This is a WITHIN-tier composition mechanism, resolved entirely
+// by parseRulesFile() BEFORE loadRuleHierarchy's own 4-tier
+// (global/user/project/local) merge ever sees the result — mergeRules
+// above has no awareness that a tier's rules came from more than one
+// physical file.
+
+/**
+ * Generous headroom over any real base-policy chain (a team's own
+ * global -> org -> department chain is unlikely to exceed a handful of
+ * links), while still failing loudly on a runaway or accidentally very
+ * long chain. Belt-and-suspenders alongside the `chain.includes(...)`
+ * cycle check below: that check catches a TRUE cycle (A ends up back at
+ * a path already in the chain) by identity, which this depth cap does not
+ * replace — it exists for the non-cyclic case where every step resolves
+ * to a new path but the chain never terminates because it is symlinked
+ * (or otherwise regenerated) arbitrarily deep.
+ */
+const MAX_EXTENDS_DEPTH = 10
+
+/**
+ * Layer `overrides` on top of `base` by rule id: a new id is appended, a
+ * repeated id replaces the base entry — UNLESS the base entry is a
+ * `level: protect` floor and the override would weaken it on any of the
+ * three axes floorTightensOrEqual checks (action, mode, or enforcement
+ * surface), in which case the base entry is kept AS-IS and a load-time
+ * error is recorded naming the rule id and the overriding file.
+ *
+ * This is the one deliberate divergence from mergeRules' own same-id
+ * dedup (which silently keeps the stronger floor and drops a weakening
+ * override with no error at all — see mergeRules' doc comment). That
+ * silence is correct there: a lower-SCOPE override may come from a
+ * project or local file whose author never consciously chose to combine
+ * with the global floor, and may not even know it exists — nothing was
+ * "decided" that needs surfacing.
+ *
+ * `extends:` is different: both files were deliberately linked by the
+ * SAME author's own `extends:` line. Silently keeping the floor there
+ * would hide a real authoring mistake — "I edited my project's rules.yaml
+ * to weaken an inherited rule and it just silently didn't take" — from
+ * exactly the person positioned to notice and fix it. So this pushes a
+ * loud, explicit error into `errors` instead (the same `ParsedRules.errors`
+ * channel every other parse failure already uses — see validate.ts,
+ * level.ts, status.ts, dashboard.ts, enforce.ts, daemon.ts, all of which
+ * already surface it). Concretely, that error flows into
+ * pipeline.ts's checkRuleVersion() "last known good" fail-closed reload
+ * path: a hierarchy reload that comes back with any errors is rejected
+ * wholesale and the previous valid hierarchy keeps enforcing — so an
+ * extends edit that would weaken an inherited floor never actually takes
+ * effect, it just gets loudly rejected instead of silently no-op'd.
+ *
+ * CAVEAT inherited from floorTightensOrEqual's surface check
+ * (sameEnforcementSurface): it compares by `JSON.stringify`, which is
+ * key-INSERTION-ORDER sensitive. Two floor definitions that are
+ * semantically identical but list their fields in a different order
+ * (e.g. `type` before `match` in one file, after in the other) will read
+ * as a surface MISMATCH and trigger this error even though nothing was
+ * actually weakened. This is a pre-existing characteristic of
+ * sameEnforcementSurface (mergeRules' own scope-based dedup has the same
+ * false-positive potential, it just fails silently there instead of
+ * loudly) — not something extends introduces, but extends turns it into a
+ * user-visible error message instead of a silent drop, so it is worth
+ * knowing about here specifically. See the "reordered keys" test in
+ * rule-parser.test.ts for the exact observed behavior.
+ */
+function applyExtendsOverrides(base: KeelRule[], overrides: KeelRule[], errors: string[], overridingSource: string): KeelRule[] {
+  const merged = new Map<string, KeelRule>(base.map(rule => [rule.id, rule]))
+  for (const rule of overrides) {
+    const existing = merged.get(rule.id)
+    if (existing && existing.level === 'protect' && !floorTightensOrEqual(existing, rule)) {
+      errors.push(
+        `Rule "${rule.id}" in "${overridingSource}" attempts to weaken a level:protect floor inherited via extends `
+        + `(inherited action: ${existing.action}${existing.mode ? `, mode: ${existing.mode}` : ''}) — `
+        + `a protect floor can only be tightened or left as-is across extends, never weakened, on action, mode, or `
+        + `match/scope surface. The inherited floor was kept; fix or remove the override in "${overridingSource}".`,
+      )
+      continue  // keep the existing (stronger) floor rule untouched
+    }
+    merged.set(rule.id, rule)
+  }
+  return [...merged.values()]
+}
+
+/**
+ * Resolve one file's `extends:` chain into a single flat, fully-merged
+ * `ParsedRules`. `parsed` is the already-parsed target file (own rules +
+ * own config); `chain` is the resolved absolute paths of every file
+ * already visited on the path down to `parsed`, `filePath` included —
+ * used to detect a cycle (a path re-appearing in `chain`) and to enforce
+ * MAX_EXTENDS_DEPTH.
+ *
+ * Resolution order for `extends: [a, b]` declared in file F: resolve(a),
+ * then resolve(b) layered on top (b overrides a on same-id collision),
+ * then F's own rules layered on top of both. A chain (F extends a, a
+ * itself extends g) is resolved recursively the same way — each base is
+ * fully self-resolved (including ITS OWN extends) before F's rules are
+ * ever applied, so a protect-floor weakening is caught at whichever link
+ * in the chain it is actually introduced, not just at the leaf.
+ *
+ * Same-id collisions are arbitrated by applyExtendsOverrides(), which
+ * reuses floorTightensOrEqual — the EXACT tightening-only logic
+ * mergeRules' own dedup loop uses, not a parallel reimplementation.
+ */
+function resolveExtendsChain(parsed: ParsedRules, chain: string[]): ParsedRules {
+  const errors = [...(parsed.errors || [])]
+
+  const ownDupes = findDuplicateRuleIds(parsed.rules)
+  if (ownDupes.length) errors.push(`Duplicate rule id(s) in the same file: ${ownDupes.join(', ')} (${parsed.sourcePath})`)
+
+  const raw = parsed.config.extends
+  const extendsList = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw]
+
+  // Every file this ParsedRules' final `rules` actually depend on —
+  // itself plus every extends target resolved below, recursively. See
+  // ParsedRules.composedFrom's doc comment for why this has to be tracked
+  // explicitly rather than just `sourcePath`.
+  const composed = new Set<string>([parsed.sourcePath])
+
+  let baseRules: KeelRule[] = []
+  for (const entry of extendsList) {
+    // Malformed shape (non-string / empty) was already flagged by
+    // parseRulesContent's own `extends` validation — skip quietly here
+    // rather than double-erroring on the same problem.
+    if (typeof entry !== 'string' || !entry.trim()) continue
+
+    const resolvedPath = resolve(dirname(parsed.sourcePath), entry)
+
+    if (chain.includes(resolvedPath)) {
+      errors.push(`Circular extends: "${parsed.sourcePath}" extends "${entry}" (${resolvedPath}), which is already in this extends chain: ${[...chain, resolvedPath].join(' -> ')}`)
+      continue
+    }
+    if (chain.length >= MAX_EXTENDS_DEPTH) {
+      errors.push(`"${parsed.sourcePath}" extends "${entry}": extends chain exceeds the maximum depth of ${MAX_EXTENDS_DEPTH} — check for an unintended long or circular chain`)
+      continue
+    }
+    if (!existsSync(resolvedPath)) {
+      errors.push(`"${parsed.sourcePath}" extends "${entry}", which does not exist (resolved to ${resolvedPath})`)
+      continue
+    }
+
+    // `existsSync` is true for a directory too, and readFileSync throws
+    // (EISDIR, or EACCES on a permissions-denied file) rather than
+    // returning content — unlike parseRulesFile's own top-level read,
+    // whose paths are all keel-constructed hierarchy locations, `entry`
+    // here is an arbitrary user-authored string. A mistyped `extends:
+    // ../shared` pointing at a directory, or a file this process can't
+    // read, must produce the same clear load-time error every other
+    // extends failure does, not an uncaught exception that takes down
+    // `keel hook`/the daemon.
+    let baseContent: string
+    try {
+      baseContent = readFileSync(resolvedPath, 'utf-8')
+    } catch (error) {
+      errors.push(`"${parsed.sourcePath}" extends "${entry}" (resolved to ${resolvedPath}), which could not be read: ${error instanceof Error ? error.message : String(error)}`)
+      continue
+    }
+    const baseParsed = resolveExtendsChain(parseRulesContent(baseContent, resolvedPath), [...chain, resolvedPath])
+    errors.push(...(baseParsed.errors || []))
+    for (const source of baseParsed.composedFrom ?? [resolvedPath]) composed.add(source)
+    baseRules = applyExtendsOverrides(baseRules, baseParsed.rules, errors, resolvedPath)
+  }
+
+  const finalRules = applyExtendsOverrides(baseRules, parsed.rules, errors, parsed.sourcePath)
+
+  return {
+    ...parsed,
+    rules: finalRules,
+    composedFrom: [...composed],
+    ...(errors.length ? { errors } : {}),
+  }
+}
+
+/**
+ * Every file a ParsedRules' `rules` were actually composed from:
+ * `composedFrom` when it was resolved via resolveExtendsChain (which sets
+ * it unconditionally, even with no `extends:` — just `[sourcePath]` in
+ * that case), or `[sourcePath]` alone for a ParsedRules that never went
+ * through that resolution (a bare parseRulesContent() call — the shipped
+ * DEFAULT_RULES_YAML in daemon.ts/allow.ts, or a hand-built ParsedRules in
+ * a test). Callers that need to detect "did this tier's effective rules
+ * change" — pipeline.ts's computeRulesHash(), and the CLI's own
+ * ruleFingerprint() implementations in daemon.ts/enforce.ts — must hash
+ * every path this returns, not just `sourcePath`, or an edit to an
+ * extended base file silently never invalidates the cache. Null-safe:
+ * returns `[]` for a missing tier.
+ */
+export function ruleFileSources(parsed: ParsedRules | null | undefined): string[] {
+  if (!parsed) return []
+  return parsed.composedFrom ?? [parsed.sourcePath]
 }
 
 /**
