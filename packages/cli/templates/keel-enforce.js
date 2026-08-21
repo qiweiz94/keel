@@ -6893,6 +6893,7 @@ function ambientHomeDir(env) {
 }
 function hostOf(url) {
   if (!url) return void 0;
+  if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(url)) return void 0;
   const m = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)/i.exec(url.trim());
   if (!m) return void 0;
   return m[1].split("@").pop()?.toLowerCase();
@@ -6912,7 +6913,13 @@ function isExactPublicPypiHost(url) {
   const h = hostOf(url);
   return h === "pypi.org" || h === "files.pythonhosted.org";
 }
-function parseNpmrc(text) {
+function interpolateEnvVars(value, env) {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, name) => {
+    const resolved = env[name];
+    return resolved !== void 0 ? resolved : whole;
+  });
+}
+function parseNpmrc(text, env) {
   const scoped = /* @__PURE__ */ new Map();
   let defaultRegistry;
   for (const raw of text.split(/\r?\n/)) {
@@ -6925,6 +6932,7 @@ function parseNpmrc(text) {
     if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
       value = value.slice(1, -1);
     }
+    value = interpolateEnvVars(value, env);
     if (key === "registry") {
       defaultRegistry = value;
       continue;
@@ -6940,7 +6948,7 @@ function resolveNpmAmbient(cwd, env) {
   let source;
   const apply = (text, label) => {
     if (!text) return;
-    const p = parseNpmrc(text);
+    const p = parseNpmrc(text, env);
     if (p.defaultRegistry) {
       defaultRegistry = p.defaultRegistry;
       source = label;
