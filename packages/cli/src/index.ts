@@ -34,6 +34,7 @@ import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
 import { installCommand, DEFAULT_RULES_YAML } from './commands/install.js'
 import { hookCommand } from './commands/hook.js'
+import { conformanceCommand } from './commands/conformance.js'
 import { gatherCommand } from './commands/gather.js'
 import { scheduleCommand } from './commands/schedule.js'
 import { watchCommand } from './commands/watch.js'
@@ -181,6 +182,15 @@ program
   .command('validate')
   .description('Check rules for conflicts, syntax, and version drift')
   .action(validateCommand)
+
+program
+  .command('conformance')
+  .description('Run the shipped OWASP Agentic Top 10 scenario suite against your own loaded rules (docs/owasp-agentic-top10.md, made runnable)')
+  .option('--level <level>', 'Protection level to evaluate against: sprint, balanced, or protect', 'balanced')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--ci', 'Exit with code 1 if any real gap is found (a "not-covered" scenario never fails)')
+  .option('--dir <path>', 'Project directory to load rules from (default: cwd)')
+  .action((options: { level?: string; json?: boolean; ci?: boolean; dir?: string }) => conformanceCommand(options))
 
 program
   .command('disable')
