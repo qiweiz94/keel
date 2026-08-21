@@ -263,8 +263,9 @@ effect on the next tool call — no restart, no daemon round-trip needed.
 
 ## The promotion lifecycle
 
-Today, promoting a Tier-3 rule is a manual step you take yourself, not an automated
-threshold. Concretely:
+Promoting a Tier-3 rule is a step you take yourself, never an automated threshold —
+but as of `keel promote`'s evidence gate, the observe rung of that step is checked
+against real data before it's allowed to happen, not just recommended. Concretely:
 
 1. An observe-mode rule fires silently on every matching call. The verdict it would
    have returned lands in `observed_action` on that call's trace entry
@@ -286,7 +287,22 @@ threshold. Concretely:
    running it, or `keel rules … --append`, on your behalf, so promotion is always your
    decision. You can also just edit `mode:` by hand.
 
+   Promoting FROM `mode: observe` (whatever the target) now re-runs the exact same
+   `computePromotionReport()` recommendation `keel retrospective` just showed you, and
+   refuses the edit — no file change, exit 1 — unless it comes back `eligible`. A
+   `stay_observe` or `insufficient_data` verdict prints which one it was and why, and
+   points back at `keel retrospective` for the detail. `--force` is the escape hatch for
+   a human who wants to promote anyway (e.g. you've watched the rule closely by hand and
+   trust it despite thin trace coverage); it prints a distinct "may not be ready" warning
+   rather than proceeding silently, so a forced promotion is never mistaken for an earned
+   one. There is deliberately no equivalent gate for `warn → block`: `mode: warn` is real
+   enforcement, not shadow-recording (only `observe` populates `observed_action`/
+   `observed_matches`), so there is no measured would-block stream for that rung to check
+   — deciding when a `warn` rule has earned `block` is still a judgment call, informed by
+   `keel report`.
+
 The default `promotion_fp_threshold` of `0.001` echoes the project's design target of a
 false-positive rate under 0.1% for a *hard* deny with no override (`SPEC.md` §8). The
-retrospective reports the rate and the recommendation; `keel promote` applies the change
-only when you run it. Nothing promotes automatically.
+retrospective reports the rate and the recommendation; `keel promote` now enforces that
+same recommendation at the observe rung, applying the change only when you run it (or
+force it). Nothing promotes automatically.

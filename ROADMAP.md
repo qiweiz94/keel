@@ -99,7 +99,17 @@ bullet above.
 
 **Near term**
 - A guided way to raise a Tier-3 rule's `mode:` from `observe` to `warn`/`block` once
-  its observed-hit record justifies it — today that's a manual rules.yaml edit
+  its observed-hit record justifies it — `keel promote <rule-id>` now gates that FROM
+  `mode: observe` on real evidence, reading the previously-unused `promotion_fp_threshold`
+  (`KeelConfig`, `types.ts`) and reusing `keel retrospective`'s own would-block-rate
+  computation (`computePromotionReport` in `retrospective.ts`) to refuse the edit — file
+  untouched, exit 1 — when a rule hasn't seen enough traffic (`insufficient_data`) or its
+  measured rate hasn't cleared the threshold (`stay_observe`), pointing at
+  `keel retrospective` either way. `--force` overrides, with a distinct "may not be
+  ready" warning, for the human who wants to promote anyway. Still manual: the
+  `warn → block` rung has no gate, because `mode: warn` is real enforcement (not
+  shadow-recorded) and keel has no measured signal for it — promoting that rung remains a
+  judgment call informed by `keel report`.
 - Semantic livelock detection ("not really making progress" without literal
   command repetition or oscillation, e.g. rewriting the same logic slightly
   differently each time without converging) — assessed, not pursued: Keel's
