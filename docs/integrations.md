@@ -24,6 +24,14 @@ wrong where the installed types were right: OpenClaw's `before_tool_call` event 
 fewer fields than documented, its `requireApproval.timeoutBehavior` is undocumented, and
 Cline's real control channel is a `HOOK_CONTROL` line that appears in no doc page.
 
+This page covers PreToolUse/PostToolUse ARMING and DISCHARGE verification confidence,
+per host. For the two things that actually happen to a completed tool call's OWN
+OUTPUT text — secret redaction and prompt-injection marker scanning, sharing one scan
+pass (`EnforcementPipeline.evaluateToolResult()`) — see docs/exfil.md's "Output
+redaction" section and docs/injection.md's per-host posture table instead; those cover
+the SAME hosts listed below but for a different question ("can keel rewrite or warn
+about what a tool call already returned", not "can keel arm/discharge/block it").
+
 ---
 
 ## Native enforcement

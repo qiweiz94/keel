@@ -11,7 +11,7 @@ release and covered by tests; anything under **Planned** is not built yet.
 - One enforcement entry point (`keel hook <host>`), plus a `generic` stdin/exit-code
   contract for hosts with no bespoke adapter
 - MCP server (`keel serve`, 7 tools) and a local daemon (`keel daemon`) for thin clients
-- 23 rule types; 10 actions (9 rule-authorable — the 10th, `redact`, is system-only, applied by keel's own output-redaction pipeline rather than written into a rule's `action:` field; the earlier `mask` action was removed from `EnforcementAction` entirely, not merely declared-but-rejected by the parser — see [docs/exfil.md](docs/exfil.md)), including `prompt` approval gates and `fix` command rewriting
+- 24 rule types; 10 actions (9 rule-authorable — the 10th, `redact`, is system-only, applied by keel's own output-redaction pipeline rather than written into a rule's `action:` field; the earlier `mask` action was removed from `EnforcementAction` entirely, not merely declared-but-rejected by the parser — see [docs/exfil.md](docs/exfil.md)), including `prompt` approval gates and `fix` command rewriting. `type: injection`'s `action` is further restricted to `warn` only, for the same "only actually reaches the model on one host" reason `redact` is system-only — see [docs/injection.md](docs/injection.md).
 - Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
 - Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
 - Self-protection: agents cannot run keel's control commands or edit its rules
@@ -57,6 +57,23 @@ release and covered by tests; anything under **Planned** is not built yet.
   default `command-oscillation` rule, `mode: observe`, with zero measured
   hit-rate evidence — see `docs/tiers.md` and
   `packages/core/src/enforce/oscillation-tracker.ts`/`oscillation-store.ts`.
+- `type: injection` — tool-result prompt-injection scanning: a DETECTOR
+  (`patterns`, matched against a completed tool call's OWN output text) and
+  a GATE (`next_call_scrutiny: true`, arming a persisted, session-scoped,
+  TTL'd warning on the session's next write/shell call — the compensating
+  control for every host except OpenCode, where a detected injection has
+  already reached the model before keel's hook can act on it). A heuristic
+  tripwire over literal marker shapes (chat-template control tokens,
+  "ignore previous instructions", role-marker impersonation, Unicode
+  tag-character smuggling), not a detector with a completeness claim — a
+  paraphrased or encoded payload still passes. `action` is restricted to
+  `warn` for every rule of this type. Ships three default rules:
+  `injected-instructions-in-tool-output` (warn),
+  `untrusted-content-role-markers` (`mode: observe`, weaker-confidence
+  sibling), `untrusted-content-next-call` (the gate). See
+  [docs/injection.md](docs/injection.md) for the full per-host honesty
+  table and `packages/core/src/enforce/injection-scan.ts`/
+  `injection-store.ts`.
 - Standalone Rego/WASM policy tools (`keel policy init|build|eval`) — **EXPERIMENTAL,
   unsupported, not part of real-time enforcement.** `.rego`/`.wasm` policies are never
   consulted by `keel hook`, the OpenCode plugin, or `keel daemon` — only YAML `rules.yaml`
@@ -121,6 +138,17 @@ bullet above.
   normal work and was rejected rather than shipped. The other half of this
   item, oscillation (A→B→A), is built — see the `type: oscillation` bullet
   under Shipped above.
+- Cross-turn taint tracking for injected content ("Lane G") — following a
+  value from the tool result it was flagged in through later
+  transformations, rather than the current session-wide, payload-blind
+  next-call scrutiny gate. Not designed or implemented yet; the only
+  forward accommodation already shipped is `PersistedInjectionTag`'s shape
+  (`injection-store.ts`) being a deliberate superset of `PersistedFlowTag`'s
+  so this can extend the same store without a migration. Also planned,
+  same evidence-gated path as every other observe-mode promotion:
+  `untrusted-content-role-markers` out of `mode: observe`, and the
+  next-call gate from `action: warn` to `prompt`, both pending real
+  hit-rate data — see [docs/injection.md](docs/injection.md).
 - Week-over-week deltas in `keel retrospective`
 - Windows test coverage. Fixture plumbing is portable now (Node APIs, not `mktemp`/
   `rm -rf`) and CRLF is fixed at the root via `.gitattributes`. Two real blockers

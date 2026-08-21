@@ -10,6 +10,7 @@ import {
   SequenceDetector,
   FlowTracker,
   PersistentFlowStore,
+  PersistentInjectionStore,
   StuckTracker,
   PersistentStuckStore,
   OscillationTracker,
@@ -44,6 +45,16 @@ export interface EnforceOptions {
 let pipeline: EnforcementPipeline | null = null
 let auditLog: AuditLog | null = null
 let contextManager: ContextManager | null = null
+/**
+ * Lane F — the next-call scrutiny gate's persisted backing store
+ * (injection-store.ts). Module-level, same lifetime pattern as `pipeline`/
+ * `auditLog` above: constructed fresh by `initEnforce()` and read back by
+ * `evaluateOutputText()` below to write an armed tag AFTER the audit entry
+ * is recorded, mirroring `PersistentFlowStore`'s "cross-process
+ * correlation" shape one level down — a fresh `keel hook <host>` process
+ * per tool call, sharing only the on-disk `KEEL_STATE_DIR`.
+ */
+let injectionStore: PersistentInjectionStore | null = null
 let currentSessionId = ''
 let currentLevel: ProtectionLevel = 'balanced'
 let learnMode = false
@@ -202,6 +213,13 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   const haltFile = join(resolveHome(), '.keel', 'HALTED')
   const budgetTracker = new BudgetTracker(new PersistentBudgetStore(), undefined, haltFile)
   const cm = new ContextManager(level)
+  // Same cross-process requirement as flowTracker/stuckTracker/etc above:
+  // `keel hook <host>` is a fresh process per tool call, so the
+  // next-call-scrutiny gate needs a disk-backed store, not an in-memory
+  // one, to see a detection recorded by ONE process's output-scan and gate
+  // a LATER process's pre-call evaluate(). Uses the same `stateDir()`/
+  // `KEEL_STATE_DIR` resolution as every other persisted store here.
+  injectionStore = new PersistentInjectionStore()
 
   // Initialize pipeline
   const stateManager = new StateManager()
@@ -216,6 +234,7 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     oscillationTracker,
     sessionTracker,
     budgetTracker,
+    injectionStore,
     ruleHierarchy: hierarchy,
     ruleVersion,
     allowedFixTransforms: true,
@@ -506,14 +525,18 @@ export async function recordClaudeCodeBudgetSnapshot(
 }
 
 /**
- * Scan a completed tool call's OWN output text for secret-shaped content
- * (sprint/lane-c2: real output capture + redaction). Thin wrapper around
- * `pipeline.evaluateOutput()` + `auditLog.record()`, the same shape as
- * `evaluateClaimText()` above.
+ * Scan a completed tool call's OWN output text for BOTH secret-shaped
+ * content (sprint/lane-c2: real output capture + redaction) AND
+ * prompt-injection markers (Lane F). Thin wrapper around
+ * `pipeline.evaluateToolResult()` + `auditLog.record()`, the same shape as
+ * `evaluateClaimText()` above — and the single scan every exit-code host
+ * should route through (hook.ts), so a secret redaction and an injection
+ * warning share one `checkRuleVersion()`/`mergedRules()` call instead of
+ * scanning the same text twice.
  *
- * Unlike the OpenCode plugin's wiring of the same pipeline method
+ * Unlike the OpenCode plugin's wiring of the same pipeline methods
  * (packages/opencode-plugin/src/plugin.ts), NO caller of this function can
- * actually apply `redacted_output` back onto what the model already
+ * actually apply `sanitized_output` back onto what the model already
  * received: every exit-code host's PostToolUse-equivalent fires AFTER the
  * tool result already reached the model's context (hook.ts's own
  * `ParsedCall.postAction` comment — "the call already ran"), and none of
@@ -522,8 +545,15 @@ export async function recordClaudeCodeBudgetSnapshot(
  * a rewrite) is even confirmed to exist. So the verdict this returns is
  * used for exactly that: a warning the caller can inject as context (see
  * hook.ts's `call.postAction` branch) and an audit record, never a live
- * mutation. See docs/exfil.md's "Output redaction" section for the full
- * per-host honesty table.
+ * mutation. See docs/exfil.md's and docs/injection.md's per-host honesty
+ * tables for the full picture.
+ *
+ * After the audit entry is recorded, arms the next-call scrutiny gate
+ * (injection-store.ts) whenever an ENFORCING injection rule actually
+ * matched (`result.injection_markers?.length` — never on an observe-only
+ * match; see that field's own doc comment in types.ts). This is the
+ * "CALLER writes the tag" half of injection-store.ts's "WHO WRITES"
+ * contract — `evaluateToolResult()` itself never touches the store.
  */
 export async function evaluateOutputText(
   tool: string,
@@ -548,7 +578,7 @@ export async function evaluateOutputText(
     subagent_of: null,
     tool_output: text,
   }
-  const result = await pipeline.evaluateOutput(input)
+  const result = await pipeline.evaluateToolResult(input)
   auditLog.record(result, {
     session_id: sessionId,
     turn_number: input.turn_number,
@@ -560,6 +590,21 @@ export async function evaluateOutputText(
     subagent_of: input.subagent_of,
     context_tokens: input.context_tokens,
   })
+  if (injectionStore && result.injection_markers?.length) {
+    injectionStore.recordTag(sessionId, {
+      source: 'tool_output',
+      timestamp: Date.now(),
+      originTool: tool,
+      ruleIds: [...new Set(result.injection_markers.map(m => m.rule_id))],
+      markerCount: result.injection_markers.length,
+      host: extra?.agent || 'unknown',
+      // This host cannot rewrite a result that already reached the model
+      // (this function's own header comment) — `neutralized` is only ever
+      // true where `sanitized_output` was actually written back onto the
+      // channel the model reads, which never happens here.
+      neutralized: false,
+    })
+  }
   return result
 }
 

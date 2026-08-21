@@ -36,7 +36,7 @@ export type RuleType =
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
   | 'research' | 'stuck' | 'diagnosis' | 'claim' | 'oracle' | 'package'
-  | 'budget' | 'oscillation'
+  | 'budget' | 'oscillation' | 'injection'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -428,6 +428,39 @@ export interface KeelRule {
   // ── MCP rules ──
   mcp_check?: 'tool_descriptions' | 'tool_results' | 'server_changes'
 
+  // ── Injection rules (`type: injection` — tool-result prompt-injection
+  // scanning, Lane F) ──
+  //
+  // An injection rule reuses `patterns[]` (above) but only the `regex` key —
+  // `prefix`, `redact_span`, and `redact_widen` are all output-redaction-
+  // specific vocabulary (see `patterns`' own doc comment) that rule-parser.ts
+  // ERRORS on for a `type: injection` rule's patterns, because injection
+  // neutralization asserts something weaker than redaction's span-safety
+  // claim: "markers were found and defanged, treat this whole result as
+  // data" needs no opt-in span proof the way "this exact span IS the secret"
+  // does. See `EnforcementPipeline.evaluateInjection()` (pipeline.ts) and
+  // enforce/injection-scan.ts for the detector form this field powers.
+  //
+  // `next_call_scrutiny` is the OTHER, gate form of an injection rule — no
+  // `patterns` of its own, `action` fixed to `warn` like every injection
+  // rule (see rule-parser.ts's validateRules and its extended validActions
+  // comment for why this action can never be rule-authorable beyond that).
+  // When true, this rule arms a persisted, session-scoped, TTL'd flag
+  // (enforce/injection-store.ts's PersistentInjectionStore) whenever ANY
+  // enforcing `patterns`-form injection rule detects a marker in a tool
+  // result this session, and fires once — as a warn — on that session's
+  // next CONSEQUENTIAL tool call (a write or a shell invocation; see
+  // WRITE_TOOL_NAMES in verification.ts and pipeline.ts's runTieredRules()
+  // for the exact predicate). This is the one place keel can still
+  // genuinely intervene on every host except OpenCode: by the time a
+  // detector rule sees a tool result, that result has already reached the
+  // model on every other host (docs/injection.md's per-host table), so the
+  // only remaining leverage is the agent's NEXT action, which still goes
+  // through the ordinary pre-call gate. A rule needs EITHER `patterns` OR
+  // `next_call_scrutiny: true` — rule-parser.ts's validateRules rejects an
+  // injection rule with neither, since it could never fire.
+  next_call_scrutiny?: boolean
+
   // ── Session composite-trip rules (`type: session`) ──
   //
   // A composite runaway-loop trip across five session-scoped dimensions:
@@ -578,6 +611,13 @@ export interface EnforceInput {
    * content`) can be reused against output text instead of only input text,
    * without overloading `args` (which is the CALL's arguments, not its
    * result) or adding a parallel input shape.
+   *
+   * Lane F adds two more consumers of this exact same field:
+   * `EnforcementPipeline.evaluateInjection()` (the `type: injection`
+   * detector-rule scan) and `evaluateToolResult()` (the orchestrator that
+   * runs both the secret scan and the injection scan against one shared
+   * `tool_output` and merges their verdicts) — see pipeline.ts and
+   * enforce/injection-scan.ts.
    */
   tool_output?: string
 }
@@ -676,6 +716,71 @@ export interface EnforceResult {
    * byte-identical for anyone not reading this field yet.
    */
   redaction_incomplete_rule_ids?: string[]
+
+  // ── Injection-scan fields (Lane F — `type: injection`, `EnforcementPipeline.
+  // evaluateInjection()` / `evaluateToolResult()`, pipeline.ts and
+  // enforce/injection-scan.ts) ──
+  //
+  // All four are absent (never present-but-empty) when the injection pass
+  // found nothing, mirroring `scan_truncated`/`redacted_rule_ids` above —
+  // old trace lines and JSON.stringify output stay byte-identical for any
+  // reader not yet aware of this field.
+  /**
+   * Every `type: injection` rule id that matched during the injection scan
+   * — both enforcing (non-`mode: observe`) and observe-mode matches, in
+   * match order. Because this includes observe-mode ids, it is NOT the
+   * right field to gate "should the next-call scrutiny tag be armed?" or
+   * "was anything actually neutralized?" on — use `injection_markers`
+   * (below) for that: it only ever contains ENFORCING matches, the spans
+   * that were actually replaced in `sanitized_output`.
+   */
+  injection_rule_ids?: string[]
+  /**
+   * Every marker span an ENFORCING (non-`mode: observe`) injection rule
+   * matched — never observe-mode matches, which are recorded only in
+   * `injection_rule_ids` and never neutralized. This is the field a caller
+   * should check to decide whether to arm the next-call scrutiny gate
+   * (`injection_markers?.length` — see docs on `KeelRule.next_call_scrutiny`)
+   * or whether anything was actually written back via `sanitized_output`.
+   *
+   * `excerpt` is DEFANGED before being placed here — collapsed whitespace,
+   * truncated to 60 chars, with `<`, `>`, `|`, `[`, `]`, and any Unicode
+   * tag/zero-width character replaced by `·` — because this field is
+   * written into audit logs that `keel report`/`keel audit` read back
+   * verbatim; an undefanged excerpt would re-deliver a working injection
+   * payload through keel's own tooling. See injection-scan.ts's
+   * `defangExcerpt()`.
+   */
+  injection_markers?: Array<{ rule_id: string; offset: number; excerpt: string }>
+  /**
+   * The candidate replacement text a caller should write back onto
+   * whatever channel `tool_output` came from — set whenever EITHER the
+   * secret scan (`redacted_output`) OR the injection scan neutralized
+   * something, and always the FULLY COMPOSED result of both: when both a
+   * redaction and an injection neutralization fire on the same tool
+   * result, `sanitized_output` already includes the redaction (the
+   * injection pass runs as a FRESH scan against the post-redaction text,
+   * never applying spans located in one string to a different string —
+   * see `evaluateToolResult()`'s own comment). `redacted_output` is
+   * retained UNCHANGED alongside it for existing consumers that only ever
+   * looked at the secret-scan output. Like `redacted_output`, this field
+   * is a pure candidate — evaluateInjection()/evaluateToolResult() never
+   * mutate anything themselves; applying this back is the caller's job.
+   */
+  sanitized_output?: string
+  /**
+   * Sibling of `scan_truncated`, for the injection pass specifically: set
+   * only `true` when the text handed to the injection scan (which may
+   * already be the post-redaction text inside `evaluateToolResult()`, not
+   * always the original `tool_output`) was longer than
+   * `MAX_OUTPUT_SCAN_CHARS` — content past that bound was never run
+   * through the `type: injection` patterns at all. Independent of
+   * `scan_truncated`: the two passes can truncate at different points
+   * when `evaluateToolResult()` composes them, since the injection pass
+   * scans text that may already differ in length from the original after
+   * redaction.
+   */
+  injection_scan_truncated?: boolean
 }
 
 export interface RedirectDirective {

@@ -412,6 +412,43 @@ test additions); and the Cursor/Cline hook wiring against the installed
 runtimes' own compiled source and type definitions, still short of a live
 exercised call on either host.
 
+### Added
+
+- **Tool-result prompt-injection scanning (Lane F) — a new `type: injection`
+  rule type.** Indirect prompt injection (instructions embedded in a file,
+  web page, API response, or other tool result that get read as new
+  instructions on the agent's next turn) is now detected, not just left as
+  a documented gap. Two forms: a DETECTOR (`patterns`, matched against a
+  completed tool call's OWN output text via `EnforcementPipeline.
+  evaluateInjection()`, never through the normal pre-call `evaluate()`
+  dispatch) and a GATE (`next_call_scrutiny: true`, armed by an enforcing
+  detector match and firing once, as a warn, on the session's next
+  consequential write/shell call — the compensating control for every host
+  except OpenCode, where a detected injection has already reached the model
+  before keel's hook can act). `action` is restricted to `warn` for every
+  rule of this type — never rule-authorable as a harder verdict, the same
+  reasoning `rule-parser.ts`'s `validActions` comment already gives for why
+  a result-rewrite verdict can't be authored generically (it only actually
+  reaches the model on one host). Ships three default rules:
+  `injected-instructions-in-tool-output` (warn),
+  `untrusted-content-role-markers` (a weaker-confidence sibling, `mode:
+  observe`), and `untrusted-content-next-call` (the gate). New
+  `EnforcementPipeline.evaluateToolResult()` orchestrates one combined
+  secret-redaction + injection scan per tool result (`packages/cli/src/
+  commands/hook.ts`, `packages/opencode-plugin/src/plugin.ts`), composing
+  both findings into `sanitized_output` and both warnings into one
+  `additionalContext`/`systemMessage` envelope. New
+  `packages/core/src/enforce/injection-scan.ts` (pure marker-scan +
+  neutralization logic, audit-log-safe excerpt defanging) and
+  `packages/core/src/enforce/injection-store.ts` (`PersistentInjectionStore`,
+  modeled directly on `flow-store.ts`, backing the next-call gate). This is
+  a heuristic tripwire over literal, well-attested marker shapes (chat-
+  template control tokens, "ignore previous instructions", role-marker
+  impersonation, Unicode tag-character smuggling), not a detector with a
+  completeness claim — a paraphrased, translated, or encoded payload still
+  passes. See `docs/injection.md` for the full per-host honesty table and
+  what this deliberately does NOT cover.
+
 ## 1.0.0
 
 `@get-keel/cli` 1.0.0 · `@get-keel/core` 1.0.0 · `@get-keel/opencode-plugin` 1.0.0

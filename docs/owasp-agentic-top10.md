@@ -30,7 +30,7 @@ mapping that isn't real.
 
 | # | OWASP category | Keel coverage |
 |---|---|---|
-| ASI01 | Agent Behaviour Hijack | Not addressed directly — mitigated only by downstream consequence rules |
+| ASI01 | Agent Behaviour Hijack | Partially addressed — tool-result injection-marker detection, detection-only (post-hoc) on most hosts, plus downstream consequence rules |
 | ASI02 | Tool Misuse and Exploitation | Well covered — this is Keel's core purpose |
 | ASI03 | Identity and Privilege Abuse | Partial — OS-level privilege escalation and credential exposure only |
 | ASI04 | Agentic Supply Chain Vulnerabilities | Partial — package supply chain and tool-manifest tampering only |
@@ -45,12 +45,26 @@ mapping that isn't real.
 
 > Manipulating an agent's goals/plans to pursue attacker-aligned objectives.
 
-**Not addressed directly.** Keel has no rule that inspects incoming content (tool
-output, retrieved documents, user prompts) for injection payloads or goal-manipulation
-patterns — that would require reasoning-level visibility Keel doesn't have on most
-hosts. What Keel *does* provide is a safety net for the actions a hijacked agent would
-try to take next, which several Tier 1/2 rules block regardless of why the agent
-decided to take them:
+**Partially addressed.** Keel now has three `type: injection` rules
+(`injected-instructions-in-tool-output`, `untrusted-content-role-markers`,
+`untrusted-content-next-call` — Lane F) that inspect a completed TOOL RESULT for
+literal indirect-prompt-injection marker shapes: chat-template control tokens, the
+"ignore previous instructions" family, role-marker impersonation, and Unicode
+tag-character smuggling. This is a heuristic tripwire over well-attested marker
+shapes, not a detector with a completeness claim — a paraphrased, translated, or
+encoded payload still passes, and reasoning-level goal-manipulation detection remains
+out of scope on every host. See `docs/injection.md` for the full per-host honesty
+table: only OpenCode can rewrite a flagged result before the model reads it; every
+other host is detection-only, post-hoc (a warning the model sees on its NEXT turn,
+plus a compensating next-call scrutiny gate on the agent's next write/shell call —
+`untrusted-content-next-call`).
+
+Keel also still has no visibility into the agent's own reasoning/goals, or into a
+user prompt/retrieved document BEFORE it becomes a tool result — this addition covers
+the specific "malicious content came back from a tool call" channel, not the broader
+category. What Keel additionally provides is a safety net for the actions a hijacked
+agent would try to take next, which several Tier 1/2 rules block regardless of why
+the agent decided to take them:
 
 - `no-exfil-flow` / `no-exfil-flow-cross-call` — block sending credential-file
   contents over the network, the most common hijack payoff.
@@ -60,8 +74,9 @@ decided to take them:
   `no-enforcer-removal` — block a hijacked agent from disarming Keel itself as its
   first move.
 
-None of these detect the hijack; they only contain what a hijacked agent can do once
-it starts issuing tool calls.
+These downstream rules don't detect the hijack either; they contain what a hijacked
+agent can do once it starts issuing tool calls, independent of whether the injection
+rules above ever fired.
 
 ## ASI02 — Tool Misuse and Exploitation
 
@@ -285,9 +300,13 @@ security risk.
 Keel is strongest against categories that reduce to *"an agent, for whatever reason,
 is about to make a harmful tool call"* — ASI02, ASI05, ASI10, and large parts of
 ASI09. It has essentially no coverage of categories that require visibility Keel's
-architecture doesn't have: the agent's own reasoning/goals (ASI01), model or
-agent-framework supply-chain provenance (ASI04, partially), persistent memory/context
-stores (ASI06), or multi-agent communication protocols (ASI07, ASI08 partially). That
-gap is consistent with how Keel is described elsewhere in this repo (see
-[docs/comparison.md](comparison.md)): a tool-call enforcement layer, not a full
+architecture doesn't have: the agent's own reasoning/goals, model or agent-framework
+supply-chain provenance (ASI04, partially), persistent memory/context stores (ASI06),
+or multi-agent communication protocols (ASI07, ASI08 partially). ASI01 sits partway
+out of that gap now: Keel still has no visibility into the agent's own
+reasoning/goals or a hijack attempt before it lands, but it now inspects the specific
+channel a hijacked-by-content agent most often depends on — a tool result carrying
+injected instructions — post-hoc on most hosts, and heuristically (docs/injection.md).
+That gap is otherwise consistent with how Keel is described elsewhere in this repo
+(see [docs/comparison.md](comparison.md)): a tool-call enforcement layer, not a full
 agentic-security platform.

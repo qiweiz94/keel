@@ -64,7 +64,7 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 49 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 52 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
@@ -102,7 +102,14 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     // with zero measured hit-rate evidence, same evidence-gated posture as
     // session-runaway-trip/session-spend-limit above — see
     // packages/core/src/enforce/oscillation-tracker.ts/oscillation-store.ts.
-    expect(install.size).toBe(49)
+    // + 3 from Lane F (tool-result prompt-injection scanning):
+    // injected-instructions-in-tool-output (mode: warn, patterns/detector
+    // form), untrusted-content-role-markers (mode: observe, weaker-
+    // confidence sibling), and untrusted-content-next-call
+    // (next_call_scrutiny: true, the compensating next-call scrutiny gate
+    // for every host except OpenCode, backed by injection-store.ts's
+    // persisted, session-scoped, TTL'd store) — see docs/injection.md.
+    expect(install.size).toBe(52)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

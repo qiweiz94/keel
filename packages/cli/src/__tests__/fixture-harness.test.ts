@@ -398,9 +398,32 @@ afterAll(() => {
   rmSafe(scratchRoot)
 })
 
+// `type: injection` rules (Lane F) are NOT dispatched through
+// `pipeline.evaluate()` at all — that is the deliberate architectural
+// decision behind shipping a brand-new rule type instead of reusing
+// `type: content` (see pipeline.ts's evaluateInjection()/
+// evaluateToolResult() and their own header comments). A detector-form
+// injection rule (`patterns`, no `next_call_scrutiny`) is only ever
+// checked by scanning a completed tool call's OWN output text, a
+// structurally different entry point than this harness's `evaluateCase()`
+// (which only ever calls `pipeline.evaluate()` — a PreToolUse-shaped
+// dispatch). The gate form (`next_call_scrutiny: true`) DOES run inside
+// `pipeline.evaluate()`, but its precondition — a persisted tag armed by
+// an ENFORCING detector match — is written by a CALLER outside the
+// pipeline (enforce.ts, the opencode plugin), never by evaluate() itself,
+// so this harness has no way to arm it without faking the very caller
+// behavior under test. Real, dedicated coverage for all three shipped
+// injection rules lives in packages/core/src/enforce/__tests__/
+// injection-detection.test.ts and injection-next-call-gate.test.ts
+// instead, exercised through the correct entry points
+// (evaluateInjection()/evaluateToolResult() and a real armed
+// PersistentInjectionStore, respectively).
+const isInjectionRuleType = (rule: KeelRule) => rule.type === 'injection'
+
 describe('per-rule fixture coverage', () => {
   it('every shipped default rule has a fixture dir with non-empty must-block and must-allow cases', () => {
     for (const rule of DEFAULT_RULES) {
+      if (isInjectionRuleType(rule)) continue
       const dir = join(FIXTURES_ROOT, rule.id)
       expect(existsSync(dir), `missing tests/rules/${rule.id}/`).toBe(true)
       const block = loadFixtures(rule.id, 'must-block.yaml')
@@ -415,6 +438,7 @@ describe('per-rule fixture coverage', () => {
 })
 
 for (const rule of DEFAULT_RULES) {
+  if (isInjectionRuleType(rule)) continue
   describe(`rule: ${rule.id} (action: ${rule.action})`, () => {
     const blockCases = loadFixtures(rule.id, 'must-block.yaml')
     const allowCases = loadFixtures(rule.id, 'must-allow.yaml')
