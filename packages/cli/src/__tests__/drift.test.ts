@@ -64,7 +64,7 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 52 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 53 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
@@ -109,7 +109,14 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     // (next_call_scrutiny: true, the compensating next-call scrutiny gate
     // for every host except OpenCode, backed by injection-store.ts's
     // persisted, session-scoped, TTL'd store) — see docs/injection.md.
-    expect(install.size).toBe(52)
+    // + 1 from Lane G (cross-turn taint tracking): untrusted-content-
+    // derived-call (next_call_scrutiny: true, taint_correlation: true) —
+    // the narrower, artifact-correlated sibling of untrusted-content-
+    // next-call, gated on the SAME persisted store via per-rule mark-not-
+    // delete consumption (injection-store.ts's consumedBy) so the two
+    // gate rules never blind each other — see enforce/injection-taint.ts
+    // and docs/injection.md.
+    expect(install.size).toBe(53)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

@@ -352,6 +352,62 @@ rules:
     }
   })
 
+  describe('type: injection — taint_correlation (Lane G)', () => {
+    it('rejects taint_correlation: true without next_call_scrutiny — it could never fire', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: broken-taint
+    type: injection
+    taint_correlation: true
+    action: warn
+    message: "no"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('taint_correlation: true without next_call_scrutiny'))).toBe(true)
+    })
+
+    it('accepts taint_correlation: true together with next_call_scrutiny: true', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: ok-taint
+    type: injection
+    next_call_scrutiny: true
+    taint_correlation: true
+    action: warn
+    message: "no"
+`, '/tmp/rules.yaml')
+      expect(validateRules(parsed.rules)).toEqual([])
+    })
+
+    it('rejects taint_correlation on a non-injection rule type', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: taint-on-command
+    type: command
+    match: "rm -rf /"
+    taint_correlation: true
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('taint_correlation is only valid on type: injection rules'))).toBe(true)
+    })
+
+    it('locks in the tier constraint: the shipped untrusted-content-derived-call shape rejects action: prompt', () => {
+      const parsed = parseRulesContent(`version: 1
+rules:
+  - id: untrusted-content-derived-call
+    type: injection
+    next_call_scrutiny: true
+    taint_correlation: true
+    action: prompt
+    message: "no"
+`, '/tmp/rules.yaml')
+      const issues = validateRules(parsed.rules)
+      expect(issues.some(i => i.includes('injection rules may only ever declare action: warn'))).toBe(true)
+    })
+  })
+
   describe('type: session (composite runaway-loop trip)', () => {
     it('accepts a well-formed session_escalation ladder', () => {
       const parsed = parseRulesContent(`version: 1

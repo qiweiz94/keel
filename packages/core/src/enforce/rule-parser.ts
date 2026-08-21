@@ -545,6 +545,16 @@ export function validateRules(rules: unknown): string[] {
         if (pattern.redact_span !== undefined) errors.push(`Injection rule "${label}" has a pattern with "redact_span" — that field is output-redaction-only (type: content); injection neutralization always replaces the full match, no span-safety opt-in needed`)
         if (pattern.redact_widen !== undefined) errors.push(`Injection rule "${label}" has a pattern with "redact_widen" — that field is output-redaction-only (type: content); injection patterns are neutralized as-matched, never widened`)
       }
+      // `taint_correlation` (Lane G) narrows a `next_call_scrutiny` gate —
+      // it has nothing to narrow without one, the same "declared but inert"
+      // shape the patterns-or-next_call_scrutiny check above already
+      // rejects for the identical reason.
+      if (rule.taint_correlation && !rule.next_call_scrutiny) {
+        errors.push(`Injection rule "${label}" has taint_correlation: true without next_call_scrutiny: true — it could never fire`)
+      }
+    }
+    if (rule.taint_correlation !== undefined && rule.type !== 'injection') {
+      errors.push(`Rule "${label}" has taint_correlation set but is type "${String(rule.type)}" — taint_correlation is only valid on type: injection rules`)
     }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine — remove it or use a supported type`)

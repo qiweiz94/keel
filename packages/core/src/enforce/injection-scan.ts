@@ -76,6 +76,16 @@ export interface InjectionScanResult {
   /** Raw count of enforcing marker OCCURRENCES (pre-merge — matches `markers.length`), used for the neutralization banner and the persisted next-call tag's markerCount. */
   markerCount: number
   /**
+   * Every ENFORCING marker's MERGED span (start/end offsets into
+   * `scanText`, overlapping/adjacent spans already unioned) — the exact
+   * same set `neutralizedText`'s replacement pass already computes and
+   * uses, just also returned here rather than discarded after use. Empty
+   * whenever `markers` is (observe-only or clean scan). This is what Lane
+   * G's `injection-taint.ts` builds its `±ARTIFACT_WINDOW_CHARS` windows
+   * around — see `extractOriginArtifacts()`.
+   */
+  spans: Array<{ start: number; end: number }>
+  /**
    * `scanText` with every enforcing match's span replaced by an attributed
    * `[keel:injection-neutralized:<rule_id>]` placeholder and one banner
    * line prepended — present only when at least one enforcing rule
@@ -146,7 +156,7 @@ export function scanInjection(scanText: string, rules: KeelRule[]): InjectionSca
 
   const markerCount = markers.length
   if (!spans.length) {
-    return { allRuleIds, observeRuleIds, markers, markerCount, neutralizedText: undefined }
+    return { allRuleIds, observeRuleIds, markers, markerCount, spans: [], neutralizedText: undefined }
   }
 
   // Merge overlapping/adjacent spans into their union — same technique as
@@ -174,5 +184,6 @@ export function scanInjection(scanText: string, rules: KeelRule[]): InjectionSca
   out += scanText.slice(cursor)
 
   const neutralizedText = `${buildBanner(markerCount, enforcingRuleIds)}\n${out}`
-  return { allRuleIds, observeRuleIds, markers, markerCount, neutralizedText }
+  const mergedSpans = merged.map(g => ({ start: g.start, end: g.end }))
+  return { allRuleIds, observeRuleIds, markers, markerCount, spans: mergedSpans, neutralizedText }
 }
