@@ -1,11 +1,27 @@
 # Keel v1.0.0 — PENDING / handoff for a new session
 
-**State at handoff (updated 2026-08-19/20):** branch `v0.4-thesis`, version **1.0.0**, suite green
-(core 665 / cli 863 / mcp 6 / plugin all-pass), `round2.mjs` exit 0. **NOTHING has been pushed,
-published, or merged.** Full record of the original v1.0 build: `session/v1/SESSION-LOG.md`.
-Full record of the 2026-08-19/20 research + overnight sprint:
+**State at handoff (updated 2026-08-20):** branch `v0.4-thesis`, version **1.0.0**, suite green
+(core 726 / cli 933 / mcp 10 / plugin all-pass), `round2.mjs` exit 0, `drift.test.ts` 9/9.
+**NOTHING has been pushed, published, or merged.** Full record of the original v1.0 build:
+`session/v1/SESSION-LOG.md`. Full record of the 2026-08-19/20 research + overnight sprint:
 `session/v1/SESSION-LOG-2026-08-19-governance-sprint.md`. Honest audit: `session/v1/AUDIT.md`.
 Everything below is what's LEFT.
+
+**2026-08-20 audit + fix sprint (since the governance sprint above):** a fresh 22-agent read-only
+audit of the whole codebase was triaged into 13 fix lanes (command-normalizer, pipeline,
+rule-parser, the real `~/.keel` home-resolution bug below, install.ts installer logic, hook.ts
+PostToolUse routing, mcp-server deprecation, state-manager/overrides/allow/problem-ledger,
+daemon/mcp-server hardening, stuck-tracker persistence, opencode-plugin trace fixes, the
+DEFAULT_RULES_YAML pattern batch, and doc fixes), run worktree-parallel and merged one at a time,
+evidence-gated (build + full suite + `round2.mjs` after each). All 13 merged. A second,
+independent review pass then re-audited the 3 earliest-merged lanes (install.ts, hook.ts,
+mcp-server) plus a fresh whole-suite verification; it found 6 further real, confirmed bugs in the
+already-merged install.ts (a hook-basename-prefix false-positive that could delete a user's own
+hook, a malformed `hooks.<Event>` value silently discarded with no warning, keel's own hook group
+silently reordering to the end of the array on every reinstall, and a Cursor `.mdc` append that
+wrote a second, unparseable frontmatter block into an existing file) — all 6 fixed, tested, and
+merged (`sprint2/fix-installer-review1`). Nothing else from that review pass required a code
+change. The level.ts HOME bug mentioned below is now fixed (see the home-bug lane above).
 
 **Since the original handoff, a research + build sprint closed several more items**: OpenSSF
 Scorecard workflow added, `docs/tiers.md` rule count fixed, evidence axes published together,
@@ -14,12 +30,13 @@ held back — no evidence), a new `simple_rules:` custom-rule format shipped (Re
 abandoned per that decision), offline host-test coverage strengthened for all 6 non-live hosts,
 an OWASP Agentic AI Top 10 mapping doc added, and PostToolUse secret-output redaction shipped for
 OpenCode (live-verified) with an honest reduced ceiling for Claude Code/Codex/Gemini. See the new
-session log for full detail. **New, real, unfixed bug found during that sprint:**
-`packages/cli/src/commands/level.ts:53` reads `process.env.HOME` directly instead of the shared
-`resolveHome()` helper, so `KEEL_HOME` does not sandbox it — this actually wrote to the real
+session log for full detail. **Bug found during that sprint, FIXED 2026-08-20:**
+`packages/cli/src/commands/level.ts:53` read `process.env.HOME` directly instead of the shared
+`resolveHome()` helper, so `KEEL_HOME` did not sandbox it — this actually wrote to the real
 `~/.keel/rules.yaml` on the build machine during the sprint (caught, independently re-verified,
 and the file confirmed intact — see the session log's "An incident, disclosed in full" section).
-Fix this before running any more live `keel level`/similar commands against a sandboxed HOME.
+Fixed in the 2026-08-20 audit sprint's home-bug lane (`level.ts`/`validate.ts`/`enforce.ts` all
+switched to `resolveHome()`), verified via an mtime-unchanged proof against the real file.
 
 Every code-closable AUDIT gap is CLOSED. What remains is either human-gated (needs credentials /
 budget / an outward action) or a deliberately-accepted limit or optional follow-up.
