@@ -11,7 +11,7 @@ release and covered by tests; anything under **Planned** is not built yet.
 - One enforcement entry point (`keel hook <host>`), plus a `generic` stdin/exit-code
   contract for hosts with no bespoke adapter
 - MCP server (`keel serve`, 7 tools) and a local daemon (`keel daemon`) for thin clients
-- 21 rule types; 10 actions (9 rule-authorable — the 10th, `redact`, is system-only, applied by keel's own output-redaction pipeline rather than written into a rule's `action:` field; the earlier `mask` action was removed from `EnforcementAction` entirely, not merely declared-but-rejected by the parser — see [docs/exfil.md](docs/exfil.md)), including `prompt` approval gates and `fix` command rewriting
+- 22 rule types; 10 actions (9 rule-authorable — the 10th, `redact`, is system-only, applied by keel's own output-redaction pipeline rather than written into a rule's `action:` field; the earlier `mask` action was removed from `EnforcementAction` entirely, not merely declared-but-rejected by the parser — see [docs/exfil.md](docs/exfil.md)), including `prompt` approval gates and `fix` command rewriting
 - Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
 - Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
 - Self-protection: agents cannot run keel's control commands or edit its rules
@@ -20,6 +20,15 @@ release and covered by tests; anything under **Planned** is not built yet.
   disable), has no `--until`/expiry of any kind, and only clears via `keel resume`
   run by a human. `keel-control-gate` blocks an agent from running either command
   on itself, same as it already blocks `keel disable`.
+- `type: budget` — real LLM token/dollar spend limits, read from a host's own local
+  transcript/session record (a Claude Code JSONL transcript's usage fields; an
+  OpenCode session row's own `cost`/token columns) rather than a network proxy.
+  Distinct from the pre-existing call-VOLUME `runaway-budget-*` (`type: rate`) rules.
+  Two-phase enforcement (measure at Stop/PostToolUse, persist a flag, deny on the
+  NEXT PreToolUse call) because Claude Code's Stop hook cannot block. Ships as the
+  default `session-spend-limit` rule, `mode: observe`, pending real-traffic burn-in
+  of its Claude Code model-string normalization — see `docs/tiers.md` and
+  `docs/integrations.md`.
 - Standalone Rego/WASM policy tools (`keel policy init|build|eval`) — **EXPERIMENTAL,
   unsupported, not part of real-time enforcement.** `.rego`/`.wasm` policies are never
   consulted by `keel hook`, the OpenCode plugin, or `keel daemon` — only YAML `rules.yaml`
@@ -39,15 +48,15 @@ release and covered by tests; anything under **Planned** is not built yet.
 - `keel schedule` — periodic analysis via launchd/cron
 
 **Problem-solving rules** (`stuck`, `research`, `diagnosis`, plus `claim`, `oracle`,
-budget, and verification checks — 9 rules total, plus one promoted) ship inside the
+budget, and verification checks — 10 rules total, plus one promoted) ship inside the
 default install as Tier 3, `mode: observe`: evaluated and recorded on every matching
 call without ever interrupting, so they accumulate a real hit record (`docs/tiers.md`)
 before anyone raises them to `warn` or `block`. `no-repeat-loops` (`stuck`) has already
 made that jump — its own real hit-rate evidence (41 repeat loops across 20 sessions,
-no recorded false-triggering) cleared the bar; the two `runaway-budget-*` rules were
-checked against the same bar and held back pending real data (`docs/tiers.md`). `keel
-rules harness` / `--append` now exist only to backfill a rules.yaml created before
-these shipped as defaults.
+no recorded false-triggering) cleared the bar; the two `runaway-budget-*` rate rules and
+the newer `type: budget` `session-spend-limit` rule were checked against the same bar
+and held back pending real data (`docs/tiers.md`). `keel rules harness` / `--append`
+now exist only to backfill a rules.yaml created before these shipped as defaults.
 
 ## Planned
 

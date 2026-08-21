@@ -1,4 +1,4 @@
-import { initEnforce, evaluateToolCall, evaluateClaimText, recordPostAction, evaluateOutputText, flushBackgroundWork } from './enforce.js'
+import { initEnforce, evaluateToolCall, evaluateClaimText, recordPostAction, evaluateOutputText, flushBackgroundWork, recordClaudeCodeBudgetSnapshot } from './enforce.js'
 import { BLOCKING_ACTIONS } from './evaluate.js'
 import type { EnforceResult, ProtectionLevel } from '../core/types.js'
 
@@ -122,6 +122,29 @@ export interface ParsedCall {
    * `undefined` here just means "nothing to scan," not "assume clean."
    */
   postAction?: { tool: string; args: Record<string, unknown>; exitCode: number | null; outputText?: string }
+  /**
+   * `body.transcript_path` — the LITERAL path Claude Code itself is
+   * writing this session's JSONL transcript to, carried on its
+   * PreToolUse/PostToolUse/Stop hook payloads alike (v1 `type: budget`
+   * lane). This is the ONLY correct way to locate a session's transcript:
+   * deriving it by slugifying `cwd` is provably lossy (Claude Code's own
+   * slug convention replaces `/`, `.`, AND literal `-` all with `-`, so
+   * `/Users/foo/my-project`, `/Users/foo/my.project`, and
+   * `/Users/foo/my/project` all slugify identically) and matching on
+   * `body.session_id` is unreliable for the same reason `sessionId` above
+   * is preferred over `session_id` — see `measureClaudeCodeSpend`'s own
+   * comment (enforce/budget/claude-transcript.ts) for the live-verified
+   * finding. Same "docs, not yet exercised against a real Claude Code
+   * session in THIS repo's own test harness" confidence tier as
+   * `reasoning`/`postAction` above for codex/gemini, which mirror the same
+   * hook-payload shape; confirmed present for claude-code specifically per
+   * this lane's own live verification (see the budget lane's CHANGELOG
+   * entry). Absent when the payload genuinely doesn't carry it (an older
+   * Claude Code version, a non-claude-code host) — callers must treat
+   * absence exactly like an unreadable file (see
+   * `recordClaudeCodeBudgetSnapshot`'s own comment), never as "no spend."
+   */
+  transcriptPath?: string
   /**
    * Set when the payload could not supply the ONE field every rule needs to
    * match against: a real tool identity (or, for the env-var TOOL_INPUT
@@ -302,6 +325,7 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
           args: {},
           sessionId: stringField(body.session_id),
           reasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : '',
+          transcriptPath: stringField(body.transcript_path),
         }
       }
       // PostToolUse-shaped payload (v1 M2-B1): the call already ran.
@@ -321,6 +345,7 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
             exitCode: postToolUseExitCode(body.tool_response),
             outputText: postToolUseOutputText(body),
           },
+          transcriptPath: stringField(body.transcript_path),
         }
       }
       const identity = toolField(body.tool_name)
@@ -345,11 +370,15 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
         // `hookInput?.reasoning` spread is the SAME shape of unpopulated
         // plumbing, not a working counterexample — see its own comment
         // ("surveyed and found unpopulated by OpenCode's own
-        // PreToolUse-shaped input").  The ACTUAL data source that would
-        // close this for real is Claude Code's PreToolUse `transcript_path`
-        // (reading the last assistant message from it) — out of scope here
-        // as a restructure, not a threading fix.
+        // PreToolUse-shaped input").
+        //
+        // `transcriptPath` (v1 `type: budget` lane) IS wired end-to-end now
+        // — see ParsedCall.transcriptPath's own comment and
+        // `recordClaudeCodeBudgetSnapshot`'s call sites in hookVerdict
+        // below (the Stop and PostToolUse branches, not this PreToolUse
+        // one — measurement happens outside the blocking path by design).
         preToolReasoning: typeof body.last_assistant_message === 'string' ? body.last_assistant_message : undefined,
+        transcriptPath: stringField(body.transcript_path),
       }
     }
     case 'codex':
@@ -716,6 +745,20 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
         const level = (options.level as ProtectionLevel | undefined)
         initEnforce(cwd, level ? { level } : undefined)
         await evaluateClaimText(call.reasoning, { cwd, agent: host, sessionId: call.sessionId })
+        // v1 `type: budget` lane: the Stop event is the natural "turn just
+        // settled" measurement point (see budget-tracker.ts's own header —
+        // this can NEVER block, exactly like every other call in this
+        // branch, so it is safe to run on the same structurally-can't-fail
+        // path). Gated on `host === 'claude-code'` specifically: this is
+        // the one host `ParsedCall.transcriptPath` is confirmed live-
+        // verified for this lane (see docs/integrations.md); codex/gemini
+        // never populate `transcriptPath` today (parsePayload's own
+        // comment), so calling this for them would just record a spurious
+        // "unavailable" audit entry every single turn for a host this rule
+        // type does not claim to support yet.
+        if (host === 'claude-code') {
+          await recordClaudeCodeBudgetSnapshot(call.transcriptPath, { cwd, agent: host, sessionId: call.sessionId })
+        }
       } catch {
         // Fail open, on purpose — see the comment above.
       }
@@ -736,6 +779,14 @@ export async function hookVerdict(hostArg: string, options: { cwd?: string; leve
         const level = (options.level as ProtectionLevel | undefined)
         initEnforce(cwd, level ? { level } : undefined)
         await recordPostAction(call.postAction.tool, call.postAction.args, call.postAction.exitCode, { cwd, agent: host, sessionId: call.sessionId })
+        // Second measurement opportunity for the same reason the Stop
+        // branch above has one — see that branch's comment. Doing it here
+        // TOO (not only on Stop) means a long turn with many tool calls
+        // gets its budget flag refreshed after every completed call, not
+        // only once the whole turn finishes.
+        if (host === 'claude-code') {
+          await recordClaudeCodeBudgetSnapshot(call.transcriptPath, { cwd, agent: host, sessionId: call.sessionId })
+        }
         // Real output capture + redaction (sprint/lane-c2), CLI-hook-host
         // ceiling: unlike the OpenCode plugin (packages/opencode-plugin/src/
         // plugin.ts), NOTHING on this path can rewrite output that already

@@ -177,6 +177,52 @@ covered it. Narrow, pre-existing (not introduced by this lane), real.
 
 ---
 
+## Real token/dollar spend (`type: budget`, v1 budget lane)
+
+Keel's hook architecture has no visibility into LLM API token/dollar usage —
+that data lives in the model response, which no PreToolUse/PostToolUse-style
+hook ever sees. `type: budget` closes that gap a different way: it reads
+usage a host has ALREADY written to its own local transcript/session record,
+never a network proxy. This is a narrower, per-host claim than most of this
+document's tables — do not read parity into it across hosts that were never
+tested.
+
+| Host | Data source | Confidence | Mechanism |
+|---|---|---|---|
+| Claude Code | Per-session JSONL transcript at `body.transcript_path` (the host's own hook payload field) — each `assistant`-type line's `message.usage`/`message.model` | **live** — confirmed against a REAL transcript on the machine this lane was built on: `sessionId` (camelCase) vs. `session_id` (snake_case) cross-reference behavior, the exact alias model strings (`claude-sonnet-5`, `claude-opus-4-8`, `claude-fable-5`), and `<synthetic>` all observed directly, not inferred from docs | `packages/core/src/enforce/budget/claude-transcript.ts` (`measureClaudeCodeSpend`), called from `hookVerdict`'s Stop/PostToolUse branches (`hook.ts`) — never from PreToolUse, see the two-phase note below |
+| OpenCode | `~/.local/share/opencode/opencode.db`'s `session` table — `cost` (already computed in dollars by OpenCode itself), `tokens_input`/`tokens_output`/`tokens_reasoning`/`tokens_cache_read`/`tokens_cache_write` | **live** — confirmed against a real installed OpenCode's actual database schema on this machine | `packages/core/src/enforce/budget/opencode-db.ts` (`measureOpenCodeSpend`), called from `plugin.ts`'s `tool.execute.after` hook |
+| Codex, Gemini, Cursor, Cline, generic | — | **not supported** | No transcript/session-record source was surveyed or confirmed for any of these hosts this lane. `type: budget` rules simply never fire on them — not a silent partial implementation, an explicit absence. A future lane adding one of these should follow this document's own citation-tier discipline (docs vs. types vs. live) rather than assuming parity with Claude Code or OpenCode. |
+
+**Why this had to be two-phase (SAFETY-CRITICAL, not a style choice).**
+Claude Code's `Stop` hook is architecturally observe-only — see this
+document's "Claim-to-evidence" section above and
+`docs/integration-guides/claude-code.md`: it fires after the turn already
+completed, so there is no tool call left to deny. A spend MEASUREMENT
+happens at `Stop`/`PostToolUse` (where the transcript write for the
+just-completed turn has already landed); it persists an over-budget flag to
+`~/.keel/state/budget-tracker.json` (`PersistentBudgetStore`); only the
+NEXT `PreToolUse` call ever denies, by reading that flag — never by
+re-reading the transcript. This is the same "warn on first violation,
+persisted state blocks on repeat" shape every other deny rule in this
+ruleset already uses (see this document's own tables above), not a new
+pattern invented for this rule type. Proven end-to-end through the real
+built CLI and shell hook templates in
+`packages/cli/src/__tests__/budget-lane-hook.test.ts`.
+
+**Model-string normalization (SAFETY-CRITICAL).** Real `message.model`
+values observed live on this machine include short aliases
+(`claude-sonnet-5`, `claude-opus-4-8`, `claude-fable-5`) that are NOT
+official Anthropic model IDs, alongside `<synthetic>` (always all-zero
+usage, skipped) and ordinary dated IDs. `measureClaudeCodeSpend`'s pricing
+lookup is exact-string-match only — an alias or any other unrecognized
+model string still contributes its tokens to the running total (token-only
+enforcement never degrades) but forces the WHOLE session's dollar figure to
+`null`, never a partial/undercounted total presented as the true one. The
+shipped default rule (`session-spend-limit`) ships with `max_tokens` only,
+no `max_dollars`, for exactly this reason — see `docs/tiers.md`.
+
+---
+
 ## Universal paths — no adapter needed
 
 **MCP server** (`keel serve`) exposes 7 tools — `keel_check`, `keel_audit`,

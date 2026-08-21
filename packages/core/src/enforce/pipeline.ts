@@ -12,6 +12,7 @@ import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validate
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
+import { BudgetTracker, type BudgetSpend } from './budget-tracker.js'
 import { ProblemLedger } from './problem-ledger.js'
 import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
@@ -87,6 +88,8 @@ export interface PipelineConfig {
   researchCache?: ResearchCache
   researchTracker?: ResearchTracker
   stuckTracker?: StuckTracker
+  /** Two-phase deny state for `type: budget` rules — see budget-tracker.ts's own header comment. `checkDeny` is read from evaluate()'s PreToolUse branch; `record` is called from `recordBudgetSnapshot()`, OUTSIDE evaluate(), by a host's Stop/PostToolUse-equivalent hook. */
+  budgetTracker?: BudgetTracker
   oracleTracker?: OracleTracker
   /** Disk-backed verdict cache for `type: package` rules. Defaults to KEEL_STATE_DIR/package-verifier.json. */
   packageVerifierCache?: PackageVerifierCache
@@ -1208,6 +1211,24 @@ export class EnforcementPipeline {
         continue
       }
 
+      // Match against budget rules (real token/dollar spend — distinct
+      // from the call-VOLUME `type: rate` runaway-budget-* rules). This is
+      // the ENTIRE blocking-path contract for `type: budget`: it only
+      // ever reads the persisted flag `BudgetTracker.record()` already
+      // wrote from a Stop/PostToolUse-equivalent hook — it never reads a
+      // transcript or database on this call. See types.ts's `max_tokens`
+      // comment and budget-tracker.ts's own header for the full two-phase
+      // rationale (Claude Code's Stop hook cannot block, so the only
+      // race-free enforcement point is the NEXT PreToolUse call, gated on
+      // state that already settled).
+      if (rule.type === 'budget' && this.config.budgetTracker) {
+        const deny = this.config.budgetTracker.checkDeny(rule, input)
+        if (deny) {
+          return this.violation(input, rule, deny.message, start, 3, rule.id)
+        }
+        continue
+      }
+
       // Match against diagnosis rules (root-cause marker): complex or
       // destructive fixes are gated on a fresh hypothesis (or diagnosis
       // evidence) for the session's active problem in the ledger.
@@ -1495,6 +1516,28 @@ export class EnforcementPipeline {
       if (rule.type !== 'stuck' || !rule.match) continue
       if (!this.matchesRulePattern(rule.match, cmd)) continue
       this.config.stuckTracker.recordOutcome(rule, input, exitCode)
+    }
+  }
+
+  /**
+   * Record a fresh spend MEASUREMENT for every `type: budget` rule, from a
+   * host's Stop/PostToolUse-equivalent hook — deliberately OUTSIDE
+   * evaluate()'s PreToolUse path (see BudgetTracker's own header comment
+   * for why: Claude Code's Stop hook cannot block, so this call can never
+   * itself deny anything; it only updates the persisted flag the NEXT
+   * PreToolUse call's `type: budget` branch reads). `spend` is already
+   * computed by the caller (budget/claude-transcript.ts's
+   * `measureClaudeCodeSpend`, budget/opencode-db.ts's
+   * `measureOpenCodeSpend`, or a fixture/test's own literal value) — this
+   * method never reads a transcript or database itself, only applies the
+   * measurement to every budget rule in the current ruleset.
+   */
+  recordBudgetSnapshot(input: EnforceInput, spend: BudgetSpend): void {
+    if (!this.config.budgetTracker) return
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+    for (const rule of rules) {
+      if (rule.type !== 'budget') continue
+      this.config.budgetTracker.record(rule, input, spend)
     }
   }
 

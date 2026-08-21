@@ -1,5 +1,6 @@
 // src/plugin.ts
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -51,7 +52,7 @@ function normalizeForMatch(p, flavor = currentFlavor()) {
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/identity.js
+// ../../node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
 var DOC = /* @__PURE__ */ Symbol.for("yaml.document");
 var MAP = /* @__PURE__ */ Symbol.for("yaml.map");
@@ -87,7 +88,7 @@ function isNode(node) {
 }
 var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
 
-// ../../../../../node_modules/yaml/browser/dist/visit.js
+// ../../node_modules/yaml/browser/dist/visit.js
 var BREAK = /* @__PURE__ */ Symbol("break visit");
 var SKIP = /* @__PURE__ */ Symbol("skip children");
 var REMOVE = /* @__PURE__ */ Symbol("remove node");
@@ -237,7 +238,7 @@ function replaceNode(key, path2, node) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/doc/directives.js
+// ../../node_modules/yaml/browser/dist/doc/directives.js
 var escapeChars = {
   "!": "%21",
   ",": "%2C",
@@ -400,7 +401,7 @@ var Directives = class _Directives {
 Directives.defaultYaml = { explicit: false, version: "1.2" };
 Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
 
-// ../../../../../node_modules/yaml/browser/dist/doc/anchors.js
+// ../../node_modules/yaml/browser/dist/doc/anchors.js
 function anchorIsValid(anchor) {
   if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
     const sa = JSON.stringify(anchor);
@@ -459,7 +460,7 @@ function createNodeAnchors(doc, prefix) {
   };
 }
 
-// ../../../../../node_modules/yaml/browser/dist/doc/applyReviver.js
+// ../../node_modules/yaml/browser/dist/doc/applyReviver.js
 function applyReviver(reviver, obj, key, val) {
   if (val && typeof val === "object") {
     if (Array.isArray(val)) {
@@ -503,7 +504,7 @@ function applyReviver(reviver, obj, key, val) {
   return reviver.call(obj, key, val);
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/toJS.js
+// ../../node_modules/yaml/browser/dist/nodes/toJS.js
 function toJS(value, arg, ctx) {
   if (Array.isArray(value))
     return value.map((v, i) => toJS(v, String(i), ctx));
@@ -526,7 +527,7 @@ function toJS(value, arg, ctx) {
   return value;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Node.js
+// ../../node_modules/yaml/browser/dist/nodes/Node.js
 var NodeBase = class {
   constructor(type) {
     Object.defineProperty(this, NODE_TYPE, { value: type });
@@ -558,7 +559,7 @@ var NodeBase = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Alias.js
+// ../../node_modules/yaml/browser/dist/nodes/Alias.js
 var Alias = class extends NodeBase {
   constructor(source) {
     super(ALIAS);
@@ -663,7 +664,7 @@ function getAliasCount(doc, node, anchors) {
   return 1;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Scalar.js
+// ../../node_modules/yaml/browser/dist/nodes/Scalar.js
 var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
 var Scalar = class extends NodeBase {
   constructor(value) {
@@ -683,7 +684,7 @@ Scalar.PLAIN = "PLAIN";
 Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
 Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
-// ../../../../../node_modules/yaml/browser/dist/doc/createNode.js
+// ../../node_modules/yaml/browser/dist/doc/createNode.js
 var defaultTagPrefix = "tag:yaml.org,2002:";
 function findTagObject(value, tagName, tags) {
   if (tagName) {
@@ -749,7 +750,7 @@ function createNode(value, tagName, ctx) {
   return node;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Collection.js
+// ../../node_modules/yaml/browser/dist/nodes/Collection.js
 function collectionFromPath(schema4, path2, value) {
   let v = value;
   for (let i = path2.length - 1; i >= 0; --i) {
@@ -881,7 +882,7 @@ var Collection = class extends NodeBase {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyComment.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyComment.js
 var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent) {
   if (/^\n+$/.test(comment))
@@ -890,7 +891,7 @@ function indentComment(comment, indent) {
 }
 var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/foldFlowLines.js
+// ../../node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
@@ -1017,7 +1018,7 @@ function consumeMoreIndentedLines(text, i, indent) {
   return end;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyString.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyString.js
 var getFoldOptions = (ctx, isBlock2) => ({
   indentAtStart: isBlock2 ? ctx.indent.length : ctx.indentAtStart,
   lineWidth: ctx.options.lineWidth,
@@ -1292,7 +1293,7 @@ function stringifyString(item, ctx, onComment, onChompKeep) {
   return res;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringify.js
+// ../../node_modules/yaml/browser/dist/stringify/stringify.js
 function createStringifyContext(doc, options) {
   const opt = Object.assign({
     blockQuote: true,
@@ -1405,7 +1406,7 @@ function stringify(item, ctx, onComment, onChompKeep) {
 ${ctx.indent}${str}`;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyPair.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyPair.js
 function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
   const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
   let keyComment = isNode(key) && key.comment || null;
@@ -1528,14 +1529,14 @@ ${ctx.indent}`;
   return str;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/log.js
+// ../../node_modules/yaml/browser/dist/log.js
 function warn(logLevel, warning) {
   if (logLevel === "debug" || logLevel === "warn") {
     console.warn(warning);
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
 var MERGE_KEY = "<<";
 var merge = {
   identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
@@ -1585,7 +1586,7 @@ function resolveAliasValue(ctx, value) {
   return ctx && isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
+// ../../node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
 function addPairToJSMap(ctx, map2, { key, value }) {
   if (isNode(key) && key.addToJSMap)
     key.addToJSMap(ctx, map2, value);
@@ -1638,7 +1639,7 @@ function stringifyKey(key, jsKey, ctx) {
   return JSON.stringify(jsKey);
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Pair.js
+// ../../node_modules/yaml/browser/dist/nodes/Pair.js
 function createPair(key, value, ctx) {
   const k = createNode(key, void 0, ctx);
   const v = createNode(value, void 0, ctx);
@@ -1667,7 +1668,7 @@ var Pair = class _Pair {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyCollection.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyCollection.js
 function stringifyCollection(collection, ctx, options) {
   const flow = ctx.inFlow ?? collection.flow;
   const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
@@ -1809,7 +1810,7 @@ function addCommentBefore({ indent, options: { commentString } }, lines2, commen
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/YAMLMap.js
+// ../../node_modules/yaml/browser/dist/nodes/YAMLMap.js
 function findPair(items, key) {
   const k = isScalar(key) ? key.value : key;
   for (const it of items) {
@@ -1940,7 +1941,7 @@ var YAMLMap = class extends Collection {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/map.js
+// ../../node_modules/yaml/browser/dist/schema/common/map.js
 var map = {
   collection: "map",
   default: true,
@@ -1954,7 +1955,7 @@ var map = {
   createNode: (schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx)
 };
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/YAMLSeq.js
+// ../../node_modules/yaml/browser/dist/nodes/YAMLSeq.js
 var YAMLSeq = class extends Collection {
   static get tagName() {
     return "tag:yaml.org,2002:seq";
@@ -2058,7 +2059,7 @@ function asItemIndex(key) {
   return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/seq.js
+// ../../node_modules/yaml/browser/dist/schema/common/seq.js
 var seq = {
   collection: "seq",
   default: true,
@@ -2072,7 +2073,7 @@ var seq = {
   createNode: (schema4, obj, ctx) => YAMLSeq.from(schema4, obj, ctx)
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/string.js
+// ../../node_modules/yaml/browser/dist/schema/common/string.js
 var string = {
   identify: (value) => typeof value === "string",
   default: true,
@@ -2084,7 +2085,7 @@ var string = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/null.js
+// ../../node_modules/yaml/browser/dist/schema/common/null.js
 var nullTag = {
   identify: (value) => value == null,
   createNode: () => new Scalar(null),
@@ -2095,7 +2096,7 @@ var nullTag = {
   stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/bool.js
+// ../../node_modules/yaml/browser/dist/schema/core/bool.js
 var boolTag = {
   identify: (value) => typeof value === "boolean",
   default: true,
@@ -2112,7 +2113,7 @@ var boolTag = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyNumber.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyNumber.js
 function stringifyNumber({ format, minFractionDigits, tag, value }) {
   if (typeof value === "bigint")
     return String(value);
@@ -2133,7 +2134,7 @@ function stringifyNumber({ format, minFractionDigits, tag, value }) {
   return n;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/float.js
+// ../../node_modules/yaml/browser/dist/schema/core/float.js
 var floatNaN = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -2169,7 +2170,7 @@ var float = {
   stringify: stringifyNumber
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/int.js
+// ../../node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
 var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
 function intStringify(node, radix, prefix) {
@@ -2205,7 +2206,7 @@ var intHex = {
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/schema.js
+// ../../node_modules/yaml/browser/dist/schema/core/schema.js
 var schema = [
   map,
   seq,
@@ -2220,7 +2221,7 @@ var schema = [
   float
 ];
 
-// ../../../../../node_modules/yaml/browser/dist/schema/json/schema.js
+// ../../node_modules/yaml/browser/dist/schema/json/schema.js
 function intIdentify2(value) {
   return typeof value === "bigint" || Number.isInteger(value);
 }
@@ -2278,7 +2279,7 @@ var jsonError = {
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
 var binary = {
   identify: (value) => value instanceof Uint8Array,
   // Buffer inherits from Uint8Array
@@ -2331,7 +2332,7 @@ var binary = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
 function resolvePairs(seq2, onError) {
   if (isSeq(seq2)) {
     for (let i = 0; i < seq2.items.length; ++i) {
@@ -2397,7 +2398,7 @@ var pairs = {
   createNode: createPairs
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
 var YAMLOMap = class _YAMLOMap extends YAMLSeq {
   constructor() {
     super();
@@ -2463,7 +2464,7 @@ var omap = {
   createNode: (schema4, iterable, ctx) => YAMLOMap.from(schema4, iterable, ctx)
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
 function boolStringify({ value, source }, ctx) {
   const boolObj = value ? trueTag : falseTag;
   if (source && boolObj.test.test(source))
@@ -2487,7 +2488,7 @@ var falseTag = {
   stringify: boolStringify
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
 var floatNaN2 = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -2526,7 +2527,7 @@ var float2 = {
   stringify: stringifyNumber
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
 function intResolve2(str, offset, radix, { intAsBigInt }) {
   const sign2 = str[0];
@@ -2595,7 +2596,7 @@ var intHex2 = {
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
 var YAMLSet = class _YAMLSet extends YAMLMap {
   constructor(schema4) {
     super(schema4);
@@ -2674,7 +2675,7 @@ var set = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
 function parseSexagesimal(str, asBigInt) {
   const sign2 = str[0];
   const parts = sign2 === "-" || sign2 === "+" ? str.substring(1) : str;
@@ -2753,7 +2754,7 @@ var timestamp = {
   stringify: ({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? ""
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
 var schema3 = [
   map,
   seq,
@@ -2778,7 +2779,7 @@ var schema3 = [
   timestamp
 ];
 
-// ../../../../../node_modules/yaml/browser/dist/schema/tags.js
+// ../../node_modules/yaml/browser/dist/schema/tags.js
 var schemas = /* @__PURE__ */ new Map([
   ["core", schema],
   ["failsafe", [map, seq, string]],
@@ -2849,7 +2850,7 @@ function getTags(customTags, schemaName, addMergeTag) {
   }, []);
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/Schema.js
+// ../../node_modules/yaml/browser/dist/schema/Schema.js
 var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 var Schema = class _Schema {
   constructor({ compat, customTags, merge: merge2, resolveKnownTags, schema: schema4, sortMapEntries, toStringDefaults }) {
@@ -2870,7 +2871,7 @@ var Schema = class _Schema {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
 function stringifyDocument(doc, options) {
   const lines2 = [];
   let hasDirectives = options.directives === true;
@@ -2941,7 +2942,7 @@ function stringifyDocument(doc, options) {
   return lines2.join("\n") + "\n";
 }
 
-// ../../../../../node_modules/yaml/browser/dist/doc/Document.js
+// ../../node_modules/yaml/browser/dist/doc/Document.js
 var Document = class _Document {
   constructor(value, replacer, options) {
     this.commentBefore = null;
@@ -3233,7 +3234,7 @@ function assertCollection(contents) {
   throw new Error("Expected a YAML collection as document contents");
 }
 
-// ../../../../../node_modules/yaml/browser/dist/errors.js
+// ../../node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
   constructor(name, pos, code, message) {
     super();
@@ -3289,7 +3290,7 @@ ${pointer}
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-props.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-props.js
 function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
   let spaceBefore = false;
   let atNewline = startOnNewline;
@@ -3417,7 +3418,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   };
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-contains-newline.js
+// ../../node_modules/yaml/browser/dist/compose/util-contains-newline.js
 function containsNewline(key) {
   if (!key)
     return null;
@@ -3453,7 +3454,7 @@ function containsNewline(key) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
+// ../../node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
 function flowIndentCheck(indent, fc, onError) {
   if (fc?.type === "flow-collection") {
     const end = fc.end[0];
@@ -3464,7 +3465,7 @@ function flowIndentCheck(indent, fc, onError) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-map-includes.js
+// ../../node_modules/yaml/browser/dist/compose/util-map-includes.js
 function mapIncludes(ctx, items, search) {
   const { uniqueKeys } = ctx.options;
   if (uniqueKeys === false)
@@ -3473,7 +3474,7 @@ function mapIncludes(ctx, items, search) {
   return items.some((pair) => isEqual(pair.key, search));
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-block-map.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-map.js
 var startColMsg = "All mapping items must start at the same column";
 function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLMap;
@@ -3569,7 +3570,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   return map2;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-block-seq.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-seq.js
 function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bs, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLSeq;
   const seq2 = new NodeClass(ctx.schema);
@@ -3611,7 +3612,7 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
   return seq2;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-end.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-end.js
 function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
@@ -3648,7 +3649,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   return { comment, offset };
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
 var blockMsg = "Block collections are not allowed within flow collections";
 var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
 function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, fc, onError, tag) {
@@ -3828,7 +3829,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   return coll;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-collection.js
+// ../../node_modules/yaml/browser/dist/compose/compose-collection.js
 function resolveCollection(CN2, ctx, token, onError, tagName, tag) {
   const coll = token.type === "block-map" ? resolveBlockMap(CN2, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq(CN2, ctx, token, onError, tag) : resolveFlowCollection(CN2, ctx, token, onError, tag);
   const Coll = coll.constructor;
@@ -3880,7 +3881,7 @@ function composeCollection(CN2, ctx, token, props, onError) {
   return node;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
 function resolveBlockScalar(ctx, scalar, onError) {
   const start = scalar.offset;
   const header = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
@@ -4056,7 +4057,7 @@ function splitLines(source) {
   return lines2;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
 function resolveFlowScalar(scalar, strict, onError) {
   const { offset, type, source, end } = scalar;
   let _type;
@@ -4268,7 +4269,7 @@ function parseCharCode(source, offset, length, onError) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/compose-scalar.js
 function composeScalar(ctx, token, tagToken, onError) {
   const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
   const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
@@ -4339,7 +4340,7 @@ function findScalarTagByTest({ atKey, directives, schema: schema4 }, value, toke
   return tag;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
+// ../../node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
 function emptyScalarPosition(offset, before, pos) {
   if (before) {
     pos ?? (pos = before.length);
@@ -4363,7 +4364,7 @@ function emptyScalarPosition(offset, before, pos) {
   return offset;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-node.js
+// ../../node_modules/yaml/browser/dist/compose/compose-node.js
 var CN = { composeNode, composeEmptyNode };
 function composeNode(ctx, token, props, onError) {
   const atKey = ctx.atKey;
@@ -4456,7 +4457,7 @@ function composeAlias({ options }, { offset, source, end }, onError) {
   return alias;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-doc.js
+// ../../node_modules/yaml/browser/dist/compose/compose-doc.js
 function composeDoc(options, directives, { offset, start, value, end }, onError) {
   const opts = Object.assign({ _directives: directives }, options);
   const doc = new Document(void 0, opts);
@@ -4489,7 +4490,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   return doc;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/composer.js
+// ../../node_modules/yaml/browser/dist/compose/composer.js
 function getErrorPos(src) {
   if (typeof src === "number")
     return [src, src + 1];
@@ -4682,7 +4683,7 @@ ${end.comment}` : end.comment;
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/parse/cst-visit.js
+// ../../node_modules/yaml/browser/dist/parse/cst-visit.js
 var BREAK2 = /* @__PURE__ */ Symbol("break visit");
 var SKIP2 = /* @__PURE__ */ Symbol("skip children");
 var REMOVE2 = /* @__PURE__ */ Symbol("remove item");
@@ -4738,7 +4739,7 @@ function _visit(path2, item, visitor) {
   return typeof ctrl === "function" ? ctrl(item, path2) : ctrl;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/parse/cst.js
+// ../../node_modules/yaml/browser/dist/parse/cst.js
 var BOM = "\uFEFF";
 var DOCUMENT = "";
 var FLOW_END = "";
@@ -4803,7 +4804,7 @@ function tokenType(source) {
   return null;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/parse/lexer.js
+// ../../node_modules/yaml/browser/dist/parse/lexer.js
 function isEmpty(ch) {
   switch (ch) {
     case void 0:
@@ -5385,7 +5386,7 @@ var Lexer = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/parse/line-counter.js
+// ../../node_modules/yaml/browser/dist/parse/line-counter.js
 var LineCounter = class {
   constructor() {
     this.lineStarts = [];
@@ -5410,7 +5411,7 @@ var LineCounter = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/parse/parser.js
+// ../../node_modules/yaml/browser/dist/parse/parser.js
 function includesToken(list, type) {
   for (let i = 0; i < list.length; ++i)
     if (list[i].type === type)
@@ -6273,7 +6274,7 @@ var Parser = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/public-api.js
+// ../../node_modules/yaml/browser/dist/public-api.js
 function parseOptions(options) {
   const prettyErrors = options.prettyErrors !== false;
   const lineCounter = options.lineCounter || prettyErrors && new LineCounter() || null;
@@ -6498,7 +6499,8 @@ function validateRules(rules) {
     "diagnosis",
     "claim",
     "oracle",
-    "package"
+    "package",
+    "budget"
   ]);
   const validActions = /* @__PURE__ */ new Set(["block", "deny", "warn", "prompt", "allow", "fix", "report", "research", "redirect"]);
   const validLevels = /* @__PURE__ */ new Set(["sprint", "balanced", "protect"]);
@@ -6539,6 +6541,9 @@ function validateRules(rules) {
       if (!rule.trigger) {
         errors.push(`Oracle rule "${label}" needs a trigger (the failing test-run matcher that arms the recency window) \u2014 without it the rule can never fire`);
       }
+    }
+    if (rule.type === "budget" && rule.max_tokens === void 0 && rule.max_dollars === void 0) {
+      errors.push(`Budget rule "${label}" needs max_tokens or max_dollars \u2014 remove it or add a spend ceiling`);
     }
     if (typeof rule.type === "string" && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine \u2014 remove it or use a supported type`);
@@ -8809,6 +8814,13 @@ var EnforcementPipeline = class {
           }
           continue;
         }
+        if (rule.type === "budget" && this.config.budgetTracker) {
+          const deny = this.config.budgetTracker.checkDeny(rule, input);
+          if (deny) {
+            return this.violation(input, rule, deny.message, start, 3, rule.id);
+          }
+          continue;
+        }
         if (rule.type === "diagnosis" && this.config.ledger) {
           const cmdStr = commandString(input);
           if (rule.fallback_tools?.includes(input.tool) && rule.fallback_pattern && this.matchesRulePattern(rule.fallback_pattern, cmdStr)) {
@@ -8981,6 +8993,27 @@ var EnforcementPipeline = class {
       if (rule.type !== "stuck" || !rule.match) continue;
       if (!this.matchesRulePattern(rule.match, cmd)) continue;
       this.config.stuckTracker.recordOutcome(rule, input, exitCode);
+    }
+  }
+  /**
+   * Record a fresh spend MEASUREMENT for every `type: budget` rule, from a
+   * host's Stop/PostToolUse-equivalent hook — deliberately OUTSIDE
+   * evaluate()'s PreToolUse path (see BudgetTracker's own header comment
+   * for why: Claude Code's Stop hook cannot block, so this call can never
+   * itself deny anything; it only updates the persisted flag the NEXT
+   * PreToolUse call's `type: budget` branch reads). `spend` is already
+   * computed by the caller (budget/claude-transcript.ts's
+   * `measureClaudeCodeSpend`, budget/opencode-db.ts's
+   * `measureOpenCodeSpend`, or a fixture/test's own literal value) — this
+   * method never reads a transcript or database itself, only applies the
+   * measurement to every budget rule in the current ruleset.
+   */
+  recordBudgetSnapshot(input, spend) {
+    if (!this.config.budgetTracker) return;
+    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+    for (const rule of rules) {
+      if (rule.type !== "budget") continue;
+      this.config.budgetTracker.record(rule, input, spend);
     }
   }
   /**
@@ -9970,6 +10003,250 @@ import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, exists
 import { join as join7 } from "node:path";
 var STUCK_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
+// ../core/src/enforce/budget-store.ts
+import { readFileSync as readFileSync11, writeFileSync as writeFileSync7, existsSync as existsSync10, mkdirSync as mkdirSync7, renameSync as renameSync6 } from "node:fs";
+import { join as join8 } from "node:path";
+var BUDGET_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
+var MAX_ENTRIES = 500;
+var PersistentBudgetStore = class {
+  dir;
+  lockOptions;
+  constructor(dir = stateDir(), lockOptions = {}) {
+    this.dir = dir;
+    this.lockOptions = lockOptions;
+  }
+  filePath() {
+    return join8(this.dir, "budget-tracker.json");
+  }
+  lockPath() {
+    return `${this.filePath()}.lock`;
+  }
+  load() {
+    try {
+      const p = this.filePath();
+      if (existsSync10(p)) {
+        const parsed = JSON.parse(readFileSync11(p, "utf-8"));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+    }
+    return {};
+  }
+  save(data) {
+    try {
+      mkdirSync7(this.dir, { recursive: true });
+      const p = this.filePath();
+      const tmp = `${p}.${process.pid}.tmp`;
+      writeFileSync7(tmp, JSON.stringify(data));
+      renameSync6(tmp, p);
+    } catch {
+    }
+  }
+  prune(data, now) {
+    const pruned = {};
+    for (const [key, state] of Object.entries(data)) {
+      if (!state || typeof state.measuredAt !== "number") continue;
+      if (now - state.measuredAt < BUDGET_STATE_MAX_AGE_MS) pruned[key] = state;
+    }
+    const keys = Object.keys(pruned);
+    if (keys.length > MAX_ENTRIES) {
+      const byRecency = keys.map((k) => ({ k, last: pruned[k].measuredAt })).sort((a, b) => a.last - b.last);
+      for (const { k } of byRecency.slice(0, keys.length - MAX_ENTRIES)) delete pruned[k];
+    }
+    return pruned;
+  }
+  /**
+   * Non-expired persisted state for `key`, or `null` — read-only, no lock,
+   * no directory creation, never throws. `BudgetTracker.checkDeny()` calls
+   * this on every evaluated tool call, not only ones being recorded — same
+   * hot-path requirement as `PersistentStuckStore.get()`.
+   */
+  get(key) {
+    if (!key) return null;
+    const state = this.load()[key];
+    if (!state || typeof state.measuredAt !== "number") return null;
+    if (Date.now() - state.measuredAt >= BUDGET_STATE_MAX_AGE_MS) return null;
+    return state;
+  }
+  /** Persist `state` for `key`, replacing whatever was there. Under the file lock so two concurrent measurement writers can't lose one's write to the other's. */
+  set(key, state) {
+    if (!key) return;
+    this.ensureDir();
+    withFileLock(this.lockPath(), () => {
+      const now = Date.now();
+      const data = this.prune(this.load(), now);
+      data[key] = state;
+      this.save(data);
+    }, this.lockOptions);
+  }
+  ensureDir() {
+    try {
+      mkdirSync7(this.dir, { recursive: true });
+    } catch {
+    }
+  }
+  /** Clear one bucket — used by tests and by a future `keel budget reset`. */
+  delete(key) {
+    if (!key) return;
+    this.ensureDir();
+    withFileLock(this.lockPath(), () => {
+      const data = this.load();
+      if (key in data) {
+        delete data[key];
+        this.save(data);
+      }
+    }, this.lockOptions);
+  }
+  /** Clear every bucket — test isolation helper, mirrors PersistentStuckStore.clearAll(). */
+  clearAll() {
+    this.ensureDir();
+    withFileLock(this.lockPath(), () => {
+      this.save({});
+    }, this.lockOptions);
+  }
+};
+
+// ../core/src/enforce/halt-writer.ts
+import { writeFileSync as writeFileSync8, existsSync as existsSync11, mkdirSync as mkdirSync8 } from "node:fs";
+import { join as join9 } from "node:path";
+function writeHaltSentinel(reason, haltFilePath) {
+  const path2 = haltFilePath || join9(resolveHome(), ".keel", "HALTED");
+  const dir = join9(path2, "..");
+  if (!existsSync11(dir)) {
+    mkdirSync8(dir, { recursive: true });
+  }
+  const state = {
+    halted_at: (/* @__PURE__ */ new Date()).toISOString(),
+    reason: reason || "Manual halt",
+    auto_clear_on_restart: false
+  };
+  writeFileSync8(path2, JSON.stringify(state, null, 2));
+}
+
+// ../core/src/enforce/budget-tracker.ts
+var BudgetTracker = class {
+  store;
+  haltWriter;
+  /**
+   * `haltWriter` defaults to the real `writeHaltSentinel` (writes
+   * `~/.keel/HALTED` via `resolveHome()`) but is INJECTABLE specifically so
+   * a test can assert the hard-stop escalation decision (does this
+   * measurement cross the threshold, is the rule actually enforcing) fired
+   * or didn't, WITHOUT ever writing to a real home directory — this
+   * codebase's own `override-isolation-guard.ts` exists because a test
+   * that forgets an equivalent stub for a DIFFERENT sentinel file
+   * (overrides.json) silently corrupted the developer's real `~/.keel`
+   * before; this constructor parameter is how `type: budget`'s tests avoid
+   * repeating that mistake for HALTED specifically.
+   */
+  constructor(store = new PersistentBudgetStore(), haltWriter = writeHaltSentinel) {
+    this.store = store;
+    this.haltWriter = haltWriter;
+  }
+  key(rule, input) {
+    return `budget:${rule.id}:${input.session_id || "unknown"}:${input.cwd}`;
+  }
+  /**
+   * Read-only check for the PreToolUse blocking path. Returns a deny
+   * signal only when the LAST measurement confirmed the session over
+   * budget — never derives that from anything read on this call.
+   */
+  checkDeny(rule, input) {
+    const state = this.store.get(this.key(rule, input));
+    if (!state || !state.overBudget) return null;
+    const spendDesc = state.dollarsConfident && state.spendDollars !== null ? `${state.spendTokens.toLocaleString()} tokens (~$${state.spendDollars.toFixed(2)})` : `${state.spendTokens.toLocaleString()} tokens (dollar figure unavailable \u2014 see rationale)`;
+    const staleness = state.unavailable ? " The most recent measurement attempt could not read spend data; this reflects the last CONFIRMED measurement, not a fresh read." : "";
+    return { message: `${rule.message} Last confirmed spend: ${spendDesc}.${staleness}` };
+  }
+  /**
+   * Record a fresh spend measurement, called OUTSIDE evaluate() — see this
+   * class's own header. Updates the persisted over-budget flag for `rule`
+   * against `input`'s session/cwd.
+   *
+   * `spend.unavailable === true` is handled specially: this is point 5's
+   * "never silently report under budget when the transcript can't be
+   * read" — a failed read must NEVER reset a prior over-budget flag to
+   * false (that would read as "confirmed under budget" when nothing was
+   * actually confirmed), so an unavailable measurement carries the
+   * PREVIOUS state's overBudget/spend fields forward unchanged and only
+   * flips `unavailable: true` — a loud, inspectable degraded-state signal
+   * distinct from either verdict, never a silently-passed one.
+   */
+  record(rule, input, spend) {
+    if (rule.max_tokens === void 0 && rule.max_dollars === void 0) return;
+    const key = this.key(rule, input);
+    if (spend.unavailable) {
+      const prior = this.store.get(key);
+      this.store.set(key, {
+        overBudget: prior?.overBudget ?? false,
+        measuredAt: Date.now(),
+        spendTokens: prior?.spendTokens ?? 0,
+        spendDollars: prior?.spendDollars ?? null,
+        dollarsConfident: prior?.dollarsConfident ?? false,
+        unavailable: true,
+        reason: prior ? `Spend data unreadable on this measurement attempt \u2014 carrying forward the last confirmed reading (${prior.spendTokens.toLocaleString()} tokens).` : "Spend data unreadable and no prior confirmed measurement exists for this session \u2014 budget enforcement is degraded to observe-only until a read succeeds."
+      });
+      return;
+    }
+    const overByTokens = rule.max_tokens !== void 0 && spend.tokens > rule.max_tokens;
+    const overByDollars = rule.max_dollars !== void 0 && spend.dollarsConfident && spend.dollars !== null && spend.dollars > rule.max_dollars;
+    const overBudget = overByTokens || overByDollars;
+    const state = {
+      overBudget,
+      measuredAt: Date.now(),
+      spendTokens: spend.tokens,
+      spendDollars: spend.dollars,
+      dollarsConfident: spend.dollarsConfident,
+      unavailable: false,
+      reason: overBudget ? `Measured spend ${spend.tokens.toLocaleString()} tokens${overByTokens ? ` exceeds max_tokens (${rule.max_tokens})` : ""}${overByTokens && overByDollars ? " and" : ""}${overByDollars ? ` $${spend.dollars?.toFixed(2)} exceeds max_dollars (${rule.max_dollars})` : ""}.` : `Measured spend ${spend.tokens.toLocaleString()} tokens \u2014 within budget.`
+    };
+    this.store.set(key, state);
+    if (overBudget && rule.mode !== "observe" && rule.hard_stop_multiplier !== void 0) {
+      const tokenMultiple = rule.max_tokens ? spend.tokens / rule.max_tokens : 0;
+      const dollarMultiple = rule.max_dollars && spend.dollarsConfident && spend.dollars !== null ? spend.dollars / rule.max_dollars : 0;
+      if (tokenMultiple >= rule.hard_stop_multiplier || dollarMultiple >= rule.hard_stop_multiplier) {
+        this.haltWriter(
+          `keel halted by rule "${rule.id}": spend reached ${rule.hard_stop_multiplier}x its configured budget ceiling (${spend.tokens.toLocaleString()} tokens). Run 'keel resume' after reviewing.`
+        );
+      }
+    }
+  }
+};
+
+// ../core/src/enforce/budget/opencode-db.ts
+async function measureOpenCodeSpend(dbPath, sessionId) {
+  if (!dbPath || !sessionId) {
+    return { tokens: 0, dollars: null, dollarsConfident: false, unavailable: true, unrecognizedModels: [] };
+  }
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const row = db.prepare(
+        "SELECT cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write FROM session WHERE id = ?"
+      ).get(sessionId);
+      if (!row) {
+        return { tokens: 0, dollars: 0, dollarsConfident: true, unavailable: false, unrecognizedModels: [] };
+      }
+      const num = (v) => typeof v === "number" && Number.isFinite(v) ? v : 0;
+      const tokens = num(row.tokens_input) + num(row.tokens_output) + num(row.tokens_reasoning) + num(row.tokens_cache_read) + num(row.tokens_cache_write);
+      const costValue = row.cost;
+      const dollarsConfident = typeof costValue === "number" && Number.isFinite(costValue);
+      return {
+        tokens,
+        dollars: dollarsConfident ? costValue : null,
+        dollarsConfident,
+        unavailable: false,
+        unrecognizedModels: []
+      };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return { tokens: 0, dollars: null, dollarsConfident: false, unavailable: true, unrecognizedModels: [] };
+  }
+}
+
 // ../core/src/enforce/research-tracker.ts
 var ResearchTracker = class {
   constructor(researchCache) {
@@ -10051,14 +10328,14 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync11, writeFileSync as writeFileSync7, renameSync as renameSync6, statSync as statSync3 } from "node:fs";
-import { join as join8 } from "node:path";
+import { existsSync as existsSync12, mkdirSync as mkdirSync9, readFileSync as readFileSync12, writeFileSync as writeFileSync9, renameSync as renameSync7, statSync as statSync3 } from "node:fs";
+import { join as join10 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/audit.ts
-import { appendFileSync, existsSync as existsSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync12, readdirSync } from "node:fs";
-import { join as join9 } from "node:path";
+import { appendFileSync, existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync13, readdirSync } from "node:fs";
+import { join as join11 } from "node:path";
 
 // ../core/src/enforce/audit-redaction.ts
 var SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key|credential)/i;
@@ -10098,18 +10375,18 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync12, readFileSync as readFileSync13, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync7 } from "node:fs";
-import { join as join10 } from "node:path";
+import { existsSync as existsSync14, readFileSync as readFileSync14, writeFileSync as writeFileSync11, mkdirSync as mkdirSync11, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync8 } from "node:fs";
+import { join as join12 } from "node:path";
 var signingKey = null;
 function keyPath() {
-  return join10(resolveHome(), ".keel", "receipt-key.json");
+  return join12(resolveHome(), ".keel", "receipt-key.json");
 }
 function legacyKeyPath() {
-  return join10(process.cwd(), ".keel", "receipts", "receipt-key.json");
+  return join12(process.cwd(), ".keel", "receipts", "receipt-key.json");
 }
 function parseKeyFile(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync13(filePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync14(filePath, "utf-8"));
     return parsed && parsed.kid ? parsed : null;
   } catch {
     return null;
@@ -10143,20 +10420,20 @@ function initReceiptKey() {
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } };
   signingKey = newKey;
   try {
-    const dir = join10(resolveHome(), ".keel");
-    if (!existsSync12(dir)) mkdirSync9(dir, { recursive: true });
-    writeFileSync9(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    const dir = join12(resolveHome(), ".keel");
+    if (!existsSync14(dir)) mkdirSync11(dir, { recursive: true });
+    writeFileSync11(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
 }
 var receiptChain = /* @__PURE__ */ new Map();
 function receiptsLogPath() {
-  return join10(process.cwd(), ".keel", "receipts", "receipts.log");
+  return join12(process.cwd(), ".keel", "receipts", "receipts.log");
 }
 function loadReceiptChainHead(session) {
   try {
-    const lines2 = readFileSync13(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
+    const lines2 = readFileSync14(receiptsLogPath(), "utf-8").split("\n").filter(Boolean);
     for (let i = lines2.length - 1; i >= 0; i--) {
       const r = JSON.parse(lines2[i]);
       if ((r.session ?? "default") !== session) continue;
@@ -10189,20 +10466,20 @@ function createReceipt(agentId, toolName, args, verdict, ruleName, policyName, s
   receipt.signature = sign(null, Buffer.from(JSON.stringify(toHash), "utf8"), privateKey).toString("base64url");
   receiptChain.set(session, receipt.receipt_hash);
   try {
-    const dir = join10(process.cwd(), ".keel", "receipts");
-    if (!existsSync12(dir)) mkdirSync9(dir, { recursive: true });
-    appendFileSync2(join10(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
+    const dir = join12(process.cwd(), ".keel", "receipts");
+    if (!existsSync14(dir)) mkdirSync11(dir, { recursive: true });
+    appendFileSync2(join12(dir, "receipts.log"), JSON.stringify(receipt) + "\n");
   } catch {
   }
   return receipt;
 }
 
 // ../core/src/file-verify.ts
-import { readFileSync as readFileSync14 } from "node:fs";
-import { extname, basename as basename2, dirname, join as join11 } from "node:path";
+import { readFileSync as readFileSync15 } from "node:fs";
+import { extname, basename as basename2, dirname, join as join13 } from "node:path";
 async function loadTypeScriptFor(filePath) {
   const { createRequire } = await import("node:module");
-  for (const root of [join11(dirname(filePath), "noop.js"), import.meta.url]) {
+  for (const root of [join13(dirname(filePath), "noop.js"), import.meta.url]) {
     try {
       const ts = createRequire(root)("typescript");
       const api = ts?.createSourceFile ? ts : ts?.default;
@@ -10236,7 +10513,7 @@ async function verifyFileSyntax(filePath) {
       case ".cts": {
         const ts = await loadTypeScriptFor(filePath);
         if (!ts) return null;
-        const source = readFileSync14(filePath, "utf-8");
+        const source = readFileSync15(filePath, "utf-8");
         const kind = ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
         const parsed = ts.createSourceFile(basename2(filePath), source, ts.ScriptTarget.Latest, false, kind);
         const diagnostics = parsed.parseDiagnostics;
@@ -10246,11 +10523,11 @@ async function verifyFileSyntax(filePath) {
         break;
       }
       case ".json":
-        JSON.parse(readFileSync14(filePath, "utf-8"));
+        JSON.parse(readFileSync15(filePath, "utf-8"));
         break;
       case ".yaml":
       case ".yml":
-        parse(readFileSync14(filePath, "utf-8"));
+        parse(readFileSync15(filePath, "utf-8"));
         break;
       default:
         return null;
@@ -10287,6 +10564,7 @@ var HOME_DIR = resolveHome();
 var KEEL_DIR = path.join(HOME_DIR, ".keel");
 var RULES_PATH = path.join(KEEL_DIR, "rules.yaml");
 var REQUIREMENTS_PATH = path.join(KEEL_DIR, "requirements.md");
+var OPENCODE_DB_PATH = process.env.KEEL_OPENCODE_DB_PATH || path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
 var DISABLED_PATH = path.join(KEEL_DIR, "DISABLED");
 var sentinelCorrupted = false;
 var HALTED_PATH = path.join(KEEL_DIR, "HALTED");
@@ -11415,6 +11693,50 @@ rules:
     action: warn
     message: "More than 500 Bash calls in this session's last 4 hours \u2014 possible runaway loop or scope creep."
 
+  - id: session-spend-limit
+    type: budget
+    mode: observe
+    category: resource
+    severity: medium
+    confidence: medium
+    maturity: incubating
+    max_tokens: 2000000
+    action: deny
+    rationale: >-
+      keel had NO visibility into LLM API token/dollar usage at all before
+      this rule \u2014 the two existing runaway-budget-* rules (type: rate,
+      above) only ever counted tool-call VOLUME, and their own rationale
+      says so explicitly ("token budgets are not visible to keel's
+      enforcement hook and are intentionally NOT modeled"), because usage
+      lives in the model response, which keel's hook architecture never
+      saw. This rule closes that gap by reading REAL usage from a host's
+      own local record instead \u2014 a Claude Code session transcript's
+      message.usage fields, or an OpenCode session row's own cost/tokens_*
+      columns \u2014 never a network proxy. Two-phase by construction (see
+      packages/core/src/enforce/budget-tracker.ts): a Stop/PostToolUse-
+      equivalent hook measures spend and persists an over-budget flag; only
+      the NEXT PreToolUse call can ever deny, because Claude Code's Stop
+      hook is architecturally observe-only (it cannot block the turn that
+      just completed \u2014 docs/integration-guides/claude-code.md) \u2014 the same
+      "warn on first violation, persisted state blocks on repeat" shape
+      every other deny rule in this ruleset already uses. Shipped in
+      mode: observe, not enforcing: the model-string normalization this
+      depends on has a safety-critical failure mode (short aliases like
+      claude-sonnet-5/claude-opus-4-8/claude-fable-5, observed live on real
+      sessions on the machine this rule was built on, carry real non-zero
+      usage but must never be priced as if they matched an official dated
+      model ID) and needs to burn in against real traffic before it blocks
+      anything. max_tokens alone, no max_dollars, for the related reason:
+      a session using only aliased model strings correctly degrades its
+      dollar figure to unavailable (never a guessed/partial total), so a
+      rule keyed on max_dollars risks being a control that can never fire
+      on exactly the sessions observed live on this machine.
+    remediation: "Review the session's cumulative token usage; start a fresh session if the work has drifted, or raise max_tokens for a genuinely long one."
+    false_positives:
+      - "A long but legitimate large-refactor session \u2014 token spend correlates with session LENGTH, not with anything going wrong, the same false-positive shape the existing call-volume runaway-budget-* rules above already document for themselves."
+      - "A Claude Code transcript that cannot be read (missing/rotated file, permissions) degrades that measurement to the last confirmed state rather than asserting either verdict from zero data \u2014 see BudgetTracker.record()'s own comment. Surfaces as a distinct 'unavailable' audit entry, never a false block, but this rule's real hit rate depends on transcript readability."
+    message: "This session's measured LLM token spend exceeds max_tokens \u2014 possible runaway usage. Review before continuing, or raise the ceiling for a genuinely long session."
+
 `;
 function ensureRules() {
   try {
@@ -11597,6 +11919,7 @@ var plugin_default = {
       allowedFixTransforms: true,
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
+      budgetTracker: new BudgetTracker(new PersistentBudgetStore()),
       researchTracker: new ResearchTracker(),
       reloadRules: () => loadRuleHierarchy(directory),
       ruleFingerprint: () => [
@@ -11828,6 +12151,11 @@ var plugin_default = {
           pipeline.recordAttemptOutcome(action, exit);
           record({ session_id: input?.sessionID, turn_number: action.turn_number, tool: input?.tool, args: projectAuditArgs(args), action: "allow", message: "Tool completed", hook: "tool.execute.after", exit, cwd: directory });
           await verifyEdit(input?.tool, args, input?.sessionID, action.turn_number);
+          try {
+            const spend = await measureOpenCodeSpend(OPENCODE_DB_PATH, input?.sessionID);
+            pipeline.recordBudgetSnapshot(action, spend);
+          } catch {
+          }
         } catch {
         }
       },

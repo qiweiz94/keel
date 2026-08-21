@@ -1,7 +1,7 @@
 # Write your first custom rule
 
 The full rule format (`rules:` in `rules.yaml`, or YAML frontmatter in `AGENTS.md`/
-`CLAUDE.md`) is the same rich shape keel's own 46 shipped rules use — `id`, `type`,
+`CLAUDE.md`) is the same rich shape keel's own 47 shipped rules use — `id`, `type`,
 `level`, `scope`, `context`, `action`, `message`, `priority`, plus a couple dozen more
 fields depending on `type`. That's the right shape for keel's own catalog. It is not a
 reasonable first thing to hand someone who just wants to block one command their team

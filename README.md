@@ -209,11 +209,11 @@ default) · `block` (always) · `prompt` (always block until a human runs
 suggested next step) · `research` (block on a stale knowledge-freshness gate) ·
 `report` (log only).
 
-**Rule types:** `command`, `filesystem`, `content`, `network`, `env`, `rate`, `time`,
-`sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
+**Rule types:** `command`, `filesystem`, `content`, `network`, `env`, `rate`, `budget`,
+`time`, `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
 problem-solving types below (`stuck`, `research`, `diagnosis`, `claim`, `oracle`).
 
-`keel install` ships 46 rules by default, split into three tiers — what's an
+`keel install` ships 47 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
 `curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
@@ -223,7 +223,7 @@ publishing, and `npx`/`bunx` of unpinned packages. Run `keel validate` after edi
 ### Stopping agents that circle
 
 Several rule types target the failure everyone recognises — an agent retrying the same
-broken command forever. Three ship as part of the default 46:
+broken command forever. Three ship as part of the default 47:
 
 - **`stuck`** (`no-repeat-loops`) — N identical failures in a window → redirect, then deny
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
@@ -234,12 +234,20 @@ rules (`claim`, `oracle` ×2, budget, and verification checks) — ship as `mode
 evaluated and recorded on every matching call, never interrupting anything, until a
 human decides otherwise. `no-repeat-loops` has since been PROMOTED out of observe: this
 project's own traces cite 41 distinct repeat loops across 20 sessions as real evidence
-of the failure mode, and no over-triggering has ever been recorded against it (the two
-`runaway-budget-*` rules were checked against the same evidence bar and held back — see
-[docs/tiers.md](docs/tiers.md)) — it now actually redirects at 3 identical failures and
-denies at 5. `keel rules harness --append` is kept only for a rules.yaml created before
-these shipped as defaults — it checks by rule id, so it's a no-op if you already have
-them.
+of the failure mode, and no over-triggering has ever been recorded against it (the
+existing rate-based call-count `runaway-budget-*` rules were checked against the same
+evidence bar and held back — see [docs/tiers.md](docs/tiers.md)) — it now actually
+redirects at 3 identical failures and denies at 5. `keel rules harness --append` is kept
+only for a rules.yaml created before these shipped as defaults — it checks by rule id,
+so it's a no-op if you already have them.
+
+Note the two "budget" things above are NOT the same rule: the existing `runaway-budget-*`
+rules (`type: rate`) only ever count tool-call VOLUME in a time window — they have no
+visibility into actual LLM token/dollar spend and their own rationale says so. The new
+`type: budget` rule (`session-spend-limit`) is a separate mechanism that reads REAL
+usage from a host's own local record (a Claude Code transcript's usage fields, an
+OpenCode session row's own cost/token columns) and enforces on that instead — see
+[docs/tiers.md](docs/tiers.md) for why it ships `mode: observe`.
 
 ```bash
 keel rules harness            # print the legacy standalone set, with what they'd have caught in your history

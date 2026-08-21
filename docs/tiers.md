@@ -1,9 +1,9 @@
 # The three tiers
 
-`keel install` writes 46 default rules into `~/.keel/rules.yaml`, split into three
+`keel install` writes 47 default rules into `~/.keel/rules.yaml`, split into three
 tiers: 13 rules in Tier 1 carry a hard `level: protect` floor, plus one more Tier-1-
 positioned sibling rule that doesn't (see the note under Tier 1 below); 22 rules sit in
-Tier 2 (balanced); 9 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
+Tier 2 (balanced); 10 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
 has since been promoted out of Tier 3 into active enforcement (see below). This page
 explains what each tier does, how the "speed dial" (`keel level`) interacts with them,
 and how a rule moves from silently watching to actually blocking.
@@ -39,13 +39,13 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   ladder is the wrong shape — the first hit *is* the incident.
 
 Three tiers resolve that tension by giving each rule the posture its own evidence
-earns it, instead of applying one policy to all 46.
+earns it, instead of applying one policy to all 47.
 
 | Tier | What it does | Can the dial soften it? | Example rules |
 |---|---|---|---|
 | **1 — protect floor** | Denies on the *first* hit, always | No — active and unsoftened at every dial, sprint included | `no-force-push`, `pipe-to-shell`, `no-exfil-flow`, `keel-control-gate` |
 | **2 — balanced** | Warns once, then blocks (dial-dependent) | Yes — `sprint` downgrades its deny/block to warn | `no-push-to-main`, `no-secrets-in-code`, `cicd-and-infra` |
-| **3 — observe** | Evaluated and recorded, never interrupts | N/A — records what it *would* have done regardless of dial | `research-before-fix`, `claim-without-evidence`, `runaway-budget-tool-calls` |
+| **3 — observe** | Evaluated and recorded, never interrupts | N/A — records what it *would* have done regardless of dial | `research-before-fix`, `claim-without-evidence`, `runaway-budget-tool-calls`, `session-spend-limit` |
 
 ## Tier 1 — protect floor (13 rules)
 
@@ -78,7 +78,7 @@ sources/sinks against a persisted, session-scoped store instead of in-memory sta
 it catches a read and a later network sink across two separate hook processes, not just
 one. It ships `action: warn`, `level: sprint` (no floor — the dial can soften it like any
 Tier-2 rule), yet it's written directly after `no-exfil-flow` in `rules.yaml` rather than
-under the Tier-2 comment header. This page counts it toward the 46-rule total but not
+under the Tier-2 comment header. This page counts it toward the 47-rule total but not
 toward Tier 1's 13-rule floor count, since behavior (no floor, dial-softenable `warn`) is
 what puts a rule in a tier, not its position in the file.
 
@@ -136,7 +136,11 @@ retrospective run). The two `runaway-budget-*` rules below were evaluated agains
 identical bar and held back: their own rationale states plainly that observe mode
 exists to measure a hit rate that has never actually been measured (precedent-only
 justification, zero real evaluations recorded to date) — that is the honest "not yet"
-case this promotion is not.
+case this promotion is not. `session-spend-limit` (the newest Tier-3 rule, `type:
+budget`) is a DIFFERENT "not yet" case, one level more cautious than the `runaway-budget-*`
+pair: it isn't only unmeasured, its model-string normalization has a safety-critical
+failure mode (see its own row below) that needs to survive real traffic before this
+rule is even a promotion candidate.
 
 Because it is a `type: stuck` escalation ladder rather than a flat warn-or-deny rule,
 it doesn't fit Tier 1 or Tier 2's simple action column cleanly:
@@ -145,7 +149,7 @@ it doesn't fit Tier 1 or Tier 2's simple action column cleanly:
 |---|---|---|---|
 | `no-repeat-loops` | stuck | warn (base) → **redirect** at 3 identical failures → **deny** at 5, in a 15-minute window; `sprint` downgrades the 5th-attempt deny to warn, the 3rd-attempt redirect never softens | An identical failing command retried 3× / 5× in a 15-minute window |
 
-## Tier 3 — observe (9 rules)
+## Tier 3 — observe (10 rules)
 
 Every rule below ships with `mode: observe`. The pipeline evaluates them on every
 matching call and records what it *would* have done — the `observed_action` field on
@@ -161,15 +165,23 @@ to the host is always `allow`. Nothing here interrupts anyone yet.
 | `test-oracle-tampering` | oracle | warn | A test weakened (skip/only added, assertion removed, snapshot rewritten) shortly after it failed |
 | `test-oracle-env-introspection` | content | warn | Written code that inspects the call stack/test identifier and branches on it — detecting *which* test is calling the implementation to fake two contradictory tests passing, instead of implementing correct behavior |
 | `test-before-commit` | verification | warn | `src/` changes committed with no passing test run in the session |
-| `runaway-budget-tool-calls` | rate | warn | >500 tool calls in the last 4 hours of a session |
-| `runaway-budget-bash-calls` | rate | warn | >500 Bash calls in the last 4 hours of a session |
+| `runaway-budget-tool-calls` | rate | warn | >500 tool calls in the last 4 hours of a session — call-VOLUME only, no visibility into actual LLM token/dollar spend |
+| `runaway-budget-bash-calls` | rate | warn | >500 Bash calls in the last 4 hours of a session — same call-VOLUME-only caveat |
+| `session-spend-limit` | **budget** | deny | Measured session spend (real tokens, read from a host's own local transcript/session record — a Claude Code transcript's usage fields or an OpenCode session row's cost/token columns) over `max_tokens`. NOT the same mechanism as the two `runaway-budget-*` rows above: this reads actual usage instead of counting calls. Ships `mode: observe` for a narrower, safety-specific reason than "unmeasured": its Claude Code reader depends on model-string normalization with a real failure mode (a short alias like `claude-sonnet-5` must never be priced as an official dated model ID), and that needs to survive real traffic before this rule denies anything. Two-phase by construction — see `packages/core/src/enforce/budget-tracker.ts` — because Claude Code's Stop hook cannot block. |
 
 `test-oracle-tampering` and `test-oracle-env-introspection` are the two Tier-3 rules
 that carry a level (`level: balanced`) — they're also the exception to "every rule
-evaluates at every dial": switching to `sprint` deactivates them. Confirmed live:
-`keel level sprint` from `protect` printed `2 rule(s) deactivated (their level floor
-is above sprint): test-oracle-tampering, test-oracle-env-introspection`, and `keel
-status` reported `Active at current dial: 44 of 46`.
+evaluates at every dial": switching to `sprint` deactivates them. Confirmed live (at
+the time this was written): `keel level sprint` from `protect` printed `2 rule(s)
+deactivated (their level floor is above sprint): test-oracle-tampering,
+test-oracle-env-introspection`, and `keel status` reported `Active at current dial: 44
+of 46`. That capture predates the budget lane's `session-spend-limit` addition — the
+shipped total is now 47, not 46 — and this page does not re-assert a replacement
+dial-diff figure here without re-running the capture (a fresh `keel level sprint` run
+against this exact ruleset during the budget lane printed a DIFFERENT result — zero
+rules deactivated — than the quote above claims, which is either a pre-existing staleness
+in this quote or a real behavior change since it was captured; either way, resolving
+that discrepancy is out of this lane's scope).
 
 ## The speed dial
 
@@ -203,6 +215,11 @@ Dial diff (protect → sprint), from the merged ruleset:
     no-destructive-interpreter-body, protected-branch-reset, protected-branch-delete,
     pipe-to-shell, prod-db-destruction, no-exfil-flow, no-force-push
 ```
+
+(This capture also predates the budget lane; re-run today and `session-spend-limit`
+joins the "soften deny/block → warn" list, since its declared `action: deny` still
+participates in the dial-softening check even while `mode: observe` keeps its actual
+verdict at `allow`.)
 
 `sprint` isn't meant to be permanent: it auto-reverts to `balanced` after 4 hours
 (`DEFAULT_SPRINT_EXPIRY_HOURS` in `rule-parser.ts`), overridable with

@@ -66,6 +66,94 @@ session — verified via the built plugin bundle and its own load-test script, t
 same verification tier the existing `isDisabled()` kill-switch check in that file
 carries.
 
+Adds `type: budget` — real LLM API token/dollar spend limits, read from a host's own
+local transcript/session record. Keel's hook architecture had no visibility into
+token/dollar usage before this: that data lives in the model response, which no
+PreToolUse/PostToolUse-style hook ever sees. This is distinct from the pre-existing
+`runaway-budget-tool-calls`/`runaway-budget-bash-calls` (`type: rate`) rules, which
+only ever count tool-call VOLUME in a time window and say so in their own rationale.
+
+### Added
+
+- **`type: budget` rule type** (`RuleType` in `packages/core/src/types.ts`, `validTypes`
+  in `packages/core/src/enforce/rule-parser.ts`) — new `max_tokens`/`max_dollars`/
+  `hard_stop_multiplier` fields on `KeelRule`. `validateRules()` rejects a `type: budget`
+  rule with neither `max_tokens` nor `max_dollars` set.
+- **`packages/core/src/enforce/budget/claude-transcript.ts`**
+  (`measureClaudeCodeSpend`) — sums a Claude Code session's real token/dollar usage
+  directly from its own JSONL transcript, given the LITERAL `transcript_path` from the
+  host's own hook payload (never a `cwd` slug — Claude Code's own slug convention
+  replaces `/`, `.`, and literal `-` all with `-`, which is provably lossy:
+  `/Users/foo/my-project`, `/Users/foo/my.project`, and `/Users/foo/my/project` all
+  slugify identically). **Live-verified this lane** against a real transcript on the
+  build machine: (1) 63% of assistant lines in a real parent transcript carried a
+  snake_case `session_id` that did NOT match the file's own identity (Task/subagent
+  cross-references to separate child `.jsonl` files) — this reader deliberately sums
+  every line in the file with no per-line session filter, since `transcript_path`
+  already settles file identity; (2) real `message.model` values on ordinary sessions,
+  including keel's own live-verify fixtures, include short aliases
+  (`claude-sonnet-5`, `claude-opus-4-8`, `claude-fable-5`) that are NOT official
+  Anthropic model IDs, plus `<synthetic>` (always all-zero usage, skipped). Model
+  pricing lookup (`DEFAULT_PRICE_TABLE`) is exact-string-match only — an alias or any
+  unrecognized model still contributes tokens to the running total but forces the
+  WHOLE session's dollar figure to `null`, never a partial/undercounted total presented
+  as the true one.
+- **`packages/core/src/enforce/budget/opencode-db.ts`** (`measureOpenCodeSpend`) — a
+  COMPLETELY SEPARATE implementation for OpenCode, not a variant of the transcript
+  reader: OpenCode has no per-session transcript files at all. **Live-verified this
+  lane** against a real installed OpenCode's actual `~/.local/share/opencode/
+  opencode.db` schema: its `session` table already carries `cost` computed in dollars
+  by OpenCode itself (spanning heterogeneous providers — `opencode-go`, `ollama-local`,
+  `hy3`, `deepseek-v4-flash`, `glm-5.1` — that a keel-side pricing table would be
+  hopeless for and unnecessary), plus `tokens_input`/`tokens_output`/`tokens_reasoning`/
+  `tokens_cache_read`/`tokens_cache_write` rollup columns. No model-normalization logic
+  exists in this reader at all — there is no per-model lookup to get wrong. Uses
+  `node:sqlite`, imported dynamically so a runtime without it degrades to
+  `unavailable: true` rather than crashing the plugin hook.
+- **Two-phase, race-free enforcement** (`packages/core/src/enforce/budget-tracker.ts`,
+  `BudgetTracker`/`PersistentBudgetStore`) — SAFETY-CRITICAL architectural constraint:
+  Claude Code's `Stop` hook is observe-only (`docs/integration-guides/claude-code.md`)
+  and cannot block, because the turn has already completed by the time it fires. A
+  spend measurement is recorded from a Stop/PostToolUse-equivalent hook OUTSIDE
+  `EnforcementPipeline.evaluate()`'s PreToolUse path
+  (`EnforcementPipeline.recordBudgetSnapshot()`, called from `hook.ts`'s
+  `recordClaudeCodeBudgetSnapshot` on Claude Code, and from `plugin.ts`'s
+  `tool.execute.after` on OpenCode); it persists an over-budget flag to
+  `~/.keel/state/budget-tracker.json`; only the NEXT `PreToolUse` call denies, by
+  reading that persisted flag — the pipeline's `type: budget` branch never re-reads a
+  transcript or database on the blocking path. This is the same "warn on first
+  violation, persisted state blocks on repeat" ladder every other deny rule in this
+  ruleset already uses (`EnforcementPipeline.violation()`'s existing
+  `denyFirstTime`/`StateManager` mechanism — no new warn-ladder was built). Proven
+  end-to-end through the real built CLI and shell hook templates in
+  `packages/cli/src/__tests__/budget-lane-hook.test.ts`: a Stop call measuring a
+  grossly-over-budget synthetic transcript still exits 0, the next PreToolUse call
+  warns (first hit), and the one after that denies (exit 2) — with a companion case
+  proving a missing `transcript_path` never fabricates a deny from zero data.
+- **`packages/core/src/enforce/halt-writer.ts`** (`writeHaltSentinel`) — the core-side
+  counterpart of `cli/halt.ts`'s `haltSession()` that lane's own header comment
+  anticipated needing (`packages/core` cannot import from `packages/cli`; the build
+  direction is cli → core). Writes the identical sentinel shape. `BudgetTracker`'s
+  `hard_stop_multiplier` escalation is its first caller, gated so a `mode: observe`
+  rule (what the shipped default ships as) can NEVER trigger it — only a rule that is
+  actually enforcing can.
+- **`session-spend-limit`**, the 47th default rule (`type: budget`, `max_tokens:
+  2000000`), shipped `mode: observe` pending real-traffic burn-in of the Claude Code
+  model-normalization logic above — see `docs/tiers.md`. Identical text landed in both
+  `install.ts`'s and `plugin.ts`'s copies of `DEFAULT_RULES_YAML`;
+  `packages/cli/src/__tests__/drift.test.ts` confirms the two stayed field-identical.
+
+Verified: full test suite green across all four workspaces (`npm test`: core 760
+passed, cli 954 passed, mcp-server 10 passed, opencode-plugin's load-test all PASS),
+the red-team harness (`node scripts/redteam/round2.mjs`) reports no new floor
+regression, and the per-rule fixture harness
+(`packages/cli/src/__tests__/fixture-harness.test.ts`) covers `session-spend-limit`'s
+must-block/must-allow cases including an unavailable-measurement case that must never
+be silently read as under budget. Honesty note: Claude Code's transcript shape and
+OpenCode's SQLite shape are both live-verified against real installs on the machine
+this lane was built on; every other host (`docs/integrations.md`'s new "Real
+token/dollar spend" table) is explicitly unsupported, not silently assumed to work.
+
 ## 1.0.0
 
 `@get-keel/cli` 1.0.0 · `@get-keel/core` 1.0.0 · `@get-keel/opencode-plugin` 1.0.0
