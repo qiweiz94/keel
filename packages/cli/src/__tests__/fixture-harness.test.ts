@@ -12,6 +12,7 @@ import {
   PersistentFlowStore,
   SequenceDetector,
   StuckTracker,
+  OscillationTracker,
   SessionTracker,
   BudgetTracker,
   ResearchTracker,
@@ -238,6 +239,7 @@ function buildPipeline(rules: KeelRule[]): EnforcementPipeline {
     // without these. A fresh instance per pipeline, matching the isolation
     // model documented above (one rule/case at a time).
     stuckTracker: new StuckTracker(),
+    oscillationTracker: new OscillationTracker(),
     sessionTracker: new SessionTracker(),
     // Persisted (not bare in-memory like stuckTracker above): `type: budget`
     // has no in-memory fast path at all — BudgetTracker.record()/checkDeny()

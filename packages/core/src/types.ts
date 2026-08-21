@@ -36,7 +36,7 @@ export type RuleType =
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
   | 'research' | 'stuck' | 'diagnosis' | 'claim' | 'oracle' | 'package'
-  | 'budget'
+  | 'budget' | 'oscillation'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
@@ -187,6 +187,25 @@ export interface KeelRule {
   fingerprint?: 'auto' | 'exact'    // auto = normalized identity (default), exact = raw string
   require_failure?: boolean         // only count attempts with a nonzero exit (default true)
   escalation?: Array<{ at: number; action: EnforcementAction; message: string }>  // custom ladder
+
+  // ── Oscillation rules (A→B→A→B cycle detector — sibling of `type: stuck`'s
+  // exact-repeat detector, not a replacement: `no-repeat-loops` catches the
+  // SAME failing command retried; this catches a short repeating SEQUENCE of
+  // DIFFERENT commands/fingerprints, e.g. edit file A, edit file B undoing
+  // A's change, edit A again. See oscillation-tracker.ts's header for the
+  // full detection algorithm and oscillation-store.ts for the persisted
+  // rolling-window shape. Reuses `fingerprint`, `require_failure`,
+  // `escalation`, `window_seconds` (TTL), and `match` (optional extra
+  // command-text filter on top of the tool-scope gate) from the stuck-rule
+  // fields above — only the fields below are new to this type.)
+  /** Max recent fingerprints kept per session's rolling window (default 8). Oscillation is a LOCAL pattern — this is deliberately small, not the whole session history. */
+  oscillation_window_size?: number
+  /** Smallest repeating-unit length to detect, clamped to >= 2 (default 2). A length-1 "cycle" is exact repetition — `type: stuck`'s territory — and is never matched here regardless of this value (see oscillation-tracker.ts's distinct-fingerprint guard). */
+  min_cycle_length?: number
+  /** Largest repeating-unit length to detect (default 4). */
+  max_cycle_length?: number
+  /** How many consecutive repeats of a candidate unit are required before it counts as oscillation at all, clamped to >= 2 (default 2 — A→B→A→B is the minimum evidence of a cycle, A→B alone is just two calls). */
+  min_cycle_repeats?: number
 
   // ── Diagnosis rules (root-cause marker) ──
   require_hypothesis?: boolean      // gate the action on a fresh ledger hypothesis (default true)
@@ -574,7 +593,7 @@ export interface EnforceResult {
 }
 
 export interface RedirectDirective {
-  kind: 'stuck' | 'research' | 'diagnosis' | 'plan'
+  kind: 'stuck' | 'oscillation' | 'research' | 'diagnosis' | 'plan'
   required_tools: string[]
   target: string
   rationale: string

@@ -291,7 +291,7 @@ export function validateRules(rules: unknown): string[] {
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
     'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim', 'oracle', 'package',
-    'budget',
+    'budget', 'oscillation',
   ])
   // `mask` (a rule-authorable `action: mask`) stays deliberately absent from
   // this set. CORRECTION (sprint/lane-c2): the previous version of this
@@ -420,6 +420,20 @@ export function validateRules(rules: unknown): string[] {
     }
     if (rule.type === 'budget' && rule.max_tokens === undefined && rule.max_dollars === undefined) {
       errors.push(`Budget rule "${label}" needs max_tokens or max_dollars — remove it or add a spend ceiling`)
+    }
+    if (rule.type === 'oscillation') {
+      if (rule.min_cycle_length !== undefined && (typeof rule.min_cycle_length !== 'number' || rule.min_cycle_length < 2)) {
+        errors.push(`Oscillation rule "${label}" has an invalid min_cycle_length (must be a number >= 2 — a length-1 "cycle" is exact repetition, type: stuck's territory)`)
+      }
+      if (rule.max_cycle_length !== undefined && (typeof rule.max_cycle_length !== 'number' || rule.max_cycle_length < (rule.min_cycle_length ?? 2))) {
+        errors.push(`Oscillation rule "${label}" has an invalid max_cycle_length (must be a number >= min_cycle_length)`)
+      }
+      if (rule.min_cycle_repeats !== undefined && (typeof rule.min_cycle_repeats !== 'number' || rule.min_cycle_repeats < 2)) {
+        errors.push(`Oscillation rule "${label}" has an invalid min_cycle_repeats (must be a number >= 2 — A→B→A→B is the minimum evidence of a cycle)`)
+      }
+      if (rule.oscillation_window_size !== undefined && (typeof rule.oscillation_window_size !== 'number' || rule.oscillation_window_size < 4)) {
+        errors.push(`Oscillation rule "${label}" has an invalid oscillation_window_size (must be a number >= 4 — too small to ever hold two repeats of even the shortest cycle)`)
+      }
     }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
       errors.push(`Rule "${label}" uses type "${rule.type}", which is not implemented by the enforcement engine — remove it or use a supported type`)

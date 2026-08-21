@@ -64,7 +64,7 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     }
   })
 
-  it('has exactly 47 rules (update this count deliberately when the ruleset changes)', () => {
+  it('has exactly 49 rules (update this count deliberately when the ruleset changes)', () => {
     // 36 from the Wave-2 tier restructure + 6 pasted at the gate:
     // unverified-package-install, claim-without-evidence,
     // test-oracle-tampering, test-before-commit, runaway-budget-tool-calls,
@@ -92,7 +92,17 @@ describe('rules drift: install.ts vs plugin.ts', () => {
     // runaway-budget-* rules above (`type: rate`); shipped `mode: observe`
     // pending real-traffic burn-in of the model-string normalization it
     // depends on — see packages/core/src/enforce/budget-tracker.ts.
-    expect(install.size).toBe(48)
+    // + 1 from the stuck-oscillation lane: command-oscillation (`type:
+    // oscillation`, a brand-new RuleType) — the "oscillation (A→B→A)" item
+    // ROADMAP.md's Near-term section named as a planned sibling of
+    // `no-repeat-loops` (`type: stuck`): a short repeating CYCLE of >= 2
+    // DIFFERENT recent command fingerprints within a session's small
+    // rolling window, complementary to (never redundant with)
+    // no-repeat-loops' own exact-repeat detection; shipped `mode: observe`
+    // with zero measured hit-rate evidence, same evidence-gated posture as
+    // session-runaway-trip/session-spend-limit above — see
+    // packages/core/src/enforce/oscillation-tracker.ts/oscillation-store.ts.
+    expect(install.size).toBe(49)
   })
 
   it('has no unanchored rm -rf / false-positive (BUG 1)', () => {

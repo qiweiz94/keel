@@ -12,6 +12,8 @@ import {
   PersistentFlowStore,
   StuckTracker,
   PersistentStuckStore,
+  OscillationTracker,
+  PersistentOscillationStore,
   SessionTracker,
   PersistentSessionStore,
   BudgetTracker,
@@ -163,6 +165,16 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
   // same way and it never touches a real ~/.keel unless that env var is
   // unset.
   const stuckTracker = new StuckTracker(new PersistentStuckStore())
+  // Same gap, same fix, for the oscillation detector (`type: oscillation`,
+  // shipped as `command-oscillation`): OscillationTracker's rolling window
+  // is in-memory only by default, constructed fresh by `initEnforce()` on
+  // every single `keel hook <host>` process — without a
+  // PersistentOscillationStore, a session's last few fingerprints would
+  // never survive past the ONE tool call that recorded them, and a genuine
+  // A→B→A→B cycle spread across separate `keel hook` processes could never
+  // be seen. Uses the same `stateDir()`/`KEEL_STATE_DIR` resolution as
+  // stuckTracker above.
+  const oscillationTracker = new OscillationTracker(new PersistentOscillationStore())
   // Same gap, same fix, for the composite session-runaway trip (`type:
   // session`, shipped as `session-runaway-trip`): SessionTracker's counters
   // are in-memory only by default, constructed fresh by `initEnforce()` on
@@ -200,6 +212,7 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     sequenceDetector,
     flowTracker,
     stuckTracker,
+    oscillationTracker,
     sessionTracker,
     budgetTracker,
     ruleHierarchy: hierarchy,

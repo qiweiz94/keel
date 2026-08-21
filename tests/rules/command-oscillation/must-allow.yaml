@@ -1,0 +1,82 @@
+# command-oscillation is `mode: observe`, so every case here would allow
+# regardless — the real assertion is that `observed_action` never surfaces
+# an oscillation verdict (fixture-harness.test.ts's must-allow path checks
+# `result.action === 'allow'`, the OUTER verdict, which is a no-op check on
+# its own for an observe rule; these cases exist to prove the DETECTOR
+# itself stays silent — see the dedicated oscillation.test.ts unit suite for
+# the observed_action-level assertions this file's harness shape can't
+# express).
+cases:
+  - note: "a legitimate edit/test alternation where every step SUCCEEDS is never appended to the window (require_failure: true) — the TDD red-green-refactor false-positive this rule is designed to exclude"
+    steps:
+      - tool: write
+        args: { path: "src/feature.ts", content: "export const x = 1" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 0
+      - tool: write
+        args: { path: "src/feature.ts", content: "export const x = 2" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 0
+      - tool: write
+        args: { path: "src/feature.ts", content: "export const x = 3" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 0
+      - tool: write
+        args: { path: "src/feature.ts", content: "export const x = 4" }
+        exit_code: 0
+      - tool: Bash
+        args: { command: "npm test" }
+
+  - note: "a single command repeated exactly (no-repeat-loops' own case) never satisfies the distinct-fingerprint cycle requirement here — complementary, not double-counted"
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+
+  - note: "read-only exploration alternating between two files (Read/Grep) never feeds the window — oscillation only watches Bash and mutating (write/edit) tool calls"
+    steps:
+      - tool: Read
+        args: { path: "src/a.ts" }
+      - tool: Read
+        args: { path: "src/b.ts" }
+      - tool: Read
+        args: { path: "src/a.ts" }
+      - tool: Read
+        args: { path: "src/b.ts" }
+      - tool: Read
+        args: { path: "src/a.ts" }
+      - tool: Read
+        args: { path: "src/b.ts" }
+      - tool: Read
+        args: { path: "src/a.ts" }
+
+  - note: "only ONE repeat of a failing A→B pair (not yet two full cycles) stays under the minimum-evidence threshold"
+    steps:
+      - tool: Bash
+        args: { command: "npm run lint" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run build" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run lint" }

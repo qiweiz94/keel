@@ -10,6 +10,7 @@ import {
   SequenceDetector,
   StateManager,
   StuckTracker,
+  OscillationTracker,
   SessionTracker,
   BudgetTracker,
   PersistentBudgetStore,
@@ -1321,6 +1322,70 @@ rules:
       - "A Claude Code transcript that cannot be read (missing/rotated file, permissions) degrades that measurement to the last confirmed state rather than asserting either verdict from zero data — see BudgetTracker.record()'s own comment. Surfaces as a distinct 'unavailable' audit entry, never a false block, but this rule's real hit rate depends on transcript readability."
     message: "This session's measured LLM token spend exceeds max_tokens — possible runaway usage. Review before continuing, or raise the ceiling for a genuinely long session."
 
+  - id: command-oscillation
+    type: oscillation
+    mode: observe
+    category: workflow
+    severity: medium
+    confidence: medium
+    maturity: incubating
+    priority: -10
+    window_seconds: 900
+    oscillation_window_size: 8
+    min_cycle_length: 2
+    max_cycle_length: 4
+    min_cycle_repeats: 2
+    fingerprint: auto
+    require_failure: true
+    escalation:
+      - at: 2
+        action: redirect
+        message: "This session has cycled through the same short sequence of failing commands/edits at least twice without resolving. Stop alternating between them. Research the exact error, state a root-cause hypothesis, then change approach."
+      - at: 3
+        action: deny
+        message: "3+ repeats of the same oscillating pattern. Retrying without new information is blocked — record a hypothesis or ask the user."
+    action: warn
+    rationale: >-
+      ROADMAP.md named this a planned-but-unbuilt sibling of no-repeat-loops
+      (type: stuck): "oscillation (A→B→A)". no-repeat-loops only catches the
+      SAME failing command retried — it does NOT catch an agent alternating
+      between two or three DIFFERENT failing commands or edits that never
+      converge (edit file A, edit file B undoing A's change, edit A again), a
+      real stuck pattern that looks like "activity" but is actually going
+      nowhere. This rule tracks a SHORT rolling window of recent command
+      fingerprints per session (default: last 8, not the whole session
+      history — oscillation is a LOCAL pattern) and detects a repeating CYCLE
+      of length >= 2 (A→B→A→B, or A→B→C→A→B→C), not merely "any command seen
+      before in the window" — the latter would false-positive on completely
+      normal workflows like alternating between running a test and editing
+      the file it tests. Complementary to no-repeat-loops by construction,
+      never redundant with it: a pure exact-repeat (period 1) never satisfies
+      this rule's distinct-fingerprint-within-the-unit requirement, and a
+      genuine A→B→A→B cycle never accumulates a count in no-repeat-loops'
+      per-fingerprint buckets either — see oscillation-tracker.ts's check().
+      require_failure defaults to true, mirroring no-repeat-loops' own
+      discriminator, deliberately: a legitimate TDD red-green-refactor loop
+      (edit test, edit code, edit test, edit code) is LITERALLY period-2
+      alternation between two fingerprints, and the only thing distinguishing
+      it from a genuine stuck oscillation is that each step succeeds —
+      requiring failure excludes it by construction (the edit calls report
+      exitCode 0 and are never appended to the window; the one command that
+      legitimately repeats on every red iteration, the test runner, is the
+      SAME fingerprint each time — period 1 — no-repeat-loops' territory, not
+      this rule's). Ships in mode: observe, exactly like session-runaway-trip
+      and session-spend-limit started: this is a brand-new detector with zero
+      measured hit-rate evidence, and no-repeat-loops is the only rule in this
+      catalog that has ever earned promotion out of observe, on real evidence
+      (41 distinct repeat loops across 20 sessions, zero recorded
+      false-positives) via keel retrospective + a human running keel
+      promote — this rule follows the identical evidence-gated path, not a
+      shortcut around it.
+    remediation: "Stop alternating between the same short sequence of commands or edits. Research why neither approach is holding, state a root-cause hypothesis, then try something genuinely different."
+    false_positives:
+      - "A legitimate edit/verify alternation (e.g. edit a config, re-run a linter, edit again) where every step SUCCEEDS — excluded by require_failure: true, since a clean exit is never appended to the window."
+      - "KNOWN GAP, not a false positive but a documented miss: an agent oscillating between two edits that each individually SUCCEED (e.g. reverting a file to a prior state each time) is invisible to this rule as shipped — catching that needs a content-state ('did this file's content actually change vs. a prior version') signal no tracker in this codebase feeds into this detector today. See oscillation-tracker.ts's header."
+    message: "Oscillating pattern detected: cycling between the same short sequence of failing commands/edits without resolving."
+
 `
 
 function ensureRules(): void {
@@ -1524,6 +1589,7 @@ export default {
       allowedFixTransforms: true,
       stateManager: new StateManager(),
       stuckTracker: new StuckTracker(),
+      oscillationTracker: new OscillationTracker(),
       sessionTracker: new SessionTracker(),
       budgetTracker: new BudgetTracker(new PersistentBudgetStore()),
       researchTracker: new ResearchTracker(),
