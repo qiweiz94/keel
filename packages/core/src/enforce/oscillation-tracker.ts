@@ -159,7 +159,15 @@ export class OscillationTracker {
     // earlier process already recorded fingerprints for this exact session
     // bucket. Prefer the persisted bucket whenever it is at least as
     // informative as whatever this instance has locally — mirrors
-    // StuckTracker.check()'s identical "further along" preference.
+    // StuckTracker.check()'s identical "further along" preference. Uses
+    // >= rather than StuckTracker's strict >, deliberately: entry-array
+    // LENGTH (unlike a single count) can tie without the content being
+    // identical only in a same-process call (recordOutcome already writes
+    // through to the store then mirrors the exact result into `memory`, so
+    // within one process the two never actually disagree at equal length)
+    // — the harmless cost is re-assigning `state` from the freshly-read
+    // persisted copy on every check() once a store is configured, not a
+    // correctness gap.
     if (this.persistentStore) {
       const persisted = this.persistentStore.get(key)
       if (persisted && (!state || persisted.entries.length >= state.entries.length)) {
