@@ -235,8 +235,10 @@ but none are DEACTIVATED — every rule stays present and evaluated at every dia
 the deny-tier ones get weaker. `keel status` reported `Active at current dial: 49 of
 49` at sprint before Lane F's three new rules landed (confirming no rule drops out of
 the active set at that ruleset size — "active at every dial" means present and
-evaluated, not unaffected by the dial); the live count is `52 of 52` against the
-current shipped ruleset, same property, not re-verified live for this exact number.
+evaluated, not unaffected by the dial); re-confirmed live against the current shipped
+ruleset (`keel level sprint --project` from a clean isolated install, same 5-rule
+soften/13-floor dial diff as before): `keel status` reports `Active at current dial:
+52 of 52`.
 
 ## The speed dial
 
