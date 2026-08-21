@@ -8049,8 +8049,9 @@ function renderToken(token, dict) {
       rendered += seg.quoteChar + seg.text + seg.quoteChar;
       value += seg.text;
     } else if (seg.quoted) {
-      rendered += seg.text;
-      value += seg.text;
+      const expanded = expandVars(seg.text, dict);
+      rendered += expanded;
+      value += expanded;
     } else if (seg.escapedSpace) {
       rendered += "\\" + seg.text;
       value += seg.text;
