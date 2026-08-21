@@ -22,6 +22,29 @@ export const SECRET_ENV_PATTERNS = [
   /\b(?:DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_ACCESS_KEY|AWS_SECRET_ACCESS)(?![a-zA-Z0-9])/,
 ]
 
+/**
+ * Provider-documented credential SHAPES only — each pattern's match span is
+ * the secret bytes themselves (AWS access key IDs, `sk-`/`ghp_`-style
+ * tokens, a PEM private-key header). Deliberately excludes checkSecret()'s
+ * other patterns, which match a variable NAME string (`OPENAI_API_KEY`,
+ * `AWS_SECRET_ACCESS_KEY`) rather than a secret value — a name pattern
+ * tested against a credential VALUE (not the surrounding "NAME=value" text)
+ * would score the literal string "OPENAI_API_KEY" as secret-shaped and
+ * flag configs that contain no actual secret. Exported so other detectors
+ * that scan already-isolated candidate VALUES (not free-form text/command
+ * strings) — e.g. `keel scan`'s MCP env/header check — reuse the exact
+ * shapes checkSecret() blocks on, instead of a second, driftable regex list.
+ */
+export const SECRET_VALUE_SHAPE_PATTERNS = [
+  /(?<![A-Z0-9])(AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])/,
+  /(?:sk-[a-zA-Z0-9]{32,})/,
+  /(?:ghp_[a-zA-Z0-9]{36})/,
+  /(?:gho_[a-zA-Z0-9]{36})/,
+  /(?:ghu_[a-zA-Z0-9]{36})/,
+  /(?:ghs_[a-zA-Z0-9]{36})/,
+  /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
+]
+
 export class PolicyEngine {
   private policy: PolicyFile | null = null
   private auditLog: AuditEntry[] = []
@@ -558,13 +581,7 @@ export class PolicyEngine {
 
   checkSecret(content: string): EnforcementResult | null {
     const patterns = [
-      /(?<![A-Z0-9])(AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])/,
-      /(?:sk-[a-zA-Z0-9]{32,})/,
-      /(?:ghp_[a-zA-Z0-9]{36})/,
-      /(?:gho_[a-zA-Z0-9]{36})/,
-      /(?:ghu_[a-zA-Z0-9]{36})/,
-      /(?:ghs_[a-zA-Z0-9]{36})/,
-      /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
+      ...SECRET_VALUE_SHAPE_PATTERNS,
       /\b(?:OPENAI|ANTHROPIC|DEEPSEEK|GITLAB)_(?:API_KEY|SECRET|TOKEN)(?![a-zA-Z0-9_])/,
       /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)(?![a-zA-Z0-9_])/,
       /\b(?:DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_ACCESS_KEY)(?![a-zA-Z0-9_])/,

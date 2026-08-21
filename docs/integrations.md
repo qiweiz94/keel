@@ -361,6 +361,31 @@ Stated plainly rather than left as a gap for the reader to fill in optimisticall
 | GitHub Copilot cloud agent | governance is a network-egress allowlist, not a per-tool-call gate, and it does not cover MCP servers | MCP allowlisting, egress proxy |
 | MCP protocol itself | the spec is explicit that consent is a host responsibility, not a protocol guarantee; the interceptor proposal (SEP-1763) is an unsponsored draft | rely on the host's own hook |
 
+### `keel scan`'s MCP checks are client-config-only
+
+`keel scan` reads the same on-disk MCP client config every host already parses
+(`.mcp.json`, `claude_desktop_config.json`, `mcp_config.json`, ...) and flags what is
+INSPECTABLE from that file alone: unpinned runner packages, plaintext `http://`/`ws://`
+transports, unsafe stdio startup-command patterns (`sudo`, a root/home-wide `rm -rf`,
+`curl | sh`), dangerous URL schemes (`javascript:`/`data:`/`file:`/`vbscript:`), URLs
+shaped like SSRF against a private network or cloud-metadata endpoint, and literal
+(non-`${VAR}`) credentials sitting in `env`/`headers`.
+
+modelcontextprotocol.io's own Security Best Practices page also documents three further
+vulnerability classes — **token passthrough** (a server forwarding a client's token to a
+downstream API it was never issued for), **confused deputy** (a server with its own
+standing credentials tricked into acting on an attacker's behalf), and **session
+hijacking** (a session identifier reused or predicted to ride an existing
+authenticated session). All three are properties of the SERVER's own runtime
+implementation — what it does with a token after receiving it, how it authorizes a
+request, how it mints and validates session state — none of which appears anywhere in a
+client config file. `keel scan` has no way to observe them without running the server
+and probing its actual request handling, which is a different tool than a local
+config scanner. They are not checked here, and no `keel scan` finding should be read as
+covering them; auditing a given MCP server against these three requires reviewing (or
+testing) that server's own source, the same way `keel scan` cannot review the code an
+agent's tool calls write either (see [SECURITY.md](../SECURITY.md) for that boundary).
+
 ---
 
 ## Failure behaviour

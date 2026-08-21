@@ -16,6 +16,7 @@ export {
   DEFAULT_POLICY,
   DEFAULT_POLICY_YAML,
   SECRET_ENV_PATTERNS,
+  SECRET_VALUE_SHAPE_PATTERNS,
 } from './policy-engine.js'
 
 export {

@@ -1,4 +1,18 @@
 export { EnforcementPipeline, type PipelineTier, type PipelineConfig } from './pipeline.js'
+export {
+  normalizeCommand,
+  PYTHON_INTERPRETER_RE,
+  type NormalizedCommand,
+  type NormalizedSubcommand,
+  type NormalizedToken,
+} from './command-normalizer.js'
+export {
+  scoreSecretCandidate,
+  worstSecretVerdict,
+  isUniformRedactionShape,
+  shannonEntropyBitsPerChar,
+  type SecretConfidenceVerdict,
+} from './secret-confidence.js'
 export { ActionCache, ContentTracker } from './cache.js'
 export { ContextManager } from './context-manager.js'
 export { AuditLog } from './audit.js'
