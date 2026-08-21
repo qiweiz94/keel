@@ -1634,15 +1634,23 @@ survive long sessions, compaction, and context rot. Edit it freely — it is you
   console.log(chalk.green(`  ✓ Created ${reqPath}`))
 }
 
-// A hook entry command written by keel's own installer always points at one
-// of the fixed .claude/hooks/<Event>/keel-* paths this file wires below —
-// never at a path a different tool's own hook registration would use. That
-// lets a re-install identify and replace only keel's OWN prior entries
-// without touching another tool's registrations under the same event key.
+// The exact, complete set of hook command paths keel's own installer ever
+// writes (see installClaudeCode below). A re-install must identify and
+// replace only these literal entries — matching on a loose 'keel-' basename
+// prefix would also delete a user's own similarly-prefixed hook script
+// (e.g. a project's own '.claude/hooks/PreToolUse/keel-audit-log'), which
+// keel never owned and has no business removing.
+const KEEL_OWNED_HOOK_COMMANDS = new Set([
+  '.claude/hooks/PreToolUse/keel-enforce',
+  '.claude/hooks/PostToolUse/keel-reinject',
+  '.claude/hooks/PostToolUse/keel-verify',
+  '.claude/hooks/Stop/keel-claim',
+])
+
 function isKeelHookCommand(command: unknown): boolean {
   if (typeof command !== 'string') return false
-  const base = command.split('/').pop() ?? ''
-  return base.startsWith('keel-')
+  const normalized = command.startsWith('./') ? command.slice(2) : command
+  return KEEL_OWNED_HOOK_COMMANDS.has(normalized)
 }
 
 interface ClaudeHookGroup {
@@ -1657,15 +1665,48 @@ interface ClaudeHookGroup {
 // shared matcher group if another tool's hook shares it, or by dropping the
 // whole group once it has none left — so a re-install doesn't accumulate
 // duplicate keel entries alongside the fresh ones appended below.
-function mergeKeelHookEntries(existing: unknown, keelGroups: ClaudeHookGroup[]): ClaudeHookGroup[] {
+//
+// `eventLabel` (e.g. "PreToolUse") is used only to name the config in a
+// warning if `existing` turns out to be present but malformed — mirrors the
+// warn-and-preserve-nothing-silently posture installClaudeCode already
+// takes for a corrupt settings.json as a whole, rather than dropping a
+// malformed value with no trace.
+function mergeKeelHookEntries(existing: unknown, keelGroups: ClaudeHookGroup[], eventLabel: string): ClaudeHookGroup[] {
+  if (existing !== undefined && !Array.isArray(existing)) {
+    console.log(chalk.yellow(`  ⚠ hooks.${eventLabel} in .claude/settings.json is not an array — replacing with keel's hooks only (its previous, malformed value is not preserved).`))
+  }
   const existingGroups: ClaudeHookGroup[] = Array.isArray(existing) ? existing : []
+
+  // Remember where keel's own group used to live so the merge can put the
+  // fresh one back in the same slot — otherwise every re-install silently
+  // moves keel's hook group to the end of the array, changing execution
+  // order relative to other tools' hooks registered under the same event.
+  let keelSlot = -1
+  existingGroups.forEach((group, i) => {
+    if (Array.isArray(group?.hooks) && group.hooks.some((h) => isKeelHookCommand(h?.command))) {
+      if (keelSlot === -1) keelSlot = i
+    }
+  })
+
   const preserved = existingGroups
     .map((group) => {
-      if (!Array.isArray(group?.hooks)) return group
-      return { ...group, hooks: group.hooks.filter((h) => !isKeelHookCommand(h?.command)) }
+      if (group == null || typeof group !== 'object') return group
+      if (!Array.isArray(group.hooks)) return group
+      return { ...group, hooks: group.hooks.filter((h) => h != null && !isKeelHookCommand(h?.command)) }
     })
-    .filter((group) => !Array.isArray(group?.hooks) || group.hooks.length > 0)
-  return [...preserved, ...keelGroups]
+    .filter((group) => group != null && (!Array.isArray(group.hooks) || group.hooks.length > 0))
+
+  if (keelSlot === -1) return [...preserved, ...keelGroups]
+
+  // Re-derive the insertion index in `preserved`: count how many of the
+  // groups BEFORE keel's original slot survived the filter above.
+  const before = existingGroups.slice(0, keelSlot)
+  const survivingBefore = before.filter((group) => {
+    if (group == null || typeof group !== 'object') return true
+    if (!Array.isArray(group.hooks)) return true
+    return group.hooks.some((h) => h != null && !isKeelHookCommand(h?.command))
+  }).length
+  return [...preserved.slice(0, survivingBefore), ...keelGroups, ...preserved.slice(survivingBefore)]
 }
 
 async function installClaudeCode() {
@@ -1744,7 +1785,7 @@ async function installClaudeCode() {
         },
       ],
     },
-  ])
+  ], 'PreToolUse')
   hooks.PostToolUse = mergeKeelHookEntries(hooks.PostToolUse, [
     {
       matcher: '*',
@@ -1759,7 +1800,7 @@ async function installClaudeCode() {
         },
       ],
     },
-  ])
+  ], 'PostToolUse')
   hooks.Stop = mergeKeelHookEntries(hooks.Stop, [
     {
       hooks: [
@@ -1769,7 +1810,7 @@ async function installClaudeCode() {
         },
       ],
     },
-  ])
+  ], 'Stop')
   settings.hooks = hooks
 
   mkdirSync(dirname(settingsPath), { recursive: true })
@@ -1874,9 +1915,23 @@ Full requirements: ~/.keel/requirements.md
     writeFileSync(rulePath, mdc, 'utf-8')
     console.log(chalk.green(`  ✓ Created ${rulePath}`))
   } else if (!readFileSync(rulePath, 'utf-8').includes('# Keel enforcement')) {
-    const existing = readFileSync(rulePath, 'utf-8').trimEnd()
-    writeFileSync(rulePath, existing + '\n\n' + mdc, 'utf-8')
-    console.log(chalk.green(`  ✓ Appended Keel rules to ${rulePath}`))
+    // keel.mdc already exists with content keel didn't write. MDC/YAML
+    // frontmatter is only ever parsed at position 0 of a file — appending
+    // this block's own '---...---' header into the middle of an existing
+    // file (which may ALSO already have its own leading frontmatter block)
+    // never gets recognized as frontmatter by Cursor, so 'alwaysApply: true'
+    // would silently do nothing. Write keel's block to its own dedicated
+    // file instead, where its frontmatter is guaranteed to sit at position 0.
+    const ownRulePath = join(rulesDir, 'keel-enforcement.mdc')
+    if (!existsSync(ownRulePath)) {
+      writeFileSync(ownRulePath, mdc, 'utf-8')
+      console.log(chalk.green(`  ✓ Created ${ownRulePath}`))
+      console.log(chalk.dim(`    (${rulePath} already had other content — keel's rules were written to their own file instead of appending, so alwaysApply frontmatter still parses correctly)`))
+    } else if (!readFileSync(ownRulePath, 'utf-8').includes('# Keel enforcement')) {
+      console.log(chalk.yellow(`  ! Both ${rulePath} and ${ownRulePath} already exist with non-keel content — skipping. Add Keel's rules to a new .mdc file yourself.`))
+    } else {
+      console.log(chalk.dim(`  ${ownRulePath} already configured (skipping)`))
+    }
   } else {
     console.log(chalk.dim(`  ${rulePath} already configured (skipping)`))
   }
