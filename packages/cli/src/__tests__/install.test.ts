@@ -573,4 +573,34 @@ describe('install --claude-code merges hooks instead of replacing them wholesale
     const otherIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.other-tool/hooks/pre.sh'))
     expect(keelIndex).toBeLessThan(otherIndex)
   })
+
+  it('places keel\'s group correctly even with a literal null entry before it in a hand-corrupted hooks array', () => {
+    // A null group is not valid Claude Code config, but the merge must not
+    // crash on it, and — the specific edge case this test targets — the
+    // slot-preservation index math must agree with which groups actually
+    // survive the filter, or keel's re-inserted group can land on the wrong
+    // side of another tool's group.
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const seeded = {
+      hooks: {
+        PreToolUse: [
+          null,
+          { matcher: '*', hooks: [{ type: 'command', command: '.claude/hooks/PreToolUse/keel-enforce' }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: '.other-tool/hooks/pre.sh' }] },
+        ],
+      },
+    }
+    writeFileSync(settingsPath, JSON.stringify(seeded, null, 2) + '\n', 'utf-8')
+
+    const out = run('install --claude-code')
+    expect(out.code).toBe(0)
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const groups = settings.hooks.PreToolUse
+    expect(groups.some((g: any) => g == null)).toBe(false)
+    const keelIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.claude/hooks/PreToolUse/keel-enforce'))
+    const otherIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.other-tool/hooks/pre.sh'))
+    expect(keelIndex).toBeLessThan(otherIndex)
+  })
 })

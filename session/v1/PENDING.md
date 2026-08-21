@@ -15,13 +15,27 @@ daemon/mcp-server hardening, stuck-tracker persistence, opencode-plugin trace fi
 DEFAULT_RULES_YAML pattern batch, and doc fixes), run worktree-parallel and merged one at a time,
 evidence-gated (build + full suite + `round2.mjs` after each). All 13 merged. A second,
 independent review pass then re-audited the 3 earliest-merged lanes (install.ts, hook.ts,
-mcp-server) plus a fresh whole-suite verification; it found 6 further real, confirmed bugs in the
-already-merged install.ts (a hook-basename-prefix false-positive that could delete a user's own
-hook, a malformed `hooks.<Event>` value silently discarded with no warning, keel's own hook group
-silently reordering to the end of the array on every reinstall, and a Cursor `.mdc` append that
-wrote a second, unparseable frontmatter block into an existing file) — all 6 fixed, tested, and
-merged (`sprint2/fix-installer-review1`). Nothing else from that review pass required a code
-change. The level.ts HOME bug mentioned below is now fixed (see the home-bug lane above).
+mcp-server) plus a fresh whole-suite verification; it found 7 items in the already-merged
+install.ts. **5 were real code defects, fixed and tested** (`sprint2/fix-installer-review1`): a
+hook-basename-prefix false-positive that could delete a user's own hook (narrowed to an exact
+match against keel's 4 known command strings), a malformed `hooks.<Event>` value silently
+discarded with no warning (now warns), a literal `null` hook entry surviving the merge filter (now
+filtered), keel's own hook group silently reordering to the end of the array on every reinstall
+(now preserves its original slot), and a Cursor `.mdc` append that wrote a second, unparseable
+frontmatter block into an existing file (now writes a separate `keel-enforcement.mdc` instead when
+`keel.mdc` already has non-keel content). **2 were dispositioned as NOT bugs, with reasoning
+recorded rather than silently dropped**: the same-class "unconditional overwrite" pattern flagged
+in `installOpenClaw`/`installHermes` is correct-by-design there (those write into a keel-owned
+directory with keel-authored content, unlike `settings.json`/`keel.mdc`, which are shared with
+other tools/users); and the compound case where both `.cursor/hooks.json` and a pre-existing
+`keel.mdc` already exist was found to already print an adequate, distinct yellow warning about the
+hook not being wired — not the misleading single "success" message the finding described. A
+delta-audit follow-up pass then found and fixed one further real issue introduced by the review-1
+fix itself: `mergeKeelHookEntries`'s two internal position-counting predicates could disagree on a
+literal `null` group, re-creating a narrower version of the null-survives-filter bug class in the
+same function that had just fixed it elsewhere — closed by extracting one shared predicate used in
+both places (`sprint2/fix-installer-review1-followup`). The level.ts HOME bug mentioned below is
+now fixed (see the home-bug lane above).
 
 **Since the original handoff, a research + build sprint closed several more items**: OpenSSF
 Scorecard workflow added, `docs/tiers.md` rule count fixed, evidence axes published together,
