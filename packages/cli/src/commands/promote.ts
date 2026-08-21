@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import chalk from 'chalk'
-import { loadRuleHierarchy, type RuleHierarchy, type ParsedRules } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, winningPromotionThreshold, type RuleHierarchy, type ParsedRules } from '../core/enforce/rule-parser.js'
 import { isInteractive } from './interactive.js'
+import { resolveHome } from '../core/home.js'
+import { loadTraceEntries, collectObserveRuleIds, computePromotionReport, type PromotionRow } from './retrospective.js'
 import type { RuleMode } from '../core/types.js'
 
 const MODE_ORDER: RuleMode[] = ['observe', 'warn', 'block']
@@ -112,9 +115,39 @@ function findRuleSource(hierarchy: RuleHierarchy, ruleId: string): { source: Par
 }
 
 /**
- * `keel promote <rule-id> [--to warn|block]` — advance a `mode: observe`
- * rule one rung up the ladder (observe → warn → block), or jump straight
- * to an explicit `--to` target.
+ * This rule's measured promotion evidence, computed the SAME way `keel
+ * retrospective`'s promotion section and `keel report` already compute it
+ * (computePromotionReport/collectObserveRuleIds/winningPromotionThreshold,
+ * all imported from retrospective.ts and rule-parser.ts, not re-implemented
+ * here) — so `keel promote`'s verdict can never silently disagree with what
+ * those two commands just told the human about the same rule.
+ *
+ * Only ever meaningful for a rule currently in `mode: observe`: that is the
+ * ONLY rung with a measured "would-block" signal at all. `mode: warn` is
+ * real enforcement (pipeline.ts's effectiveAction() special-cases only
+ * `observe`), so a warn-mode rule never populates observed_action/
+ * observed_matches on its trace entries and there is nothing here to
+ * measure for a warn → block promotion — see promoteCommand's own handling
+ * of that case.
+ *
+ * Reads KEEL_TRACES_DIR fresh on every call rather than caching it at
+ * module scope — a module-level const would freeze whatever the env var
+ * was at first import, which is exactly the bug retrospective.ts's and
+ * report.ts's identical comments both warn against.
+ */
+function evidenceForObserveRule(ruleId: string, hierarchy: RuleHierarchy, cwd: string): PromotionRow | null {
+  const auditDir = process.env.KEEL_TRACES_DIR || join(resolveHome(), '.keel', 'traces')
+  const entries = loadTraceEntries(auditDir)
+  const rules = collectObserveRuleIds(hierarchy)
+  const threshold = winningPromotionThreshold(hierarchy)
+  const rows = computePromotionReport(entries, rules, threshold, cwd)
+  return rows.find((r) => r.rule_id === ruleId) || null
+}
+
+/**
+ * `keel promote <rule-id> [--to warn|block] [--force]` — advance a `mode:
+ * observe` rule one rung up the ladder (observe → warn → block), or jump
+ * straight to an explicit `--to` target.
  *
  * User-owned by construction, the same way `keel level` and `keel rules
  * harness --append` are: this edits the rules.yaml the rule lives in, so
@@ -122,12 +155,26 @@ function findRuleSource(hierarchy: RuleHierarchy, ruleId: string): { source: Par
  * is on the `keel-control-gate` deny list — an agent cannot run this
  * itself, only the human deciding a rule has burned in long enough.
  *
+ * Evidence-gated when promoting FROM `mode: observe` (whatever the
+ * target): `promotion_fp_threshold` existed in KeelConfig since the start
+ * but was never actually read anywhere — this is that wiring. Before
+ * writing the mode change, the rule's measured would-block rate is looked
+ * up via the exact same computePromotionReport() pipeline `keel
+ * retrospective`'s promotion section already surfaces, and the promotion
+ * is refused (exit 1, file untouched) unless that pipeline says
+ * `eligible`. `--force` is the deliberate human override — it always wins,
+ * but prints a distinct, honest warning instead of silently proceeding, so
+ * a forced promotion is never mistaken for an earned one. Promoting FROM
+ * `warn` (to `block`) has no such gate: `mode: warn` is real enforcement,
+ * not shadow-recording, so there is no measured would-block stream for it
+ * to check — see evidenceForObserveRule's own comment.
+ *
  * Idempotent: promoting a rule to the mode it is already at is a no-op,
  * not an error, so a re-run (or a flaky script) never corrupts the file.
  * Never auto-promotes anything — this command only runs when a human
  * types it.
  */
-export async function promoteCommand(ruleId: string | undefined, options: { to?: string; cwd?: string } = {}) {
+export async function promoteCommand(ruleId: string | undefined, options: { to?: string; cwd?: string; force?: boolean } = {}) {
   if (!isInteractive() && process.env.KEEL_ALLOW_NON_TTY !== '1') {
     console.error(chalk.red('\n  `keel promote` edits your rules.yaml, so it must be run from your own terminal.'))
     console.error(chalk.dim('  Run `keel retrospective` to see promotion recommendations instead.\n'))
@@ -145,7 +192,8 @@ export async function promoteCommand(ruleId: string | undefined, options: { to?:
     return
   }
 
-  const hierarchy = loadRuleHierarchy(options.cwd || process.cwd())
+  const cwd = options.cwd || process.cwd()
+  const hierarchy = loadRuleHierarchy(cwd)
   const found = findRuleSource(hierarchy, ruleId)
   if (!found) {
     console.log(chalk.red(`  Rule "${ruleId}" not found in any rules.yaml (project, local, global, user).`))
@@ -163,6 +211,27 @@ export async function promoteCommand(ruleId: string | undefined, options: { to?:
   if (currentMode === target) {
     console.log(chalk.dim(`  "${ruleId}" is already mode: ${target}. No change.`))
     return
+  }
+
+  if (currentMode === 'observe') {
+    const row = evidenceForObserveRule(ruleId, hierarchy, cwd)
+    const eligible = row?.recommendation === 'eligible'
+    if (!eligible) {
+      if (!options.force) {
+        const insufficientData = !row || row.recommendation === 'insufficient_data'
+        console.log(chalk.red(`\n  "${ruleId}" is not yet eligible for promotion.`))
+        console.log(insufficientData
+          ? chalk.dim('  Not enough recorded hits yet — too little traffic to trust a would-block rate this small.')
+          : chalk.dim('  Its measured would-block (false-positive) rate has not cleared promotion_fp_threshold — it may still be firing on legitimate work.'))
+        if (row) console.log(chalk.dim(`  ${row.detail}`))
+        console.log(chalk.dim('  Run `keel retrospective` for the full picture, or re-run with --force to promote anyway.\n'))
+        process.exitCode = 1
+        return
+      }
+      console.log(chalk.yellow(`  Forcing promotion without evidence — "${ruleId}" may not be ready.`))
+    }
+  } else if (currentMode === 'warn') {
+    console.log(chalk.dim(`  Note: keel has no measured evidence for warn → block (only mode: observe rules are shadow-recorded) — watch \`keel report\` before relying on this.`))
   }
 
   const result = writeRuleMode(source.sourcePath, ruleId, target)

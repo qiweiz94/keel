@@ -371,7 +371,8 @@ program
   .description('Advance a mode: observe rule to warn/block (user-owned — run this yourself, not through the agent)')
   .argument('<rule-id>', 'Rule ID to promote')
   .option('--to <mode>', 'Target mode: warn or block (default: the next rung — observe→warn, warn→block)')
-  .action((ruleId: string, options: { to?: string }) => promoteCommand(ruleId, options))
+  .option('--force', 'Skip the evidence gate (observe rules only — see promotion_fp_threshold) and promote anyway')
+  .action((ruleId: string, options: { to?: string; force?: boolean }) => promoteCommand(ruleId, options))
 
 program.parse(process.argv)
 
