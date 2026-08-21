@@ -15,6 +15,11 @@ release and covered by tests; anything under **Planned** is not built yet.
 - Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
 - Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
 - Self-protection: agents cannot run keel's control commands or edit its rules
+- `keel halt` / `keel resume` — a lockdown latch, separate from the `keel disable`
+  kill switch: denies every subsequent call (instead of allowing everything, like
+  disable), has no `--until`/expiry of any kind, and only clears via `keel resume`
+  run by a human. `keel-control-gate` blocks an agent from running either command
+  on itself, same as it already blocks `keel disable`.
 - Standalone Rego/WASM policy tools (`keel policy init|build|eval`) — **EXPERIMENTAL,
   unsupported, not part of real-time enforcement.** `.rego`/`.wasm` policies are never
   consulted by `keel hook`, the OpenCode plugin, or `keel daemon` — only YAML `rules.yaml`

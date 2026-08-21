@@ -18,6 +18,7 @@ import { evaluateCommand } from './commands/evaluate.js'
 import { testCommand, testFromAudit } from './commands/test.js'
 import { validateCommand } from './commands/validate.js'
 import { disableCommand, enableCommand } from './commands/disable.js'
+import { haltCommand, resumeCommand } from './commands/halt.js'
 import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
@@ -191,6 +192,17 @@ program
   .command('enable')
   .description('Re-enable enforcement after a disable')
   .action(enableCommand)
+
+program
+  .command('halt')
+  .description('Lockdown: deny every subsequent tool call until a human runs `keel resume` (no auto-expiry)')
+  .option('--reason <text>', 'Reason for halting')
+  .action(haltCommand)
+
+program
+  .command('resume')
+  .description('Clear a halt set by `keel halt`')
+  .action(resumeCommand)
 
 program
   .command('evaluate')

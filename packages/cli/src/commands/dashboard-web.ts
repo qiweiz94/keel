@@ -115,6 +115,9 @@ function pageHtml(): string {
 
   <div class="card">
     <h2>Status</h2>
+    <div class="row" id="halt-row" style="display:none">
+      <span class="kv">Enforcement: <b id="st-halt">—</b></span>
+    </div>
     <div class="row">
       <span class="kv">Speed dial: <b id="st-dial">—</b></span>
       <span class="kv">Kill switch: <b id="st-kill">—</b></span>
@@ -204,6 +207,13 @@ async function refresh() {
   if (!s) return
   dial = s.dial
   document.getElementById('st-dial').textContent = (s.dial || 'balanced').toUpperCase()
+  const halted = s.halted || { active: false }
+  const haltRow = document.getElementById('halt-row')
+  haltRow.style.display = halted.active ? '' : 'none'
+  if (halted.active) {
+    document.getElementById('st-halt').textContent = 'HALTED — every call denied (' + (halted.reason || 'Manual halt') + ')'
+    document.getElementById('st-halt').style.color = '#f85149'
+  }
   const ks = s.killSwitch
   document.getElementById('st-kill').textContent = ks.state === 'enabled' ? 'active' : ks.state === 'corrupt' ? 'CORRUPT — stays ON' : 'DISABLED'
   document.getElementById('st-kill').style.color = ks.state === 'enabled' ? '#3fb950' : ks.state === 'corrupt' ? '#f85149' : '#d29922'

@@ -74,7 +74,7 @@ rules:
   # ── TIER 1: protect floor ──────────────────────────────────────────
   - id: keel-control-gate
     type: command
-    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall|promote)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
+    match: "keel[ \t]+(disable|allow|level|enforce|install|uninstall|promote|halt|resume)([ \t]|$)|keel[ \t]+rules[ \t][^|;&]*--append"
     action: deny
     level: protect
     priority: 100
@@ -95,6 +95,7 @@ rules:
       - "**/.keel.local.yaml"
       - "**/.config/keel/rules.yaml"
       - "**/.keel/DISABLED"
+      - "**/.keel/HALTED"
       - "**/.opencode/plugins/**"
       - "**/.keel/plugins/**"
       - "**/.claude/settings.json"
@@ -117,7 +118,7 @@ rules:
 
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)|rm[^|;&]*[ \t/][.]keel([ \t]|/?$)"
+    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED|HALTED)|rm[^|;&]*[ \t/][.]keel([ \t]|/?$)"
     action: deny
     level: protect
     priority: 90
@@ -135,7 +136,7 @@ rules:
   # ── self-protection write gate (Tier 1; supervisor paste at gate-3, secreview) ──
   - id: no-self-protection-write
     type: command
-    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/|[.]keel/DISABLED)|git +config[^|;&]*core[.]hooksPath"
+    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/|[.]keel/DISABLED|[.]keel/HALTED)|git +config[^|;&]*core[.]hooksPath"
     action: deny
     level: protect
     priority: 95
@@ -150,7 +151,7 @@ rules:
       - "Scaffolding a brand-new project's .mcp.json with a heredoc or redirect is blocked; ask the user to run it."
       - "A file literally named .mcp.json anywhere outside the project root is still matched -- the path fragments are matched anywhere in the command, not anchored to the project."
       - "A commit message that merely quotes one of these paths is NOT matched (verified: git commit -m with .mcp.json in the message passes), because a write verb must also be present."
-      - "A diagnostic READ of the sentinel or any of these config files (cat, ls, grep of .keel/DISABLED, .mcp.json, .claude/settings.json) is NOT blocked -- every path alternative here requires a preceding write verb or redirect, so reads pass and only writes are denied (verified live, v0.4 red-team)."
+      - "A diagnostic READ of the sentinel or any of these config files (cat, ls, grep of .keel/DISABLED, .keel/HALTED, .mcp.json, .claude/settings.json) is NOT blocked -- every path alternative here requires a preceding write verb or redirect, so reads pass and only writes are denied (verified live, v0.4 red-team)."
     message: "Writing to keel's own files, the agent's trust/approval config, or git hooks through a shell command is blocked -- these are user-owned."
   - id: agent-env-hijack
     type: command

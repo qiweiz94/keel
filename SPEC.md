@@ -110,6 +110,8 @@ Status: ✅ = built, 🚧 = planned (spec'd but not implemented)
 | `keel validate` | ✅ | Check rules for conflicts, syntax, drift |
 | `keel disable` | ✅ | Kill switch — suspend all enforcement |
 | `keel enable` | ✅ | Re-enable after disable |
+| `keel halt` | ✅ | Lockdown latch — deny every subsequent call until a human clears it |
+| `keel resume` | ✅ | Clear a halt set by `keel halt` |
 | `keel suggest` | ✅ | Analyze audit trail, suggest rule improvements |
 | `keel allow <rule-id> --once` | ✅ | One-time override for a blocked action |
 | `keel evaluate --tool <name> --args <json>` | ✅ | JSON-in/JSON-out for programmatic use |
@@ -257,6 +259,9 @@ work or stalling the workflow.
 - `keel level` — set the dial directly (global or --project).
 - `keel allow <id> [--once]` — approvals; unknown ids are refused.
 - `keel disable/enable` — kill switch; corrupt sentinel fails CLOSED.
+- `keel halt/resume` — lockdown latch; corrupt sentinel fails CLOSED toward
+  HALTED (the opposite polarity of disable's corrupt-sentinel fallback —
+  see the Kill Switch section below). No TTL; only `keel resume` clears it.
 - `keel receipts rotate` — key rotation; old keys still verify.
 - The control gate (keel-control-gate) denies the AGENT from running any
   of these — keel controls are user-owned.
@@ -849,6 +854,36 @@ Sentinel file at `~/.keel/DISABLED`. It expires automatically. A restart-scoped
 sentinel is consumed only after a long-lived integration successfully starts;
 direct CLI subprocesses do not treat every invocation as an agent restart.
 Corrupt sentinel state fails closed and requires `keel enable` for recovery.
+
+### Halt (Lockdown Latch)
+
+The inverse of the kill switch above, not a second name for it: `keel disable`
+ALLOWS every call while its sentinel exists; `keel halt` DENIES every call
+while its sentinel exists. They are separate controls with separate sentinel
+files, and a halt wins if both happen to be set at once.
+
+```
+$ keel halt --reason "investigating a runaway loop"
+  → Keel HALTED. Every tool call is now DENIED until a human clears this.
+
+$ keel resume                     # Only way to clear a halt
+  → Keel resumed. Enforcement continues normally.
+```
+
+Sentinel file at `~/.keel/HALTED`. Unlike `keel disable`, it has no `--until`
+flag and no expiry field of any kind — an industrial e-stop requires a
+manual reset, and a halt that could silently lapse on a timer would defeat
+the one property that makes it different from an ordinary rule: nothing
+gets past it, and nothing — not a retry, not a rephrase, not even `keel
+disable` — can quietly clear it. `keel enable` does not touch a halt either;
+only `keel resume` does. `keel-control-gate` denies an agent that tries to
+run `keel halt` OR `keel resume` itself, the same as it already denies
+`keel disable` — clearing a halt is a human-in-their-own-terminal action.
+
+Corrupt sentinel state fails closed toward HALTED (denying, not allowing) —
+the opposite polarity of the kill switch's corrupt-state fallback above,
+because "closed" for a control that denies everything means the denial
+stays in force, not that it lifts.
 
 ### Lockup Escape
 

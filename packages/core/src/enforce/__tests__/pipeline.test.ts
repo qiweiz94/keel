@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -13,6 +13,16 @@ import { loadRuleHierarchy, parseRulesContent, parseRulesFile, validateRules } f
 import type { StateManager } from '../state-manager.js'
 import { FileRuleOverrideStore } from '../overrides.js'
 import { rmSafe } from './helpers/fs-safe.js'
+
+// Every pipeline this file builds via makePipeline()/makePipelineFromYaml()
+// points at a private tmp HALTED path that is never written to, rather than
+// relying on the real ~/.keel/HALTED being absent. This is deliberately
+// NOT the same pattern as the DISABLED guard in the 'EnforcementPipeline'
+// beforeAll below (which does rm the real sentinel) — halt's whole contract
+// is "nothing but `keel resume` clears this", so a test suite silently
+// deleting a developer's real HALTED file would violate the feature it is
+// testing, not just risk a flaky run.
+const SHARED_HALT_FILE = join(mkdtempSync(join(tmpdir(), 'keel-pipeline-halt-')), 'HALTED')
 
 function sharedStateManager(): StateManager {
   const state = {
@@ -102,6 +112,7 @@ function makePipeline(level: ProtectionLevel = 'balanced'): EnforcementPipeline 
     ruleHierarchy: hierarchy,
     ruleVersion: 1,
     allowedFixTransforms: true,
+    haltFile: SHARED_HALT_FILE,
   }
 
   return new EnforcementPipeline(config)
@@ -119,6 +130,7 @@ function makePipelineFromYaml(yaml: string, stateManager?: StateManager, sourceP
     ruleHierarchy: { global: null, user: null, project: rules, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
+    haltFile: SHARED_HALT_FILE,
     stateManager,
   })
 }
@@ -157,6 +169,12 @@ describe('EnforcementPipeline', () => {
     // in lockstep with the code under test.
     const sentinelPath = join(resolveHome(), '.keel', 'DISABLED')
     if (existsSync(sentinelPath)) rmSync(sentinelPath)
+    // No equivalent rm of the real ~/.keel/HALTED here, deliberately: every
+    // pipeline this file builds (including the 'Kill switch' describe block
+    // above and the dedicated 'Halt' describe block below) is given an
+    // explicit `haltFile` pointing at a private tmp path — see
+    // SHARED_HALT_FILE's own comment for why silently clearing a
+    // developer's real halt would be wrong, not just risky.
   })
 
   describe('Stateful rules', () => {
@@ -524,6 +542,7 @@ rules:
         ruleVersion: 1,
         allowedFixTransforms: true,
         disableFile: sentinelPath,
+        haltFile: SHARED_HALT_FILE,
       })
 
     afterAll(() => {
@@ -617,6 +636,97 @@ rules:
       writeFileSync(sentinelPath, '{not-json')
       await expect(killSwitchPipeline().evaluate(input('Bash', { command: 'echo safe' }))).rejects.toThrow('Invalid Keel kill-switch state')
       rmSync(sentinelPath)
+    })
+  })
+
+  describe('Halt (`keel halt` — the inverse of the kill switch)', () => {
+    const haltDir = mkdtempSync(join(tmpdir(), 'keel-halt-'))
+    const haltPath = join(haltDir, 'HALTED')
+    const haltPipeline = (extra: Partial<PipelineConfig> = {}): EnforcementPipeline =>
+      new EnforcementPipeline({
+        level: 'balanced',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: null, user: null, project: makeSampleRules(), local: null },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        haltFile: haltPath,
+        ...extra,
+      })
+
+    afterEach(() => {
+      if (existsSync(haltPath)) rmSync(haltPath)
+    })
+
+    afterAll(() => {
+      rmSafe(haltDir)
+    })
+
+    it('denies every call while halted, including a call with no matching rule at all', async () => {
+      writeFileSync(haltPath, JSON.stringify({ halted_at: new Date().toISOString(), reason: 'testing halt', auto_clear_on_restart: false }))
+      const pipeline = haltPipeline()
+      const result = await pipeline.evaluate(input('Bash', { command: 'echo perfectly-harmless' }))
+      expect(result.action).toBe('deny')
+      expect(result.rule_id).toBe('keel-halted')
+      expect(result.message).toContain('HALTED')
+      expect(result.message).toContain('testing halt')
+      expect(result.message).toContain('keel resume')
+    })
+
+    it('has no expires_at / TTL — the sentinel never auto-clears itself no matter how old halted_at is', async () => {
+      writeFileSync(haltPath, JSON.stringify({ halted_at: new Date(0).toISOString(), reason: 'ancient halt', auto_clear_on_restart: false }))
+      const pipeline = haltPipeline()
+      const result = await pipeline.evaluate(input('Bash', { command: 'echo still-halted' }))
+      expect(result.action).toBe('deny')
+      expect(existsSync(haltPath)).toBe(true)
+    })
+
+    it('fails closed (stays halted, DENY) when the halt sentinel is corrupt — unlike DISABLED, this does not throw', async () => {
+      writeFileSync(haltPath, '{not-json')
+      const pipeline = haltPipeline()
+      const result = await pipeline.evaluate(input('Bash', { command: 'echo corrupt-halt' }))
+      expect(result.action).toBe('deny')
+      expect(result.rule_id).toBe('keel-halted')
+    })
+
+    it('resumes normal enforcement once the sentinel is removed', async () => {
+      writeFileSync(haltPath, JSON.stringify({ halted_at: new Date().toISOString(), reason: 'temp', auto_clear_on_restart: false }))
+      const pipeline = haltPipeline()
+      expect((await pipeline.evaluate(input('Bash', { command: 'echo x' }))).action).toBe('deny')
+      rmSync(haltPath)
+      // A fresh pipeline instance, same as a real `keel resume` followed by
+      // the next call — evaluate() re-checks the sentinel every call, so an
+      // existing instance would also see this, but a fresh one rules out
+      // any hidden per-instance caching of the halted state.
+      const resumed = haltPipeline()
+      expect((await resumed.evaluate(input('Bash', { command: 'echo x' }))).action).toBe('allow')
+    })
+
+    it('wins over the DISABLED kill switch when both sentinels are present', async () => {
+      const disableDir = mkdtempSync(join(tmpdir(), 'keel-halt-disable-'))
+      const disablePath = join(disableDir, 'DISABLED')
+      writeFileSync(disablePath, JSON.stringify({ disabled_at: new Date().toISOString(), expires_at: null, reason: 'agent tried to disable its way out' }))
+      writeFileSync(haltPath, JSON.stringify({ halted_at: new Date().toISOString(), reason: 'halted after the disable', auto_clear_on_restart: false }))
+      const pipeline = haltPipeline({ disableFile: disablePath })
+      // Without the halt, this DISABLED sentinel alone would return 'allow'
+      // (see the 'allows all actions when sentinel file exists' case
+      // above) — the halt must override that, not merely coexist with it.
+      const result = await pipeline.evaluate(input('Bash', { command: 'git push --force' }))
+      expect(result.action).toBe('deny')
+      expect(result.rule_id).toBe('keel-halted')
+      rmSafe(disableDir)
+    })
+
+    it('also blocks the Stop-hook claim-to-evidence path (evaluateClaim), not just tool-call evaluation', async () => {
+      writeFileSync(haltPath, JSON.stringify({ halted_at: new Date().toISOString(), reason: 'claim-path halt', auto_clear_on_restart: false }))
+      const pipeline = haltPipeline()
+      const claimInput = { ...input('assistant-message', {}), reasoning: 'Done! All tests pass.' }
+      const result = await pipeline.evaluateClaim(claimInput)
+      expect(result.action).toBe('deny')
+      expect(result.rule_id).toBe('keel-halted')
     })
   })
 
