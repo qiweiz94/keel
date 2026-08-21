@@ -8466,6 +8466,61 @@ function detectClaim(input) {
   return null;
 }
 
+// ../core/src/enforce/secret-confidence.ts
+var KNOWN_PLACEHOLDER_SECRETS = /* @__PURE__ */ new Set([
+  // AWS's own SDK/CLI/IAM-console docs' canonical example access key ID —
+  // the single most copy-pasted credential-shaped string on the internet,
+  // and the literal case this feature exists to fix.
+  "AKIAIOSFODNN7EXAMPLE"
+]);
+var AWS_EXAMPLE_SUFFIX = "EXAMPLE";
+function shannonEntropyBitsPerChar(s) {
+  if (!s.length) return 0;
+  const counts = /* @__PURE__ */ new Map();
+  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const p = count / s.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+function isUniformRedactionShape(candidate, minRun = 8) {
+  if (candidate.length < minRun) return false;
+  const last = candidate[candidate.length - 1];
+  let run = 0;
+  for (let i = candidate.length - 1; i >= 0 && candidate[i] === last; i--) run++;
+  if (run < minRun) return false;
+  return run >= candidate.length - 12;
+}
+function scoreSecretCandidate(candidate) {
+  if (KNOWN_PLACEHOLDER_SECRETS.has(candidate)) return "allow";
+  if (candidate.startsWith("AKIA") && candidate.endsWith(AWS_EXAMPLE_SUFFIX)) return "allow";
+  if (isUniformRedactionShape(candidate)) return "allow";
+  return "deny";
+}
+function worstSecretVerdict(regexSource, content) {
+  let re;
+  try {
+    re = new RegExp(regexSource, "gi");
+  } catch {
+    return null;
+  }
+  let match;
+  let sawAny = false;
+  let iterations = 0;
+  while ((match = re.exec(content)) && iterations < 1e3) {
+    iterations++;
+    if (match[0] === "") {
+      re.lastIndex++;
+      continue;
+    }
+    sawAny = true;
+    if (scoreSecretCandidate(match[0]) === "deny") return "deny";
+  }
+  return sawAny ? "allow" : null;
+}
+
 // ../core/src/enforce/pipeline.ts
 var OBSERVE_CONTINUE = /* @__PURE__ */ Symbol("keel:observe-continue");
 var MAX_OUTPUT_SCAN_CHARS = 256 * 1024;
@@ -9212,6 +9267,16 @@ var EnforcementPipeline = class {
           if (inlineContent || diskChanged) {
             for (const pattern of rule.patterns) {
               const content = inlineContent || (isFile ? readFileSync5(resolvedPath, "utf-8") : "");
+              if (pattern.regex && pattern.redact_span === true) {
+                const verdict = worstSecretVerdict(pattern.regex, content);
+                if (verdict === "deny") {
+                  const sample = new RegExp(pattern.regex, "i").exec(content)?.[0];
+                  const entropyNote = sample ? ` (candidate entropy ${shannonEntropyBitsPerChar(sample).toFixed(2)} bits/char)` : "";
+                  return this.violation(input, rule, `${rule.message}${entropyNote}`, start, 5);
+                }
+                if (verdict === "allow") continue;
+                continue;
+              }
               if (pattern.regex && this.matchesRulePattern(pattern.regex, content) || pattern.prefix && content.startsWith(pattern.prefix)) {
                 return this.violation(input, rule, rule.message, start, 5);
               }
@@ -11634,7 +11699,7 @@ rules:
     rationale: "Exact-signature literal credential formats (AWS keys, GitHub tokens, Slack tokens, OpenAI-shaped keys, PEM headers) \u2014 high enough confidence to deny at balanced per the severity x confidence rule, despite living in Tier 2."
     remediation: "Use environment variables or a secrets manager, never a literal credential in source."
     false_positives:
-      - "A docs page showing a REDACTED example key with the real characters replaced by x's does not match these exact-length formats, so it passes; a real (even if revoked) key literal will still match and deny, which is intentional."
+      - "A docs page showing a REDACTED example key with the real characters replaced by x's DOES match these exact-length formats (an earlier version of this note claimed otherwise \u2014 it did not, x is a valid uppercase-alnum character). A local, offline confidence filter (packages/core/src/enforce/secret-confidence.ts) allows an exact known-placeholder literal such as AWS's own AKIAIOSFODNN7EXAMPLE, AWS's documented EXAMPLE-suffix convention, or a redaction-shaped run of one repeated character, before this rule denies. A real (even if revoked) key literal still matches and denies, unconditionally, exactly as before."
     message: "Hardcoded credentials must not be written to files."
 
   - id: no-secret-files

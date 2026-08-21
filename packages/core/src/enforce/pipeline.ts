@@ -27,6 +27,7 @@ import { matchesAnyTestGlob } from './oracle-glob.js'
 import { FileRuleOverrideStore } from './overrides.js'
 import { commandString, commandSurfaces, argPath } from './arg-utils.js'
 import { detectClaim } from './claim.js'
+import { worstSecretVerdict, shannonEntropyBitsPerChar } from './secret-confidence.js'
 
 export type PipelineTier = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -1352,6 +1353,48 @@ export class EnforcementPipeline {
         if (inlineContent || diskChanged) {
           for (const pattern of rule.patterns) {
             const content = inlineContent || (isFile ? readFileSync(resolvedPath, 'utf-8') : '')
+            // Local-only false-positive filter (secret-confidence.ts) —
+            // ONLY for patterns whose match span IS the secret bytes
+            // themselves (redact_span: true, see types.ts's doc and
+            // secret-confidence.ts's header). A pattern without
+            // redact_span (PEM headers, aws_secret_access_key=) matches
+            // only a LABEL, never a secret-shaped substring — scoring
+            // that text would misfire on every single match of those
+            // patterns, so they fall straight through to the unchanged
+            // unconditional check below, exactly as before this feature.
+            //
+            // Deliberately write-side ONLY (this branch, not
+            // evaluateOutput()'s redaction path below) and deliberately
+            // NOT gated on file-path context: the target path an agent
+            // writes to is attacker-controlled input, so "lower
+            // confidence because the path looks like docs/" would be a
+            // two-line bypass (write the real credential to
+            // docs/notes.md instead of src/). worstSecretVerdict() only
+            // ever clears a match via an exact/structural
+            // placeholder-shape allowlist (a known literal, AWS's
+            // documented EXAMPLE-suffix convention, or a redaction-shaped
+            // run of one repeated character) — never via entropy or path,
+            // both of which are calibration-free facts about the string
+            // itself, not a threshold. See
+            // no-path-context-bypass.test.ts / secret-confidence.test.ts
+            // for the regression pinning a real-shaped key still denies
+            // identically in README.md / docs/ / *.test.ts / *.example.
+            if (pattern.regex && pattern.redact_span === true) {
+              const verdict = worstSecretVerdict(pattern.regex, content)
+              if (verdict === 'deny') {
+                // Entropy is purely observational here (see
+                // secret-confidence.ts's header for why it cannot itself
+                // clear or soften a match) — surfaced in the message only
+                // as a diagnostic for a human reviewing the block, never
+                // consulted to decide the action.
+                const sample = new RegExp(pattern.regex, 'i').exec(content)?.[0]
+                const entropyNote = sample ? ` (candidate entropy ${shannonEntropyBitsPerChar(sample).toFixed(2)} bits/char)` : ''
+                return this.violation(input, rule, `${rule.message}${entropyNote}`, start, 5)
+              }
+              if (verdict === 'allow') continue // known placeholder/redaction shape — never even warn; keep scanning remaining patterns
+              // verdict === null: pattern.regex matched nothing, fall through with no violation for this pattern
+              continue
+            }
             if ((pattern.regex && this.matchesRulePattern(pattern.regex, content)) || (pattern.prefix && content.startsWith(pattern.prefix))) {
               return this.violation(input, rule, rule.message, start, 5)
             }
