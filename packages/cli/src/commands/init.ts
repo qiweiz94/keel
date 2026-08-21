@@ -9,7 +9,7 @@ export async function initCommand(options: { hooks?: boolean }) {
   const policyPath = join(cwd, '.keel.yaml')
 
   if (existsSync(policyPath)) {
-    console.log(chalk.yellow('.keel.yaml already exists. Use keel check to verify it.'))
+    console.log(chalk.yellow('.keel.yaml already exists.'))
   } else {
     writeFileSync(policyPath, DEFAULT_POLICY_YAML, 'utf-8')
     console.log(chalk.green('✓ Created .keel.yaml'))
@@ -44,9 +44,9 @@ export async function initCommand(options: { hooks?: boolean }) {
   }
 
   console.log(chalk.cyan('\nNext steps:'))
-  console.log('  1. Review .keel.yaml and customize the rules')
+  console.log('  1. Run keel install to set up .keel/rules.yaml — that is what keel check actually enforces')
   console.log('  2. Run keel check --ci to verify compliance')
-  console.log('  3. Commit .keel.yaml to your repository')
+  console.log('  3. Commit .keel/rules.yaml to your repository')
   if (!options.hooks) {
     console.log('  4. Run keel init --hooks to install git hook enforcement')
   }

@@ -1,10 +1,65 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { existsSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { rmSafe } from './helpers/fs-safe.js'
+
+/**
+ * `check` now routes through the same EnforcementPipeline/.keel/rules.yaml
+ * path as `keel hook`/`keel evaluate`/`keel daemon` (the legacy PolicyEngine
+ * default policy no longer applies), so these tests need a real rules
+ * fixture to evaluate against — same self-written fixture approach as
+ * hook.test.ts's own TEST_RULES, curated to just the rules these tests
+ * exercise rather than shelling out to the full `keel install` (which does
+ * host-detection this fixture doesn't need).
+ *
+ * `no-destructive-commands` and `no-secrets-in-code` are pinned to
+ * `level: protect` here — a deliberate DIVERGENCE from their real shipped
+ * level (`protect` / `sprint` respectively, see install.ts) — so they block
+ * on the very first match instead of warning once and blocking on the
+ * repeat (dialAction()'s protect-floor rule in pipeline.ts). Every test
+ * below shares one HOME/KEEL_STATE_DIR for the whole file (beforeAll, not
+ * beforeEach), so a rule without that pin would warn on whichever test
+ * happens to hit it first and only deny on a later repeat — an ordering
+ * dependency the original PolicyEngine-backed tests never had to think
+ * about, since it always blocked immediately with no warn-first grace.
+ * `no-verify-bypass`/`broad-privilege-escalation` need no such pin: their
+ * real shipped `action: warn` never escalates regardless of level (see
+ * pipeline.ts's `enforcedAction()` — the warn-once-then-block ladder is
+ * `deny`/`block`-only).
+ */
+const TEST_RULES = `version: 1
+rules:
+  - id: no-destructive-commands
+    type: command
+    match: "rm -rf /|rm -rf ~"
+    action: deny
+    level: protect
+    message: "Destructive commands (including fork bombs) are blocked."
+
+  - id: no-verify-bypass
+    type: command
+    match: "git commit.*--no-verify|git commit( [^ ]+)* -n( |$)"
+    action: warn
+    message: "AI agents must not bypass git hooks with --no-verify."
+
+  - id: broad-privilege-escalation
+    type: command
+    match: "(?<![A-Za-z])sudo(?![A-Za-z])"
+    action: warn
+    message: "Broad privilege/ownership change (sudo, chmod -R, or chown -R) — double-check the scope."
+
+  - id: no-secrets-in-code
+    type: content
+    patterns:
+      - regex: "AKIA[0-9A-Z]{16}"
+      - regex: "OPENAI_API_KEY="
+    action: deny
+    level: protect
+    message: "Hardcoded credentials must not be written to files."
+`
 
 // Resolve from this file's own location, NOT process.cwd(). `npm test` runs
 // vitest with cwd=packages/cli, where a cwd-relative path resolves to
@@ -54,6 +109,9 @@ describe('CLI Integration', () => {
     execSync('git init', { cwd: testDir })
     execSync('git config user.email test@test.com', { cwd: testDir })
     execSync('git config user.name test', { cwd: testDir })
+
+    mkdirSync(join(testDir, '.keel'), { recursive: true })
+    writeFileSync(join(testDir, '.keel', 'rules.yaml'), TEST_RULES, 'utf-8')
   })
 
   afterAll(() => {
@@ -79,14 +137,25 @@ describe('CLI Integration', () => {
     expect(out).toContain('BLOCKED')
   })
 
-  it('check --command blocks no-verify', () => {
-    const { stdout: out } = run('check --command "git commit --no-verify -m x"')
-    expect(out).toContain('BLOCKED')
+  it('check --command warns (not blocks) on no-verify', () => {
+    // Accepted severity change: no-verify-bypass ships at action: warn, not
+    // deny/block — a genuinely broken hook needs an escape hatch. check.ts
+    // used to hard-block this unconditionally via a check-local re-escalation
+    // that no longer exists; it now reports whatever the rule itself says.
+    const { stdout: out, code } = run('check --command "git commit --no-verify -m x"')
+    expect(out).toContain('WARN')
+    expect(out).not.toContain('BLOCKED')
+    expect(code).toBe(0)
   })
 
-  it('check --command blocks sudo', () => {
-    const { stdout: out } = run('check --command "sudo rm file"')
-    expect(out).toContain('BLOCKED')
+  it('check --command warns (not blocks) on sudo', () => {
+    // Accepted severity change: broad-privilege-escalation ships at action:
+    // warn, not deny/block — sudo has too high a legitimate-use rate to
+    // hard-block by default.
+    const { stdout: out, code } = run('check --command "sudo rm file"')
+    expect(out).toContain('WARN')
+    expect(out).not.toContain('BLOCKED')
+    expect(code).toBe(0)
   })
 
   it('check --command blocks pkill python', () => {
@@ -105,14 +174,33 @@ describe('CLI Integration', () => {
   })
 
   it('check detects secrets in file', () => {
+    // --write is required now: content-based secret scanning is write-side
+    // only (matching every other host's read/write split) — a plain read
+    // (no --write) no longer scans file content at all.
     writeFileSync(join(testDir, 'test.txt'), 'OPENAI_API_KEY=sk-test123-test-test-test-abcdefgh', 'utf-8')
-    const { stdout: out } = run('check test.txt')
+    const { stdout: out } = run('check test.txt --write')
     expect(out).toContain('BLOCKED')
   })
 
+  // `keel audit`/`keel audit --json` render `.keel/audit/audit.log` — the
+  // legacy PolicyEngine's own signed, hash-chained log (packages/core/src/
+  // policy-engine.ts's private `audit()` method is its only writer; see
+  // signing.ts/receipts.ts). `keel check` never fed this file after this
+  // migration — but neither does `keel hook`/`keel evaluate`/`keel daemon`,
+  // which never fed it either; they all write to the modern, unsigned
+  // `AuditLog` (`~/.keel/traces/`, rendered by `keel enforce --audit`)
+  // instead. `check` losing this write is consistency with the rest of the
+  // platform, not a fresh regression. These two tests were only ever
+  // exercising `auditCommand`'s own rendering, with `check` as an
+  // incidental producer — seed the log file directly so that coverage
+  // survives without depending on `check` to (no longer) write it.
   it('audit shows log', () => {
-    // Run a command first to generate audit entry
-    run('check --command "rm -rf /"')
+    mkdirSync(join(testDir, '.keel', 'audit'), { recursive: true })
+    writeFileSync(
+      join(testDir, '.keel', 'audit', 'audit.log'),
+      JSON.stringify({ timestamp: new Date().toISOString(), action: 'block', rule_name: 'no-destructive-commands', tool_name: 'bash', message: 'Destructive commands are blocked.' }) + '\n',
+      'utf-8',
+    )
     const { stdout: out } = run('audit')
     expect(out).toContain('BLOCKED')
   })
@@ -194,10 +282,11 @@ describe('CLI Integration', () => {
     expect(code).not.toBe(0)
   })
 
-  it('check --command blocks --no-verify given after other flags', () => {
-    // `git commit -n` is caught, but the pattern requires `commit` and `-n`
-    // to be adjacent, so moving the flag past -m evades it.
-    const { stdout: out } = run('check --command "git commit -m msg -n"')
-    expect(out).toContain('BLOCKED')
+  it('check --command warns on --no-verify given after other flags', () => {
+    // `git commit -n` is still caught when `-n` trails other flags — and,
+    // per the accepted severity change, warns rather than blocks.
+    const { stdout: out, code } = run('check --command "git commit -m msg -n"')
+    expect(out).toContain('WARN')
+    expect(code).toBe(0)
   })
 })

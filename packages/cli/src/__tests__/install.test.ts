@@ -121,49 +121,94 @@ describePosixShim('init --hooks', () => {
   })
 })
 
-describePosixShim('policy loading fails closed', () => {
-  it('denies when the policy file is empty', () => {
-    // parseYaml("") returns null without throwing, so this must be checked
-    // explicitly — it used to throw a TypeError and crash the CLI.
-    writeFileSync(join(dir, '.keel.yaml'), '', 'utf-8')
-    const { stdout, code } = run('check --command "ls -la"')
+describePosixShim('rules loading fails closed', () => {
+  // `check` now routes through the same EnforcementPipeline/.keel/rules.yaml
+  // path as `keel hook`/`keel evaluate`/`keel daemon` — the legacy
+  // PolicyEngine .keel.yaml fail-closed/defaults behavior this describe
+  // block used to test no longer applies to `check` at all. Both `home`
+  // dirs below are fresh empty tmp dirs (not the real process HOME) so a
+  // developer machine's own ~/.keel/rules.yaml can't leak into either
+  // test — the "absent" case especially would otherwise pass vacuously
+  // (or fail) depending on what's actually on disk outside this test.
+  let home: string
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'keel-test-rules-home-')) })
+  afterEach(() => { rmSafe(home) })
+
+  it('denies when .keel/rules.yaml is malformed', () => {
+    mkdirSync(join(dir, '.keel'), { recursive: true })
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), 'not: [valid yaml\n', 'utf-8')
+    const { stdout, code } = run('check --command "ls -la"', { home })
     expect(stdout).toContain('BLOCKED')
     expect(code).not.toBe(0)
   })
 
-  it('denies when the policy file is malformed', () => {
-    writeFileSync(join(dir, '.keel.yaml'), 'not: [valid yaml\n', 'utf-8')
-    const { stdout, code } = run('check --command "ls -la"')
-    expect(stdout).toContain('BLOCKED')
-    expect(code).not.toBe(0)
-  })
-
-  it('uses defaults — not fail-closed — when no policy file exists', () => {
-    const { stdout, code } = run('check --command "ls -la"')
+  it('warns loudly and exits 0 — not fail-closed, not silently allowed — when no rules exist anywhere', () => {
+    const { stdout, code } = run('check --command "ls -la"', { home })
+    expect(stdout).toContain('No Keel rules found')
     expect(stdout).not.toContain('BLOCKED')
     expect(code).toBe(0)
   })
 })
 
-describePosixShim('the policy protects its own configuration', () => {
+describePosixShim('the rules protect their own configuration', () => {
+  // Minimal-but-real fixture: a filesystem-type no-rules-tampering-shaped
+  // rule scoped to just the paths these tests exercise, rather than
+  // shelling out to the full `keel install` (host-detection this fixture
+  // doesn't need). Pinned to level: protect — matching the real
+  // no-rules-tampering rule's actual shipped level (install.ts) — so it
+  // blocks on the first match rather than warning once and blocking on a
+  // repeat (dialAction()'s protect-floor rule in pipeline.ts).
+  //
+  // Isolated HOME (a fresh empty tmp dir, not the real machine HOME) AND a
+  // rule id distinct from the real shipped `no-rules-tampering` — belt and
+  // suspenders against a real ~/.keel/rules.yaml on the machine running
+  // this suite. Found empirically: a real global `no-rules-tampering`
+  // (level: protect, wider `paths` list) merging alongside this narrower
+  // same-id fixture rule hits mergeRules()'s floor-can-only-tighten guard
+  // (rule-parser.ts) — a same-id project override of a protect floor is
+  // discarded, not applied, unless it matches the SAME enforcement
+  // surface — so three of the four `protectedPaths` below silently fell
+  // through to the (real, but untested-here) global rule while one
+  // happened to still match by coincidence. A distinct id sidesteps that
+  // merge logic entirely; the isolated HOME means there is no colliding
+  // global rule to merge against in the first place either.
+  const RULES = `version: 1
+rules:
+  - id: test-no-rules-tampering
+    type: filesystem
+    paths:
+      - "**/.keel/rules.yaml"
+      - "**/.mcp.json"
+      - "**/.claude/settings.json"
+      - "**/.git/hooks/**"
+    action: deny
+    level: protect
+    message: "Writes to Keel's own configuration are blocked."
+`
   const protectedPaths = [
-    '.keel.yaml',
-    '.keel/audit/audit.log',
+    '.keel/rules.yaml',
+    '.mcp.json',
     '.claude/settings.json',
     '.git/hooks/pre-commit',
   ]
 
+  let home: string
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'keel-test-protect-home-'))
+    mkdirSync(join(dir, '.keel'), { recursive: true })
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), RULES, 'utf-8')
+  })
+  afterEach(() => { rmSafe(home) })
+
   for (const p of protectedPaths) {
     it(`blocks writes to ${p}`, () => {
-      run('init')
-      const { stdout } = run(`check --file "${p}" --write`)
+      const { stdout } = run(`check --file "${p}" --write`, { home })
       expect(stdout).toContain('BLOCKED')
     })
   }
 
   it('does not block writes to ordinary source files', () => {
-    run('init')
-    const { stdout, code } = run('check --file "src/index.ts" --write')
+    const { stdout, code } = run('check --file "src/index.ts" --write', { home })
     expect(stdout).not.toContain('BLOCKED')
     expect(code).toBe(0)
   })
