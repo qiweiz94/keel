@@ -7695,7 +7695,18 @@ function normalizeSubcommand(rawSub, dict, depth) {
   if (commandTokens.length > 0) {
     const argv0 = commandTokens[0].value;
     const kind = classifyInterpreter(basename(argv0));
-    if (kind) {
+    if (basename(argv0) === "keel" && commandTokens[1]?.value === "run") {
+      let bodyIndex = 2;
+      if (commandTokens[bodyIndex]?.value === "--") bodyIndex++;
+      const bodyTokens = commandTokens.slice(bodyIndex);
+      if (bodyTokens.length > 0) {
+        const bodyValue = bodyTokens.length === 1 ? bodyTokens[0].value : bodyTokens.map((t) => t.rendered).join(" ");
+        sub.interpreterBody = bodyValue;
+        if (depth < MAX_INTERPRETER_DEPTH) {
+          sub.nested = normalizeCommand(bodyValue, depth + 1);
+        }
+      }
+    } else if (kind) {
       const flags = interpreterFlags(kind);
       for (let k = 1; k < commandTokens.length - 1; k++) {
         const tok = commandTokens[k].value;

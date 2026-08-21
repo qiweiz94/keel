@@ -2,6 +2,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node
 import { join } from 'node:path'
 import chalk from 'chalk'
 import { resolveHome } from '../core/home.js'
+import { killSupervisedRuns, DEFAULT_KILL_GRACE_MS, type KillResult } from './run-kill.js'
+import type { RunStateEntry } from './run-state.js'
 
 // Same resolveHome()-based resolution as disable.ts's disableFilePath() —
 // the exact HOME-vs-KEEL_HOME split-brain bug fixed there (a bare
@@ -46,6 +48,39 @@ export function haltSession(reason: string): void {
   writeFileSync(haltFilePath(), JSON.stringify(state, null, 2))
 }
 
+function describeEntry(entry: RunStateEntry): string {
+  const cmd = entry.command.join(' ')
+  return `pid ${entry.pid} (${cmd.length > 60 ? cmd.slice(0, 60) + '…' : cmd})`
+}
+
+/** Render one kill outcome as a human-facing line. Exported for testing. */
+export function describeKillOutcome(result: KillResult): string {
+  const { pid, entry, outcome } = result
+  const label = entry ? describeEntry(entry) : `pid ${pid}`
+  switch (outcome.kind) {
+    case 'not-tracked':
+      return `  ✗ ${label}: not a tracked \`keel run\` process — nothing to kill.`
+    case 'unverified':
+      return `  ✗ ${label}: entry is still unverified (its process identity was never confirmed) — refusing to signal it.`
+    case 'refused-pgid-0-or-1':
+      return `  ✗ ${label}: REFUSED — recorded process-group id is 0 or 1, which is never a legitimate supervised group. Entry marked stale; investigate before trusting keel run again.`
+    case 'refused-own-pgid':
+      return `  ✗ ${label}: REFUSED — this is keel's OWN process group. Will never self-signal.`
+    case 'refused-own-pgid-unknown':
+      return `  ✗ ${label}: REFUSED — could not determine keel's own process-group id, so self-signaling cannot be ruled out. Fix your \`ps\` availability and retry.`
+    case 'already-dead':
+      return `  · ${label}: process was already gone. Tracking entry cleared.`
+    case 'not-ours':
+      return `  ✗ ${label}: a process exists at this pid but is not one keel can signal (permission denied) — refusing rather than guessing whether it's the same process.`
+    case 'start-time-mismatch':
+      return `  ✗ ${label}: REFUSED — the process at this pid no longer matches what \`keel run\` recorded (start time/identity differs). The pid was almost certainly reused by a DIFFERENT process. Entry marked stale.`
+    case 'killed':
+      return `  ✓ ${label}: killed (${outcome.via}).`
+    case 'kill-unconfirmed':
+      return `  ! ${label}: SIGKILL sent but the process could not be confirmed dead (zombie or uninterruptible sleep?). Tracking entry LEFT IN PLACE — retry \`keel halt --kill\`.`
+  }
+}
+
 /**
  * The inverse of `keel disable` — an industrial e-stop, not a rule match.
  * Once tripped, EVERY subsequent tool call is denied (not allowed, like
@@ -61,8 +96,21 @@ export function haltSession(reason: string): void {
  * elsewhere in this codebase (pipeline.ts, status.ts, dashboard.ts) with
  * the OPPOSITE polarity (it ALLOWS everything) — reusing that name for
  * halt would read as the same control with two behaviors.
+ *
+ * `--kill` additionally reaches for a `keel run`-supervised process — see
+ * run-kill.ts's own header for why every ambiguity in that path resolves
+ * to REFUSING to signal, never to proceeding. The sentinel write above
+ * always happens first and unconditionally, exactly as before `--kill`
+ * existed: a failed/refused kill must never suppress the lockdown latch
+ * itself.
  */
-export async function haltCommand(options: { reason?: string }) {
+export async function haltCommand(options: {
+  reason?: string
+  kill?: boolean
+  killPid?: number | string
+  killAll?: boolean
+  killGrace?: number | string
+}) {
   const reason = options.reason || 'Manual halt'
   haltSession(reason)
 
@@ -75,6 +123,49 @@ export async function haltCommand(options: { reason?: string }) {
   console.log(chalk.cyan('  Clear with:'))
   console.log(chalk.white('    keel resume'))
   console.log()
+
+  if (options.kill) {
+    let graceMs = DEFAULT_KILL_GRACE_MS
+    if (options.killGrace !== undefined && options.killGrace !== '') {
+      const seconds = typeof options.killGrace === 'number' ? options.killGrace : parseInt(String(options.killGrace), 10)
+      if (!Number.isInteger(seconds) || seconds <= 0) {
+        console.log(chalk.red(`  Invalid --kill-grace: "${options.killGrace}". Use a positive number of seconds.`))
+        process.exitCode = 1
+        return
+      }
+      graceMs = seconds * 1000
+    }
+
+    let pid: number | undefined
+    if (options.killPid !== undefined && options.killPid !== '') {
+      const parsed = typeof options.killPid === 'number' ? options.killPid : parseInt(String(options.killPid), 10)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        console.log(chalk.red(`  Invalid --kill-pid: "${options.killPid}". Use a positive pid.`))
+        process.exitCode = 1
+        return
+      }
+      pid = parsed
+    }
+
+    console.log(chalk.bold('  Looking for a keel run-supervised process to kill...'))
+    const { results, ambiguous } = await killSupervisedRuns({ pid, all: options.killAll, graceMs })
+
+    if (ambiguous) {
+      console.log(chalk.yellow(`  Multiple supervised runs are tracked (${ambiguous.length}) — refusing to guess which one you mean:`))
+      for (const entry of ambiguous) console.log(chalk.dim(`    • ${describeEntry(entry)}`))
+      console.log(chalk.cyan('  Re-run with --kill-pid <pid> for one, or --kill-all for every tracked run.'))
+      process.exitCode = 1
+      return
+    }
+
+    if (results.length === 0) {
+      console.log(chalk.dim('  No keel run-supervised process is currently tracked — sentinel-only halt.'))
+      return
+    }
+
+    for (const result of results) console.log(describeKillOutcome(result))
+    console.log()
+  }
 }
 
 /**

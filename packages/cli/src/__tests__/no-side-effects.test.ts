@@ -107,6 +107,17 @@ const ALLOWLIST: Record<string, string> = {
     'Out of ownership for this audit (binding constraint: core-adjacent, do not edit). readStdin() checks ' +
     'process.stdin.isTTY only to decide whether piped JSON is present, not to gate a side effect — a bare ' +
     'TTY with nothing piped in correctly reads as empty input rather than blocking on a read forever.',
+  'run.ts':
+    'spawn(agentCmd[0], ...) IS the entire purpose of the explicit `keel run <agent-cmd>` command — unlike ' +
+    'dashboard-web\'s auto-opened browser, this is never an unsolicited side effect layered on top of some ' +
+    'other action; a human (or an already-enforcement-gated agent — see keel-control-gate\'s own reasoning ' +
+    'in control-gate.test.ts for why `run` is deliberately NOT blocked there) had to type `keel run ...` for ' +
+    'this line to run at all. No isInteractive() gate applies for the same reason dashboard.ts\'s TUI gate ' +
+    'does not apply to its own explicit --once path: opt-in by construction, not by terminal detection.',
+  'run-kill.ts':
+    'execFileSync("ps", ["-axo", "pid=,ppid="]) is a READ-ONLY process listing (never mutates anything) used ' +
+    'to enumerate descendant pids for the SIGTERM/SIGKILL sweep, reached only from the explicit `keel halt ' +
+    '--kill` flag — opt-in, never fired by a bare `keel halt`.',
 }
 
 describe('side-effect primitive sweep (packages/cli/src/commands/*.ts)', () => {

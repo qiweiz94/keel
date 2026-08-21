@@ -19,6 +19,7 @@ import { testCommand, testFromAudit } from './commands/test.js'
 import { validateCommand } from './commands/validate.js'
 import { disableCommand, enableCommand } from './commands/disable.js'
 import { haltCommand, resumeCommand } from './commands/halt.js'
+import { runCommand } from './commands/run.js'
 import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
@@ -197,12 +198,23 @@ program
   .command('halt')
   .description('Lockdown: deny every subsequent tool call until a human runs `keel resume` (no auto-expiry)')
   .option('--reason <text>', 'Reason for halting')
+  .option('--kill', 'Also send SIGTERM/SIGKILL to a `keel run`-supervised process (see safety checks in run-kill.ts)')
+  .option('--kill-pid <pid>', 'With --kill, target one specific tracked pid instead of auto-selecting')
+  .option('--kill-all', 'With --kill, target every tracked run instead of refusing when more than one is tracked')
+  .option('--kill-grace <seconds>', 'With --kill, SIGTERM grace period before SIGKILL (default: 5)')
   .action(haltCommand)
 
 program
   .command('resume')
   .description('Clear a halt set by `keel halt`')
   .action(resumeCommand)
+
+program
+  .command('run')
+  .description('Run an agent command under keel supervision, so `keel halt --kill` can reach it even mid-flight (POSIX only — see docs)')
+  .argument('<agent-cmd...>', 'Agent command and its own arguments (use `--` before it if it has flags of its own, e.g. `keel run -- claude --dangerously-skip-permissions`)')
+  .allowUnknownOption()
+  .action(runCommand)
 
 program
   .command('evaluate')
