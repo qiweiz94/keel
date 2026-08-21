@@ -1,9 +1,9 @@
 # The three tiers
 
-`keel install` writes 46 default rules into `~/.keel/rules.yaml`, split into three
+`keel install` writes 47 default rules into `~/.keel/rules.yaml`, split into three
 tiers: 13 rules in Tier 1 carry a hard `level: protect` floor, plus one more Tier-1-
 positioned sibling rule that doesn't (see the note under Tier 1 below); 22 rules sit in
-Tier 2 (balanced); 9 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
+Tier 2 (balanced); 10 rules sit in Tier 3 (observe); and one rule (`no-repeat-loops`)
 has since been promoted out of Tier 3 into active enforcement (see below). This page
 explains what each tier does, how the "speed dial" (`keel level`) interacts with them,
 and how a rule moves from silently watching to actually blocking.
@@ -39,7 +39,7 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   ladder is the wrong shape — the first hit *is* the incident.
 
 Three tiers resolve that tension by giving each rule the posture its own evidence
-earns it, instead of applying one policy to all 46.
+earns it, instead of applying one policy to all 47.
 
 | Tier | What it does | Can the dial soften it? | Example rules |
 |---|---|---|---|
@@ -78,7 +78,7 @@ sources/sinks against a persisted, session-scoped store instead of in-memory sta
 it catches a read and a later network sink across two separate hook processes, not just
 one. It ships `action: warn`, `level: sprint` (no floor — the dial can soften it like any
 Tier-2 rule), yet it's written directly after `no-exfil-flow` in `rules.yaml` rather than
-under the Tier-2 comment header. This page counts it toward the 46-rule total but not
+under the Tier-2 comment header. This page counts it toward the 47-rule total but not
 toward Tier 1's 13-rule floor count, since behavior (no floor, dial-softenable `warn`) is
 what puts a rule in a tier, not its position in the file.
 
@@ -145,7 +145,7 @@ it doesn't fit Tier 1 or Tier 2's simple action column cleanly:
 |---|---|---|---|
 | `no-repeat-loops` | stuck | warn (base) → **redirect** at 3 identical failures → **deny** at 5, in a 15-minute window; `sprint` downgrades the 5th-attempt deny to warn, the 3rd-attempt redirect never softens | An identical failing command retried 3× / 5× in a 15-minute window |
 
-## Tier 3 — observe (9 rules)
+## Tier 3 — observe (10 rules)
 
 Every rule below ships with `mode: observe`. The pipeline evaluates them on every
 matching call and records what it *would* have done — the `observed_action` field on
@@ -163,13 +163,32 @@ to the host is always `allow`. Nothing here interrupts anyone yet.
 | `test-before-commit` | verification | warn | `src/` changes committed with no passing test run in the session |
 | `runaway-budget-tool-calls` | rate | warn | >500 tool calls in the last 4 hours of a session |
 | `runaway-budget-bash-calls` | rate | warn | >500 Bash calls in the last 4 hours of a session |
+| `session-runaway-trip` | session | warn → prompt → **deny+halt** (consecutive_failures only) | A composite runaway-loop trip: session duration, cumulative tool/Bash-call counts, distinct-file-write churn, and consecutive-failure count. See below. |
+
+`session-runaway-trip` is `type: session`'s first real handler — a composite
+runaway-loop trip across five session-scoped dimensions (wall-clock duration,
+cumulative tool-call count, cumulative Bash-call count, distinct-file-write churn,
+and consecutive-failure count), tracked in one atomically-locked record per session
+(`session-store.ts`) and escalated through an author-declared ladder
+(`session-tracker.ts`). It doesn't fit this table's flat "would-be action" column
+cleanly, for the same reason `no-repeat-loops` didn't fit Tier 1/2's action column:
+duration, tool-call count, bash-call count, and file-write churn are pure VOLUME
+counters that climb whether a session is thriving or stuck, so they are structurally
+barred (`validateRules`) from escalating past `prompt` — a legitimate 500-tool-call
+refactor across 60 files must never look like a runaway loop on volume alone. Only
+`consecutive_failures` is failure-aware (reset on any success, exactly like
+`no-repeat-loops`'s own `require_failure`) and is the one dimension allowed to
+escalate all the way to a `keel halt` lockdown latch with no auto-expiry. Unlike
+`no-repeat-loops`, this rule ships with no measured hit-rate evidence yet — it starts
+in `mode: observe` for the same reason the `runaway-budget-*` rules above still sit
+there, not because it was promoted and then held back.
 
 `test-oracle-tampering` and `test-oracle-env-introspection` are the two Tier-3 rules
-that carry a level (`level: balanced`) — they're also the exception to "every rule
-evaluates at every dial": switching to `sprint` deactivates them. Confirmed live:
-`keel level sprint` from `protect` printed `2 rule(s) deactivated (their level floor
-is above sprint): test-oracle-tampering, test-oracle-env-introspection`, and `keel
-status` reported `Active at current dial: 44 of 46`.
+that carry an explicit `level: sprint` (every other Tier-3 rule leaves `level` unset) —
+both mean "no floor, obey the dial" per this page's own opening distinction, so neither
+deactivates at any dial position. Confirmed live: `keel level sprint` from `protect`
+reports no deactivations, and `keel status` reports `Active at current dial: 47 of
+47`, matching "every rule is active at every dial."
 
 ## The speed dial
 
@@ -196,8 +215,6 @@ switching `protect → sprint`:
 Dial diff (protect → sprint), from the merged ruleset:
   4 rule(s) soften deny/block → warn: source-change-requires-test, no-secrets-in-code,
     no-secret-files, no-credential-echo
-  2 rule(s) deactivated (their `level` floor is above sprint): test-oracle-tampering,
-    test-oracle-env-introspection
   13 `level: protect` floor(s) unchanged: keel-control-gate, no-self-protection-write,
     no-rules-tampering, no-enforcer-removal, agent-env-hijack, no-destructive-commands,
     no-destructive-interpreter-body, protected-branch-reset, protected-branch-delete,

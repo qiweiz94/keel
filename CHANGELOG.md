@@ -66,6 +66,118 @@ session — verified via the built plugin bundle and its own load-test script, t
 same verification tier the existing `isDisabled()` kill-switch check in that file
 carries.
 
+Adds `type: session`'s first real handler — a composite runaway-loop trip
+(`session-runaway-trip`) across five session-scoped dimensions. `rule-parser.ts`
+previously rejected every `type: session` rule outright (`notImplemented` Set) and
+`pipeline.ts` carried a `continue`-only stub claiming duration was "handled by
+context manager" — false; `context-manager.ts` is unrelated token-count-triggered
+re-injection. Both are now real.
+
+### Added
+
+- **`session_escalation` on `KeelRule` (`packages/core/src/types.ts`)**, replacing
+  the old, never-consumed `max_duration_minutes` field entirely. An array of
+  `{ dimension, at, action, message?, halt? }` steps across five dimensions:
+  `duration_minutes`, `tool_calls`, `bash_calls`, `file_write_churn` (all pure
+  VOLUME counters), and `consecutive_failures` (failure-aware, reset on any
+  success — the same shape `no-repeat-loops`'s `require_failure` already uses).
+  **Safety-critical, enforced structurally, not by convention**:
+  `validateRules()` (`rule-parser.ts`) now rejects `action: deny|block` or
+  `halt: true` on any step whose dimension isn't `consecutive_failures` — a
+  legitimate long session must never be able to reach `keel halt` on call volume
+  alone. Also rejects a `type: session` rule with no `session_escalation` entries
+  at all (no detection surface — the same class of error `oracle` rules missing a
+  `trigger` already get), closing off the exact "declared but inert" shape this
+  rule type used to have.
+- **`session-tracker.ts` / `session-store.ts` (new, `packages/core/src/enforce/`)**.
+  `PersistentSessionStore` keeps ALL FIVE dimensions for one `(ruleId, session_id)`
+  in a SINGLE record under ONE file lock (`session-tracker.json` in
+  `KEEL_STATE_DIR`) — deliberately not five separately-locked counters, which
+  could produce a torn composite read across two racing `keel hook` processes.
+  Keyed WITHOUT `cwd` (unlike `PersistentStuckStore`): a session's duration and
+  call counts belong to the session, not to whichever directory the agent
+  happened to be in when a given call fired. `SessionTracker.check()` resolves
+  the WORST met step across all five dimensions on any given call, deterministic
+  tie-break by severity then threshold then declaration order.
+- **`pipeline.ts`'s session-trip branch** (`rule.type === 'session'`) replaces the
+  old dead stub: bumps activity every call a `type: session` rule is active for,
+  checks the composite ladder, and — ONLY when the returned verdict actually
+  resolved to `deny`/`block` (accounting for the `sprint` dial's downgrade and a
+  consumed `keel allow --once` override — never from the escalation step's
+  declared action alone) AND the step carried `halt: true` — writes the `keel
+  halt` sentinel via the new `halt-writer.ts`. Passes `skipFirstWarning: true`
+  into `violation()`, the same flag `no-repeat-loops` (`type: stuck`) already
+  passes and for the identical reason: without it, the terminal deny+halt step's
+  FIRST hit downgraded to pipeline.ts's separate warn-once-then-block grace
+  ("First violation... warning only") — verified live before the fix, since the
+  ladder's own lower steps already ARE the escalation, and stacking a second
+  warn-once grace on top silently defeated the terminal step every time.
+  `file_write_churn` is gated on `WRITE_TOOL_NAMES` (now exported from
+  `verification.ts`, reused rather than re-invented) instead of a
+  `!/^read/i.test(tool)` heuristic — the looser form was tried first and
+  rejected: `Grep`/`Glob`/`LS` all take a resolvable `path` argument and aren't
+  "read"-prefixed, so an agent searching 80 directories would have counted as 80
+  distinct file writes. `session-tracker.ts`'s "worst met step wins" tie-break
+  prefers the failure-aware dimension over a volume dimension on an equal
+  severity tie (previously "higher `at` wins" alone), so a call that crosses
+  both `tool_calls@500` and `consecutive_failures@3` at once reports the
+  actionable failure signal, not the coincidental call-count threshold.
+- **`halt-writer.ts` (new, `packages/core/src/enforce/`)**: `writeHaltSentinel()`,
+  the core-side counterpart to `halt.ts`'s `haltSession()` that `packages/core`
+  needed but couldn't import (see `halt.ts`'s own header comment on the cli→core
+  build direction). Writes the identical sentinel shape (`halted_at`, `reason`,
+  `auto_clear_on_restart: false`) at the identical path
+  (`config.haltFile || join(resolveHome(), '.keel', 'HALTED')`, matching
+  `checkHalt()`'s own resolution exactly) so `keel status`/`keel resume` read a
+  rule-triggered halt identically to a manual one.
+- **`session-runaway-trip`, a new default rule** (`install.ts` and
+  `plugin.ts`'s `DEFAULT_RULES_YAML`, byte-identical — `drift.test.ts`'s rule
+  count bumped 46 → 47): duration 240m/480m, tool-calls 500/1000, Bash-calls
+  300/600, file-write-churn 40/80 (all warn/prompt only), consecutive-failures
+  3/5/8 (warn/prompt/deny+halt). Ships `mode: observe` — unlike `no-repeat-loops`,
+  this rule has no measured hit-rate evidence yet, so it starts exactly where
+  `no-repeat-loops` and the still-observing `runaway-budget-*` rules did, not as
+  a promotion. `category: resource` (matching `bash-rate-limit`'s precedent),
+  `priority: 0` (same tier as the two `runaway-budget-*` rules — all three are
+  `mode: observe` today so evaluation order has no effect yet).
+- **`keel validate`/`keel status` now surface a session-id-scoping caveat** when a
+  `type: session` rule is active: `hook.ts`'s `parsePayload` confirms a real
+  session id only for claude-code/codex/gemini/cursor; cline is best-effort (4
+  spellings tried); `generic` may send none at all, in which case `keel hook`'s
+  per-process fallback id makes every "session" look like exactly one call and
+  the composite trip silently never advances. Core cannot detect this (it only
+  ever sees an opaque string) — surfaced explicitly at the CLI layer instead of
+  degrading silently.
+- **`fixture-harness.test.ts`'s `expectedActionFor()`** gained a
+  `rule.type === 'session' && rule.session_escalation` branch mirroring the
+  existing `type: stuck` escalation-ladder special-case, plus
+  `tests/rules/session-runaway-trip/{must-block,must-allow}.yaml` fixtures.
+- **`pipeline.test.ts`'s new `Session composite trip` describe block** covers the
+  full ladder, the halt-sentinel write (and, critically, the three cases where it
+  must NOT write: `mode: observe`, the `sprint` dial downgrading the terminal
+  deny to warn, and a consumed override), a long successful session capping at
+  `prompt` and never reaching `deny`/halt, `exitCode === null` being a true no-op,
+  a missing `session_id` being a safe no-op, `file_write_churn` excluding
+  read-only search tools and not double-counting a repeated path,
+  `duration_minutes` advancing live across calls with fake timers (idle-overnight
+  shape), and — because `cli/enforce.ts` wires a REAL `PersistentSessionStore`
+  in production while every other case here uses `SessionTracker`'s in-memory
+  fallback — a nested `with a real PersistentSessionStore (cross-process)` group
+  that re-runs the ladder/reset/null-exit-code cases through the disk-backed
+  store and proves a second, freshly-constructed `SessionTracker` sharing the
+  same store directory sees the first instance's accumulated failures (the exact
+  gap this store exists to close for `keel hook <host>`'s fresh-process-per-call
+  shape).
+
+Verified: full test suite green across all four workspaces (`npm test`), the
+red-team harness (`node scripts/redteam/round2.mjs`) reports no new regressions,
+and the drift test confirms `install.ts` and `plugin.ts` stayed field-identical
+at 47 rules. An in-process micro-benchmark (500 sequential `evaluate()` calls)
+measured the `PersistentSessionStore`-backed hot-path cost at ~0.34ms/call over
+the no-tracker baseline — comfortably inside the pipeline's own <50ms tier
+budget. Shipped in `mode: observe` — see `docs/tiers.md` for why, and for
+the same promotion bar `no-repeat-loops` itself had to clear first.
+
 ## 1.0.0
 
 `@get-keel/cli` 1.0.0 · `@get-keel/core` 1.0.0 · `@get-keel/opencode-plugin` 1.0.0

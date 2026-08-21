@@ -12,6 +12,7 @@ import {
   PersistentFlowStore,
   SequenceDetector,
   StuckTracker,
+  SessionTracker,
   ResearchTracker,
   ProblemLedger,
   parseRulesContent,
@@ -223,6 +224,7 @@ function buildPipeline(rules: KeelRule[]): EnforcementPipeline {
     // without these. A fresh instance per pipeline, matching the isolation
     // model documented above (one rule/case at a time).
     stuckTracker: new StuckTracker(),
+    sessionTracker: new SessionTracker(),
     researchTracker: new ResearchTracker(),
     ledger: new ProblemLedger(join(scratchRoot, `ledger-${Math.random().toString(36).slice(2)}.json`)),
   }
@@ -327,6 +329,12 @@ function expectedActionFor(rule: KeelRule, c?: CaseDef): EnforceResult['action']
   // which escalation tier it's exercising, so it doubles as the real outer
   // action once the rule actually enforces instead of just observing.
   if (rule.type === 'stuck' && rule.escalation && c?.observed_action) return c.observed_action as EnforceResult['action']
+  // Composite session-runaway trip (type: session, e.g. session-runaway-trip
+  // once promoted out of observe): the outer action depends on WHICH
+  // session_escalation step is met on a given case (warn at one dimension's
+  // threshold, prompt or deny at another's), not the rule's flat `action`
+  // field — same shape as the stuck-ladder special-case immediately above.
+  if (rule.type === 'session' && rule.session_escalation && c?.observed_action) return c.observed_action as EnforceResult['action']
   if (rule.action === 'redirect') return 'redirect'
   if (rule.action === 'fix') return 'fix'
   if (rule.action === 'prompt') return 'prompt'

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { resolveHome } from '../../home.js'
@@ -7,6 +7,8 @@ import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
+import { SessionTracker } from '../session-tracker.js'
+import { PersistentSessionStore } from '../session-store.js'
 import type { PipelineConfig } from '../pipeline.js'
 import type { ProtectionLevel, RuleContext } from '../../types.js'
 import { loadRuleHierarchy, parseRulesContent, parseRulesFile, validateRules } from '../rule-parser.js'
@@ -727,6 +729,424 @@ rules:
       const result = await pipeline.evaluateClaim(claimInput)
       expect(result.action).toBe('deny')
       expect(result.rule_id).toBe('keel-halted')
+    })
+  })
+
+  describe('Session composite trip (`type: session`)', () => {
+    // Small thresholds so these tests run fast and don't need thousands of
+    // evaluate() calls — the SHIPPED default (session-runaway-trip,
+    // install.ts) uses much larger real-world numbers; the escalation
+    // LOGIC being tested here is identical regardless of the threshold
+    // values.
+    // Deliberately no top-level `level:` in this frontmatter (unlike
+    // makeSampleRules() above) — a hierarchy-level `level:` WINS over
+    // per-call `input.level` (effectiveHierarchyLevel / resolvedLevel,
+    // rule-parser.ts), which would make the sprint-dial test below
+    // silently ineffective since PipelineConfig.level (set via
+    // sessionPipeline({ level: 'sprint' })) is NOT the dial
+    // effectiveLevel() reads — input.level (falling back through the
+    // hierarchy) is.
+    const sessionRules = (extraSteps = '') => parseRulesContent(`---
+keel:
+  version: 1
+  rules:
+    - id: test-session-trip
+      type: session
+      action: warn
+      session_escalation:
+        - { dimension: consecutive_failures, at: 2, action: warn }
+        - { dimension: consecutive_failures, at: 3, action: prompt }
+        - { dimension: consecutive_failures, at: 4, action: deny, halt: true }
+        - { dimension: tool_calls, at: 5, action: warn }
+        - { dimension: tool_calls, at: 8, action: prompt }
+        ${extraSteps}
+      message: "test session trip"
+---
+`, '/tmp/test-session-rules.md')
+
+    // A SECOND, minimal rule builder carrying ONLY the caller's own steps —
+    // no base tool_calls/consecutive_failures ladder. Needed for tests that
+    // isolate a single dimension (file_write_churn, duration_minutes):
+    // sessionRules()'s built-in `tool_calls` steps (at:5 warn, at:8 prompt)
+    // would otherwise ALSO trip once a test makes more than 5-8 evaluate()
+    // calls (e.g. probing 10 Grep calls), producing a `prompt` outer action
+    // that has nothing to do with the dimension actually under test.
+    const isolatedSessionRule = (steps: string) => parseRulesContent(`---
+keel:
+  version: 1
+  rules:
+    - id: test-session-trip-isolated
+      type: session
+      action: warn
+      session_escalation:
+        ${steps}
+      message: "test session trip (isolated dimension)"
+---
+`, '/tmp/test-session-rules-isolated.md')
+
+    const haltDir = mkdtempSync(join(tmpdir(), 'keel-session-halt-'))
+    const sessionPipeline = (extra: Partial<PipelineConfig> = {}, extraSteps = ''): { pipeline: EnforcementPipeline; haltPath: string } => {
+      const haltPath = join(haltDir, `HALTED-${Math.random().toString(36).slice(2)}`)
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: null, user: null, project: sessionRules(extraSteps), local: null },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        haltFile: haltPath,
+        sessionTracker: new SessionTracker(),
+        ...extra,
+      })
+      return { pipeline, haltPath }
+    }
+
+    // Pairs with isolatedSessionRule() above — a pipeline carrying ONLY the
+    // caller's own escalation steps, no base tool_calls/consecutive_failures
+    // ladder to interfere with a single-dimension probe.
+    const isolatedPipeline = (steps: string, extra: Partial<PipelineConfig> = {}): { pipeline: EnforcementPipeline; haltPath: string } => {
+      const haltPath = join(haltDir, `HALTED-isolated-${Math.random().toString(36).slice(2)}`)
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: null, user: null, project: isolatedSessionRule(steps), local: null },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        haltFile: haltPath,
+        sessionTracker: new SessionTracker(),
+        ...extra,
+      })
+      return { pipeline, haltPath }
+    }
+
+    afterAll(() => {
+      rmSafe(haltDir)
+    })
+
+    it('escalates consecutive_failures through warn -> prompt -> deny+halt, and writes the halt sentinel only at the terminal step', async () => {
+      const { pipeline, haltPath } = sessionPipeline()
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      const call = (n: number) => input('Bash', { command: `cmd-${n}` }, session)
+
+      // recordAttemptOutcome is the AFTER-hook: by the time evaluate() runs
+      // for call N, it can only see the outcomes of calls 1..N-1 — so the
+      // escalation for a given failure count is only observable on the
+      // NEXT call, exactly like `no-repeat-loops`'s own stuck-tracker.
+
+      const r1 = await pipeline.evaluate(call(1)) // 0 prior failures
+      expect(r1.action).toBe('allow')
+      pipeline.recordAttemptOutcome(call(1), 1) // failures -> 1
+
+      const r2 = await pipeline.evaluate(call(2)) // 1 prior failure — below warn-at-2
+      expect(r2.action).toBe('allow')
+      pipeline.recordAttemptOutcome(call(2), 1) // failures -> 2
+
+      const r3 = await pipeline.evaluate(call(3)) // 2 prior failures — warn
+      expect(r3.action).toBe('warn')
+      pipeline.recordAttemptOutcome(call(3), 1) // failures -> 3
+      expect(existsSync(haltPath)).toBe(false)
+
+      const r4 = await pipeline.evaluate(call(4)) // 3 prior failures — prompt
+      expect(r4.action).toBe('prompt')
+      pipeline.recordAttemptOutcome(call(4), 1) // failures -> 4
+      expect(existsSync(haltPath)).toBe(false)
+
+      const r5 = await pipeline.evaluate(call(5)) // 4 prior failures — deny + halt
+      expect(r5.action).toBe('deny')
+      expect(r5.rule_id).toBe('test-session-trip')
+      expect(existsSync(haltPath)).toBe(true)
+      const sentinel = JSON.parse(readFileSync(haltPath, 'utf-8'))
+      expect(sentinel.auto_clear_on_restart).toBe(false)
+      expect(typeof sentinel.halted_at).toBe('string')
+    })
+
+    it('a success resets consecutive_failures — the streak never reaches the halt step', async () => {
+      const { pipeline, haltPath } = sessionPipeline()
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      for (let i = 0; i < 10; i++) {
+        const call = input('Bash', { command: `cmd-${i}` }, session)
+        await pipeline.evaluate(call)
+        // Alternate fail/succeed — never two consecutive failures, let
+        // alone four.
+        pipeline.recordAttemptOutcome(call, i % 2 === 0 ? 1 : 0)
+      }
+      const result = await pipeline.evaluate(input('Bash', { command: 'final' }, session))
+      expect(result.action).not.toBe('deny')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('SAFETY: a long successful session never reaches deny/halt through volume dimensions alone — they cap at prompt', async () => {
+      const { pipeline, haltPath } = sessionPipeline()
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      let last
+      for (let i = 0; i < 20; i++) {
+        const call = input('Read', { path: `/tmp/file-${i}.txt` }, session)
+        last = await pipeline.evaluate(call)
+        pipeline.recordAttemptOutcome(call, 0) // every attempt succeeds
+      }
+      // tool_calls threshold (8) is well past by call 20 — must have
+      // escalated to `prompt` (its ceiling), never `deny`.
+      expect(last!.action).toBe('prompt')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('exitCode === null neither increments nor resets consecutive_failures', async () => {
+      const { pipeline, haltPath } = sessionPipeline()
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      const call = (n: number) => input('Bash', { command: `cmd-${n}` }, session)
+      await pipeline.evaluate(call(1))
+      pipeline.recordAttemptOutcome(call(1), 1)
+      await pipeline.evaluate(call(2))
+      pipeline.recordAttemptOutcome(call(2), null) // no exit code reported
+      await pipeline.evaluate(call(3))
+      pipeline.recordAttemptOutcome(call(3), null)
+      // Still only 1 real failure recorded (call 1) — below the warn-at-2
+      // threshold, since the two null outcomes were no-ops.
+      const result = await pipeline.evaluate(call(4))
+      expect(result.action).toBe('allow')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('the sprint dial downgrading deny to warn must NOT write the halt sentinel', async () => {
+      // sprint-dial downgrade (dialAction, rule-parser.ts) only softens
+      // deny/block when the rule carries no `level: protect` floor — the
+      // test rule here has none, so `level: sprint` softens its terminal
+      // step to warn. The dial itself is read from EnforceInput.level
+      // (effectiveLevel() / effectiveHierarchyLevel(), NOT
+      // PipelineConfig.level) since sessionRules()'s hierarchy carries no
+      // top-level `level:` of its own — see sessionRules()'s own comment.
+      const { pipeline, haltPath } = sessionPipeline()
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      const call = (n: number) => ({ ...input('Bash', { command: `cmd-${n}` }, session), level: 'sprint' as const })
+      for (let i = 1; i <= 4; i++) {
+        await pipeline.evaluate(call(i))
+        pipeline.recordAttemptOutcome(call(i), 1)
+      }
+      const result = await pipeline.evaluate(call(5))
+      expect(result.action).toBe('warn')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('a consumed override on the terminal step must NOT write the halt sentinel', async () => {
+      const { pipeline, haltPath } = sessionPipeline({ overrideStore: { consume: () => true, peek: () => null, list: () => ({}) } })
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      const call = (n: number) => input('Bash', { command: `cmd-${n}` }, session)
+      for (let i = 1; i <= 4; i++) {
+        await pipeline.evaluate(call(i))
+        pipeline.recordAttemptOutcome(call(i), 1)
+      }
+      const result = await pipeline.evaluate(call(5))
+      expect(result.action).toBe('allow')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('mode: observe never writes the halt sentinel, even past the terminal threshold', async () => {
+      const observeRules = parseRulesContent(`---
+keel:
+  version: 1
+  level: balanced
+  rules:
+    - id: test-session-trip-observe
+      type: session
+      mode: observe
+      action: warn
+      session_escalation:
+        - { dimension: consecutive_failures, at: 2, action: deny, halt: true }
+      message: "test session trip (observe)"
+---
+`, '/tmp/test-session-rules-observe.md')
+      const haltPath = join(haltDir, `HALTED-observe-${Math.random().toString(36).slice(2)}`)
+      const pipeline = new EnforcementPipeline({
+        level: 'balanced',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: null, user: null, project: observeRules, local: null },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        haltFile: haltPath,
+        sessionTracker: new SessionTracker(),
+      })
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      const call = (n: number) => input('Bash', { command: `cmd-${n}` }, session)
+      for (let i = 1; i <= 3; i++) {
+        await pipeline.evaluate(call(i))
+        pipeline.recordAttemptOutcome(call(i), 1)
+      }
+      const result = await pipeline.evaluate(call(4))
+      expect(result.action).toBe('allow')
+      expect(result.observed_action).toBe('deny')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('a call with no session_id is a no-op for the tracker — never throws, never escalates', async () => {
+      const { pipeline, haltPath } = sessionPipeline()
+      const noSession = { ...input('Bash', { command: 'anything' }), session_id: '' }
+      for (let i = 0; i < 6; i++) {
+        const result = await pipeline.evaluate(noSession)
+        expect(result.action).not.toBe('deny')
+      }
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('file_write_churn counts DISTINCT write-tool targets, and does NOT count read-only search tools (Grep/Glob/LS) even though they take a path argument', async () => {
+      const { pipeline, haltPath } = isolatedPipeline('- { dimension: file_write_churn, at: 3, action: warn }')
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+
+      // Grep/Glob/LS all take a `path` argPath() can resolve, and none are
+      // "read"-prefixed — the exact false-positive class this dimension's
+      // WRITE_TOOL_NAMES gate (verification.ts) exists to avoid. 10 calls,
+      // 10 distinct paths, well past the at:3 threshold if these counted.
+      for (let i = 0; i < 10; i++) {
+        await pipeline.evaluate(input('Grep', { path: `/tmp/dir-${i}` }, session))
+      }
+      const afterSearch = await pipeline.evaluate(input('Glob', { path: '/tmp/dir-final' }, session))
+      expect(afterSearch.action).toBe('allow')
+
+      // Now 3 DISTINCT real writes — should trip the threshold.
+      await pipeline.evaluate(input('Write', { path: '/tmp/f1.txt', content: 'x' }, session))
+      await pipeline.evaluate(input('Write', { path: '/tmp/f2.txt', content: 'x' }, session))
+      const afterWrites = await pipeline.evaluate(input('Write', { path: '/tmp/f3.txt', content: 'x' }, session))
+      expect(afterWrites.action).toBe('warn')
+      expect(existsSync(haltPath)).toBe(false)
+    })
+
+    it('file_write_churn does NOT double-count the SAME path written twice', async () => {
+      const { pipeline } = isolatedPipeline('- { dimension: file_write_churn, at: 3, action: warn }')
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      await pipeline.evaluate(input('Write', { path: '/tmp/same.txt', content: 'x' }, session))
+      await pipeline.evaluate(input('Write', { path: '/tmp/same.txt', content: 'y' }, session))
+      const result = await pipeline.evaluate(input('Write', { path: '/tmp/same.txt', content: 'z' }, session))
+      // 3 calls, 1 distinct path — must stay well under the at:3 threshold.
+      expect(result.action).toBe('allow')
+    })
+
+    it('duration_minutes is computed LIVE from first-seen — advances across calls even with no intervening activity', async () => {
+      const { pipeline, haltPath } = isolatedPipeline('- { dimension: duration_minutes, at: 240, action: warn }\n        - { dimension: duration_minutes, at: 480, action: prompt }')
+      const session = `sess-${Math.random().toString(36).slice(2)}`
+      const now = new Date()
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(now)
+        const first = await pipeline.evaluate(input('Bash', { command: 'start' }, session))
+        expect(first.action).toBe('allow')
+
+        // +5h, no calls in between — this is what an idle-overnight session
+        // looks like: sessionStart never moves, only wall-clock time does.
+        vi.setSystemTime(new Date(now.getTime() + 5 * 60 * 60 * 1000))
+        const after5h = await pipeline.evaluate(input('Bash', { command: 'resume' }, session))
+        expect(after5h.action).toBe('warn')
+        expect(existsSync(haltPath)).toBe(false)
+
+        // +9h total — crosses the prompt tier too, still never halt (a
+        // duration-only dimension is structurally barred from reaching it).
+        vi.setSystemTime(new Date(now.getTime() + 9 * 60 * 60 * 1000))
+        const after9h = await pipeline.evaluate(input('Bash', { command: 'resume-again' }, session))
+        expect(after9h.action).toBe('prompt')
+        expect(existsSync(haltPath)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    describe('with a real PersistentSessionStore (cross-process)', () => {
+      // The tests above all use sessionPipeline()'s default in-memory-only
+      // SessionTracker (no store passed to its constructor) — fine for
+      // exercising the ESCALATION LOGIC, but it is NOT what `keel hook
+      // <host>` actually uses in production (cli/enforce.ts wires
+      // PersistentSessionStore precisely because that host is a fresh
+      // process per tool call). The increment/reset logic is implemented
+      // TWICE — once in session-store.ts's bumpActivity/bumpFailure, once
+      // more in session-tracker.ts's in-memory fallback paths — so
+      // exercising only the fallback leaves the copy real users depend on
+      // completely unverified. These tests close that gap.
+      let storeDir = ''
+      afterEach(() => {
+        if (storeDir) { rmSafe(storeDir); storeDir = '' }
+      })
+
+      it('the full ladder (warn -> prompt -> deny+halt), reset-on-success, and exitCode===null all behave identically through a real disk-backed store', async () => {
+        storeDir = mkdtempSync(join(tmpdir(), 'keel-session-store-'))
+        const haltPath = join(haltDir, `HALTED-store-${Math.random().toString(36).slice(2)}`)
+        const pipeline = new EnforcementPipeline({
+          level: 'balanced',
+          context: 'local' as RuleContext,
+          cache: new ActionCache({ maxSize: 100 }),
+          contentTracker: new ContentTracker(),
+          sequenceDetector: new SequenceDetector(),
+          flowTracker: new FlowTracker(),
+          ruleHierarchy: { global: null, user: null, project: sessionRules(), local: null },
+          ruleVersion: 1,
+          allowedFixTransforms: true,
+          haltFile: haltPath,
+          sessionTracker: new SessionTracker(new PersistentSessionStore(storeDir)),
+        })
+        const session = `sess-${Math.random().toString(36).slice(2)}`
+        const call = (n: number) => input('Bash', { command: `cmd-${n}` }, session)
+
+        expect((await pipeline.evaluate(call(1))).action).toBe('allow')
+        pipeline.recordAttemptOutcome(call(1), 1)
+        expect((await pipeline.evaluate(call(2))).action).toBe('allow')
+        pipeline.recordAttemptOutcome(call(2), 0) // reset-on-success, through the store
+        expect((await pipeline.evaluate(call(3))).action).toBe('allow') // reset held
+        pipeline.recordAttemptOutcome(call(3), 1)
+        pipeline.recordAttemptOutcome(call(3), null) // no-op, through the store
+        expect((await pipeline.evaluate(call(4))).action).toBe('allow') // still only 1 real failure
+        pipeline.recordAttemptOutcome(call(4), 1) // 2
+        expect((await pipeline.evaluate(call(5))).action).toBe('warn') // 2 -> warn
+        pipeline.recordAttemptOutcome(call(5), 1) // 3
+        expect((await pipeline.evaluate(call(6))).action).toBe('prompt') // 3 -> prompt
+        pipeline.recordAttemptOutcome(call(6), 1) // 4
+        const final = await pipeline.evaluate(call(7)) // 4 -> deny + halt
+        expect(final.action).toBe('deny')
+        expect(existsSync(haltPath)).toBe(true)
+      })
+
+      it('a second SessionTracker instance sharing the same store dir sees the FIRST instance\'s accumulated failures — the fresh-process-per-call gap this store exists to close', async () => {
+        storeDir = mkdtempSync(join(tmpdir(), 'keel-session-store-'))
+        const buildPipeline = () => new EnforcementPipeline({
+          level: 'balanced',
+          context: 'local' as RuleContext,
+          cache: new ActionCache({ maxSize: 100 }),
+          contentTracker: new ContentTracker(),
+          sequenceDetector: new SequenceDetector(),
+          flowTracker: new FlowTracker(),
+          ruleHierarchy: { global: null, user: null, project: sessionRules(), local: null },
+          ruleVersion: 1,
+          allowedFixTransforms: true,
+          haltFile: join(haltDir, `HALTED-store2-${Math.random().toString(36).slice(2)}`),
+          // A FRESH SessionTracker + FRESH PersistentSessionStore each time,
+          // mirroring `keel hook <host>` constructing a brand-new
+          // in-memory tracker every process — only the on-disk file is
+          // shared.
+          sessionTracker: new SessionTracker(new PersistentSessionStore(storeDir)),
+        })
+        const session = `sess-${Math.random().toString(36).slice(2)}`
+        const call = (n: number) => input('Bash', { command: `cmd-${n}` }, session)
+
+        // "Process A": 3 failing attempts.
+        const pipelineA = buildPipeline()
+        for (let i = 1; i <= 3; i++) {
+          await pipelineA.evaluate(call(i))
+          pipelineA.recordAttemptOutcome(call(i), 1)
+        }
+
+        // "Process B": a BRAND NEW pipeline/tracker instance, same session_id,
+        // same store dir. Its in-memory map is empty — it must still see
+        // the 3 accumulated failures on its very first evaluate() call.
+        const pipelineB = buildPipeline()
+        const result = await pipelineB.evaluate(call(4))
+        expect(result.action).toBe('prompt') // 3 prior failures -> prompt tier
+      })
     })
   })
 

@@ -12,12 +12,14 @@ import { mergeRules, detectConflicts, hashRulesFile, loadRuleHierarchy, validate
 import { SequenceDetector } from './sequencer.js'
 import { FlowTracker } from './flow-tracker.js'
 import { StuckTracker } from './stuck-tracker.js'
+import { SessionTracker } from './session-tracker.js'
+import { writeHaltSentinel } from './halt-writer.js'
 import { ProblemLedger } from './problem-ledger.js'
 import { ResearchTracker } from './research-tracker.js'
 import type { ResearchCache } from './research/research-cache.js'
 import { extractPackageInstalls, checkPackagesCacheOnly, scheduleBackgroundVerification, decidePackageAction, PackageVerifierCache } from './package-verifier.js'
 import { StateManager } from './state-manager.js'
-import { VerificationTracker } from './verification.js'
+import { VerificationTracker, WRITE_TOOL_NAMES } from './verification.js'
 import { OracleTracker } from './oracle-tracker.js'
 import { detectWeakening } from './oracle-signatures.js'
 import { matchesAnyTestGlob } from './oracle-glob.js'
@@ -87,6 +89,8 @@ export interface PipelineConfig {
   researchCache?: ResearchCache
   researchTracker?: ResearchTracker
   stuckTracker?: StuckTracker
+  /** Composite runaway-loop trip behind `type: session` rules (session-tracker.ts). Optional, same pattern as stuckTracker: a rules.yaml with no `type: session` rule never touches it. */
+  sessionTracker?: SessionTracker
   oracleTracker?: OracleTracker
   /** Disk-backed verdict cache for `type: package` rules. Defaults to KEEL_STATE_DIR/package-verifier.json. */
   packageVerifierCache?: PackageVerifierCache
@@ -1442,9 +1446,64 @@ export class EnforcementPipeline {
         }
       }
 
-      // Session duration check
-      if (rule.type === 'session' && rule.max_duration_minutes) {
-        // This would be checked per-session, not per-action. Handled by context manager.
+      // Composite session-runaway trip (`type: session`, shipped default
+      // `session-runaway-trip`): five session-scoped dimensions in one
+      // atomically-locked record (session-store.ts), escalating through an
+      // author-declared ladder (session-tracker.ts). Bumps activity on
+      // EVERY call that reaches this branch — only when a `type: session`
+      // rule is actually active, so a rules.yaml with none never pays this
+      // cost — then checks whether the worst met step across all five
+      // dimensions fires. No `match:` gating (unlike `stuck`/`rate`): a
+      // session trip is scoped by session_id, not by matching the specific
+      // command, so it applies to every tool call in the session.
+      if (rule.type === 'session' && rule.session_escalation?.length && this.config.sessionTracker) {
+        const args = input.args as Record<string, unknown>
+        // A "write" call, for the file_write_churn dimension: gated on
+        // WRITE_TOOL_NAMES (verification.ts) — the SAME curated write-tool
+        // set `type: verification`/`type: claim` obligations already use to
+        // decide "did this call just modify a file" — rather than a looser
+        // `!/^read/i.test(tool)` heuristic. The looser form was tried first
+        // and rejected: Grep/Glob/LS all take a `path` argument argPath()
+        // happily resolves and none of them start with "read", so an agent
+        // grepping 80 directories would have counted as 80 distinct file
+        // writes — a false "scope creep" prompt from pure exploration. Bash
+        // is also excluded by construction (it isn't in WRITE_TOOL_NAMES):
+        // its own volume is already covered by the bash_calls dimension.
+        const pathStr = WRITE_TOOL_NAMES.has(input.tool.toLowerCase()) ? argPath(args) : ''
+        const writePath = pathStr ? resolveMaybeRelative(pathStr, input.cwd) : undefined
+        this.config.sessionTracker.recordActivity(rule, input, { isBash: input.tool === 'Bash', writePath })
+
+        const escalation = this.config.sessionTracker.check(rule, input)
+        if (escalation) {
+          // skipFirstWarning: true — same reasoning as the stuck-loop
+          // branch above (no-repeat-loops): the ladder ITSELF is already
+          // the escalation (warn at a low threshold, prompt higher, deny
+          // at the top) built from calls that already climbed through the
+          // lower steps. Applying pipeline.ts's own SEPARATE warn-once-
+          // then-block grace on top of that would blunt the terminal deny
+          // step into yet another one-time warning — verified live: without
+          // this flag, the very first call to ever reach the deny+halt step
+          // downgraded to "First violation... warning only," exactly the
+          // false negative this flag exists to prevent.
+          const result = this.violation(input, { ...rule, action: escalation.action }, escalation.message, start, 2, rule.id, undefined, true)
+          // Only trip `keel halt` when the step both (a) declared `halt:
+          // true` — which validateRules already guarantees is only ever
+          // true on a consecutive_failures step — AND (b) the verdict that
+          // ACTUALLY came back is deny/block. (b) matters on its own: the
+          // sprint dial can downgrade a deny to warn (dialAction(), called
+          // from within violation()), and a human's `keel allow <id>
+          // --once` can consume the override and turn this specific call
+          // into an `allow` — writing the halt sentinel BEFORE checking the
+          // real result would silently override both of those and latch a
+          // permanent lockdown the human/dial had just relaxed. Observe
+          // mode needs no separate check here: `violation()` throws
+          // OBSERVE_CONTINUE before ever reaching this line, so an
+          // observe-mode session rule can never write the sentinel.
+          if (escalation.halt && (result.action === 'deny' || result.action === 'block')) {
+            writeHaltSentinel(this.config.haltFile || join(resolveHome(), '.keel', 'HALTED'), escalation.message)
+          }
+          return result
+        }
         continue
       }
       } catch (err) {
@@ -1486,6 +1545,21 @@ export class EnforcementPipeline {
       const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
       for (const rule of rules) {
         if (rule.type === 'oracle') this.oracleTracker.observeOutcome(rule, input, exitCode)
+      }
+    }
+
+    // Session composite trip's consecutive_failures dimension: fed by the
+    // SAME after-hook exit code as the stuck-loop detector below, but
+    // scoped to the whole session rather than one command fingerprint —
+    // every `type: session` rule gets a recordOutcome() call regardless of
+    // what command ran. Must run before the stuckTracker early-return
+    // below, same reasoning as the oracle block above.
+    if (this.config.sessionTracker) {
+      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      for (const rule of rules) {
+        if (rule.type === 'session' && rule.session_escalation?.length) {
+          this.config.sessionTracker.recordOutcome(rule, input, exitCode)
+        }
       }
     }
 

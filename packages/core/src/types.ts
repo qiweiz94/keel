@@ -277,8 +277,43 @@ export interface KeelRule {
   // ── MCP rules ──
   mcp_check?: 'tool_descriptions' | 'tool_results' | 'server_changes'
 
-  // ── Session rules ──
-  max_duration_minutes?: number
+  // ── Session composite-trip rules (`type: session`) ──
+  //
+  // A composite runaway-loop trip across five session-scoped dimensions:
+  // wall-clock duration, cumulative tool-call count, cumulative Bash-call
+  // count, distinct-file-write churn, and consecutive-failure count. Each
+  // entry in the ladder targets exactly one dimension and fires once that
+  // dimension's live value reaches `at`; the WORST met step across all five
+  // wins on any given call (session-tracker.ts's `check()`).
+  //
+  // New field name is deliberately `session_`-prefixed rather than reusing
+  // `type: rate`'s `window_seconds`/`max_calls`: those mean a SLIDING-WINDOW
+  // ceiling per matched pattern, a different semantic from a
+  // session-cumulative total that never resets on its own — see
+  // `runaway-budget-tool-calls`/`-bash-calls` (install.ts) for the sliding-
+  // window shape this deliberately does NOT reuse. The shape itself
+  // (`{ at, action, message }`) mirrors `type: stuck`'s `escalation` field
+  // (see `max_attempts`/`block_attempts`/`escalation` above), extended with
+  // one new `dimension` selector so a single rule can carry independent
+  // thresholds per dimension instead of one flat count.
+  //
+  // SAFETY-CRITICAL, enforced structurally by rule-parser.ts's
+  // validateRules (not merely by convention): `halt: true` and
+  // `action: 'deny' | 'block'` may ONLY appear on a `consecutive_failures`
+  // step. `duration_minutes`, `tool_calls`, `bash_calls`, and
+  // `file_write_churn` are pure volume counters — they climb whether the
+  // session is thriving or stuck, so they may escalate at most to `prompt`;
+  // only a repeated-FAILURE streak (reset on any success, exactly like
+  // `no-repeat-loops`'s `require_failure`) may ever escalate all the way to
+  // a `keel halt` lockdown latch (no auto-expiry — see halt-writer.ts).
+  session_escalation?: Array<{
+    dimension: 'duration_minutes' | 'tool_calls' | 'bash_calls' | 'file_write_churn' | 'consecutive_failures'
+    at: number
+    action: EnforcementAction
+    message?: string
+    /** Trips `keel halt`'s lockdown latch when this step fires. Rejected by validateRules on any dimension other than `consecutive_failures`. */
+    halt?: boolean
+  }>
 
   // ── Inheritance rules ──
   propagate_rules?: 'all' | 'global' | 'none'

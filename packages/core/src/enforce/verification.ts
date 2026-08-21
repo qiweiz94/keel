@@ -18,7 +18,13 @@ function isObligationRule(rule: KeelRule): boolean {
 // servers expose file writes under arbitrary tool names. Rules whose trigger
 // names a write tool must fire on all of them, which is why `matches` falls
 // back to arg-shape matching (below) instead of comparing tool names only.
-const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'apply_patch', 'patch', 'writefile', 'write_file'])
+// Exported for pipeline.ts's session-trip branch (`file_write_churn`
+// dimension), which needs the SAME "is this call a write" judgment this
+// module already encodes — reusing it instead of a second, narrower
+// heuristic is what keeps a read-only search tool (Grep/Glob/LS, none of
+// which are in this Set) from being counted as a file write just because it
+// takes a `path` argument argPath() can resolve.
+export const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'apply_patch', 'patch', 'writefile', 'write_file'])
 
 function matchesToolList(tools: string[], input: EnforceInput): boolean {
   if (tools.some(tool => tool.toLowerCase() === input.tool.toLowerCase())) return true

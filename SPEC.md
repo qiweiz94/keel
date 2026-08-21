@@ -138,13 +138,14 @@ runtime without requiring a separate process.
 | Capability | Public v1 status |
 |------------|------------------|
 | `command`, `filesystem`, `content`, `network`, `rate`, `time`, `sequence`, `verification`, `flow` rules | Supported |
+| `session` rules | Supported — a composite runaway-loop trip across five session-scoped dimensions (wall-clock duration, cumulative tool-call count, cumulative Bash-call count, distinct-file-write churn, consecutive-failure count), escalating `warn → prompt → halt`. Volume-only dimensions cap at `prompt` by construction; only `consecutive_failures` may reach `halt`. Ships as the default `session-runaway-trip` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Session-scoping depends on the calling host sending a real session id; a host that cannot is surfaced at `keel validate`/`keel status`, not silently degraded. |
 | Rule metadata: `level`, `scope`, `context`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
 | `.keel/rules.yaml` project rules | Supported and recommended |
 | `AGENTS.md` OpenCode rule frontmatter | Supported |
 | `CLAUDE.md` rule frontmatter | Supported as Claude Code compatibility fallback |
 | OpenCode before/after, system-transform, and compaction hooks | Supported |
 | Claude Code, Cline, Cursor, and Codex installation | Supported at documented integration level |
-| `mcp`, `session`, `inheritance`, and advanced context rules | Not implemented — rejected at `keel validate` (never silently accepted) |
+| `mcp`, `inheritance`, and advanced context rules | Not implemented — rejected at `keel validate` (never silently accepted) |
 | `keel test --from-audit` historical replay | Planned after v1 |
 
 Anything marked planned is not presented as available behavior in public v1
@@ -343,7 +344,7 @@ rules:
 | `verification` | A source-change obligation satisfied by a successful test before a concrete boundary | `trigger`, `satisfy`, `boundaries` |
 | `flow` | Information flow control | `sources: [".env"]`, `sinks: ["network"]` |
 | `mcp` | MCP-specific threats | `mcp_check: tool_descriptions` — **not implemented**: rejected at `keel validate` |
-| `session` | Session-level rules | `max_duration_minutes: 120` |
+| `session` | Composite runaway-loop trip: wall-clock duration, cumulative tool-call/Bash-call counts, distinct-file-write churn, and consecutive-failure count, escalating `warn → prompt → halt`. Volume-only dimensions are structurally barred (`validateRules`) from escalating past `prompt`; only `consecutive_failures` may reach `halt` (trips `keel halt`'s lockdown latch — no auto-expiry). See `session-tracker.ts`/`session-store.ts`. | `session_escalation: [{dimension: consecutive_failures, at: 8, action: deny, halt: true}, ...]` |
 | `inheritance` | Subagent rule propagation | `propagate_rules: all` — **not implemented**: rejected at `keel validate` |
 | `context` | Context management | Re-injection thresholds |
 
@@ -356,7 +357,7 @@ rules:
 | `level` | No | `sprint` \| `balanced` \| `protect` (default: `balanced`) |
 | `scope` | No | `global` \| `user` \| `project` \| `folder` \| `session` |
 | `context` | No | `[local]` \| `[ci]` \| `[local, ci]` (default: both) |
-| `action` | Yes for enforcing rules; optional for context/meta/session marker rules | `report` \| `warn` \| `deny` \| `prompt` \| `fix` |
+| `action` | Yes for enforcing rules; optional for context/meta marker rules | `report` \| `warn` \| `deny` \| `prompt` \| `fix` |
 | `message` | Yes | Human-readable description |
 | `priority` | No | Higher = evaluated first (default: 0) |
 | `unless_reasoning` | No | Regex — allow if agent's reasoning matches |

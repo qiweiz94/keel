@@ -341,26 +341,22 @@ export function validateRules(rules: unknown): string[] {
   const validRuleContexts = new Set(['local', 'ci', 'both'])
   // Declared in the type system but with no handler in the enforcement
   // pipeline — accepting them silently gave users a false sense of security.
-  // `session` was investigated for removal from this set (sprint2/lane
-  // fix-rule-parser) on the theory that pipeline.ts (~line 1165) has real,
-  // working `max_duration_minutes` enforcement for `type: session`. That
-  // theory does not survive reading the code: the block at pipeline.ts:1165
-  // is `if (rule.type === 'session' && rule.max_duration_minutes) { //
-  // handled by context manager; continue }` — it never calls violation() or
-  // result(), it just skips the rule, every time, unconditionally. Its own
-  // comment says "This WOULD be checked... Handled by context manager" —
-  // aspirational, not actual — and enforce/context-manager.ts is about
-  // token-usage-triggered rule re-injection, not session duration; grepping
-  // the whole repo for `max_duration_minutes` and for `type === 'session'`
-  // turns up no other consumer anywhere. `type: session` therefore has
-  // exactly the same "declared but not enforced" shape as mcp/inheritance/
-  // meta/context and stays in this set for the same reason they do. SPEC.md
-  // agrees with this: its top-level "Public v1 Release Contract" table
-  // (line ~145) lists `session` alongside mcp/inheritance as "Not
-  // implemented — rejected at `keel validate`"; only a lower, per-type
-  // reference table (~line 341) omits the annotation, and that omission is
-  // the stale part, not this Set.
-  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'session', 'context'])
+  //
+  // `type: session` was previously in this set (see git history for the
+  // full investigation: pipeline.ts used to have a `continue`-only stub
+  // at its old `max_duration_minutes` branch, "handled by context manager"
+  // — aspirational, not actual, and context-manager.ts is unrelated
+  // token-usage re-injection). It now has a REAL handler — a composite
+  // runaway-loop trip across five session-scoped dimensions
+  // (`session-runaway-trip`, install.ts) — see pipeline.ts's session-trip
+  // branch (`rule.type === 'session'`), session-tracker.ts, and
+  // session-store.ts. The old `max_duration_minutes` field is gone;
+  // `session_escalation` (types.ts) is the only spelling now. `mcp` /
+  // `inheritance` / `meta` / `context` remain genuinely unimplemented and
+  // stay in this Set. SPEC.md's tables were updated in the same change
+  // that flipped this — see its "Public v1 Release Contract" table and its
+  // per-type reference table.
+  const notImplemented = new Set(['mcp', 'inheritance', 'meta', 'context'])
 
   for (const candidate of rules) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
@@ -379,6 +375,46 @@ export function validateRules(rules: unknown): string[] {
       }
       if (!rule.trigger) {
         errors.push(`Oracle rule "${label}" needs a trigger (the failing test-run matcher that arms the recency window) — without it the rule can never fire`)
+      }
+    }
+    if (rule.type === 'session') {
+      if (!rule.session_escalation?.length) {
+        errors.push(`Session rule "${label}" needs at least one session_escalation entry — without one it can never fire, the exact "declared but inert" shape this type used to have`)
+      } else {
+        const validDimensions = new Set(['duration_minutes', 'tool_calls', 'bash_calls', 'file_write_churn', 'consecutive_failures'])
+        const validStepActions = new Set(['warn', 'prompt', 'deny', 'block'])
+        for (const [i, step] of rule.session_escalation.entries()) {
+          if (!step || typeof step !== 'object') {
+            errors.push(`Session rule "${label}" session_escalation[${i}] must be an object`)
+            continue
+          }
+          if (!validDimensions.has(String(step.dimension))) {
+            errors.push(`Session rule "${label}" session_escalation[${i}] has an unsupported dimension: ${String(step.dimension)}`)
+          }
+          if (typeof step.at !== 'number' || !(step.at > 0)) {
+            errors.push(`Session rule "${label}" session_escalation[${i}] needs a positive numeric "at" threshold`)
+          }
+          if (!validStepActions.has(String(step.action))) {
+            errors.push(`Session rule "${label}" session_escalation[${i}] has an unsupported action: ${String(step.action)} (expected warn, prompt, deny, or block)`)
+          }
+          // SAFETY-CRITICAL (see types.ts's session_escalation doc comment
+          // and session-tracker.ts's header): a pure VOLUME dimension —
+          // everything except consecutive_failures — must never be able to
+          // deny/block, and must never carry `halt: true`. Only a
+          // repeated-FAILURE streak (reset on any success) may escalate
+          // that far. This is enforced HERE, structurally, rather than left
+          // as an authoring convention, so a rules.yaml that gets this
+          // backwards is rejected at `keel validate` instead of silently
+          // shipping a false-positive-prone halt trigger.
+          if (step.dimension !== 'consecutive_failures') {
+            if (step.action === 'deny' || step.action === 'block') {
+              errors.push(`Session rule "${label}" session_escalation[${i}]: dimension "${String(step.dimension)}" is a volume-only counter and must not escalate past "prompt" — action "${step.action}" is only allowed on "consecutive_failures"`)
+            }
+            if (step.halt) {
+              errors.push(`Session rule "${label}" session_escalation[${i}]: "halt: true" is only allowed on a "consecutive_failures" step — volume-only dimensions must never trip keel halt`)
+            }
+          }
+        }
       }
     }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {

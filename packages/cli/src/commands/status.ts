@@ -184,8 +184,17 @@ export async function statusCommand() {
     const note = isRepeat && duplicatePaths.has(scope.sourcePath) ? chalk.dim(' (same file as above)') : ''
     console.log(chalk.dim(`  Rules (${name}):`) + ` ${badge}${chalk.dim(` — ${scope.sourcePath}`)}${note}`)
   }
-  const active = mergeRules(hierarchy, dial, 'local').length
+  const activeRules = mergeRules(hierarchy, dial, 'local')
+  const active = activeRules.length
   console.log(chalk.dim(`  Active at current dial:`) + ` ${chalk.white(active.toString())} of ${distinct}${invalid ? chalk.red(` (${invalid} rule issue(s) — run keel validate)`) : ''}`)
+  // See validate.ts's identical caveat for the full explanation: a
+  // `type: session` composite trip is scoped by session_id, and core has
+  // no way to tell a host's real session id apart from `keel hook`'s
+  // per-process fallback — so this is unconditional whenever the rule is
+  // active, not a claim this screen can actually verify per-host.
+  if (activeRules.some(r => r.type === 'session')) {
+    console.log(chalk.yellow('  ⚠ type: session rule active — not every host can reliably scope sessions (keel validate for detail)'))
+  }
 
   // ── Recent blocks ──
   const traceFile = join(home, '.keel', 'traces', `${today}.jsonl`)
