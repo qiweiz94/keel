@@ -309,6 +309,148 @@ describe('hook payload parsing', () => {
   })
 })
 
+describe('v1 M2-C1: cline claim-to-evidence (agent_end/TaskComplete, tool_result/PostToolUse)', () => {
+  it('agent_end sets `reasoning` from turn.outputText, routing to the claim-reach path', () => {
+    const call = parsePayload('cline', JSON.stringify({
+      hookName: 'agent_end', taskId: 'task_1',
+      turn: { outputText: 'Done, all tests pass.', status: 'completed' },
+    }))
+    expect(call.reasoning).toBe('Done, all tests pass.')
+    expect(call.tool).toBe('assistant-message')
+    expect(call.args).toEqual({})
+    expect(call.sessionId).toBe('task_1')
+    expect(call.postAction).toBeUndefined()
+  })
+
+  it('agent_end with a missing/non-string turn.outputText stays on the claim-reach path with empty reasoning, not a fall-through to an ordinary call', () => {
+    const call = parsePayload('cline', JSON.stringify({ hookName: 'agent_end', taskId: 'task_2' }))
+    expect(call.reasoning).toBe('')
+    expect(call.tool).toBe('assistant-message')
+    expect(call.degenerate).toBeUndefined()
+  })
+
+  it('tool_result sets `postAction` with exitCode ALWAYS null — Cline\'s own `success` field does not confirm a shell command\'s exit status (see hook.ts comment), so this must never guess a pass', () => {
+    const call = parsePayload('cline', JSON.stringify({
+      hookName: 'tool_result', taskId: 'task_3',
+      postToolUse: { toolName: 'bash', parameters: { command: 'npm test' }, result: 'FAIL 3 tests', success: false, executionTimeMs: 40 },
+    }))
+    expect(call.postAction).toEqual({ tool: 'bash', args: { command: 'npm test' }, exitCode: null, outputText: 'FAIL 3 tests' })
+    expect(call.reasoning).toBeUndefined()
+
+    // Even when Cline itself reports success:true, exitCode still stays
+    // null — the discharge honesty gap is about what `success` CONFIRMS,
+    // not about which value it happens to carry.
+    const successCall = parsePayload('cline', JSON.stringify({
+      hookName: 'tool_result', taskId: 'task_3',
+      postToolUse: { toolName: 'bash', parameters: { command: 'npm test' }, result: 'ok', success: true, executionTimeMs: 40 },
+    }))
+    expect(successCall.postAction?.exitCode).toBeNull()
+    expect(successCall.postAction?.outputText).toBe('ok')
+  })
+
+  it('an ordinary preToolUse (tool_call) payload is unaffected by the new hookName branches', () => {
+    const call = parsePayload('cline', JSON.stringify({
+      hookName: 'tool_call', taskId: 'task_4',
+      preToolUse: { toolName: 'bash', parameters: { command: 'ls' } },
+    }))
+    expect(call.tool).toBe('bash')
+    expect(call.args).toEqual({ command: 'ls' })
+    expect(call.sessionId).toBe('task_4')
+    expect(call.postAction).toBeUndefined()
+    expect(call.reasoning).toBeUndefined()
+  })
+
+  it('sessionId prefers taskId, then sessionContext.rootSessionId, then the pre-existing unconfirmed guesses — never fabricated when none are present', () => {
+    expect(parsePayload('cline', JSON.stringify({
+      hookName: 'tool_call', taskId: 'task_5', sessionContext: { rootSessionId: 'root_5' },
+      preToolUse: { toolName: 'bash', parameters: {} },
+    })).sessionId).toBe('task_5')
+
+    expect(parsePayload('cline', JSON.stringify({
+      hookName: 'tool_call', sessionContext: { rootSessionId: 'root_6' },
+      preToolUse: { toolName: 'bash', parameters: {} },
+    })).sessionId).toBe('root_6')
+
+    expect(parsePayload('cline', JSON.stringify({
+      preToolUse: { toolName: 'bash', parameters: {}, sessionId: 'legacy_guess_7' },
+    })).sessionId).toBe('legacy_guess_7')
+
+    expect(parsePayload('cline', JSON.stringify({
+      preToolUse: { toolName: 'bash', parameters: {} },
+    })).sessionId).toBeUndefined()
+  })
+})
+
+describe('v1 M2-C1: cursor claim-to-evidence (afterAgentResponse, postToolUse/postToolUseFailure)', () => {
+  it('afterAgentResponse sets `reasoning` from `text` when a token-count field is present, routing to the claim-reach path', () => {
+    const call = parsePayload('cursor', JSON.stringify({
+      conversation_id: 'conv_1', generation_id: 'gen_1', model: 'gpt-5',
+      text: 'Done, all tests pass.', input_tokens: 100, output_tokens: 20,
+    }))
+    expect(call.reasoning).toBe('Done, all tests pass.')
+    expect(call.tool).toBe('assistant-message')
+    expect(call.sessionId).toBe('conv_1')
+    expect(call.postAction).toBeUndefined()
+  })
+
+  it('does NOT route afterAgentThought into the claim-reach path — same {conversation_id, text, duration_ms} shape, but no token-count fields', () => {
+    const call = parsePayload('cursor', JSON.stringify({
+      conversation_id: 'conv_2', generation_id: 'gen_2', model: 'gpt-5',
+      text: 'internal reasoning, not the final answer', duration_ms: 12,
+    }))
+    expect(call.reasoning).toBeUndefined()
+    // Falls through to the tool_name/command-shaped branches, which find
+    // neither here — this is the pre-existing "unknown tool" MCP shape,
+    // not a crash. The point of this test is only that `text` alone never
+    // triggers the claim-reach path.
+    expect(call.tool).toBe('unknown')
+  })
+
+  it('postToolUse (shell): parses exitCode out of the JSON-stringified tool_output, matching Cursor\'s own createSuccessOutput({output, exitCode}) shape', () => {
+    const pass = parsePayload('cursor', JSON.stringify({
+      conversation_id: 'conv_3', tool_name: 'bash', tool_input: { command: 'npm test' },
+      tool_output: JSON.stringify({ output: 'ok', exitCode: 0 }), duration: 500, tool_use_id: 'tu_1',
+    }))
+    expect(pass.postAction).toEqual({ tool: 'bash', args: { command: 'npm test' }, exitCode: 0, outputText: 'ok' })
+
+    const fail = parsePayload('cursor', JSON.stringify({
+      conversation_id: 'conv_3', tool_name: 'bash', tool_input: { command: 'npm test' },
+      tool_output: JSON.stringify({ output: 'FAIL', exitCode: 1 }), duration: 500, tool_use_id: 'tu_2',
+    }))
+    expect(fail.postAction).toEqual({ tool: 'bash', args: { command: 'npm test' }, exitCode: 1, outputText: 'FAIL' })
+  })
+
+  it('postToolUse (non-shell): exitCode stays null when tool_output carries no numeric exitCode field — absence is normal for e.g. a file read, not a parse failure', () => {
+    const call = parsePayload('cursor', JSON.stringify({
+      conversation_id: 'conv_4', tool_name: 'read_file', tool_input: { path: 'a.ts' },
+      tool_output: JSON.stringify({ file_path: 'a.ts', content_length: 42 }), duration: 10, tool_use_id: 'tu_3',
+    }))
+    expect(call.postAction?.exitCode).toBeNull()
+    expect(call.postAction?.tool).toBe('read_file')
+  })
+
+  it('postToolUseFailure: exitCode 1 (a confirmed infra-level failure — spawn error/timeout/abort, per Cursor\'s own isSuccess semantics), outputText from error_message', () => {
+    const call = parsePayload('cursor', JSON.stringify({
+      conversation_id: 'conv_5', tool_name: 'bash', tool_input: { command: 'sleep 999' },
+      error_message: 'Command timed out after 60000ms', failure_type: 'timeout', duration: 60000,
+    }))
+    expect(call.postAction).toEqual({
+      tool: 'bash', args: { command: 'sleep 999' }, exitCode: 1, outputText: 'Command timed out after 60000ms',
+    })
+  })
+
+  it('beforeShellExecution/beforeMCPExecution are unaffected by the new branches', () => {
+    const shell = parsePayload('cursor', JSON.stringify({ command: 'ls', conversation_id: 'conv_6' }))
+    expect(shell.tool).toBe('bash')
+    expect(shell.postAction).toBeUndefined()
+    expect(shell.reasoning).toBeUndefined()
+
+    const mcp = parsePayload('cursor', JSON.stringify({ tool_name: 'search', tool_input: {}, conversation_id: 'conv_7' }))
+    expect(mcp.tool).toBe('search')
+    expect(mcp.postAction).toBeUndefined()
+  })
+})
+
 describe('verdict rendering per host', () => {
   it('preserves a message containing quotes — the sed bug', () => {
     const message = 'Use "--force-with-lease" instead of --force.'

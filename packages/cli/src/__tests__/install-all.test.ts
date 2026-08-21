@@ -71,6 +71,14 @@ describe('keel install --all', () => {
     expect(existsSync(homeFile('.cline', 'hooks', 'PreToolUse'))).toBe(true)
   })
 
+  // v1 M2-C1: claim-to-evidence real reach for Cline — PostToolUse
+  // (discharge + output scan) and TaskComplete (the claim-channel text)
+  // installed alongside the pre-existing PreToolUse block hook.
+  it('installs the Cline claim-to-evidence hooks (v1 M2-C1)', () => {
+    expect(existsSync(homeFile('.cline', 'hooks', 'PostToolUse'))).toBe(true)
+    expect(existsSync(homeFile('.cline', 'hooks', 'TaskComplete'))).toBe(true)
+  })
+
   it('installs the Codex hook', () => {
     expect(existsSync(homeFile('.codex', 'hooks', 'keel-enforce.sh'))).toBe(true)
   })
@@ -78,6 +86,18 @@ describe('keel install --all', () => {
   it('installs the Claude Code and Cursor hooks in the project', () => {
     expect(existsSync(projFile('.claude', 'hooks', 'PreToolUse', 'keel-enforce'))).toBe(true)
     expect(existsSync(projFile('.cursor', 'hooks', 'keel-enforce.sh'))).toBe(true)
+  })
+
+  // v1 M2-C1: claim-to-evidence real reach for Cursor — postToolUse,
+  // postToolUseFailure, and afterAgentResponse all wired into
+  // .cursor/hooks.json, pointing at the SAME script as the pre-existing
+  // beforeShellExecution/beforeMCPExecution block hooks.
+  it('wires the Cursor claim-to-evidence hooks into .cursor/hooks.json (v1 M2-C1)', () => {
+    const hooksJson = JSON.parse(readFileSync(projFile('.cursor', 'hooks.json'), 'utf-8'))
+    for (const event of ['beforeShellExecution', 'beforeMCPExecution', 'postToolUse', 'postToolUseFailure', 'afterAgentResponse']) {
+      expect(hooksJson.hooks[event], `expected hooks.${event} to be wired`).toBeDefined()
+      expect(hooksJson.hooks[event][0].command).toBe('./.cursor/hooks/keel-enforce.sh')
+    }
   })
 
   // Regression: the project rules.yaml stub used to write `rules:` with no

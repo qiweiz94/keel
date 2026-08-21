@@ -2064,6 +2064,28 @@ Project requirements: .keel/requirements.md (if present)
     template: 'cline-pretooluse.sh',
     target: join(resolveHome(), '.cline', 'hooks', 'PreToolUse'),
   })
+  // v1 M2-C1: claim-to-evidence real reach for Cline — closes
+  // docs/integrations.md's prior "NO CHANNEL CONFIRMED" cells for this
+  // host. `types` confidence: read from the installed `cline` npm CLI's
+  // own COMPILED `@cline/core` bundle (not merely its `.d.ts`, and not
+  // published docs), same tier as the PreToolUse hook above. See
+  // hook.ts's cline branch comments for exactly what is and is not
+  // confirmed — `type: verification` discharge specifically stays inert
+  // (exitCode always null) pending confirmation of Cline's shell exit-
+  // status semantics; the claim channel and output-text secret scanning
+  // are fully wired.
+  await installHostHook({
+    label: 'Cline',
+    template: 'cline-posttooluse.sh',
+    target: join(resolveHome(), '.cline', 'hooks', 'PostToolUse'),
+    note: 'Scans completed tool output for secrets and records attempt outcomes — types confidence. Does NOT yet discharge type: verification obligations (Cline\'s own success flag does not confirm a shell command\'s exit status — see hook.ts comment).',
+  })
+  await installHostHook({
+    label: 'Cline',
+    template: 'cline-taskcomplete.sh',
+    target: join(resolveHome(), '.cline', 'hooks', 'TaskComplete'),
+    note: 'Claim-to-evidence real reach — carries the agent\'s own final response text. types confidence.',
+  })
 
   // MCP server — gives Cline an enforcement check tool.
   const clineDir = join(cwd, '.cline')
@@ -2152,9 +2174,15 @@ Full requirements: ~/.keel/requirements.md
     label: 'Cursor',
     template: 'cursor-beforeshellexecution.sh',
     target: join(cwd, '.cursor', 'hooks', 'keel-enforce.sh'),
-    note: 'UNVERIFIED against a live Cursor — contract taken from docs, not installed types.',
+    note: 'Blocking path (beforeShellExecution/beforeMCPExecution): UNVERIFIED against a live Cursor — contract taken from docs, not installed types. '
+      + 'Same script ALSO handles postToolUse/postToolUseFailure (claim-to-evidence discharge) and afterAgentResponse (the claim-channel text) — v1 M2-C1, '
+      + 'types confidence for those three (read from the installed Cursor.app\'s own bundled cursor-agent-exec extension, not docs). See docs/integrations.md.',
   })
-  // failClosed: a crash in the hook must deny, not silently allow.
+  // failClosed: a crash in the hook must deny, not silently allow. Kept on
+  // postToolUse/postToolUseFailure/afterAgentResponse too for consistency
+  // even though those paths structurally can never block (hookVerdict
+  // always reports exit 0 / blocked:false for a post-action or claim-reach
+  // payload — see hook.ts) — a no-op flag there, not a contradiction.
   const cursorHooks = join(cwd, '.cursor', 'hooks.json')
   if (!existsSync(cursorHooks)) {
     writeFileSync(cursorHooks, JSON.stringify({
@@ -2162,15 +2190,23 @@ Full requirements: ~/.keel/requirements.md
       hooks: {
         beforeShellExecution: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
         beforeMCPExecution: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
+        // v1 M2-C1: claim-to-evidence real reach for Cursor — closes
+        // docs/integrations.md's prior "NO CHANNEL CONFIRMED" cells.
+        postToolUse: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
+        postToolUseFailure: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
+        afterAgentResponse: [{ command: './.cursor/hooks/keel-enforce.sh', failClosed: true }],
       },
     }, null, 2) + '\n', 'utf-8')
     console.log(chalk.green(`  ✓ Wired ${cursorHooks} (failClosed: true)`))
   } else {
-    console.log(chalk.yellow(`  ! ${cursorHooks} exists — add the keel hook to beforeShellExecution yourself`))
+    console.log(chalk.yellow(`  ! ${cursorHooks} exists — add the keel hook yourself to beforeShellExecution/beforeMCPExecution (blocking), and to`))
+    console.log(chalk.yellow('    postToolUse/postToolUseFailure/afterAgentResponse (claim-to-evidence — verification/claim obligations will silently'))
+    console.log(chalk.yellow('    never discharge on this host until those are wired) — all five point at the same ./.cursor/hooks/keel-enforce.sh.'))
   }
-  console.log(chalk.dim('  Note: the hook above is BLOCKING (failClosed) once wired into .cursor/hooks.json — not advisory.'))
-  console.log(chalk.dim('    Contract taken from Cursor\'s docs, UNVERIFIED against a live Cursor install.'))
-  console.log(chalk.dim('    keel.mdc above is a separate, always-active advisory layer alongside it.'))
+  console.log(chalk.dim('  Note: beforeShellExecution/beforeMCPExecution are BLOCKING (failClosed) once wired — not advisory.'))
+  console.log(chalk.dim('    Contract for those two taken from Cursor\'s docs, UNVERIFIED against a live Cursor install.'))
+  console.log(chalk.dim('    postToolUse/postToolUseFailure/afterAgentResponse can never block (see hook.ts) — types confidence, read from'))
+  console.log(chalk.dim('    the installed Cursor.app\'s own bundled code, not docs. keel.mdc above is a separate advisory layer alongside all of this.'))
 }
 
 // ── Codex CLI (advisory: AGENTS.md section) ──

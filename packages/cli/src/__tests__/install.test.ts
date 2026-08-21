@@ -260,6 +260,8 @@ describe('install honors KEEL_HOME over HOME', () => {
       join(keelHome, '.opencode', 'plugins', 'keel-enforce.js'),
       join(keelHome, '.keel', 'requirements.md'),
       join(keelHome, '.cline', 'hooks', 'PreToolUse'),
+      join(keelHome, '.cline', 'hooks', 'PostToolUse'),
+      join(keelHome, '.cline', 'hooks', 'TaskComplete'),
       join(keelHome, '.codex', 'hooks', 'keel-enforce.sh'),
       join(keelHome, '.hermes', 'plugins', 'keel', 'keel_plugin.py'),
       join(keelHome, '.openclaw', 'plugins', 'keel', 'index.mjs'),

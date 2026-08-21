@@ -244,6 +244,33 @@ function postToolUseOutputText(body: Record<string, unknown>): string | undefine
 }
 
 /**
+ * Parses Cursor's `postToolUse` `tool_output` field (v1 M2-C1). For a
+ * SHELL command specifically, the installed Cursor.app bundle's own
+ * `createSuccessOutput` (cursor-agent-exec/dist/main.js) JSON-stringifies
+ * `{output, exitCode}` before it ever reaches the hook — `exitCode`
+ * collapsed to `0` (the command's own `result.case === "success"`) or `1`
+ * (ran, but the command itself exited non-zero; per the comment above,
+ * this is STILL a `postToolUse`-level success, not `postToolUseFailure`).
+ * Every OTHER tool type's `createSuccessOutput` shape is DIFFERENT — a
+ * file read returns `{file_path, content_length}`, a screen recording
+ * returns `{result_type}` — and carries no `exitCode` at all. That absence
+ * is NORMAL, not a parse failure, so this returns `exitCode: null`
+ * (unconfirmed, never discharges `type: verification`) whenever the field
+ * isn't a finite number — the same conservative posture as
+ * `postToolUseExitCode` above, for the same reason: a wrong guess would
+ * clear an obligation on a run that never actually passed.
+ */
+function cursorPostToolUseOutcome(rawToolOutput: unknown): { exitCode: number | null; outputText?: string } {
+  if (typeof rawToolOutput !== 'string' || rawToolOutput.length === 0) return { exitCode: null }
+  let parsed: unknown
+  try { parsed = JSON.parse(rawToolOutput) } catch { return { exitCode: null, outputText: rawToolOutput } }
+  const record = asRecord(parsed)
+  const exitCode = typeof record.exitCode === 'number' && Number.isFinite(record.exitCode) ? record.exitCode : null
+  const outputText = typeof record.output === 'string' ? record.output : undefined
+  return { exitCode, outputText }
+}
+
+/**
  * Read a host's payload. Malformed input degrades to an unknown tool
  * rather than throwing: a hook that crashes is a hook the host skips, and
  * every host surveyed treats a skipped hook as permission to proceed.
@@ -261,18 +288,83 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
 
   switch (host) {
     case 'cline': {
+      // v1 M2-C1 (cline claim-to-evidence lane). `taskId` (top-level) and
+      // `sessionContext.rootSessionId` are CONFIRMED common-base fields on
+      // every Cline hook payload — read directly from the `cline` npm
+      // CLI's own installed `node_modules/@cline/core`'s COMPILED bundle
+      // (`dist/index.js`, not merely its `.d.ts`: the payload-building
+      // closures literally spread `{...taskId, ..., sessionContext, ...}`
+      // onto every hook event). The `sessionId`/`session_id` guesses below
+      // predate this finding and are not confirmed by ANY installed
+      // source — kept as a harmless additional fallback rather than
+      // removed, since an unconfirmed guess is not itself proof it never
+      // fires.
+      const baseSessionId = stringField(body.taskId)
+        || stringField(asRecord(body.sessionContext).rootSessionId)
+
+      // agent_end / TaskComplete (v1 M2-C1): fires once per completed
+      // agent run — confirmed in the same compiled bundle's `afterRun`
+      // hook: `if (result.status === "completed")
+      // Q({...,hookName:"agent_end",turn:{outputText:result.outputText,
+      // status:result.status},taskComplete:{...}})`. `outputText` is the
+      // agent's own final generated text for that run — this is Cline's
+      // Stop-equivalent claim-channel text, the piece
+      // docs/integrations.md's "NO CHANNEL CONFIRMED" cell was about.
+      // Gated on `hookName` (present on every payload per the same
+      // compiled source), mirroring claude-code's `hook_event_name` gate
+      // above — a differently-shaped payload never misroutes here.
+      if (body.hookName === 'agent_end') {
+        const turn = asRecord(body.turn)
+        return {
+          tool: 'assistant-message',
+          args: {},
+          sessionId: baseSessionId,
+          reasoning: typeof turn.outputText === 'string' ? turn.outputText : '',
+        }
+      }
+
+      // tool_result / PostToolUse (v1 M2-C1): fires after every completed
+      // tool call — confirmed in the same bundle's `afterTool` hook:
+      // `postToolUse:{toolName:record.name, parameters:..., result:...,
+      // success:!record.error, executionTimeMs:...}`. `exitCode` is
+      // DELIBERATELY always `null` here, not merely conservative: `success`
+      // reflects whether the TOOL CALL ITSELF errored
+      // (`ToolCallRecord.error`), and this lane could not confirm from any
+      // installed source whether a non-zero-exit shell command (a FAILING
+      // test run) sets that field, or completes as a non-erroring call
+      // whose failure is only visible as text inside `result` — exactly
+      // the ambiguity `postToolUseExitCode` above exists to never guess
+      // through. Treating `success` as a confirmed pass/fail would risk
+      // discharging `type: verification` on a run that never actually
+      // passed (`VerificationTracker.isFakeSatisfy`'s failure class).
+      // `outputText` is still populated from `result` for
+      // `evaluateOutputText` secret-shaped-content scanning, which does not
+      // depend on exit status at all — that half of this channel IS fully
+      // live, not blocked on the open question above.
+      if (body.hookName === 'tool_result') {
+        const post = asRecord(body.postToolUse)
+        const identity = toolField(post.toolName)
+        return {
+          tool: 'post-action',
+          args: {},
+          sessionId: baseSessionId,
+          postAction: {
+            tool: identity.tool,
+            args: asRecord(post.parameters),
+            exitCode: null,
+            outputText: typeof post.result === 'string' ? post.result : undefined,
+          },
+        }
+      }
+
+      // tool_call / PreToolUse (pre-existing, unchanged).
       const pre = asRecord(body.preToolUse)
       const identity = toolField(pre.toolName)
       return {
         ...identity,
         args: asRecord(pre.parameters),
-        // No published or installed-type source confirms cline's session
-        // field name (docs/integrations.md rates cline "types", but that
-        // covers the toolName/parameters shape actually exercised, not a
-        // session id) — try both the nested and top-level spellings a
-        // preToolUse-shaped payload might plausibly use, and simply carry
-        // none when neither is present rather than guess further.
-        sessionId: stringField(pre.sessionId) || stringField(pre.session_id)
+        sessionId: baseSessionId
+          || stringField(pre.sessionId) || stringField(pre.session_id)
           || stringField(body.sessionId) || stringField(body.session_id),
       }
     }
@@ -280,8 +372,80 @@ export function parsePayload(host: Host, raw: string): ParsedCall {
       // Cursor sends a bare `command` for shell execution, or
       // tool_name/tool_input for an MCP call. `conversation_id` is part of
       // the common base schema shared by every Cursor hook event, sitting
-      // alongside either shape (cursor.com/docs/hooks).
+      // alongside every shape below (cursor.com/docs/hooks; confirmed
+      // present specifically on afterAgentResponse/stop by reading the
+      // installed Cursor.app's own bundled `cursor-agent-exec` extension —
+      // see the branches below).
       const sessionId = stringField(body.conversation_id)
+
+      // afterAgentResponse (v1 M2-C1): fires with the model's own
+      // generated text for one generation inside the agent loop —
+      // confirmed by reading the INSTALLED Cursor.app's bundled
+      // `cursor-agent-exec/dist/main.js` (not published docs, which say
+      // nothing about this event): the literal payload-construction site
+      // is `{conversation_id, generation_id, model, text:e.text,
+      // input_tokens:..., output_tokens:..., ...}`. This is Cursor's
+      // closest analog to Claude Code's Stop/last_assistant_message — the
+      // claim-channel text `type: claim` needs, closing
+      // docs/integrations.md's prior "NO CHANNEL CONFIRMED" cell.
+      //
+      // Discriminated on `input_tokens`/`output_tokens` PRESENCE (via
+      // `in`, not truthiness — a genuine 0 must still count), not merely
+      // `typeof body.text === 'string'`: a SIBLING event,
+      // `afterAgentThought`, shares the IDENTICAL {conversation_id,
+      // generation_id, model, text, duration_ms} shape in the same
+      // decompiled source — that's the model's internal reasoning text,
+      // not its completed answer, and has no token-count fields at all.
+      // Routing it into the claim evaluator would misattribute reasoning
+      // text as a "done" claim. `afterAgentResponse`'s payload always
+      // carries the token-count keys (per the same literal construction
+      // site), so this discriminator holds even when a value is 0.
+      if (typeof body.text === 'string' && ('input_tokens' in body || 'output_tokens' in body)) {
+        return {
+          tool: 'assistant-message',
+          args: {},
+          sessionId,
+          reasoning: body.text,
+        }
+      }
+
+      // postToolUse / postToolUseFailure (v1 M2-C1): Cursor's GENERIC
+      // per-tool-call post-action hooks, confirmed in the same installed
+      // bundle — they fire for EVERY tool type (not only shell) via a
+      // shared wrapper, not the tool-specific afterShellExecution/
+      // afterMCPExecution pair. Success:
+      // `{...baseHookRequest, tool_name, tool_input, tool_output, duration,
+      // tool_use_id}`; failure: `{..., tool_name, tool_input, error_message,
+      // failure_type, duration}` — confirmed as the literal
+      // `fireSuccessAsync`/`fireFailureAsync` payload construction sites.
+      // Neither carries an explicit event-name field (same as Cursor's
+      // existing beforeShellExecution/beforeMCPExecution pair below), so
+      // this is disambiguated by shape, matching that established
+      // precedent rather than inventing a new technique.
+      //
+      // IMPORTANT (confirmed, not merely unconfirmed): for a SHELL command
+      // specifically, `postToolUseFailure` only fires on an INFRA-level
+      // failure (spawn error, timeout, or the call being aborted) — an
+      // ordinary FAILING test run (non-zero exit) still reports success at
+      // this level (Cursor's own `isSuccess` for shell is
+      // `case==="success" || (case==="failure" && !aborted)`) and fires
+      // `postToolUse`, not `postToolUseFailure`. So "which event fired" is
+      // NOT by itself a pass/fail signal for a test run — see
+      // `cursorPostToolUseOutcome` below for the actual exit-code
+      // extraction, which is what gets that right.
+      if (typeof body.tool_name === 'string' && ('tool_output' in body || 'error_message' in body)) {
+        const identity = toolField(body.tool_name)
+        const outcome = 'error_message' in body
+          ? { exitCode: 1, outputText: stringField(body.error_message) }
+          : cursorPostToolUseOutcome(body.tool_output)
+        return {
+          tool: 'post-action',
+          args: {},
+          sessionId,
+          postAction: { tool: identity.tool, args: asRecord(body.tool_input), ...outcome },
+        }
+      }
+
       if (typeof body.command === 'string') {
         // Unlike every other host, Cursor's shell shape carries the tool
         // identity AND the argument in the SAME field: `command` is not an
