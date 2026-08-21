@@ -9,7 +9,7 @@ import { ActionCache, ContentTracker } from '../core/enforce/cache.js'
 import { SequenceDetector } from '../core/enforce/sequencer.js'
 import { FlowTracker } from '../core/enforce/flow-tracker.js'
 import { StateManager } from '../core/enforce/state-manager.js'
-import { loadRuleHierarchy, parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, parseRulesFile, ruleFileSources, validateRules } from '../core/enforce/rule-parser.js'
 import { ProblemLedger } from '../core/enforce/problem-ledger.js'
 import { StuckTracker } from '../core/enforce/stuck-tracker.js'
 import { OscillationTracker } from '../core/enforce/oscillation-tracker.js'
@@ -125,7 +125,7 @@ function sharedLedger(): ProblemLedger {
 }
 
 function ruleFingerprint(cwd: string): string {
-  const sources = [
+  const candidates = [
     join(cwd, '.keel', 'rules.yaml'),
     join(cwd, 'AGENTS.md'),
     join(cwd, 'CLAUDE.md'),
@@ -136,9 +136,36 @@ function ruleFingerprint(cwd: string): string {
     join(resolveHome(), '.config', 'keel', 'rules.yaml'),
   ]
   const hash = createHash('sha256')
-  for (const source of sources) {
-    hash.update(source)
-    if (existsSync(source)) hash.update(readFileSync(source))
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    // Unconditional, even when the candidate is absent — otherwise a
+    // rules.yaml that didn't exist yet and now does would not change the
+    // fingerprint at all.
+    hash.update(candidate)
+    if (!existsSync(candidate)) continue
+    const raw = readFileSync(candidate)
+    hash.update(raw)
+    seen.add(candidate)
+    // This fingerprint runs on EVERY daemon request — checkRuleVersion()
+    // (pipeline.ts) calls it from every single pipeline.evaluate() call,
+    // not on a timer — so a full YAML parse + extends-resolution of all 8
+    // candidates on every request would be real, ongoing cost on a hot
+    // path, and most rules.yaml files never use `extends:` at all. A raw
+    // substring check on bytes already in hand is enough to know whether a
+    // full parse could possibly be needed — it can never false-negative
+    // (the field name has to literally appear in the text to be used), so
+    // this only ever skips a parse that provably wasn't necessary. Only
+    // when `extends` might be present do we pay for resolving the chain
+    // (parseRulesFile) so an edit to a shared base file is still
+    // detected — see ParsedRules.composedFrom's doc comment
+    // (rule-parser.ts).
+    if (!raw.includes('extends')) continue
+    for (const source of ruleFileSources(parseRulesFile(candidate))) {
+      if (seen.has(source)) continue
+      seen.add(source)
+      hash.update(source)
+      if (existsSync(source)) hash.update(readFileSync(source))
+    }
   }
   return hash.digest('hex')
 }

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   parseRulesContent, validateRules, sprintExpiryStatus, resolvedLevel,
-  DEFAULT_SPRINT_EXPIRY_HOURS, mergeRules,
+  DEFAULT_SPRINT_EXPIRY_HOURS, mergeRules, parseRulesFile,
 } from '../rule-parser.js'
 import type { KeelConfig, KeelRule } from '../../types.js'
 import type { RuleHierarchy, ParsedRules } from '../rule-parser.js'
@@ -795,5 +798,376 @@ describe('mergeRules — a different-id rule cannot priority-shadow a level:prot
     // Full order: observe tier first, then the floor tier, then everything
     // else — exact, not just the pairwise relation above.
     expect(merged.map(r => r.id)).toEqual(['my-observe', 'no-force-push', 'my-allow'])
+  })
+})
+
+// ── extends: rule composition ─────────────────────────────────────────
+//
+// A rules.yaml can declare `extends: <path>` (or a list of paths),
+// resolved relative to its OWN directory, and merged in BEFORE its own
+// rules — see resolveExtendsChain / applyExtendsOverrides in
+// rule-parser.ts and KeelConfig.extends' doc comment in types.ts.
+
+function newDir(): string {
+  return mkdtempSync(join(tmpdir(), 'keel-extends-test-'))
+}
+
+function writeRules(dir: string, name: string, yaml: string): string {
+  const path = join(dir, name)
+  writeFileSync(path, yaml, 'utf-8')
+  return path
+}
+
+describe('extends: rule composition', () => {
+  it('a simple two-file extends chain merges the base rule and the extending file\'s own rule', () => {
+    const dir = newDir()
+    writeRules(dir, 'base.yaml', `
+version: 1
+rules:
+  - id: base-rule
+    type: command
+    action: warn
+    match: 'rm -rf'
+    message: from base
+`)
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: base.yaml
+rules:
+  - id: leaf-rule
+    type: command
+    action: deny
+    match: 'curl'
+    message: from leaf
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeUndefined()
+    const ids = parsed?.rules.map(r => r.id).sort()
+    expect(ids).toEqual(['base-rule', 'leaf-rule'])
+  })
+
+  it('extends accepts a list of paths, resolved relative to the extending file\'s own directory', () => {
+    const dir = newDir()
+    const subDir = join(dir, 'shared')
+    mkdirSync(subDir)
+    writeRules(subDir, 'a.yaml', `
+version: 1
+rules:
+  - id: rule-a
+    type: command
+    action: warn
+    match: 'a'
+    message: a
+`)
+    writeRules(subDir, 'b.yaml', `
+version: 1
+rules:
+  - id: rule-b
+    type: command
+    action: warn
+    match: 'b'
+    message: b
+`)
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends:
+  - shared/a.yaml
+  - shared/b.yaml
+rules:
+  - id: rule-c
+    type: command
+    action: warn
+    match: 'c'
+    message: c
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeUndefined()
+    expect(parsed?.rules.map(r => r.id).sort()).toEqual(['rule-a', 'rule-b', 'rule-c'])
+  })
+
+  it('a project file overriding a non-protect base rule by id works normally (no error, override wins)', () => {
+    const dir = newDir()
+    writeRules(dir, 'base.yaml', `
+version: 1
+rules:
+  - id: shared-rule
+    type: command
+    action: warn
+    match: 'deploy'
+    message: base says warn
+`)
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: base.yaml
+rules:
+  - id: shared-rule
+    type: command
+    action: deny
+    match: 'deploy'
+    message: leaf says deny
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeUndefined()
+    expect(parsed?.rules).toHaveLength(1)
+    expect(parsed?.rules[0]).toMatchObject({ id: 'shared-rule', action: 'deny', message: 'leaf says deny' })
+  })
+
+  // The single most important test in this suite: a project file that
+  // extends a base policy must NOT be able to silently (or even loudly-
+  // but-successfully) weaken a level:protect floor the base declares.
+  it('a project file attempting to WEAKEN an inherited level:protect floor is REFUSED with a clear error, and the floor is kept', () => {
+    const dir = newDir()
+    writeRules(dir, 'base.yaml', `
+version: 1
+rules:
+  - id: no-force-push
+    type: command
+    action: deny
+    level: protect
+    match: 'push.*--force'
+    message: base floor
+`)
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: base.yaml
+rules:
+  - id: no-force-push
+    type: command
+    action: warn
+    match: 'push.*--force'
+    message: leaf tries to weaken
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeDefined()
+    expect(parsed?.errors?.some(e => e.includes('no-force-push') && e.includes('protect') && e.includes('weaken'))).toBe(true)
+    // The floor itself must be the one that survives into the merged list.
+    const rule = parsed?.rules.find(r => r.id === 'no-force-push')
+    expect(rule?.action).toBe('deny')
+    expect(rule?.level).toBe('protect')
+    expect(rule?.message).toBe('base floor')
+  })
+
+  it('a project file TIGHTENING an inherited level:protect floor (warn -> deny) is honored, no error', () => {
+    const dir = newDir()
+    writeRules(dir, 'base.yaml', `
+version: 1
+rules:
+  - id: no-force-push
+    type: command
+    action: warn
+    level: protect
+    match: 'push.*--force'
+    message: base floor, warn only
+`)
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: base.yaml
+rules:
+  - id: no-force-push
+    type: command
+    action: deny
+    level: protect
+    match: 'push.*--force'
+    message: leaf tightens to deny
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeUndefined()
+    const rule = parsed?.rules.find(r => r.id === 'no-force-push')
+    expect(rule?.action).toBe('deny')
+    expect(rule?.message).toBe('leaf tightens to deny')
+  })
+
+  it('a circular extends chain (A extends B extends A) is detected and errors clearly, not a hang or stack overflow', () => {
+    const dir = newDir()
+    // Write A first referencing B, then B referencing A — order of writes
+    // doesn't matter since both are on disk before either is parsed.
+    writeRules(dir, 'a.yaml', `
+version: 1
+extends: b.yaml
+rules:
+  - id: rule-a
+    type: command
+    action: warn
+    match: 'a'
+    message: a
+`)
+    const aPath = writeRules(dir, 'b.yaml', `
+version: 1
+extends: a.yaml
+rules:
+  - id: rule-b
+    type: command
+    action: warn
+    match: 'b'
+    message: b
+`)
+    // Parse starting from b.yaml, which extends a.yaml, which extends
+    // b.yaml again — a real cycle.
+    const parsed = parseRulesFile(aPath)
+    expect(parsed?.errors).toBeDefined()
+    expect(parsed?.errors?.some(e => e.toLowerCase().includes('circular'))).toBe(true)
+  })
+
+  it('an extends reference to a missing file errors clearly, not a silent skip or crash', () => {
+    const dir = newDir()
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: does-not-exist.yaml
+rules:
+  - id: leaf-rule
+    type: command
+    action: warn
+    match: 'x'
+    message: leaf
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeDefined()
+    expect(parsed?.errors?.some(e => e.includes('does-not-exist.yaml') && e.includes('not exist'))).toBe(true)
+    // The leaf's own rule should still be present — a missing extends
+    // target shouldn't take down the whole file, just get flagged.
+    expect(parsed?.rules.map(r => r.id)).toContain('leaf-rule')
+  })
+
+  it('a multi-level chain (3+ files) resolves correctly, later files overriding earlier ones', () => {
+    const dir = newDir()
+    writeRules(dir, 'grandparent.yaml', `
+version: 1
+rules:
+  - id: shared-rule
+    type: command
+    action: warn
+    match: 'x'
+    message: from grandparent
+  - id: grandparent-only
+    type: command
+    action: warn
+    match: 'g'
+    message: only in grandparent
+`)
+    writeRules(dir, 'parent.yaml', `
+version: 1
+extends: grandparent.yaml
+rules:
+  - id: shared-rule
+    type: command
+    action: prompt
+    match: 'x'
+    message: from parent
+  - id: parent-only
+    type: command
+    action: warn
+    match: 'p'
+    message: only in parent
+`)
+    const leafPath = writeRules(dir, 'child.yaml', `
+version: 1
+extends: parent.yaml
+rules:
+  - id: shared-rule
+    type: command
+    action: deny
+    match: 'x'
+    message: from child
+`)
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeUndefined()
+    const shared = parsed?.rules.find(r => r.id === 'shared-rule')
+    expect(shared?.message).toBe('from child')
+    expect(shared?.action).toBe('deny')
+    expect(parsed?.rules.map(r => r.id).sort()).toEqual(['grandparent-only', 'parent-only', 'shared-rule'])
+  })
+
+  it('a malformed extends field (empty string) produces a clear validation error', () => {
+    const leafPath = (() => {
+      const dir = newDir()
+      return writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: ''
+rules:
+  - id: leaf-rule
+    type: command
+    action: warn
+    match: 'x'
+    message: leaf
+`)
+    })()
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeDefined()
+    expect(parsed?.errors?.some(e => e.includes('extends'))).toBe(true)
+  })
+
+  it('a chain deeper than MAX_EXTENDS_DEPTH errors clearly instead of hanging', () => {
+    const dir = newDir()
+    // Build a long non-circular chain: file_0 -> file_1 -> ... -> file_12,
+    // each extending the next, well past any real-world depth.
+    const depth = 12
+    for (let i = depth; i >= 0; i--) {
+      const next = i < depth ? `\nextends: file_${i + 1}.yaml` : ''
+      writeRules(dir, `file_${i}.yaml`, `version: 1${next}\nrules:\n  - id: rule-${i}\n    type: command\n    action: warn\n    match: 'x${i}'\n    message: rule ${i}\n`)
+    }
+    const parsed = parseRulesFile(join(dir, 'file_0.yaml'))
+    expect(parsed?.errors).toBeDefined()
+    expect(parsed?.errors?.some(e => e.includes('maximum depth'))).toBe(true)
+  })
+
+  it('extends pointing at a directory errors clearly instead of crashing (EISDIR)', () => {
+    const dir = newDir()
+    mkdirSync(join(dir, 'shared'))
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: shared
+rules:
+  - id: leaf-rule
+    type: command
+    action: warn
+    match: 'x'
+    message: leaf
+`)
+    expect(() => parseRulesFile(leafPath)).not.toThrow()
+    const parsed = parseRulesFile(leafPath)
+    expect(parsed?.errors).toBeDefined()
+    expect(parsed?.errors?.some(e => e.includes('shared') && e.includes('could not be read'))).toBe(true)
+    expect(parsed?.rules.map(r => r.id)).toContain('leaf-rule')
+  })
+
+  // Documents a known, pre-existing characteristic of the floor-tightening
+  // check (see applyExtendsOverrides' doc comment "CAVEAT" paragraph):
+  // sameEnforcementSurface compares by JSON.stringify, which is sensitive
+  // to key insertion order. Two semantically-identical floor definitions
+  // that list fields in a different order are read as a surface mismatch.
+  // This is inherited from mergeRules (same helper, same characteristic)
+  // and not something this feature introduces — this test exists so the
+  // behavior is documented and intentional, not an accidental surprise.
+  it('CHARACTERIZATION: a semantically-identical floor override with reordered YAML keys is (falsely) treated as a surface change', () => {
+    const dir = newDir()
+    writeRules(dir, 'base.yaml', `
+version: 1
+rules:
+  - id: no-force-push
+    type: command
+    action: deny
+    level: protect
+    match: 'push.*--force'
+    message: base floor
+`)
+    // Same fields, same values, DIFFERENT declaration order (match before type).
+    const leafPath = writeRules(dir, 'leaf.yaml', `
+version: 1
+extends: base.yaml
+rules:
+  - id: no-force-push
+    match: 'push.*--force'
+    type: command
+    action: deny
+    level: protect
+    message: base floor
+`)
+    const parsed = parseRulesFile(leafPath)
+    // Known false-positive: this is flagged as a weakening attempt even
+    // though the override is semantically identical to the floor it
+    // "overrides" — see the CAVEAT above. If this test starts failing
+    // because sameEnforcementSurface became key-order-INsensitive, that's
+    // an improvement — update this test to assert no error instead.
+    expect(parsed?.errors?.some(e => e.includes('no-force-push'))).toBe(true)
   })
 })

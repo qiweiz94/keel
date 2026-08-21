@@ -43,6 +43,29 @@ export type RuleType =
 export interface KeelConfig {
   version: number
   level?: ProtectionLevel
+  /**
+   * One or more other rules.yaml (or CLAUDE.md/AGENTS.md frontmatter)
+   * files this file builds on — a single path or a list, resolved
+   * relative to THIS file's own directory (not cwd, not the leaf file
+   * ultimately being loaded). Extended files are parsed and merged in
+   * list order BEFORE this file's own `rules:`/`simple_rules:`, so this
+   * file can override a base policy by id. A base file may itself
+   * declare `extends`, forming a chain — resolved recursively by
+   * enforce/rule-parser.ts's resolveExtendsChain(), which also detects
+   * circular chains and enforces a max depth.
+   *
+   * This is a WITHIN-tier composition mechanism, distinct from keel's
+   * existing 4-tier global/user/project/local hierarchy (see
+   * loadRuleHierarchy in enforce/rule-parser.ts): `extends` lets any
+   * single file in any one of those tiers share a base policy with other
+   * files, resolved entirely before that tier's rules enter the 4-tier
+   * merge. A same-id override that would WEAKEN a `level: protect` floor
+   * inherited via `extends` is refused with a load-time error rather than
+   * silently resolved — see resolveExtendsChain's doc comment for why
+   * this deliberately differs from the 4-tier hierarchy's own same-id
+   * dedup (mergeRules), which silently keeps the stronger floor instead.
+   */
+  extends?: string | string[]
   rules?: KeelRule[]
   /**
    * Minimal/beginner-friendly rule entries — the "bring your own rule"

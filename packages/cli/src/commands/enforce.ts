@@ -22,6 +22,7 @@ import {
   loadRuleHierarchy,
   parseRulesFile,
   hashRulesFile,
+  ruleFileSources,
   detectConflicts,
   mergeRules as mergeRulesFn,
   validateRules,
@@ -239,11 +240,20 @@ export function initEnforce(projectDir?: string, options?: EnforceOptions): {
     // lookup an actual chance to settle before `keel hook`'s caller calls
     // `process.exit()`.
     packageVerifierOnBackgroundStart: (settled) => { pendingBackgroundWork.push(settled) },
+    // Each candidate is hashed by path (so a still-missing file remains a
+    // stable placeholder in the joined string), plus — whenever it parses
+    // — every file its own `extends:` chain actually depends on, so
+    // editing a shared base file also invalidates this fingerprint rather
+    // than leaving a running session on stale rules. See
+    // ParsedRules.composedFrom's doc comment (rule-parser.ts).
     ruleFingerprint: () => [
       join(dir, '.keel', 'rules.yaml'), join(dir, 'AGENTS.md'), join(dir, 'CLAUDE.md'),
       join(dir, '.keel.local.yaml'), join(dir, 'AGENTS.local.md'), join(dir, 'CLAUDE.local.md'),
       join(resolveHome(), '.keel', 'rules.yaml'), join(resolveHome(), '.config', 'keel', 'rules.yaml'),
-    ].map(hashRulesFile).join(':'),
+    ]
+      .flatMap(candidate => [candidate, ...ruleFileSources(parseRulesFile(candidate))])
+      .map(hashRulesFile)
+      .join(':'),
   })
 
   pipeline = p
