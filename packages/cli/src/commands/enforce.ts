@@ -603,6 +603,10 @@ export async function evaluateOutputText(
       // true where `sanitized_output` was actually written back onto the
       // channel the model reads, which never happens here.
       neutralized: false,
+      // Lane G: correlatable artifacts near the enforcing marker(s), when
+      // any were found — arms the narrower `untrusted-content-derived-call`
+      // gate rule alongside the broad one above.
+      ...(result.injection_artifacts?.length ? { artifacts: result.injection_artifacts } : {}),
     })
   }
   return result

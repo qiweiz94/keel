@@ -1736,9 +1736,16 @@ export class EnforcementPipeline {
       // ever reached from `evaluateTiers()` strictly after `checkHalt()`
       // has already returned null, so a halt already wins before this
       // branch is reachable at all.
+      //
+      // `peekPending`/`consumePending` now take THIS rule's own id
+      // (injection-store.ts's per-rule mark-not-delete consumption model —
+      // see that file's "CONSUMPTION MODEL" section) rather than consuming
+      // blindly for the whole session: the correctness fix required the
+      // moment a second `next_call_scrutiny` rule shares this same store,
+      // even though only this one broad rule uses the branch today.
       if (rule.type === 'injection' && rule.next_call_scrutiny && this.config.injectionStore) {
         const store = this.config.injectionStore
-        const pending = store.peekPending(input.session_id)
+        const pending = store.peekPending(input.session_id, rule.id)
         if (pending.length) {
           const toolKey = input.tool.toLowerCase()
           const consequential = WRITE_TOOL_NAMES.has(toolKey) || CONSEQUENTIAL_SHELL_TOOL_NAMES.has(toolKey)
@@ -1747,7 +1754,7 @@ export class EnforcementPipeline {
             // a peek-only read (below, the non-consequential branch) never
             // burns the tag, so an `ls` between the detection and the real
             // write/shell call does not silently disarm the gate.
-            const consumed = store.consumePending(input.session_id)
+            const consumed = store.consumePending(input.session_id, rule.id)
             if (consumed.length) {
               const ruleIds = [...new Set(consumed.flatMap(t => t.ruleIds))]
               const originTools = [...new Set(consumed.map(t => t.originTool))]

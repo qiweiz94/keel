@@ -781,6 +781,20 @@ export interface EnforceResult {
    * redaction.
    */
   injection_scan_truncated?: boolean
+  /**
+   * Correlatable artifacts (URLs, hostnames, file paths, email addresses)
+   * found within a bounded window of an ENFORCING injection marker — the
+   * same restriction `injection_markers` has, and absent whenever
+   * `injection_markers` is (never present-but-empty, same convention as
+   * every other field in this section). Already DEFANGED, same reasoning
+   * as `injection_markers.excerpt`: this field is written into audit logs
+   * and can be surfaced back to the model via a warning message on its
+   * next turn, so an undefanged value would re-deliver a working URL/path
+   * through keel's own tooling. Callers persist it onto
+   * `PersistedInjectionTag.artifacts` (injection-store.ts). See
+   * enforce/injection-taint.ts.
+   */
+  injection_artifacts?: Array<{ kind: 'url' | 'host' | 'path' | 'email'; value: string }>
 }
 
 export interface RedirectDirective {

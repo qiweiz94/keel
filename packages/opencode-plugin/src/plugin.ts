@@ -1912,6 +1912,10 @@ export default {
           // called right after a real write-back — see this function's
           // own header comment.
           neutralized: true,
+          // Lane G: correlatable artifacts near the enforcing marker(s), when
+          // any were found — arms the narrower `untrusted-content-derived-call`
+          // gate rule alongside the broad one above.
+          ...(result.injection_artifacts?.length ? { artifacts: result.injection_artifacts } : {}),
         })
       }
     }

@@ -85,4 +85,44 @@ describe('PersistentInjectionStore — cross-process lost-update safety', () => 
     },
     60_000,
   )
+
+  it(
+    'two processes calling consumePending for DIFFERENT rule ids against the SAME tag both succeed with no lost update (Lane G per-rule mark model)',
+    async () => {
+      const dir = freshDir()
+      const sessionId = 'shared-consume-session'
+      const tagId = 'the-one-shared-tag'
+      const store = new PersistentInjectionStore(dir)
+      store.recordTag(sessionId, {
+        source: 'tool_output',
+        timestamp: Date.now(),
+        originTool: 'Read',
+        ruleIds: ['injected-instructions-in-tool-output'],
+        markerCount: 1,
+        neutralized: false,
+        id: tagId,
+      })
+
+      const results = await runWorkersConcurrently(
+        './injection-store-consume-worker.ts',
+        [
+          [dir, sessionId, 'untrusted-content-next-call', tagId],
+          [dir, sessionId, 'untrusted-content-derived-call', tagId],
+        ],
+      )
+      const counts = results.map(r => JSON.parse(r.stdout).consumedCount as number)
+      // Each worker's OWN rule id must have successfully marked the tag —
+      // neither can lose to the other under the race.
+      expect(counts, `expected both workers to consume exactly once each — got ${JSON.stringify(counts)}`).toEqual([1, 1])
+
+      const finalStore = new PersistentInjectionStore(dir)
+      expect(finalStore.peekPending(sessionId, 'untrusted-content-next-call')).toEqual([])
+      expect(finalStore.peekPending(sessionId, 'untrusted-content-derived-call')).toEqual([])
+      // Unfiltered peek: the tag is still there (marked, not deleted) with BOTH rule ids recorded.
+      const [survivor] = finalStore.peekPending(sessionId)
+      expect(survivor).toBeDefined()
+      expect(survivor.consumedBy?.sort()).toEqual(['untrusted-content-derived-call', 'untrusted-content-next-call'])
+    },
+    60_000,
+  )
 })
