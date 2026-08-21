@@ -624,7 +624,7 @@ rules:
     rationale: "Exact-signature literal credential formats (AWS keys, GitHub tokens, Slack tokens, OpenAI-shaped keys, PEM headers) — high enough confidence to deny at balanced per the severity x confidence rule, despite living in Tier 2."
     remediation: "Use environment variables or a secrets manager, never a literal credential in source."
     false_positives:
-      - "A docs page showing a REDACTED example key with the real characters replaced by x's does not match these exact-length formats, so it passes; a real (even if revoked) key literal will still match and deny, which is intentional."
+      - "A docs page showing a REDACTED example key with the real characters replaced by x's DOES match these exact-length formats (an earlier version of this note claimed otherwise — it did not, x is a valid uppercase-alnum character). A local, offline confidence filter (packages/core/src/enforce/secret-confidence.ts) allows an exact known-placeholder literal such as AWS's own AKIAIOSFODNN7EXAMPLE, AWS's documented EXAMPLE-suffix convention, or a redaction-shaped run of one repeated character, before this rule denies. A real (even if revoked) key literal still matches and denies, unconditionally, exactly as before."
     message: "Hardcoded credentials must not be written to files."
 
   - id: no-secret-files
