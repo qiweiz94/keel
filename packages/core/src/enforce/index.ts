@@ -23,6 +23,11 @@ export { FlowTracker } from './flow-tracker.js'
 export { PersistentFlowStore, FLOW_TAG_TTL_MS, type PersistedFlowTag } from './flow-store.js'
 export { scanInjection, defangExcerpt, type InjectionScanResult, type InjectionMarker } from './injection-scan.js'
 export { PersistentInjectionStore, INJECTION_TAG_TTL_MS, type PersistedInjectionTag } from './injection-store.js'
+export {
+  defangArtifact, extractOriginArtifacts, extractCallArtifacts, correlateTags,
+  ARTIFACT_WINDOW_CHARS, MAX_ARTIFACTS_PER_TAG, MAX_CALL_CONTENT_SCAN_CHARS, MAX_ARTIFACTS_PER_CALL,
+  type ArtifactKind, type InjectionArtifact,
+} from './injection-taint.js'
 export { Suggester } from './suggester.js'
 export { StateManager } from './state-manager.js'
 export { StuckTracker } from './stuck-tracker.js'
