@@ -148,9 +148,85 @@ guessing 0 on anything it doesn't recognize.
 | Claude Code | `PreToolUse` (**live**, pre-existing — `session/transcripts/claude-code-force-push.txt`) | `PostToolUse` — NEW this lane (`claude-posttooluse-verify.sh`, a second hook entry alongside `keel-reinject`) | `Stop` (pre-existing, unchanged) | verified — `claude-posttooluse-verify-hook.test.ts`: real built CLI + real shell script, MUST-discharge (confirmed pass) and MUST-NOT-discharge (confirmed fail / unconfirmed outcome / non-matching command) all pass | **docs** — the `tool_response` exit-code field name is UNCONFIRMED (see above); this environment's sandbox blocks a nested `claude` CLI invocation, so no live PostToolUse payload was captured this lane |
 | Codex | `PreToolUse` (**docs**, pre-existing — installer already flags "Codex CLI has no blocking hooks" / hook-trust caveats) | `PostToolUse` — NEW this lane (`codex-posttooluse.sh`) | `Stop` — NEW this lane (`codex-stop.sh`; hook.ts's own prior comment had flagged this as "documented but deliberately unwired" — this is that follow-up) | same test suite covers the parse branch (`hook-command.test.ts`) | **docs** — codex CLI is not installed in this environment; nothing beyond the pre-existing "converged on the same hookSpecificOutput-shaped contract" citation |
 | Gemini | `PreToolUse` (**types** — `gemini hooks migrate --from-claude` confirmed to exist on this machine) | `PostToolUse` — NEW this lane (`gemini-posttooluse.sh`) | `Stop` — NEW this lane (`gemini-stop.sh`) | same test suite covers the parse branch | **types** for the general Claude-Code-compatibility claim (same basis as PreToolUse); the SPECIFIC PostToolUse/Stop field shape was not live-confirmable — `gemini -p` on this machine returns `IneligibleTierError` (this account's free tier was deprecated in favor of Antigravity), an auth/tier block, not a code defect |
-| Cursor | `beforeShellExecution`/`beforeMCPExecution` (**docs**, pre-existing) | **NO CHANNEL CONFIRMED** | **NO CHANNEL CONFIRMED** | not implemented | cursor CLI is not installed here and this repo carries no prior citation for a post-action/stop-shaped Cursor hook event; not fabricated against an unconfirmed schema |
-| Cline | `PreToolUse` (**types**, pre-existing — read from installed `@cline/core`) | **NO CHANNEL CONFIRMED** | **NO CHANNEL CONFIRMED** | not implemented | cline CLI is installed here but its post-action/stop hook shape was not investigated this lane (out of time budget, not ruled out) — left honestly unexplored rather than guessed |
+| Cursor | `beforeShellExecution`/`beforeMCPExecution` (**docs**, pre-existing) | `postToolUse`/`postToolUseFailure` — NEW (v1 M2-C1) | `afterAgentResponse` — NEW (v1 M2-C1) | `postToolUse`/`postToolUseFailure`/`afterAgentResponse` all wired via `cursor-beforeshellexecution.sh` (same script as the pre-existing block hooks — see its own header comment) | **types** — read from the INSTALLED Cursor.app's own bundled `cursor-agent-exec` extension (`/Applications/Cursor.app/Contents/Resources/app/extensions/cursor-agent-exec/dist/main.js` on this machine), not published docs, which say nothing about these three events at all. See footnote ⁵ for exactly what is and isn't confirmed. |
+| Cline | `PreToolUse` (**types**, pre-existing — read from installed `@cline/core`) | `tool_result`/`~/.cline/hooks/PostToolUse` — NEW (v1 M2-C1) | `agent_end`/`~/.cline/hooks/TaskComplete` — NEW (v1 M2-C1) | `cline-posttooluse.sh` / `cline-taskcomplete.sh` | **types** — read from the installed `cline` npm CLI's own COMPILED `node_modules/@cline/core/dist/index.js` bundle (not merely its `.d.ts`, and not docs). See footnote ⁶: the claim channel is fully live; `type: verification` discharge specifically stays inert (never fires) because Cline's own success signal could not be confirmed to track a shell command's exit status. |
 | Hermes / OpenClaw | plugin-based (`pre_tool_call`/`before_tool_call`), not exit-code hosts | out of scope — these are long-lived plugin processes with the same obligation-persistence properties OpenCode already has | out of scope | not touched this lane | unchanged |
+
+**v1 M2-C1 (this lane): Cursor and Cline, replacing "NO CHANNEL CONFIRMED"
+with a specific, cited answer for each.** Both hosts turned out to have
+real post-action/completion hook events; neither is documented on
+cursor.com or the Cline docs site, so both were found by reading the
+INSTALLED application's own compiled code on this machine, not by
+guessing. That is a stronger basis than most `docs`-tier rows above, but
+it is still `types`, never `live` — no assertion here has been exercised
+against a real Cursor or Cline session actually running an agent turn;
+see each footnote for exactly what a payload SHAPE was confirmed to be
+versus what remains a live-host unknown.
+
+⁵ **Cursor.** `postToolUse`/`postToolUseFailure`/`afterAgentResponse`
+(alongside the pre-existing `beforeShellExecution`/`beforeMCPExecution`/
+`afterShellExecution`/`stop`/`afterAgentThought`/... — the full event set
+enumerated together as one `HookEventName`-shaped object in the bundle)
+were read directly out of `cursor-agent-exec/dist/main.js`'s own hook-
+firing call sites — e.g. the literal `fireSuccessAsync`/`fireFailureAsync`
+payload construction (`{...baseHookRequest, tool_name, tool_input,
+tool_output, duration, tool_use_id}` / `{..., error_message,
+failure_type}`) and the `afterAgentResponse`/`stop` case blocks
+(`{conversation_id, generation_id, model, text:e.text, input_tokens,
+output_tokens, ...}` / `{..., status, loop_count}` — no text on `stop`,
+which is why `afterAgentResponse` is the claim channel here, not `stop`).
+Two things are CONFIRMED ABSENT, not merely unconfirmed, and both are
+handled by never guessing rather than by omission:
+- `afterShellExecution` (the tool-specific shell hook, as opposed to the
+  generic `postToolUse`) carries `output` (stdout+stderr text) but NO
+  exit code, in either of the two independent code paths that build it —
+  confirmed by reading both `createSuccessOutput`/`Le()` call sites. It is
+  deliberately left unwired; `postToolUse` is used instead.
+- For a shell command specifically, `postToolUseFailure` only fires on an
+  INFRA-level failure (spawn error, timeout, or an aborted call) — an
+  ordinary FAILING test (non-zero exit) still reports through
+  `postToolUse` (Cursor's own `isSuccess` for shell is `case==="success"
+  || (case==="failure" && !aborted)`). The REAL exit code for a shell
+  command is recovered from `postToolUse`'s `tool_output` field instead,
+  which for shell specifically is a JSON string of
+  `{output, exitCode}` (`createSuccessOutput`'s own literal return value,
+  collapsed to 0/1) — `cursorPostToolUseOutcome` (hook.ts) parses this and
+  falls back to `exitCode: null` for every other tool type, whose
+  `createSuccessOutput` shape carries no exit code at all (confirmed
+  different per tool spec, e.g. a file read returns `{file_path,
+  content_length}`). `stop` (run-completion, `status`/`loop_count`, no
+  text) was identified and deliberately left unwired for the same reason
+  as `afterShellExecution` — a real, named event with nothing this lane
+  needs in its payload, not an unknown one.
+
+⁶ **Cline.** `~/.cline/hooks/PostToolUse` (`tool_result`) and
+`~/.cline/hooks/TaskComplete` (`agent_end`) are both real
+`HookConfigFileName` enum members in the installed `cline` npm CLI's
+`node_modules/@cline/core` — confirmed in its `.d.ts` AND in the compiled
+`dist/index.js` bundle's actual hook-firing closures: `afterTool` builds
+`postToolUse:{toolName, parameters, result, success:!record.error,
+executionTimeMs}`, and `afterRun` builds `turn:{outputText, status}` when
+`status === "completed"`. `outputText` is the agent's own final generated
+text — fully wired as the claim-channel text (`parsePayload`'s
+`hookName === 'agent_end'` branch), closing that half of the prior
+"NO CHANNEL CONFIRMED" cell outright.
+The discharge half stays deliberately inert: `success` reflects whether
+the TOOL CALL ITSELF errored (`ToolCallRecord.error`), and no installed
+source available in this lane — not `@cline/shared`'s `.d.ts`, not
+`@cline/core`'s bundle, and the `cline` CLI's own executable is a compiled
+Mach-O binary this lane could not practically disassemble in budget —
+confirms whether a non-zero-exit shell command (a FAILING test) SETS that
+field, or completes as a non-erroring call whose failure is only visible
+as text inside `result`. Treating `success` as a confirmed pass/fail would
+risk discharging `type: verification` on a run that never actually
+passed — the exact `VerificationTracker.isFakeSatisfy` failure class.
+`hook.ts`'s cline `tool_result` branch therefore always sets
+`exitCode: null` (recording the attempt, and scanning `result` for
+secret-shaped output via `evaluateOutputText`, but never calling
+`markVerificationSatisfied`). This is a genuinely different, more precise
+state than the prior "NO CHANNEL CONFIRMED": the channel IS confirmed: the
+exit-status semantics needed to safely use it for `type: verification`
+are the specific open question, not a guess this lane declined to make.
 
 **Slopsquatting deny-on-retry (same root cause).** `type: package` rule
 cache misses fire `scheduleBackgroundVerification` with `void` — never
