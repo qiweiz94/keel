@@ -1,7 +1,7 @@
 # Keel v1.0.0 — PENDING / handoff for a new session
 
 **State at handoff (updated 2026-08-20):** branch `v0.4-thesis`, version **1.0.0**, suite green
-(core 726 / cli 933 / mcp 10 / plugin all-pass), `round2.mjs` exit 0, `drift.test.ts` 9/9.
+(core 726 / cli 934 / mcp 10 / plugin all-pass), `round2.mjs` exit 0, `drift.test.ts` 9/9.
 **NOTHING has been pushed, published, or merged.** Full record of the original v1.0 build:
 `session/v1/SESSION-LOG.md`. Full record of the 2026-08-19/20 research + overnight sprint:
 `session/v1/SESSION-LOG-2026-08-19-governance-sprint.md`. Honest audit: `session/v1/AUDIT.md`.
