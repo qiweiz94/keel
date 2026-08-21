@@ -6,6 +6,7 @@ import {
   parseRulesFile, validateRules, loadRuleHierarchy, mergeRules, dialAction,
   sprintExpiryStatus, effectiveHierarchyLevel, DEFAULT_SPRINT_EXPIRY_HOURS,
 } from '../core/enforce/rule-parser.js'
+import { resolveHome } from '../core/home.js'
 import type { ProtectionLevel, KeelRule } from '../core/types.js'
 
 const VALID_LEVELS: ProtectionLevel[] = ['sprint', 'balanced', 'protect']
@@ -50,7 +51,7 @@ const LEVEL_EFFECTS: Record<ProtectionLevel, string[]> = {
  * change takes effect without a restart.
  */
 export async function levelCommand(options: { project?: boolean }, levelArg?: string) {
-  const home = process.env.HOME || '~'
+  const home = resolveHome()
   const globalPath = join(home, '.keel', 'rules.yaml')
   const projectPath = join(process.cwd(), '.keel', 'rules.yaml')
 

@@ -29,13 +29,20 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_PATTERN, '')
 }
 
-function run(args: string, opts: { cwd?: string; path?: string; home?: string } = {}) {
+function run(args: string, opts: { cwd?: string; path?: string; home?: string; keelHome?: string } = {}) {
   try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: opts.home ?? home,
+      PATH: opts.path ?? `${shim}:${process.env.PATH}`,
+    }
+    if (opts.keelHome) env.KEEL_HOME = opts.keelHome
+    else delete env.KEEL_HOME
     const stdout = execSync(`node "${CLI}" ${args}`, {
       encoding: 'utf-8',
       cwd: opts.cwd ?? dir,
       timeout: 10000,
-      env: { ...process.env, HOME: opts.home ?? home, PATH: opts.path ?? `${shim}:${process.env.PATH}` },
+      env,
     })
     return { stdout: stripAnsi(stdout), code: 0 }
   } catch (err: any) {
@@ -207,6 +214,46 @@ describePosixShim('keel level (the speed dial)', () => {
     const softenedLine = out.stdout.split('\n').find(l => l.includes('soften deny/block'))
     expect(softenedLine).toBeDefined()
     expect(softenedLine).not.toContain('floor-rule')
+  })
+})
+
+describePosixShim('keel level honors KEEL_HOME over HOME', () => {
+  // Regression for the incident where `keel level` read `process.env.HOME`
+  // directly (falling back to the literal, non-expanding string '~') instead
+  // of resolveHome(). Two DISTINCT tmp dirs for HOME and KEEL_HOME — never
+  // relying on KEEL_HOME alone — so this can't pass by accident even if
+  // level.ts still resolved a bare HOME under the hood.
+  let sysHome: string
+  let keelHome: string
+
+  beforeEach(() => {
+    sysHome = mkdtempSync(join(tmpdir(), 'keel-test-syshome-'))
+    keelHome = mkdtempSync(join(tmpdir(), 'keel-test-keelhome-'))
+  })
+
+  afterEach(() => {
+    rmSafe(sysHome); rmSafe(keelHome)
+  })
+
+  it('reads and writes the global level under KEEL_HOME, never under HOME', () => {
+    mkdirSync(join(keelHome, '.keel'), { recursive: true })
+    writeFileSync(join(keelHome, '.keel', 'rules.yaml'), PROJECT_RULES)
+
+    const out = run('level sprint', { home: sysHome, keelHome })
+    expect(out.stdout).toContain('global level: balanced → sprint')
+    expect(readFileSync(join(keelHome, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: sprint$/m)
+
+    // The real/system HOME must be untouched — no file created there at all.
+    expect(existsSync(join(sysHome, '.keel', 'rules.yaml'))).toBe(false)
+  })
+
+  it('falls back to HOME when KEEL_HOME is unset', () => {
+    mkdirSync(join(sysHome, '.keel'), { recursive: true })
+    writeFileSync(join(sysHome, '.keel', 'rules.yaml'), PROJECT_RULES)
+
+    const out = run('level protect', { home: sysHome })
+    expect(out.stdout).toContain('global level: balanced → protect')
+    expect(readFileSync(join(sysHome, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: protect$/m)
   })
 })
 

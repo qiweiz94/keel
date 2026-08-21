@@ -2,13 +2,14 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, detectConflicts, hashRulesFile, parseRulesFile, validateRules } from '../core/enforce/rule-parser.js'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel validate` — check rules for conflicts, syntax errors, and version drift.
  */
 export async function validateCommand() {
   const dir = process.cwd()
-  const home = process.env.HOME || '~'
+  const home = resolveHome()
 
   // Find project rules: .keel/rules.yaml > AGENTS.md > CLAUDE.md
   const projectPaths = [
