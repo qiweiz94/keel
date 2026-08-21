@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { join } from 'node:path'
 import { resolveHome } from '../home.js'
 import { applyAmbientConfig } from './ambient-registry-config.js'
+import { PYTHON_INTERPRETER_RE } from './command-normalizer.js'
 
 /**
  * Slopsquatting install gate.
@@ -414,17 +415,21 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
     i++
   }
   if (i >= tokens.length) return []
-  // `python -m pip install <pkg>` / `python3 -m pip install <pkg>` is a
-  // very common way agents actually invoke pip — route it through the
-  // exact same pip-handling logic as a bare `pip install`, rather than
-  // duplicating any pip-specific parsing. `managerFromToken('python')` is
-  // null by design (python itself is not a package manager), so this only
-  // consumes `python`/`python3` + `-m` as a 2-token prefix, leaving `i`
+  // `python -m pip install <pkg>` / `python3 -m pip install <pkg>` (and
+  // versioned basenames like `python3.11`/`python3.12`) is a very common
+  // way agents actually invoke pip — route it through the exact same
+  // pip-handling logic as a bare `pip install`, rather than duplicating any
+  // pip-specific parsing. `managerFromToken('python')` is null by design
+  // (python itself is not a package manager), so this only consumes the
+  // python interpreter token + `-m` as a 2-token prefix, leaving `i`
   // pointing at `pip`/`pip3` — exactly where a bare invocation already
   // starts, so every line below this (manager detection, the shared `i++`,
-  // matchAddSubcommand) runs completely unmodified.
-  const pyBase = tokens[i].split('/').pop()
-  if ((pyBase === 'python' || pyBase === 'python3') && tokens[i + 1] === '-m'
+  // matchAddSubcommand) runs completely unmodified. `PYTHON_INTERPRETER_RE`
+  // is the same basename regex command-normalizer.ts's `classifyInterpreter`
+  // uses to recognize a python interpreter token, shared rather than
+  // duplicated so both stay in sync.
+  const pyBase = tokens[i].split('/').pop() ?? ''
+  if (PYTHON_INTERPRETER_RE.test(pyBase) && tokens[i + 1] === '-m'
     && (tokens[i + 2] === 'pip' || tokens[i + 2] === 'pip3')) {
     i += 2
   }
@@ -526,9 +531,12 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
  *
  * Deliberately out of scope: `cargo install` (binary install — a different
  * cargo subcommand than `add`). `python -m pip install`/`python3 -m pip
- * install` ARE covered — see the `isPythonModulePip` prefix check in
- * `extractSegmentInstalls`, routed through the same pip-handling logic as
- * a bare `pip install`.
+ * install`/`python3.11 -m pip install` (and other versioned basenames) ARE
+ * covered — see the inline `pyBase` prefix check (tested against
+ * `PYTHON_INTERPRETER_RE`, imported from command-normalizer.ts) near the
+ * top of `extractSegmentInstalls`, which consumes the interpreter + `-m`
+ * prefix and routes what follows through the same pip-handling logic as a
+ * bare `pip install`.
  *
  * Ambient config files (`.npmrc`, `pip.conf`, `.cargo/config.toml`,
  * `GOPRIVATE`) that mark a name as private WITHOUT any command-line signal

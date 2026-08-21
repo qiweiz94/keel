@@ -849,6 +849,15 @@ describe('extractPackageInstalls: new ecosystems', () => {
     expect(extractPackageInstalls('python -m pip install requests==2.31.0')[0]).toMatchObject({ name: 'requests', requestedVersion: '==2.31.0' })
   })
 
+  it('detects versioned python basenames (python3.11, python3.12) identically to plain python3', () => {
+    expect(extractPackageInstalls('python3.11 -m pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+    expect(extractPackageInstalls('python3.12 -m pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+  })
+
+  it('does not misfire on a python-prefixed but non-interpreter basename like python-config', () => {
+    expect(extractPackageInstalls('python-config -m pip install x')).toEqual([])
+  })
+
   it('python -m pip install with no package args extracts nothing', () => {
     expect(extractPackageInstalls('python -m pip install')).toEqual([])
     expect(extractPackageInstalls('python -m pip install -r requirements.txt')).toEqual([])

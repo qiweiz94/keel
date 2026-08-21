@@ -121,11 +121,21 @@ const MAX_INTERPRETER_DEPTH = 1
 // own applet-selection argv[1], a harder, separate fix.
 const SHELL_INTERPRETERS = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'fish', 'csh', 'tcsh', 'ash'])
 
+/**
+ * Basename shape shared by every python interpreter invocation: `python`,
+ * `python3`, `python3.11`, `python3.12`, etc. Exported so other modules that
+ * need to recognize "this token is a python interpreter" (e.g.
+ * package-verifier.ts's `python -m pip install` / `python3.11 -m pip
+ * install` detection) test against the exact same definition
+ * `classifyInterpreter` uses below, instead of a narrower ad hoc copy.
+ */
+export const PYTHON_INTERPRETER_RE = /^python[0-9.]*$/
+
 type InterpreterKind = 'shell' | 'python' | 'node' | 'perl'
 
 function classifyInterpreter(basename: string): InterpreterKind | null {
   if (SHELL_INTERPRETERS.has(basename)) return 'shell'
-  if (/^python[0-9.]*$/.test(basename)) return 'python'
+  if (PYTHON_INTERPRETER_RE.test(basename)) return 'python'
   if (basename === 'node' || basename === 'nodejs') return 'node'
   if (/^perl[0-9.]*$/.test(basename)) return 'perl'
   return null
