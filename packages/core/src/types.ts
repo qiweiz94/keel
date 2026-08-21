@@ -217,10 +217,15 @@ export interface KeelRule {
 
   // ── Package verification rules (slopsquatting install gate) ──
   // No `match` needed: candidate installs are detected automatically from
-  // the command (npm install/i, pnpm add, yarn add, bun add). See
-  // enforce/package-verifier.ts for the full not_found/unverified/age-gate
-  // semantics; `age_days` is the one configurable knob (deny-vs-prompt
-  // mapping for existence/reachability is fixed, per that module's header).
+  // the command across four ecosystems — npm (npm install/i, pnpm add,
+  // yarn add, bun add), PyPI (pip install, pip3 install, uv add, uv pip
+  // install, poetry add), crates.io (cargo add), and the Go module proxy
+  // (go get, go install). See enforce/package-verifier.ts for the full
+  // not_found/unverified/age-gate semantics (each ecosystem has its own
+  // registry, name grammar, and existence-check nuances — see that
+  // module's header); `age_days` is the one configurable knob shared
+  // across all four (deny-vs-prompt mapping for existence/reachability is
+  // fixed, per that module's header).
   age_days?: number                 // freshness threshold in days (default 30)
 
   // ── Rate limit rules ──

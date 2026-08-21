@@ -51,7 +51,7 @@ function normalizeForMatch(p, flavor = currentFlavor()) {
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/identity.js
+// ../../node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
 var DOC = /* @__PURE__ */ Symbol.for("yaml.document");
 var MAP = /* @__PURE__ */ Symbol.for("yaml.map");
@@ -87,7 +87,7 @@ function isNode(node) {
 }
 var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
 
-// ../../../../../node_modules/yaml/browser/dist/visit.js
+// ../../node_modules/yaml/browser/dist/visit.js
 var BREAK = /* @__PURE__ */ Symbol("break visit");
 var SKIP = /* @__PURE__ */ Symbol("skip children");
 var REMOVE = /* @__PURE__ */ Symbol("remove node");
@@ -237,7 +237,7 @@ function replaceNode(key, path2, node) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/doc/directives.js
+// ../../node_modules/yaml/browser/dist/doc/directives.js
 var escapeChars = {
   "!": "%21",
   ",": "%2C",
@@ -400,7 +400,7 @@ var Directives = class _Directives {
 Directives.defaultYaml = { explicit: false, version: "1.2" };
 Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
 
-// ../../../../../node_modules/yaml/browser/dist/doc/anchors.js
+// ../../node_modules/yaml/browser/dist/doc/anchors.js
 function anchorIsValid(anchor) {
   if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
     const sa = JSON.stringify(anchor);
@@ -459,7 +459,7 @@ function createNodeAnchors(doc, prefix) {
   };
 }
 
-// ../../../../../node_modules/yaml/browser/dist/doc/applyReviver.js
+// ../../node_modules/yaml/browser/dist/doc/applyReviver.js
 function applyReviver(reviver, obj, key, val) {
   if (val && typeof val === "object") {
     if (Array.isArray(val)) {
@@ -503,7 +503,7 @@ function applyReviver(reviver, obj, key, val) {
   return reviver.call(obj, key, val);
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/toJS.js
+// ../../node_modules/yaml/browser/dist/nodes/toJS.js
 function toJS(value, arg, ctx) {
   if (Array.isArray(value))
     return value.map((v, i) => toJS(v, String(i), ctx));
@@ -526,7 +526,7 @@ function toJS(value, arg, ctx) {
   return value;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Node.js
+// ../../node_modules/yaml/browser/dist/nodes/Node.js
 var NodeBase = class {
   constructor(type) {
     Object.defineProperty(this, NODE_TYPE, { value: type });
@@ -558,7 +558,7 @@ var NodeBase = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Alias.js
+// ../../node_modules/yaml/browser/dist/nodes/Alias.js
 var Alias = class extends NodeBase {
   constructor(source) {
     super(ALIAS);
@@ -663,7 +663,7 @@ function getAliasCount(doc, node, anchors) {
   return 1;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Scalar.js
+// ../../node_modules/yaml/browser/dist/nodes/Scalar.js
 var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
 var Scalar = class extends NodeBase {
   constructor(value) {
@@ -683,7 +683,7 @@ Scalar.PLAIN = "PLAIN";
 Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
 Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
-// ../../../../../node_modules/yaml/browser/dist/doc/createNode.js
+// ../../node_modules/yaml/browser/dist/doc/createNode.js
 var defaultTagPrefix = "tag:yaml.org,2002:";
 function findTagObject(value, tagName, tags) {
   if (tagName) {
@@ -749,7 +749,7 @@ function createNode(value, tagName, ctx) {
   return node;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Collection.js
+// ../../node_modules/yaml/browser/dist/nodes/Collection.js
 function collectionFromPath(schema4, path2, value) {
   let v = value;
   for (let i = path2.length - 1; i >= 0; --i) {
@@ -881,7 +881,7 @@ var Collection = class extends NodeBase {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyComment.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyComment.js
 var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent) {
   if (/^\n+$/.test(comment))
@@ -890,7 +890,7 @@ function indentComment(comment, indent) {
 }
 var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/foldFlowLines.js
+// ../../node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
@@ -1017,7 +1017,7 @@ function consumeMoreIndentedLines(text, i, indent) {
   return end;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyString.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyString.js
 var getFoldOptions = (ctx, isBlock2) => ({
   indentAtStart: isBlock2 ? ctx.indent.length : ctx.indentAtStart,
   lineWidth: ctx.options.lineWidth,
@@ -1292,7 +1292,7 @@ function stringifyString(item, ctx, onComment, onChompKeep) {
   return res;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringify.js
+// ../../node_modules/yaml/browser/dist/stringify/stringify.js
 function createStringifyContext(doc, options) {
   const opt = Object.assign({
     blockQuote: true,
@@ -1405,7 +1405,7 @@ function stringify(item, ctx, onComment, onChompKeep) {
 ${ctx.indent}${str}`;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyPair.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyPair.js
 function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
   const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
   let keyComment = isNode(key) && key.comment || null;
@@ -1528,14 +1528,14 @@ ${ctx.indent}`;
   return str;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/log.js
+// ../../node_modules/yaml/browser/dist/log.js
 function warn(logLevel, warning) {
   if (logLevel === "debug" || logLevel === "warn") {
     console.warn(warning);
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
 var MERGE_KEY = "<<";
 var merge = {
   identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
@@ -1585,7 +1585,7 @@ function resolveAliasValue(ctx, value) {
   return ctx && isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
+// ../../node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
 function addPairToJSMap(ctx, map2, { key, value }) {
   if (isNode(key) && key.addToJSMap)
     key.addToJSMap(ctx, map2, value);
@@ -1638,7 +1638,7 @@ function stringifyKey(key, jsKey, ctx) {
   return JSON.stringify(jsKey);
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/Pair.js
+// ../../node_modules/yaml/browser/dist/nodes/Pair.js
 function createPair(key, value, ctx) {
   const k = createNode(key, void 0, ctx);
   const v = createNode(value, void 0, ctx);
@@ -1667,7 +1667,7 @@ var Pair = class _Pair {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyCollection.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyCollection.js
 function stringifyCollection(collection, ctx, options) {
   const flow = ctx.inFlow ?? collection.flow;
   const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
@@ -1809,7 +1809,7 @@ function addCommentBefore({ indent, options: { commentString } }, lines2, commen
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/YAMLMap.js
+// ../../node_modules/yaml/browser/dist/nodes/YAMLMap.js
 function findPair(items, key) {
   const k = isScalar(key) ? key.value : key;
   for (const it of items) {
@@ -1940,7 +1940,7 @@ var YAMLMap = class extends Collection {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/map.js
+// ../../node_modules/yaml/browser/dist/schema/common/map.js
 var map = {
   collection: "map",
   default: true,
@@ -1954,7 +1954,7 @@ var map = {
   createNode: (schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx)
 };
 
-// ../../../../../node_modules/yaml/browser/dist/nodes/YAMLSeq.js
+// ../../node_modules/yaml/browser/dist/nodes/YAMLSeq.js
 var YAMLSeq = class extends Collection {
   static get tagName() {
     return "tag:yaml.org,2002:seq";
@@ -2058,7 +2058,7 @@ function asItemIndex(key) {
   return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/seq.js
+// ../../node_modules/yaml/browser/dist/schema/common/seq.js
 var seq = {
   collection: "seq",
   default: true,
@@ -2072,7 +2072,7 @@ var seq = {
   createNode: (schema4, obj, ctx) => YAMLSeq.from(schema4, obj, ctx)
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/string.js
+// ../../node_modules/yaml/browser/dist/schema/common/string.js
 var string = {
   identify: (value) => typeof value === "string",
   default: true,
@@ -2084,7 +2084,7 @@ var string = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/common/null.js
+// ../../node_modules/yaml/browser/dist/schema/common/null.js
 var nullTag = {
   identify: (value) => value == null,
   createNode: () => new Scalar(null),
@@ -2095,7 +2095,7 @@ var nullTag = {
   stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/bool.js
+// ../../node_modules/yaml/browser/dist/schema/core/bool.js
 var boolTag = {
   identify: (value) => typeof value === "boolean",
   default: true,
@@ -2112,7 +2112,7 @@ var boolTag = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyNumber.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyNumber.js
 function stringifyNumber({ format, minFractionDigits, tag, value }) {
   if (typeof value === "bigint")
     return String(value);
@@ -2133,7 +2133,7 @@ function stringifyNumber({ format, minFractionDigits, tag, value }) {
   return n;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/float.js
+// ../../node_modules/yaml/browser/dist/schema/core/float.js
 var floatNaN = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -2169,7 +2169,7 @@ var float = {
   stringify: stringifyNumber
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/int.js
+// ../../node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
 var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
 function intStringify(node, radix, prefix) {
@@ -2205,7 +2205,7 @@ var intHex = {
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/core/schema.js
+// ../../node_modules/yaml/browser/dist/schema/core/schema.js
 var schema = [
   map,
   seq,
@@ -2220,7 +2220,7 @@ var schema = [
   float
 ];
 
-// ../../../../../node_modules/yaml/browser/dist/schema/json/schema.js
+// ../../node_modules/yaml/browser/dist/schema/json/schema.js
 function intIdentify2(value) {
   return typeof value === "bigint" || Number.isInteger(value);
 }
@@ -2278,7 +2278,7 @@ var jsonError = {
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
 var binary = {
   identify: (value) => value instanceof Uint8Array,
   // Buffer inherits from Uint8Array
@@ -2331,7 +2331,7 @@ var binary = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
 function resolvePairs(seq2, onError) {
   if (isSeq(seq2)) {
     for (let i = 0; i < seq2.items.length; ++i) {
@@ -2397,7 +2397,7 @@ var pairs = {
   createNode: createPairs
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
 var YAMLOMap = class _YAMLOMap extends YAMLSeq {
   constructor() {
     super();
@@ -2463,7 +2463,7 @@ var omap = {
   createNode: (schema4, iterable, ctx) => YAMLOMap.from(schema4, iterable, ctx)
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
 function boolStringify({ value, source }, ctx) {
   const boolObj = value ? trueTag : falseTag;
   if (source && boolObj.test.test(source))
@@ -2487,7 +2487,7 @@ var falseTag = {
   stringify: boolStringify
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
 var floatNaN2 = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -2526,7 +2526,7 @@ var float2 = {
   stringify: stringifyNumber
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
 function intResolve2(str, offset, radix, { intAsBigInt }) {
   const sign2 = str[0];
@@ -2595,7 +2595,7 @@ var intHex2 = {
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
 var YAMLSet = class _YAMLSet extends YAMLMap {
   constructor(schema4) {
     super(schema4);
@@ -2674,7 +2674,7 @@ var set = {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
 function parseSexagesimal(str, asBigInt) {
   const sign2 = str[0];
   const parts = sign2 === "-" || sign2 === "+" ? str.substring(1) : str;
@@ -2753,7 +2753,7 @@ var timestamp = {
   stringify: ({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? ""
 };
 
-// ../../../../../node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
 var schema3 = [
   map,
   seq,
@@ -2778,7 +2778,7 @@ var schema3 = [
   timestamp
 ];
 
-// ../../../../../node_modules/yaml/browser/dist/schema/tags.js
+// ../../node_modules/yaml/browser/dist/schema/tags.js
 var schemas = /* @__PURE__ */ new Map([
   ["core", schema],
   ["failsafe", [map, seq, string]],
@@ -2849,7 +2849,7 @@ function getTags(customTags, schemaName, addMergeTag) {
   }, []);
 }
 
-// ../../../../../node_modules/yaml/browser/dist/schema/Schema.js
+// ../../node_modules/yaml/browser/dist/schema/Schema.js
 var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 var Schema = class _Schema {
   constructor({ compat, customTags, merge: merge2, resolveKnownTags, schema: schema4, sortMapEntries, toStringDefaults }) {
@@ -2870,7 +2870,7 @@ var Schema = class _Schema {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
 function stringifyDocument(doc, options) {
   const lines2 = [];
   let hasDirectives = options.directives === true;
@@ -2941,7 +2941,7 @@ function stringifyDocument(doc, options) {
   return lines2.join("\n") + "\n";
 }
 
-// ../../../../../node_modules/yaml/browser/dist/doc/Document.js
+// ../../node_modules/yaml/browser/dist/doc/Document.js
 var Document = class _Document {
   constructor(value, replacer, options) {
     this.commentBefore = null;
@@ -3233,7 +3233,7 @@ function assertCollection(contents) {
   throw new Error("Expected a YAML collection as document contents");
 }
 
-// ../../../../../node_modules/yaml/browser/dist/errors.js
+// ../../node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
   constructor(name, pos, code, message) {
     super();
@@ -3289,7 +3289,7 @@ ${pointer}
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-props.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-props.js
 function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
   let spaceBefore = false;
   let atNewline = startOnNewline;
@@ -3417,7 +3417,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   };
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-contains-newline.js
+// ../../node_modules/yaml/browser/dist/compose/util-contains-newline.js
 function containsNewline(key) {
   if (!key)
     return null;
@@ -3453,7 +3453,7 @@ function containsNewline(key) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
+// ../../node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
 function flowIndentCheck(indent, fc, onError) {
   if (fc?.type === "flow-collection") {
     const end = fc.end[0];
@@ -3464,7 +3464,7 @@ function flowIndentCheck(indent, fc, onError) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-map-includes.js
+// ../../node_modules/yaml/browser/dist/compose/util-map-includes.js
 function mapIncludes(ctx, items, search) {
   const { uniqueKeys } = ctx.options;
   if (uniqueKeys === false)
@@ -3473,7 +3473,7 @@ function mapIncludes(ctx, items, search) {
   return items.some((pair) => isEqual(pair.key, search));
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-block-map.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-map.js
 var startColMsg = "All mapping items must start at the same column";
 function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLMap;
@@ -3569,7 +3569,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   return map2;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-block-seq.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-seq.js
 function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bs, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLSeq;
   const seq2 = new NodeClass(ctx.schema);
@@ -3611,7 +3611,7 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
   return seq2;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-end.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-end.js
 function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
@@ -3648,7 +3648,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   return { comment, offset };
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
 var blockMsg = "Block collections are not allowed within flow collections";
 var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
 function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, fc, onError, tag) {
@@ -3828,7 +3828,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   return coll;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-collection.js
+// ../../node_modules/yaml/browser/dist/compose/compose-collection.js
 function resolveCollection(CN2, ctx, token, onError, tagName, tag) {
   const coll = token.type === "block-map" ? resolveBlockMap(CN2, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq(CN2, ctx, token, onError, tag) : resolveFlowCollection(CN2, ctx, token, onError, tag);
   const Coll = coll.constructor;
@@ -3880,7 +3880,7 @@ function composeCollection(CN2, ctx, token, props, onError) {
   return node;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
 function resolveBlockScalar(ctx, scalar, onError) {
   const start = scalar.offset;
   const header = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
@@ -4056,7 +4056,7 @@ function splitLines(source) {
   return lines2;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
 function resolveFlowScalar(scalar, strict, onError) {
   const { offset, type, source, end } = scalar;
   let _type;
@@ -4268,7 +4268,7 @@ function parseCharCode(source, offset, length, onError) {
   }
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/compose-scalar.js
 function composeScalar(ctx, token, tagToken, onError) {
   const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
   const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
@@ -4339,7 +4339,7 @@ function findScalarTagByTest({ atKey, directives, schema: schema4 }, value, toke
   return tag;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
+// ../../node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
 function emptyScalarPosition(offset, before, pos) {
   if (before) {
     pos ?? (pos = before.length);
@@ -4363,7 +4363,7 @@ function emptyScalarPosition(offset, before, pos) {
   return offset;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-node.js
+// ../../node_modules/yaml/browser/dist/compose/compose-node.js
 var CN = { composeNode, composeEmptyNode };
 function composeNode(ctx, token, props, onError) {
   const atKey = ctx.atKey;
@@ -4456,7 +4456,7 @@ function composeAlias({ options }, { offset, source, end }, onError) {
   return alias;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/compose-doc.js
+// ../../node_modules/yaml/browser/dist/compose/compose-doc.js
 function composeDoc(options, directives, { offset, start, value, end }, onError) {
   const opts = Object.assign({ _directives: directives }, options);
   const doc = new Document(void 0, opts);
@@ -4489,7 +4489,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   return doc;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/compose/composer.js
+// ../../node_modules/yaml/browser/dist/compose/composer.js
 function getErrorPos(src) {
   if (typeof src === "number")
     return [src, src + 1];
@@ -4682,7 +4682,7 @@ ${end.comment}` : end.comment;
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/parse/cst-visit.js
+// ../../node_modules/yaml/browser/dist/parse/cst-visit.js
 var BREAK2 = /* @__PURE__ */ Symbol("break visit");
 var SKIP2 = /* @__PURE__ */ Symbol("skip children");
 var REMOVE2 = /* @__PURE__ */ Symbol("remove item");
@@ -4738,7 +4738,7 @@ function _visit(path2, item, visitor) {
   return typeof ctrl === "function" ? ctrl(item, path2) : ctrl;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/parse/cst.js
+// ../../node_modules/yaml/browser/dist/parse/cst.js
 var BOM = "\uFEFF";
 var DOCUMENT = "";
 var FLOW_END = "";
@@ -4803,7 +4803,7 @@ function tokenType(source) {
   return null;
 }
 
-// ../../../../../node_modules/yaml/browser/dist/parse/lexer.js
+// ../../node_modules/yaml/browser/dist/parse/lexer.js
 function isEmpty(ch) {
   switch (ch) {
     case void 0:
@@ -5385,7 +5385,7 @@ var Lexer = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/parse/line-counter.js
+// ../../node_modules/yaml/browser/dist/parse/line-counter.js
 var LineCounter = class {
   constructor() {
     this.lineStarts = [];
@@ -5410,7 +5410,7 @@ var LineCounter = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/parse/parser.js
+// ../../node_modules/yaml/browser/dist/parse/parser.js
 function includesToken(list, type) {
   for (let i = 0; i < list.length; ++i)
     if (list[i].type === type)
@@ -6273,7 +6273,7 @@ var Parser = class {
   }
 };
 
-// ../../../../../node_modules/yaml/browser/dist/public-api.js
+// ../../node_modules/yaml/browser/dist/public-api.js
 function parseOptions(options) {
   const prettyErrors = options.prettyErrors !== false;
   const lineCounter = options.lineCounter || prettyErrors && new LineCounter() || null;
@@ -6799,14 +6799,93 @@ function hashRulesFile(filePath) {
 // ../core/src/enforce/package-verifier.ts
 import { readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2, mkdirSync, renameSync } from "node:fs";
 import { join as join2 } from "node:path";
-var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun"]);
+var MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go"]);
+var MANAGER_ECOSYSTEM = {
+  npm: "npm",
+  pnpm: "npm",
+  yarn: "npm",
+  bun: "npm",
+  pip: "pypi",
+  pip3: "pypi",
+  uv: "pypi",
+  poetry: "pypi",
+  cargo: "crates",
+  go: "go"
+};
+function ecosystemForManager(manager) {
+  return MANAGER_ECOSYSTEM[manager];
+}
 var ADD_SUBCOMMANDS = {
   npm: /* @__PURE__ */ new Set(["install", "i"]),
   pnpm: /* @__PURE__ */ new Set(["add"]),
   yarn: /* @__PURE__ */ new Set(["add"]),
   bun: /* @__PURE__ */ new Set(["add"])
 };
-var QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun)\b/;
+function matchAddSubcommand(manager, tokens, i) {
+  const tok = tokens[i]?.toLowerCase();
+  if (tok === void 0) return null;
+  switch (manager) {
+    case "npm":
+    case "pnpm":
+    case "yarn":
+    case "bun":
+      return ADD_SUBCOMMANDS[manager].has(tok) ? 1 : null;
+    case "pip":
+    case "pip3":
+      return tok === "install" ? 1 : null;
+    case "poetry":
+    case "cargo":
+      return tok === "add" ? 1 : null;
+    case "go":
+      return tok === "get" || tok === "install" ? 1 : null;
+    case "uv":
+      if (tok === "add") return 1;
+      if (tok === "pip" && tokens[i + 1]?.toLowerCase() === "install") return 2;
+      return null;
+  }
+}
+var PIP_GRAMMAR_MANAGERS = /* @__PURE__ */ new Set(["pip", "pip3", "uv"]);
+var PIP_FLAG_VALUES = /* @__PURE__ */ new Set([
+  "-r",
+  "--requirement",
+  "-c",
+  "--constraint",
+  "-e",
+  "--editable",
+  "-i",
+  "--index-url",
+  "--extra-index-url",
+  "-t",
+  "--target",
+  "--trusted-host",
+  "--platform",
+  "--python-version",
+  "--implementation",
+  "--abi",
+  "--prefix",
+  "--root",
+  "--cache-dir",
+  "--proxy",
+  "--retries",
+  "--timeout",
+  "--src",
+  "-b",
+  "--build",
+  "--log"
+]);
+var FLAG_VALUE_CONSUMING = {
+  pip: PIP_FLAG_VALUES,
+  pip3: PIP_FLAG_VALUES,
+  uv: PIP_FLAG_VALUES,
+  cargo: /* @__PURE__ */ new Set(["--vers", "--version", "--registry", "--rename", "--manifest-path", "--target", "--features", "-F", "--config"]),
+  poetry: /* @__PURE__ */ new Set(["--source", "--python", "--extras", "-E"]),
+  go: /* @__PURE__ */ new Set(["-mod", "-modfile"])
+};
+var PIP_INDEX_FLAGS = /* @__PURE__ */ new Set(["-i", "--index-url", "--extra-index-url"]);
+function isPipIndexFlag(tok) {
+  return PIP_INDEX_FLAGS.has(tok.split("=")[0]);
+}
+var QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun|pip3?|uv|poetry|cargo|go)\b/;
 function tokenize(segment) {
   const tokens = [];
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
@@ -6825,11 +6904,26 @@ function isNonRegistrySpec(spec) {
   if (!spec) return true;
   if (spec.startsWith("./") || spec.startsWith("../") || spec.startsWith("/") || spec.startsWith("~")) return true;
   if (/^(file|git|git\+ssh|git\+https|git\+http|github|http|https):/i.test(spec)) return true;
-  if (/\.(tgz|tar\.gz|tar)$/i.test(spec)) return true;
+  if (/\.(tgz|tar\.gz|tar|txt|cfg|ini|toml|lock|whl)$/i.test(spec)) return true;
   if (!spec.startsWith("@") && /^[^@/\s]+\/[^@/\s]+(#.*)?$/.test(spec)) return true;
   return false;
 }
-function parseSpec(spec) {
+function nameRegexFor(ecosystem) {
+  switch (ecosystem) {
+    case "npm":
+      return /^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i;
+    case "crates":
+      return /^[a-z0-9][a-z0-9_-]*$/i;
+    // Go import paths are multi-segment (`github.com/user/repo/subpkg`),
+    // unlike npm's at-most-one-slash scoped form — each segment may contain
+    // letters, digits, `.`/`_`/`~`/`-`.
+    case "go":
+      return /^[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$/;
+    case "pypi":
+      return /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/i;
+  }
+}
+function parseSpec(spec, ecosystem) {
   let name;
   let version;
   if (spec.startsWith("@")) {
@@ -6853,7 +6947,21 @@ function parseSpec(spec) {
   }
   if (!name) return null;
   if (version && /^(workspace|link|file|git|git\+ssh|git\+https|github):/i.test(version)) return null;
-  if (!/^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i.test(name)) return null;
+  if (!nameRegexFor(ecosystem).test(name)) return null;
+  return { name, requestedVersion: version || void 0 };
+}
+function parsePipSpec(tok) {
+  const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(.*)$/.exec(tok);
+  if (!m) return null;
+  const name = m[1];
+  const rest = (m[3] || "").trim();
+  let version;
+  if (rest) {
+    const vm = /^(===|~=|==|!=|<=|>=|<|>)\s*(.+)$/.exec(rest);
+    if (!vm) return null;
+    version = vm[0];
+  }
+  if (!nameRegexFor("pypi").test(name)) return null;
   return { name, requestedVersion: version || void 0 };
 }
 function extractSegmentInstalls(segment) {
@@ -6865,15 +6973,33 @@ function extractSegmentInstalls(segment) {
   if (!manager) return [];
   i++;
   if (i >= tokens.length) return [];
-  const subcommand = tokens[i].toLowerCase();
-  if (!ADD_SUBCOMMANDS[manager].has(subcommand)) return [];
-  i++;
+  const consumed = matchAddSubcommand(manager, tokens, i);
+  if (consumed === null) return [];
+  i += consumed;
+  const ecosystem = MANAGER_ECOSYSTEM[manager];
+  const grammar = PIP_GRAMMAR_MANAGERS.has(manager) ? "pip" : "default";
+  const flagValues = FLAG_VALUE_CONSUMING[manager];
+  const privateIndex = grammar === "pip" && tokens.slice(i).some(isPipIndexFlag);
   const specs = [];
   for (; i < tokens.length; i++) {
     const tok = tokens[i];
-    if (!tok || tok.startsWith("-")) continue;
+    if (!tok) continue;
+    if (tok.startsWith("-")) {
+      if (flagValues?.has(tok)) i++;
+      continue;
+    }
+    if (grammar === "pip") {
+      if (tokens[i + 1] === "@") {
+        i += 2;
+        continue;
+      }
+      if (isNonRegistrySpec(tok)) continue;
+      const parsed2 = parsePipSpec(tok);
+      if (parsed2) specs.push({ ...parsed2, manager, raw: tok, ...privateIndex ? { privateIndex: true } : {} });
+      continue;
+    }
     if (isNonRegistrySpec(tok)) continue;
-    const parsed = parseSpec(tok);
+    const parsed = parseSpec(tok, ecosystem);
     if (parsed) specs.push({ ...parsed, manager, raw: tok });
   }
   return specs;
@@ -6889,6 +7015,21 @@ function defaultRegistryBaseUrl() {
   if (process.env.KEEL_NPM_REGISTRY) return process.env.KEEL_NPM_REGISTRY;
   if (process.env.VITEST) return "http://127.0.0.1:1";
   return "https://registry.npmjs.org";
+}
+function defaultPypiBaseUrl() {
+  if (process.env.KEEL_PYPI_REGISTRY) return process.env.KEEL_PYPI_REGISTRY;
+  if (process.env.VITEST) return "http://127.0.0.1:1";
+  return "https://pypi.org/pypi";
+}
+function defaultCratesBaseUrl() {
+  if (process.env.KEEL_CRATES_REGISTRY) return process.env.KEEL_CRATES_REGISTRY;
+  if (process.env.VITEST) return "http://127.0.0.1:1";
+  return "https://crates.io/api/v1/crates";
+}
+function defaultGoProxyBaseUrl() {
+  if (process.env.KEEL_GO_PROXY) return process.env.KEEL_GO_PROXY;
+  if (process.env.VITEST) return "http://127.0.0.1:1";
+  return "https://proxy.golang.org";
 }
 var DEFAULT_MAX_RESPONSE_BYTES = 1e7;
 function registryPath(name) {
@@ -6930,6 +7071,26 @@ async function fetchJsonCapped(url, timeoutMs, fetchImpl, maxBytes) {
     clearTimeout(timer);
   }
 }
+async function fetchStatusCapped(url, timeoutMs, fetchImpl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(0, timeoutMs));
+  try {
+    const res = await fetchImpl(url, { signal: controller.signal, headers: { "User-Agent": "keel-package-verifier/0.1" } });
+    if (res.body && typeof res.body.cancel === "function") {
+      try {
+        await res.body.cancel();
+      } catch {
+      }
+    }
+    if (!res.ok) return { ok: false, status: res.status, kind: "http_error" };
+    return { ok: true, status: res.status };
+  } catch (err) {
+    if (controller.signal.aborted) return { ok: false, kind: "timeout" };
+    return { ok: false, kind: "network_error" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function checkPackageExistence(name, opts, timeoutMs) {
   if (timeoutMs <= 0) return { verdict: "unverified", reason: "budget_exhausted" };
   const url = `${opts.registryBaseUrl}/${registryPath(name)}`;
@@ -6948,6 +7109,90 @@ async function checkPackageExistence(name, opts, timeoutMs) {
   if (outcome.kind === "timeout") return { verdict: "unverified", reason: "timeout" };
   if (outcome.kind === "too_large") return { verdict: "unverified", reason: "too_large" };
   return { verdict: "unverified", reason: "network_error" };
+}
+async function checkPyPiExistence(name, opts, timeoutMs) {
+  if (timeoutMs <= 0) return { verdict: "unverified", reason: "budget_exhausted" };
+  const url = `${opts.registryBaseUrl}/${encodeURIComponent(name)}/json`;
+  const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes);
+  if (outcome.ok) {
+    const releases = outcome.json?.releases;
+    let earliestMs;
+    if (releases) {
+      for (const files of Object.values(releases)) {
+        if (!Array.isArray(files)) continue;
+        for (const f of files) {
+          const t = f?.upload_time_iso_8601 ?? f?.upload_time;
+          if (!t) continue;
+          const ms = Date.parse(t);
+          if (Number.isNaN(ms)) continue;
+          if (earliestMs === void 0 || ms < earliestMs) earliestMs = ms;
+        }
+      }
+    }
+    if (earliestMs === void 0) return { verdict: "exists" };
+    return { verdict: "exists", createdAt: new Date(earliestMs).toISOString(), ageDays: (Date.now() - earliestMs) / 864e5 };
+  }
+  if (outcome.kind === "http_error" && outcome.status === 404) return { verdict: "not_found" };
+  if (outcome.kind === "timeout") return { verdict: "unverified", reason: "timeout" };
+  if (outcome.kind === "too_large") return { verdict: "unverified", reason: "too_large" };
+  return { verdict: "unverified", reason: "network_error" };
+}
+async function checkCratesExistence(name, opts, timeoutMs) {
+  if (timeoutMs <= 0) return { verdict: "unverified", reason: "budget_exhausted" };
+  const url = `${opts.registryBaseUrl}/${encodeURIComponent(name)}`;
+  const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes);
+  if (outcome.ok) {
+    const created = outcome.json?.crate?.created_at;
+    if (!created) return { verdict: "exists" };
+    const ms = Date.parse(created);
+    if (Number.isNaN(ms)) return { verdict: "exists" };
+    return { verdict: "exists", createdAt: created, ageDays: (Date.now() - ms) / 864e5 };
+  }
+  if (outcome.kind === "http_error" && outcome.status === 404) return { verdict: "not_found" };
+  if (outcome.kind === "timeout") return { verdict: "unverified", reason: "timeout" };
+  if (outcome.kind === "too_large") return { verdict: "unverified", reason: "too_large" };
+  return { verdict: "unverified", reason: "network_error" };
+}
+function escapeGoModulePath(p) {
+  return p.replace(/[A-Z]/g, (c) => "!" + c.toLowerCase());
+}
+function shortenGoModulePath(name) {
+  const idx = name.lastIndexOf("/");
+  if (idx <= 0) return null;
+  return name.slice(0, idx);
+}
+async function goProxyListLookup(name, opts, timeoutMs) {
+  if (timeoutMs <= 0) return { verdict: "unverified", reason: "budget_exhausted" };
+  const url = `${opts.registryBaseUrl}/${escapeGoModulePath(name)}/@v/list`;
+  const outcome = await fetchStatusCapped(url, timeoutMs, opts.fetchImpl);
+  if (outcome.ok) return { verdict: "exists" };
+  if (outcome.kind === "http_error" && (outcome.status === 404 || outcome.status === 410)) return { verdict: "not_found" };
+  if (outcome.kind === "timeout") return { verdict: "unverified", reason: "timeout" };
+  return { verdict: "unverified", reason: "network_error" };
+}
+async function checkGoExistence(name, opts, timeoutMs) {
+  if (timeoutMs <= 0) return { verdict: "unverified", reason: "budget_exhausted" };
+  const perAttempt = Math.max(1, Math.floor(timeoutMs / 2));
+  const first = await goProxyListLookup(name, opts, perAttempt);
+  if (first.verdict === "exists") return { verdict: "exists" };
+  if (first.verdict === "unverified") return { verdict: "unverified", reason: first.reason };
+  const shorter = shortenGoModulePath(name);
+  if (!shorter) return { verdict: "unverified", reason: "go_ambiguous" };
+  const second = await goProxyListLookup(shorter, opts, Math.max(1, timeoutMs - perAttempt));
+  return { verdict: "unverified", reason: second.reason ?? "go_ambiguous" };
+}
+async function checkExistenceForEcosystem(ecosystem, name, opts, timeoutMs) {
+  const { fetchImpl, maxBytes } = opts;
+  switch (ecosystem) {
+    case "npm":
+      return checkPackageExistence(name, { registryBaseUrl: opts.registryBaseUrl, fetchImpl, maxBytes }, timeoutMs);
+    case "pypi":
+      return checkPyPiExistence(name, { registryBaseUrl: opts.pypiBaseUrl, fetchImpl, maxBytes }, timeoutMs);
+    case "crates":
+      return checkCratesExistence(name, { registryBaseUrl: opts.cratesBaseUrl, fetchImpl, maxBytes }, timeoutMs);
+    case "go":
+      return checkGoExistence(name, { registryBaseUrl: opts.goProxyBaseUrl, fetchImpl, maxBytes }, timeoutMs);
+  }
 }
 async function searchDidYouMean(name, opts, timeoutMs) {
   if (timeoutMs <= 0) return [];
@@ -7000,15 +7245,26 @@ var PackageVerifierCache = class {
   expired(entry, now) {
     return now - entry.checkedAt > CACHE_TTL_MS[entry.verdict];
   }
-  get(name, now = Date.now()) {
-    const entry = this.load()[name];
+  /**
+   * Cache key is namespaced `${ecosystem}:${name}`, not bare name —
+   * finding 3c. Four ecosystems now share one cache file; without this
+   * namespacing, a PyPI 404 for "foo" would poison the cache and deny an
+   * npm package also named "foo" for the cache's TTL, and
+   * `npm install foo && cargo add foo` in one command would incorrectly
+   * reuse one ecosystem's verdict for the other.
+   */
+  key(name, ecosystem) {
+    return `${ecosystem}:${name}`;
+  }
+  get(name, now = Date.now(), ecosystem = "npm") {
+    const entry = this.load()[this.key(name, ecosystem)];
     if (!entry) return null;
     if (this.expired(entry, now)) return null;
     return entry;
   }
   set(entry, now = Date.now()) {
     const all = this.load();
-    all[entry.name] = entry;
+    all[this.key(entry.name, entry.ecosystem ?? "npm")] = entry;
     for (const [k, v] of Object.entries(all)) {
       if (this.expired(v, now)) delete all[k];
     }
@@ -7019,60 +7275,70 @@ async function checkPackages(specs, opts = {}) {
   const now = opts.now ?? Date.now;
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2e3;
   const registryBaseUrl = opts.registryBaseUrl ?? defaultRegistryBaseUrl();
+  const pypiBaseUrl = opts.pypiBaseUrl ?? defaultPypiBaseUrl();
+  const cratesBaseUrl = opts.cratesBaseUrl ?? defaultCratesBaseUrl();
+  const goProxyBaseUrl = opts.goProxyBaseUrl ?? defaultGoProxyBaseUrl();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const cache = opts.cache ?? new PackageVerifierCache();
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  const lookupOpts = { registryBaseUrl, fetchImpl, maxBytes };
+  const lookupOpts = { registryBaseUrl, pypiBaseUrl, cratesBaseUrl, goProxyBaseUrl, fetchImpl, maxBytes };
   const deadline = now() + totalTimeoutMs;
   const seen = /* @__PURE__ */ new Map();
   const results = [];
   for (const spec of specs) {
-    const already = seen.get(spec.name);
+    const ecosystem = ecosystemForManager(spec.manager);
+    const key = `${ecosystem}:${spec.name}`;
+    const already = seen.get(key);
     if (already) {
       results.push({ ...already, requestedVersion: spec.requestedVersion });
       continue;
     }
-    const cached = cache.get(spec.name, now());
     let result;
-    if (cached) {
-      result = {
-        name: spec.name,
-        requestedVersion: spec.requestedVersion,
-        verdict: cached.verdict,
-        reason: cached.reason,
-        ageDays: cached.ageDays,
-        createdAt: cached.createdAt,
-        didYouMean: cached.didYouMean,
-        fromCache: true
-      };
+    if (spec.privateIndex) {
+      result = { name: spec.name, requestedVersion: spec.requestedVersion, verdict: "unverified", reason: "private_index", fromCache: false };
     } else {
-      const remaining = deadline - now();
-      const existence = await checkPackageExistence(spec.name, lookupOpts, remaining);
-      let didYouMean;
-      if (existence.verdict === "not_found") {
-        didYouMean = await searchDidYouMean(spec.name, lookupOpts, deadline - now());
+      const cached = cache.get(spec.name, now(), ecosystem);
+      if (cached) {
+        result = {
+          name: spec.name,
+          requestedVersion: spec.requestedVersion,
+          verdict: cached.verdict,
+          reason: cached.reason,
+          ageDays: cached.ageDays,
+          createdAt: cached.createdAt,
+          didYouMean: cached.didYouMean,
+          fromCache: true
+        };
+      } else {
+        const remaining = deadline - now();
+        const existence = await checkExistenceForEcosystem(ecosystem, spec.name, lookupOpts, remaining);
+        let didYouMean;
+        if (existence.verdict === "not_found" && ecosystem === "npm") {
+          didYouMean = await searchDidYouMean(spec.name, { registryBaseUrl, fetchImpl, maxBytes }, deadline - now());
+        }
+        result = {
+          name: spec.name,
+          requestedVersion: spec.requestedVersion,
+          verdict: existence.verdict,
+          reason: existence.reason,
+          ageDays: existence.ageDays,
+          createdAt: existence.createdAt,
+          didYouMean,
+          fromCache: false
+        };
+        cache.set({
+          name: spec.name,
+          ecosystem,
+          verdict: result.verdict,
+          reason: result.reason,
+          ageDays: result.ageDays,
+          createdAt: result.createdAt,
+          didYouMean: result.didYouMean,
+          checkedAt: now()
+        }, now());
       }
-      result = {
-        name: spec.name,
-        requestedVersion: spec.requestedVersion,
-        verdict: existence.verdict,
-        reason: existence.reason,
-        ageDays: existence.ageDays,
-        createdAt: existence.createdAt,
-        didYouMean,
-        fromCache: false
-      };
-      cache.set({
-        name: spec.name,
-        verdict: result.verdict,
-        reason: result.reason,
-        ageDays: result.ageDays,
-        createdAt: result.createdAt,
-        didYouMean: result.didYouMean,
-        checkedAt: now()
-      }, now());
     }
-    seen.set(spec.name, result);
+    seen.set(key, result);
     results.push(result);
   }
   return results;
@@ -7083,7 +7349,12 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
   const missSeen = /* @__PURE__ */ new Set();
   const t = now();
   for (const spec of specs) {
-    const cached = cache.get(spec.name, t);
+    const ecosystem = ecosystemForManager(spec.manager);
+    if (spec.privateIndex) {
+      results.push({ name: spec.name, requestedVersion: spec.requestedVersion, verdict: "unverified", reason: "private_index", fromCache: false });
+      continue;
+    }
+    const cached = cache.get(spec.name, t, ecosystem);
     if (cached) {
       results.push({
         name: spec.name,
@@ -7103,8 +7374,9 @@ function checkPackagesCacheOnly(specs, cache, now = Date.now) {
         reason: "not_yet_checked",
         fromCache: false
       });
-      if (!missSeen.has(spec.name)) {
-        missSeen.add(spec.name);
+      const missKey = `${ecosystem}:${spec.name}`;
+      if (!missSeen.has(missKey)) {
+        missSeen.add(missKey);
         misses.push(spec);
       }
     }
@@ -7117,11 +7389,17 @@ function scheduleBackgroundVerification(misses, opts = {}) {
 }
 function buildNotFoundMessage(r) {
   const suggestion = r.didYouMean?.length ? ` Did you mean: ${r.didYouMean.join(", ")}?` : "";
-  return `Package "${r.name}" does not exist on the npm registry \u2014 this install is unfulfillable regardless of intent.${suggestion}`;
+  return `Package "${r.name}" does not exist on its package registry \u2014 this install is unfulfillable regardless of intent.${suggestion}`;
 }
 function buildUnverifiedMessage(r) {
   if (r.reason === "scoped_not_public") {
     return `unverified \u2014 "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist \u2014 treating as unverified, not denying.`;
+  }
+  if (r.reason === "private_index") {
+    return `unverified \u2014 "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) \u2014 approve only if you recognize and trust this index.`;
+  }
+  if (r.reason === "go_ambiguous") {
+    return `unverified \u2014 "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence \u2014 the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`;
   }
   if (r.reason === "budget_exhausted") {
     return `unverified \u2014 registry lookup budget exhausted before "${r.name}" could be checked`;
@@ -7145,7 +7423,7 @@ function decidePackageAction(results, ageThresholdDays) {
   if (unverified) return { reason: "unverified", message: buildUnverifiedMessage(unverified), result: unverified };
   const young = results.find((r) => r.verdict === "exists" && r.ageDays !== void 0 && r.ageDays < ageThresholdDays);
   if (young) return { reason: "age_gate", message: buildAgeGateMessage(young, ageThresholdDays), result: young };
-  return { reason: "ok", message: "All installed packages verified against the npm registry." };
+  return { reason: "ok", message: "All installed packages verified against their package registries." };
 }
 
 // ../core/src/enforce/command-normalizer.ts
@@ -11016,9 +11294,10 @@ rules:
       unverified until you've looked it up yourself.
     false_positives:
       - 'Private or org-scoped registry packages (Verdaccio, Artifactory, GitHub Packages) that 404 against the public npm registry by construction \u2014 these prompt as unverified, never deny (see package-verifier.ts scoped-404 handling)'
+      - 'A pip install that targets a private or company package index via --index-url, --extra-index-url, or -i \u2014 these always prompt as unverified without querying the custom index, since PyPI has no scoped-name convention like npm to signal "private" by name alone'
       - 'A legitimate package published in the last 30 days (the age-gate default) \u2014 prompts for a second look, not a hard block'
-      - 'npm registry timeouts or outages \u2014 network failures always downgrade to unverified, never deny'
-    message: "This package install could not be verified against the npm registry \u2014 confirm the name and publisher before proceeding."
+      - 'Registry timeouts or outages, on any of the four covered ecosystems \u2014 network failures always downgrade to unverified, never deny'
+    message: "This package install could not be verified against its package registry \u2014 confirm the name and publisher before proceeding."
 
   # \u2500\u2500 TIER 3: observe (evaluated + recorded via observed_action, never interrupts) \u2500\u2500
   - id: source-change-requires-test
