@@ -10,6 +10,9 @@ import {
   scheduleBackgroundVerification,
   PackageVerifierCache,
   defaultRegistryBaseUrl,
+  defaultPypiBaseUrl,
+  defaultCratesBaseUrl,
+  defaultGoProxyBaseUrl,
   type PackageCheckResult,
 } from '../package-verifier.js'
 import { rmSafe } from './helpers/fs-safe.js'
@@ -694,6 +697,38 @@ describe('defaultRegistryBaseUrl', () => {
   })
 })
 
+describe('defaultPypiBaseUrl / defaultCratesBaseUrl / defaultGoProxyBaseUrl (same safety net as npm)', () => {
+  const cases: Array<{ label: string; envVar: string; fn: () => string }> = [
+    { label: 'pypi', envVar: 'KEEL_PYPI_REGISTRY', fn: defaultPypiBaseUrl },
+    { label: 'crates', envVar: 'KEEL_CRATES_REGISTRY', fn: defaultCratesBaseUrl },
+    { label: 'go proxy', envVar: 'KEEL_GO_PROXY', fn: defaultGoProxyBaseUrl },
+  ]
+
+  for (const { label, envVar, fn } of cases) {
+    it(`${label}: honors an explicit ${envVar} override`, () => {
+      const prior = process.env[envVar]
+      try {
+        process.env[envVar] = 'https://custom.example.invalid'
+        expect(fn()).toBe('https://custom.example.invalid')
+      } finally {
+        if (prior === undefined) delete process.env[envVar]
+        else process.env[envVar] = prior
+      }
+    })
+
+    it(`${label}: defaults to a closed loopback port under vitest with no override — never the real registry in unit tests`, () => {
+      const prior = process.env[envVar]
+      delete process.env[envVar]
+      try {
+        expect(process.env.VITEST).toBeTruthy()
+        expect(fn()).toBe('http://127.0.0.1:1')
+      } finally {
+        if (prior !== undefined) process.env[envVar] = prior
+      }
+    })
+  }
+})
+
 // ── opt-in live integration test ────────────────────────────────────
 //
 // Skipped by default — set KEEL_LIVE_REGISTRY_TEST=1 to run it. Everything
@@ -755,5 +790,484 @@ describe('package rule validation', () => {
     const yaml = `version: 1\nrules:\n  - id: pkg-rule\n    type: package\n    action: prompt\n    age_days: -5\n    message: "Verify before install."\n`
     const parsed = parseRulesContent(yaml, '/tmp/pkg.yaml')
     expect(validateRules(parsed.rules).length).toBeGreaterThan(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// Multi-ecosystem widening: PyPI (pip/pip3/uv/poetry), crates.io (cargo),
+// Go module proxy (go get/install). See package-verifier.ts's module
+// header for the full rationale; each block below is labeled with the
+// audit finding (3a-3f) it exists to cover.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── extraction: new ecosystems recognized ───────────────────────────
+
+describe('extractPackageInstalls: new ecosystems', () => {
+  it('extracts pip install, pip3 install, poetry add, cargo add, go get, go install', () => {
+    expect(extractPackageInstalls('pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip' })
+    expect(extractPackageInstalls('pip3 install requests')[0]).toMatchObject({ name: 'requests', manager: 'pip3' })
+    expect(extractPackageInstalls('poetry add requests')[0]).toMatchObject({ name: 'requests', manager: 'poetry' })
+    expect(extractPackageInstalls('cargo add rand')[0]).toMatchObject({ name: 'rand', manager: 'cargo' })
+    expect(extractPackageInstalls('go get golang.org/x/tools')[0]).toMatchObject({ name: 'golang.org/x/tools', manager: 'go' })
+    expect(extractPackageInstalls('go install golang.org/x/tools/gopls@latest')[0]).toMatchObject({ name: 'golang.org/x/tools/gopls', manager: 'go', requestedVersion: 'latest' })
+  })
+
+  it('extracts both uv forms: uv add and uv pip install', () => {
+    expect(extractPackageInstalls('uv add requests')[0]).toMatchObject({ name: 'requests', manager: 'uv' })
+    expect(extractPackageInstalls('uv pip install requests')[0]).toMatchObject({ name: 'requests', manager: 'uv' })
+  })
+
+  it('cargo and go use @-splitting for version, same as npm', () => {
+    expect(extractPackageInstalls('cargo add rand@0.8.5')[0]).toMatchObject({ name: 'rand', requestedVersion: '0.8.5' })
+    expect(extractPackageInstalls('go get github.com/foo/bar@v1.2.3')[0]).toMatchObject({ name: 'github.com/foo/bar', requestedVersion: 'v1.2.3' })
+  })
+
+  it('deliberately does NOT match cargo install (a different subcommand than cargo add)', () => {
+    expect(extractPackageInstalls('cargo install ripgrep')).toEqual([])
+  })
+
+  it('a bare add/install with no package args extracts nothing, for every new manager', () => {
+    expect(extractPackageInstalls('pip install')).toEqual([])
+    expect(extractPackageInstalls('poetry add')).toEqual([])
+    expect(extractPackageInstalls('cargo add')).toEqual([])
+    expect(extractPackageInstalls('go get')).toEqual([])
+    expect(extractPackageInstalls('uv pip install')).toEqual([])
+  })
+})
+
+// ── finding 3a: flag-value tokens must not be misread as package names ──
+
+describe('finding 3a: per-manager flag-value consuming table', () => {
+  it('pip install -r requirements.txt extracts NOTHING — must never false-deny on a requirements file', () => {
+    expect(extractPackageInstalls('pip install -r requirements.txt')).toEqual([])
+    expect(extractPackageInstalls('pip install --requirement requirements.txt')).toEqual([])
+  })
+
+  it('discriminating case: -t/--target DOES consume its value, but a real package after it still extracts', () => {
+    expect(extractPackageInstalls('pip install -t /tmp/vendor requests')).toEqual([
+      { name: 'requests', requestedVersion: undefined, manager: 'pip', raw: 'requests' },
+    ])
+  })
+
+  it('pip -c/--index-url/--extra-index-url values are consumed, not treated as package names', () => {
+    expect(extractPackageInstalls('pip install -c constraints.txt django')[0].name).toBe('django')
+    expect(extractPackageInstalls('pip install -c constraints.txt django').length).toBe(1)
+  })
+
+  it('cargo --vers/--registry/--rename/--manifest-path values are consumed', () => {
+    expect(extractPackageInstalls('cargo add rand --vers 0.8.5')).toEqual([
+      { name: 'rand', requestedVersion: undefined, manager: 'cargo', raw: 'rand' },
+    ])
+    expect(extractPackageInstalls('cargo add --registry my-registry rand')[0].name).toBe('rand')
+    expect(extractPackageInstalls('cargo add --registry my-registry rand').length).toBe(1)
+    expect(extractPackageInstalls('cargo add --rename myrand rand')[0].name).toBe('rand')
+    expect(extractPackageInstalls('cargo add --manifest-path ../other/Cargo.toml serde')[0].name).toBe('serde')
+  })
+
+  it('poetry --source/--python/--extras values are consumed', () => {
+    expect(extractPackageInstalls('poetry add --source my-source requests')[0].name).toBe('requests')
+    expect(extractPackageInstalls('poetry add --source my-source requests').length).toBe(1)
+    expect(extractPackageInstalls('poetry add --python 3.11 requests')[0].name).toBe('requests')
+  })
+
+  it('npm flag-skip behavior is byte-identical to before (no consuming table for npm-family)', () => {
+    // Regression proof: FLAG_VALUE_CONSUMING has no npm entry, so npm still
+    // only skips the flag token itself, never a following token — exactly
+    // the pre-existing behavior asserted in the "ignores flags interspersed"
+    // test above.
+    expect(extractPackageInstalls('npm install --registry my-registry lodash').map(s => s.name)).toEqual(['my-registry', 'lodash'])
+  })
+})
+
+// ── finding 3f: pip extras + PEP 440 operators, never npm-style @-split ──
+
+describe('finding 3f: pip-specific spec grammar', () => {
+  it('strips [extras] before validating the name', () => {
+    expect(extractPackageInstalls('pip install black[jupyter]')).toEqual([
+      { name: 'black', requestedVersion: undefined, manager: 'pip', raw: 'black[jupyter]' },
+    ])
+  })
+
+  it('splits a PEP 440 comparison operator off as the version, not on @', () => {
+    expect(extractPackageInstalls('pip install "foo>=1.0"')[0]).toMatchObject({ name: 'foo', requestedVersion: '>=1.0' })
+    expect(extractPackageInstalls('pip install "foo==1.2.3"')[0]).toMatchObject({ name: 'foo', requestedVersion: '==1.2.3' })
+  })
+
+  it('extras AND a version operator together', () => {
+    expect(extractPackageInstalls('pip install "black[jupyter]>=22.0"')[0]).toMatchObject({ name: 'black', requestedVersion: '>=22.0' })
+  })
+
+  it('a PEP 508 URL reference (name @ url) is skipped entirely — NOT misparsed as a version pin', () => {
+    expect(extractPackageInstalls('pip install foo @ https://example.com/foo-1.0.whl')).toEqual([])
+    // uv pip install shares the same pip grammar.
+    expect(extractPackageInstalls('uv pip install foo @ https://example.com/foo-1.0.whl')).toEqual([])
+  })
+
+  it('a bare pip package name with no extras/version parses cleanly', () => {
+    expect(extractPackageInstalls('pip install requests')).toEqual([
+      { name: 'requests', requestedVersion: undefined, manager: 'pip', raw: 'requests' },
+    ])
+  })
+})
+
+// ── finding 3b: PyPI private-index extraction marking ──────────────
+
+describe('finding 3b: private-index flag detection at extraction time', () => {
+  it('marks every spec privateIndex when --index-url is present, regardless of flag order', () => {
+    const before = extractPackageInstalls('pip install --index-url https://pypi.mycompany.com/simple mycompany-tool')
+    expect(before).toEqual([{ name: 'mycompany-tool', requestedVersion: undefined, manager: 'pip', raw: 'mycompany-tool', privateIndex: true }])
+
+    const after = extractPackageInstalls('pip install mycompany-tool --index-url https://pypi.mycompany.com/simple')
+    expect(after).toEqual([{ name: 'mycompany-tool', requestedVersion: undefined, manager: 'pip', raw: 'mycompany-tool', privateIndex: true }])
+  })
+
+  it('-i and --extra-index-url both trigger it too', () => {
+    expect(extractPackageInstalls('pip install -i https://pypi.mycompany.com/simple mycompany-tool')[0].privateIndex).toBe(true)
+    expect(extractPackageInstalls('pip install --extra-index-url https://pypi.mycompany.com/simple mycompany-tool')[0].privateIndex).toBe(true)
+  })
+
+  it('an ordinary pip install with no index flag never sets privateIndex (key omitted, not false)', () => {
+    const specs = extractPackageInstalls('pip install requests')
+    expect(specs[0]).not.toHaveProperty('privateIndex')
+  })
+})
+
+// ── new-ecosystem registry mocks ────────────────────────────────────
+
+function pypiJson(releases: Record<string, string[]>): Record<string, unknown> {
+  const body: Record<string, Array<{ upload_time_iso_8601: string }>> = {}
+  for (const [version, isoTimes] of Object.entries(releases)) {
+    body[version] = isoTimes.map(t => ({ upload_time_iso_8601: t }))
+  }
+  return { releases: body }
+}
+
+function makeMockPyPi(behaviors: Record<string, 'not_found' | 'timeout' | { releases: Record<string, string[]> }>) {
+  const calls: string[] = []
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    const href = typeof url === 'string' ? url : url.toString()
+    calls.push(href)
+    const m = href.match(/\/([^/]+)\/json$/)
+    const name = m ? decodeURIComponent(m[1]) : ''
+    const behavior = behaviors[name]
+    if (!behavior) return jsonResponse(null, 404)
+    if (behavior === 'not_found') return jsonResponse(null, 404)
+    if (behavior === 'timeout') {
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+      })
+    }
+    return jsonResponse(pypiJson(behavior.releases))
+  }) as unknown as typeof fetch
+  return { fetchImpl, calls }
+}
+
+function makeMockCrates(behaviors: Record<string, 'not_found' | { createdAt: string }>) {
+  const calls: string[] = []
+  const fetchImpl = (async (url: string | URL) => {
+    const href = typeof url === 'string' ? url : url.toString()
+    calls.push(href)
+    const name = decodeURIComponent(href.split('/').pop() || '')
+    const behavior = behaviors[name]
+    if (!behavior) return jsonResponse(null, 404)
+    if (behavior === 'not_found') return jsonResponse(null, 404)
+    return jsonResponse({ crate: { created_at: behavior.createdAt } })
+  }) as unknown as typeof fetch
+  return { fetchImpl, calls }
+}
+
+/** existingModules holds UN-escaped module paths (e.g. "github.com/foo/bar"); the mock reverses the proxy's `!`-lowercase escaping to match against it, proving the real escaping path round-trips correctly. */
+function makeMockGoProxy(existingModules: Set<string>) {
+  const calls: string[] = []
+  const fetchImpl = (async (url: string | URL) => {
+    const href = typeof url === 'string' ? url : url.toString()
+    calls.push(href)
+    const m = href.match(/^https?:\/\/[^/]+\/(.+)\/@v\/list$/)
+    const escapedPath = m ? m[1] : ''
+    const path = escapedPath.replace(/!([a-z])/g, (_match, c: string) => c.toUpperCase())
+    if (existingModules.has(path)) return new Response('v1.0.0\n', { status: 200, headers: { 'content-type': 'text/plain' } })
+    return new Response('not found', { status: 404 })
+  }) as unknown as typeof fetch
+  return { fetchImpl, calls }
+}
+
+function combineFetch(routes: Array<{ prefix: string; fetchImpl: typeof fetch }>): typeof fetch {
+  return (async (url: string | URL, init?: RequestInit) => {
+    const href = typeof url === 'string' ? url : url.toString()
+    for (const r of routes) {
+      if (href.startsWith(r.prefix)) return (r.fetchImpl as unknown as (u: string | URL, i?: RequestInit) => Promise<Response>)(url, init)
+    }
+    throw new Error(`no mock route registered for ${href}`)
+  }) as unknown as typeof fetch
+}
+
+// ── finding 3d: PyPI age gate MUST use first-ever publish, not latest ──
+
+describe('finding 3d: PyPI age gate uses min(upload_time) across ALL releases, never the latest', () => {
+  it('a package whose LATEST release is 2 days old but whose EARLIEST release is 400 days old is NOT age-gated', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-pypi-'))
+    const { fetchImpl } = makeMockPyPi({
+      'sneaky-repackage': {
+        releases: {
+          '1.0.0': [daysAgoIso(400)],
+          '1.0.1': [daysAgoIso(200)],
+          '2.0.0': [daysAgoIso(2)], // the LATEST release — this is the wrong field a naive port would key off
+        },
+      },
+    })
+    const [r] = await checkPackages(
+      [{ name: 'sneaky-repackage', manager: 'pip', raw: 'sneaky-repackage' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), pypiBaseUrl: 'https://mock-pypi.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    // The discriminating assertion: a `urls[0].upload_time`-style (latest-
+    // release) implementation would report ~2 days here, not >300.
+    expect(r.ageDays).toBeGreaterThan(300)
+    expect(decidePackageAction([r], 30).reason).toBe('ok') // allow — correctly NOT age-gated
+    rmSafe(stateDir)
+  })
+
+  it('a genuinely brand-new PyPI package (single release, 2 days old) IS age-gated', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-pypi-'))
+    const { fetchImpl } = makeMockPyPi({ 'brand-new-pypi-pkg': { releases: { '1.0.0': [daysAgoIso(2)] } } })
+    const [r] = await checkPackages(
+      [{ name: 'brand-new-pypi-pkg', manager: 'pip', raw: 'brand-new-pypi-pkg' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), pypiBaseUrl: 'https://mock-pypi.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(r.ageDays).toBeLessThan(3)
+    expect(decidePackageAction([r], 30).reason).toBe('age_gate')
+    rmSafe(stateDir)
+  })
+
+  it('a nonexistent PyPI package -> not_found (unscoped 404 IS deterministic on PyPI, unlike npm scoped names)', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-pypi-'))
+    const { fetchImpl } = makeMockPyPi({})
+    const [r] = await checkPackages(
+      [{ name: 'totally-hallucinated-pypi-pkg', manager: 'pip', raw: 'totally-hallucinated-pypi-pkg' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), pypiBaseUrl: 'https://mock-pypi.invalid' },
+    )
+    expect(r.verdict).toBe('not_found')
+    // Did-you-mean is npm-only (its search endpoint has no PyPI equivalent).
+    expect(r.didYouMean).toBeUndefined()
+    rmSafe(stateDir)
+  })
+})
+
+// ── finding 3b (network layer): private-index specs never query anything ──
+
+describe('finding 3b: private-index specs are never queried against any network endpoint', () => {
+  it('checkPackages resolves to unverified/private_index without ever calling fetch', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-prividx-'))
+    const angryFetch = (async () => { throw new Error('SSRF: private-index spec must never be queried') }) as unknown as typeof fetch
+    const [r] = await checkPackages(
+      [{ name: 'mycompany-tool', manager: 'pip', raw: 'mycompany-tool', privateIndex: true }],
+      { fetchImpl: angryFetch, cache: new PackageVerifierCache(stateDir), pypiBaseUrl: 'https://mock-pypi.invalid' },
+    )
+    expect(r.verdict).toBe('unverified')
+    expect(r.reason).toBe('private_index')
+    expect(decidePackageAction([r], 30).reason).toBe('unverified')
+    expect(decidePackageAction([r], 30).message).toContain('non-default package index')
+    rmSafe(stateDir)
+  })
+
+  it('checkPackagesCacheOnly resolves it directly too — never a cache miss, never queued for background fill', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-prividx-cacheonly-'))
+    const cache = new PackageVerifierCache(stateDir)
+    const specs = [{ name: 'mycompany-tool', manager: 'pip' as const, raw: 'mycompany-tool', privateIndex: true }]
+    const { results, misses } = checkPackagesCacheOnly(specs, cache)
+    expect(results).toEqual([{ name: 'mycompany-tool', requestedVersion: undefined, verdict: 'unverified', reason: 'private_index', fromCache: false }])
+    expect(misses).toEqual([]) // critical: never queued — see finding 3c note about not caching this under pypi:<name>
+    rmSafe(stateDir)
+  })
+
+  it('a later PLAIN pip install of the same name (no --index-url this time) is unaffected — proves private_index is never cached under the bare name', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-prividx-nocache-'))
+    const cache = new PackageVerifierCache(stateDir)
+    const { fetchImpl } = makeMockPyPi({ 'mycompany-tool': { releases: { '1.0.0': [daysAgoIso(2000)] } } })
+
+    await checkPackages([{ name: 'mycompany-tool', manager: 'pip', raw: 'mycompany-tool', privateIndex: true }], { cache, pypiBaseUrl: 'https://mock-pypi.invalid' })
+    // Real lookup for the SAME name, no privateIndex flag this time.
+    const [r] = await checkPackages([{ name: 'mycompany-tool', manager: 'pip', raw: 'mycompany-tool' }], { fetchImpl, cache, pypiBaseUrl: 'https://mock-pypi.invalid' })
+    expect(r.verdict).toBe('exists') // not poisoned by the earlier private_index verdict
+    rmSafe(stateDir)
+  })
+})
+
+// ── finding 3c: cache/dedup namespaced by (ecosystem, name), not bare name ──
+
+describe('finding 3c: cache and in-call dedup keyed by (ecosystem, name)', () => {
+  it('PackageVerifierCache: an npm entry for "foo" does not leak into a pypi lookup for "foo"', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-nsdup-'))
+    const cache = new PackageVerifierCache(stateDir)
+    const now = Date.now()
+    cache.set({ name: 'foo', ecosystem: 'npm', verdict: 'not_found', checkedAt: now }, now)
+    expect(cache.get('foo', now, 'npm')?.verdict).toBe('not_found')
+    expect(cache.get('foo', now, 'pypi')).toBeNull() // no cross-ecosystem bleed
+    rmSafe(stateDir)
+  })
+
+  it('npm install foo && cargo add foo in ONE command queries BOTH registries independently — not a single deduped lookup', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-crossdedup-'))
+    const npmMock = makeMockRegistry({ foo: 'not_found' }) // npm: hallucinated
+    const cratesMock = makeMockCrates({ foo: { createdAt: daysAgoIso(2000) } }) // crates: real, old
+    const fetchImpl = combineFetch([
+      { prefix: 'https://mock-npm.invalid', fetchImpl: npmMock.fetchImpl },
+      { prefix: 'https://mock-crates.invalid', fetchImpl: cratesMock.fetchImpl },
+    ])
+    const specs = extractPackageInstalls('npm install foo && cargo add foo')
+    expect(specs.map(s => s.manager)).toEqual(['npm', 'cargo'])
+
+    const results = await checkPackages(specs, {
+      fetchImpl,
+      cache: new PackageVerifierCache(stateDir),
+      registryBaseUrl: 'https://mock-npm.invalid',
+      cratesBaseUrl: 'https://mock-crates.invalid',
+    })
+    expect(results.map(r => r.verdict)).toEqual(['not_found', 'exists']) // two DIFFERENT verdicts for the "same" bare name proves no collision
+    expect(npmMock.calls.length).toBeGreaterThanOrEqual(1)
+    expect(cratesMock.calls.length).toBe(1)
+    rmSafe(stateDir)
+  })
+
+  it('checkPackagesCacheOnly misses are deduped per (ecosystem, name), not bare name — two ecosystems, same name, both queued', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-crossdedup-cacheonly-'))
+    const cache = new PackageVerifierCache(stateDir)
+    const specs = [
+      { name: 'foo', manager: 'npm' as const, raw: 'foo' },
+      { name: 'foo', manager: 'cargo' as const, raw: 'foo' },
+    ]
+    const { misses } = checkPackagesCacheOnly(specs, cache)
+    expect(misses.length).toBe(2) // NOT deduped away — different ecosystems
+    rmSafe(stateDir)
+  })
+})
+
+// ── finding 3e: Go module proxy 404s map to unverified, never not_found ──
+
+describe('finding 3e: Go module proxy subpackage-404 handling', () => {
+  it('a real module at the literal path resolves directly, exists, single request', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-go-'))
+    const { fetchImpl, calls } = makeMockGoProxy(new Set(['golang.org/x/tools']))
+    const [r] = await checkPackages(
+      [{ name: 'golang.org/x/tools', manager: 'go', raw: 'golang.org/x/tools' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), goProxyBaseUrl: 'https://mock-go.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(calls.length).toBe(1) // no retry needed
+    rmSafe(stateDir)
+  })
+
+  it('a real SUBPACKAGE (module root exists one segment up) -> unverified, NEVER not_found/deny', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-go-sub-'))
+    const { fetchImpl, calls } = makeMockGoProxy(new Set(['github.com/user/repo'])) // the module ROOT exists; the literal queried path is one segment deeper
+    const [r] = await checkPackages(
+      [{ name: 'github.com/user/repo/subpkg', manager: 'go', raw: 'github.com/user/repo/subpkg' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), goProxyBaseUrl: 'https://mock-go.invalid' },
+    )
+    expect(r.verdict).toBe('unverified')
+    expect(r.verdict).not.toBe('not_found')
+    expect(r.reason).toBe('go_ambiguous')
+    expect(decidePackageAction([r], 30).message).toContain('subpackage')
+    expect(calls.length).toBe(2) // literal path, then exactly one segment shorter
+    rmSafe(stateDir)
+  })
+
+  it('a genuinely nonexistent Go module (both the literal path AND one segment up 404) -> STILL unverified, never not_found', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-go-fake-'))
+    const { fetchImpl, calls } = makeMockGoProxy(new Set()) // nothing exists
+    const [r] = await checkPackages(
+      [{ name: 'github.com/totally/hallucinated-repo', manager: 'go', raw: 'github.com/totally/hallucinated-repo' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), goProxyBaseUrl: 'https://mock-go.invalid' },
+    )
+    expect(r.verdict).toBe('unverified')
+    expect(r.verdict).not.toBe('not_found') // the mandate is unconditional — Go never denies on a 404
+    expect(calls.length).toBe(2) // one retry, never walked further toward the domain root
+    rmSafe(stateDir)
+  })
+
+  it('the retry never walks past ONE segment shorter — a 2-segment path with no shorter form available does not retry a 3rd time', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-go-root-'))
+    const { fetchImpl, calls } = makeMockGoProxy(new Set())
+    const [r] = await checkPackages(
+      [{ name: 'onesegment', manager: 'go', raw: 'onesegment' }], // no slash at all -> shortenGoModulePath returns null
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), goProxyBaseUrl: 'https://mock-go.invalid' },
+    )
+    expect(r.verdict).toBe('unverified')
+    expect(calls.length).toBe(1) // no retry possible, no retry attempted
+    rmSafe(stateDir)
+  })
+
+  it('DOCUMENTED GAP: a same-day Go module still ALLOWS — no age signal is derived for Go (see checkGoExistence header)', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-go-noage-'))
+    const { fetchImpl } = makeMockGoProxy(new Set(['github.com/brand-new/module']))
+    const [r] = await checkPackages(
+      [{ name: 'github.com/brand-new/module', manager: 'go', raw: 'github.com/brand-new/module' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), goProxyBaseUrl: 'https://mock-go.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(r.ageDays).toBeUndefined()
+    expect(decidePackageAction([r], 30).reason).toBe('ok') // allow — the documented, deliberate scope gap
+    rmSafe(stateDir)
+  })
+})
+
+// ── crates.io basic existence + age (uses the crate's own created_at) ──
+
+describe('crates.io existence + age', () => {
+  it('an old, real crate allows', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-crates-'))
+    const { fetchImpl } = makeMockCrates({ serde: { createdAt: daysAgoIso(3000) } })
+    const [r] = await checkPackages(
+      [{ name: 'serde', manager: 'cargo', raw: 'serde' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), cratesBaseUrl: 'https://mock-crates.invalid' },
+    )
+    expect(r.verdict).toBe('exists')
+    expect(decidePackageAction([r], 30).reason).toBe('ok')
+    rmSafe(stateDir)
+  })
+
+  it('a nonexistent crate -> not_found (crates.io has no scoped-name convention either)', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-crates-404-'))
+    const { fetchImpl } = makeMockCrates({})
+    const [r] = await checkPackages(
+      [{ name: 'totally-hallucinated-crate', manager: 'cargo', raw: 'totally-hallucinated-crate' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), cratesBaseUrl: 'https://mock-crates.invalid' },
+    )
+    expect(r.verdict).toBe('not_found')
+    rmSafe(stateDir)
+  })
+
+  it('a fresh crate is age-gated', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'keel-pkgverify-crates-fresh-'))
+    const { fetchImpl } = makeMockCrates({ 'brand-new-crate': { createdAt: daysAgoIso(5) } })
+    const [r] = await checkPackages(
+      [{ name: 'brand-new-crate', manager: 'cargo', raw: 'brand-new-crate' }],
+      { fetchImpl, cache: new PackageVerifierCache(stateDir), cratesBaseUrl: 'https://mock-crates.invalid' },
+    )
+    expect(decidePackageAction([r], 30).reason).toBe('age_gate')
+    rmSafe(stateDir)
+  })
+})
+
+// ── pipeline wiring: private-index install through the real pipeline ──
+
+describe('pipeline: finding 3b end-to-end — a private-index pip install never denies and never queries the network', () => {
+  it('prompts immediately (not "not yet checked") and the mock is never called', async () => {
+    const angryFetch = (async () => { throw new Error('should never be called for a private-index spec') }) as unknown as typeof fetch
+    const pipeline = buildPipeline(PACKAGE_RULE, angryFetch)
+    const res = await pipeline.evaluate(makeInput('pip install --index-url https://pypi.mycompany.com/simple mycompany-tool'))
+    expect(res.action).toBe('prompt')
+    expect(res.action).not.toBe('deny')
+    expect(res.message).toContain('non-default package index')
+  })
+
+  it('pip install -r requirements.txt never triggers the rule at all (finding 3a, end-to-end)', async () => {
+    let called = false
+    const fetchImpl = (async () => { called = true; return jsonResponse({}) }) as unknown as typeof fetch
+    const pipeline = buildPipeline(PACKAGE_RULE, fetchImpl)
+    const res = await pipeline.evaluate(makeInput('pip install -r requirements.txt'))
+    expect(res.action).toBe('allow')
+    expect(called).toBe(false)
   })
 })

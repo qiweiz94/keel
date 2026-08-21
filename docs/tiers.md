@@ -34,7 +34,7 @@ Two failure modes push in opposite directions, and one ruleset has to survive bo
   `no-rules-tampering` exist because of real host-config-poisoning CVEs
   (CVE-2025-59536, CVE-2026-21852) and reported Copilot `autoApprove` abuse.
   `unverified-package-install` exists because 19.7% of LLM-recommended packages don't
-  exist and get squatted by attackers waiting for an agent to `npm install` the
+  exist and get squatted by attackers waiting for an agent to install the
   hallucinated name (USENIX Security 2025). For actions in that class, a warn-once
   ladder is the wrong shape — the first hit *is* the incident.
 
@@ -115,7 +115,7 @@ are never downgraded by any dial.
 | `git-history-rewrite` | prompt | Git history mutation (rewrites shared history) |
 | `publish-gate` | prompt | Publishing or deleting registry artifacts |
 | `verify-format-before-decision` | warn | Choosing a format/convention without checking the project's own |
-| `unverified-package-install` * | prompt | A package name that doesn't resolve against the npm registry |
+| `unverified-package-install` * | prompt | A package name that doesn't resolve against its package registry (npm, PyPI, crates.io, or the Go module proxy) |
 
 \* `unverified-package-install` ships with no `level:` or `mode:` field at all — it
 isn't under either tier's YAML comment header in `install.ts`. It's listed here because

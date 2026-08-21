@@ -15,6 +15,11 @@ import { resolveHome } from '../home.js'
  * deterministic and near-zero-false-positive: a name that doesn't exist on
  * the registry is unfulfillable regardless of intent.
  *
+ * Covers four ecosystems, each with its own registry and its own name
+ * grammar: npm (npm/pnpm/yarn/bun), PyPI (pip/pip3/uv), crates.io (cargo),
+ * and the Go module proxy (go get/install). See `Ecosystem` /
+ * `ecosystemForManager` below.
+ *
  * Two-stage design:
  *   1. `extractPackageInstalls` — cheap, synchronous, regex/tokenizer only.
  *      Pays nothing for the 99% of commands that are not an install. This
@@ -25,7 +30,11 @@ import { resolveHome } from '../home.js'
  *
  * SEMANTICS (binding, see session/DECISIONS.md wave-2 slopsquatting lane):
  *   - not found on the registry           -> deny   (deterministic; a name
- *     that doesn't exist cannot be legitimately installed either way)
+ *     that doesn't exist cannot be legitimately installed either way) —
+ *     EXCEPT the Go module proxy, where a 404 at the literal queried path
+ *     is the routine, expected shape of a real subpackage, not proof of
+ *     nonexistence (see `checkGoExistence`'s own header) — Go 404s always
+ *     resolve to `unverified`, never `not_found`.
  *   - registry unreachable / timed out    -> prompt "unverified — registry
  *     unreachable" — NEVER deny on a network failure. A network blip must
  *     never brick `npm install <real package>`.
@@ -36,48 +45,180 @@ import { resolveHome } from '../home.js'
  *     construction. Hard-denying every 404'd scope would brick every
  *     private monorepo dependency; deny is reserved for UNSCOPED names,
  *     where "not on the public registry" really does mean "unfulfillable".
+ *     This is an npm-only convention: PyPI/crates.io/Go have no equivalent
+ *     syntactic marker, so their unscoped 404s ARE treated as deterministic
+ *     nonexistence (except Go, per the subpackage caveat above).
+ *   - pip install targets a non-default index (`--index-url` /
+ *     `--extra-index-url` / `-i`)  -> prompt "unverified", registry NEVER
+ *     queried — PyPI has no `@scope/`-style naming convention the way npm
+ *     does, so a private-index install looks identical BY NAME to a public
+ *     hallucination. Forcing `unverified` here is the PyPI analog of npm's
+ *     scoped-404 handling, just triggered by a command-line flag instead of
+ *     a name shape, since PyPI gives us no name-shape signal to use instead.
  *   - exists, published < age_days ago    -> prompt (age-gate; configurable
  *     per rule via `age_days`, default 30) — a brand-new package is exactly
- *     the shape a same-day slopsquat takes.
+ *     the shape a same-day slopsquat takes. For PyPI this MUST be computed
+ *     from the package's first-ever publish date (`min()` over every file
+ *     in every version in the JSON API's `releases` map), never the latest
+ *     release's `urls[0].upload_time` — a squatted package's second release
+ *     would otherwise clear the age gate on a re-publish while the name
+ *     itself is still exactly as fresh as day one. This mirrors npm's own
+ *     existing (correct) use of `time.created`, never `time.modified`.
  *   - exists, older than age_days         -> allow
  *
- * No SSRF guard (unlike enforce/research/fetcher.ts): the destination host
- * is a fixed, operator/rule-author-controlled base URL
- * (`registryBaseUrl` / `KEEL_NPM_REGISTRY`), never derived from
- * agent-controlled input — only the URL PATH varies, with the package name.
- * A rules.yaml editor is already a trusted actor (see the shipped
+ * No SSRF guard (unlike enforce/research/fetcher.ts): every registry base
+ * URL this module queries is a fixed, operator/rule-author-controlled URL
+ * (`registryBaseUrl`/`pypiBaseUrl`/`cratesBaseUrl`/`goProxyBaseUrl`, each
+ * with its own `KEEL_*_REGISTRY`/`KEEL_GO_PROXY` override), never derived
+ * from agent-controlled input — only the URL PATH varies, with the package
+ * name. A rules.yaml editor is already a trusted actor (see the shipped
  * `no-rules-tampering` / `keel-control-gate` rules), so this is not a live
- * attacker-controlled surface the way a fetched webpage's redirect chain is.
+ * attacker-controlled surface the way a fetched webpage's redirect chain
+ * is. This is exactly why a pip `--index-url` value is NEVER queried
+ * (above): that URL comes from the AGENT's command line, not the rule
+ * author, and would be a live SSRF surface if this module ever fetched it.
  */
 
 // ── Extraction ────────────────────────────────────────────────────────
 
-export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun'
+export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun' | 'pip' | 'pip3' | 'uv' | 'poetry' | 'cargo' | 'go'
+export type Ecosystem = 'npm' | 'pypi' | 'crates' | 'go'
 
 export interface PackageSpec {
   name: string
   requestedVersion?: string
   manager: PackageManager
   raw: string
+  /**
+   * Set (to `true`) only when a pip-family command (`pip`/`pip3`/`uv add`/
+   * `uv pip install`) passed `--index-url`/`--extra-index-url`/`-i`
+   * anywhere on the command line — see the module header's private-index
+   * rationale. Deliberately OMITTED (not set to `false`) on every other
+   * spec, including all npm/pnpm/yarn/bun/poetry/cargo/go specs, so
+   * pre-existing hand-built `PackageSpec` fixtures (predating this field)
+   * stay structurally identical.
+   */
+  privateIndex?: boolean
 }
 
-const MANAGERS = new Set<PackageManager>(['npm', 'pnpm', 'yarn', 'bun'])
+const MANAGERS = new Set<PackageManager>(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'uv', 'poetry', 'cargo', 'go'])
 
-// Which subcommand, for each manager, actually names NEW packages to add.
-// `npm install`/`npm ci` with no args, `pnpm install`, bare `yarn` all read
-// from the lockfile/package.json — nothing to verify, and treating them as
-// installs would false-positive on every ordinary dependency restore.
-const ADD_SUBCOMMANDS: Record<PackageManager, Set<string>> = {
+const MANAGER_ECOSYSTEM: Record<PackageManager, Ecosystem> = {
+  npm: 'npm', pnpm: 'npm', yarn: 'npm', bun: 'npm',
+  pip: 'pypi', pip3: 'pypi', uv: 'pypi', poetry: 'pypi',
+  cargo: 'crates',
+  go: 'go',
+}
+
+/** Which registry a manager's specs resolve against. `poetry` and `cargo`/`go` both use `@`-splitting name/version parsing (see `parseSpec`); only pip-family managers get the PEP-440 grammar (see `PIP_GRAMMAR_MANAGERS`). */
+export function ecosystemForManager(manager: PackageManager): Ecosystem {
+  return MANAGER_ECOSYSTEM[manager]
+}
+
+// Which subcommand, for each npm-family manager, actually names NEW
+// packages to add. `npm install`/`npm ci` with no args, `pnpm install`,
+// bare `yarn` all read from the lockfile/package.json — nothing to verify,
+// and treating them as installs would false-positive on every ordinary
+// dependency restore. (Non-npm-family managers are handled directly in
+// `matchAddSubcommand` below — pip/poetry/cargo/go don't share npm's
+// install-vs-add distinction cleanly enough to fit one shared table.)
+const ADD_SUBCOMMANDS: Record<'npm' | 'pnpm' | 'yarn' | 'bun', Set<string>> = {
   npm: new Set(['install', 'i']),
   pnpm: new Set(['add']),
   yarn: new Set(['add']),
   bun: new Set(['add']),
 }
 
+/**
+ * Returns how many tokens starting at `tokens[i]` form a recognized
+ * "this names NEW packages" subcommand for `manager`, or `null` if this
+ * invocation reads from a lockfile/manifest/current-module instead
+ * (nothing to verify) or isn't a subcommand this rule covers at all.
+ *
+ * `cargo install` (global binary install — a DIFFERENT cargo subcommand
+ * from `cargo add`, which edits `Cargo.toml`) is deliberately NOT matched
+ * here — out of scope per this feature's own scoping notes. `go install`
+ * IS matched (unlike `cargo install`): for Go, `go install <module>@version`
+ * and `go get <module>@version` both name a registry package to verify,
+ * whereas `cargo install <crate>` names a binary-install target that
+ * `cargo add` has no equivalent for — the two ecosystems' subcommands
+ * aren't actually parallel despite the shared word.
+ */
+function matchAddSubcommand(manager: PackageManager, tokens: string[], i: number): number | null {
+  const tok = tokens[i]?.toLowerCase()
+  if (tok === undefined) return null
+  switch (manager) {
+    case 'npm': case 'pnpm': case 'yarn': case 'bun':
+      return ADD_SUBCOMMANDS[manager].has(tok) ? 1 : null
+    case 'pip': case 'pip3':
+      return tok === 'install' ? 1 : null
+    case 'poetry': case 'cargo':
+      return tok === 'add' ? 1 : null
+    case 'go':
+      return (tok === 'get' || tok === 'install') ? 1 : null
+    case 'uv':
+      if (tok === 'add') return 1
+      if (tok === 'pip' && tokens[i + 1]?.toLowerCase() === 'install') return 2
+      return null
+  }
+}
+
+// Managers whose spec grammar is pip's, not npm's — finding 3f. `uv add`
+// and `uv pip install` are both pip-compatible by design (uv literally
+// ships a `pip install`-alike subcommand and pyproject-style `add`), so
+// both get this grammar rather than npm/cargo/go/poetry's `@`-splitting
+// one. Key differences handled by `parsePipSpec` + the scanning loop in
+// `extractSegmentInstalls`, NOT by reusing `parseSpec`:
+//   - extras (`pkg[extra1,extra2]`) are stripped before name validation,
+//     not rejected outright.
+//   - the version, if any, is split off at a PEP 440 comparison operator
+//     (`===`/`~=`/`==`/`!=`/`<=`/`>=`/`<`/`>`), never at `@`.
+//   - `pkg @ https://...` (PEP 508 URL reference) is THREE separate shell
+//     tokens (name, bare `@`, url) — not one token with an embedded `@`
+//     like npm's `pkg@1.2.3` — and is skipped entirely as a
+//     non-registry-verifiable reference, one level up in the scan loop.
+const PIP_GRAMMAR_MANAGERS = new Set<PackageManager>(['pip', 'pip3', 'uv'])
+
+// Flags whose VALUE is a SEPARATE shell token — finding 3a. npm/pnpm/yarn/
+// bun deliberately have NO entry: every npm-family flag that takes a value
+// is either boolean or `=`-joined in practice (`--registry=https://...`),
+// which is why the original flag-skip (`tok.startsWith('-')` -> skip just
+// that one token) never needed a table. That does NOT generalize: pip's
+// `-r requirements.txt`, cargo's `--vers 1.0`, poetry's `--source pypi`
+// all put the value in the NEXT token, which — without this table — reads
+// as an unflagged bare word and gets treated as a candidate package name
+// (`pip install -r requirements.txt` would otherwise query the registry
+// for a package literally named "requirements.txt" and 404 -> deny).
+const PIP_FLAG_VALUES = new Set([
+  '-r', '--requirement', '-c', '--constraint', '-e', '--editable',
+  '-i', '--index-url', '--extra-index-url', '-t', '--target',
+  '--trusted-host', '--platform', '--python-version', '--implementation',
+  '--abi', '--prefix', '--root', '--cache-dir', '--proxy', '--retries',
+  '--timeout', '--src', '-b', '--build', '--log',
+])
+const FLAG_VALUE_CONSUMING: Partial<Record<PackageManager, Set<string>>> = {
+  pip: PIP_FLAG_VALUES,
+  pip3: PIP_FLAG_VALUES,
+  uv: PIP_FLAG_VALUES,
+  cargo: new Set(['--vers', '--version', '--registry', '--rename', '--manifest-path', '--target', '--features', '-F', '--config']),
+  poetry: new Set(['--source', '--python', '--extras', '-E']),
+  go: new Set(['-mod', '-modfile']),
+}
+
+// pip flags that make a name unverifiable by construction — finding 3b.
+// PyPI has no `@scope/`-style syntactic marker for "this is a private
+// package" the way npm does, so the ONLY signal available that a name
+// might be a private-index package rather than a public hallucination is
+// whether the COMMAND itself points at a non-default index.
+const PIP_INDEX_FLAGS = new Set(['-i', '--index-url', '--extra-index-url'])
+function isPipIndexFlag(tok: string): boolean {
+  return PIP_INDEX_FLAGS.has(tok.split('=')[0])
+}
+
 // Cheap reject before any tokenizing — the vast majority of commands never
 // mention a package manager at all, and this is the check that makes
 // "only commands matching an install pattern pay any cost" literally true.
-const QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun)\b/
+const QUICK_PREFILTER = /\b(npm|pnpm|yarn|bun|pip3?|uv|poetry|cargo|go)\b/
 
 function tokenize(segment: string): string[] {
   const tokens: string[] = []
@@ -100,21 +241,41 @@ function managerFromToken(token: string): PackageManager | null {
  * a local path, a tarball, a git/GitHub reference, or a bare URL. These are
  * either unfulfillable-by-registry-check-anyway (local paths always
  * "exist" on disk) or already handled by other keel rules (no-remote-exec,
- * no-curl-pipe-shell) — checking them against npm's registry would be
+ * no-curl-pipe-shell) — checking them against the registry would be
  * meaningless at best and a guaranteed false "not found" at worst.
+ *
+ * The extension list also excludes a handful of common non-package file
+ * extensions (`.txt`, `.cfg`, `.ini`, `.toml`, `.lock`, `.whl`) — defense
+ * in depth for finding 3a's flag-value problem alongside the proper
+ * per-flag consuming table in `FLAG_VALUE_CONSUMING`: even if some future
+ * flag is missing from that table, `pip install -r requirements.txt`
+ * still can't reach the registry as a literal package name.
  */
 function isNonRegistrySpec(spec: string): boolean {
   if (!spec) return true
   if (spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('/') || spec.startsWith('~')) return true
   if (/^(file|git|git\+ssh|git\+https|git\+http|github|http|https):/i.test(spec)) return true
-  if (/\.(tgz|tar\.gz|tar)$/i.test(spec)) return true
+  if (/\.(tgz|tar\.gz|tar|txt|cfg|ini|toml|lock|whl)$/i.test(spec)) return true
   // Bare `user/repo` GitHub shorthand — exactly one slash, no leading '@',
   // no leading dot/tilde/scheme already ruled out above.
   if (!spec.startsWith('@') && /^[^@/\s]+\/[^@/\s]+(#.*)?$/.test(spec)) return true
   return false
 }
 
-function parseSpec(spec: string): { name: string; requestedVersion?: string } | null {
+function nameRegexFor(ecosystem: Ecosystem): RegExp {
+  switch (ecosystem) {
+    case 'npm': return /^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i
+    case 'crates': return /^[a-z0-9][a-z0-9_-]*$/i
+    // Go import paths are multi-segment (`github.com/user/repo/subpkg`),
+    // unlike npm's at-most-one-slash scoped form — each segment may contain
+    // letters, digits, `.`/`_`/`~`/`-`.
+    case 'go': return /^[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$/
+    case 'pypi': return /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/i
+  }
+}
+
+/** npm/poetry/cargo/go spec grammar: `@`-splits name from version (npm's original logic, now ecosystem-parameterized for its name-validity regex only — the splitting logic itself is unchanged and shared by every manager EXCEPT pip-family, which uses `parsePipSpec` instead). */
+function parseSpec(spec: string, ecosystem: Ecosystem): { name: string; requestedVersion?: string } | null {
   let name: string
   let version: string | undefined
   if (spec.startsWith('@')) {
@@ -129,7 +290,38 @@ function parseSpec(spec: string): { name: string; requestedVersion?: string } | 
   // registry reference (workspace deps, local links, git deps expressed
   // via the version position rather than the name position).
   if (version && /^(workspace|link|file|git|git\+ssh|git\+https|github):/i.test(version)) return null
-  if (!/^@?[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i.test(name)) return null
+  if (!nameRegexFor(ecosystem).test(name)) return null
+  return { name, requestedVersion: version || undefined }
+}
+
+/**
+ * pip-family spec parsing (pip/pip3/uv add/uv pip install) — finding 3f.
+ * Deliberately does NOT reuse `parseSpec`'s `@`-splitting: pip's `@` means
+ * a PEP 508 URL reference (`pkg @ https://...`), a completely different
+ * thing from a version pin, and is handled one level up in
+ * `extractSegmentInstalls` (as three separate shell tokens — this function
+ * only ever sees a single token already known not to be part of a
+ * `name @ url` triple).
+ *
+ * Strips a trailing `[extras]` bracket before name validation, then splits
+ * any remaining PEP 440 comparison operator (`===`/`~=`/`==`/`!=`/`<=`/
+ * `>=`/`<`/`>`) off as the version. A trailing suffix that is neither an
+ * extras bracket nor a recognized operator is conservatively treated as
+ * unparseable (`null`) rather than guessed at — matching `parseSpec`'s own
+ * existing "unparseable -> skipped, never a false deny" behavior.
+ */
+function parsePipSpec(tok: string): { name: string; requestedVersion?: string } | null {
+  const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(.*)$/.exec(tok)
+  if (!m) return null
+  const name = m[1]
+  const rest = (m[3] || '').trim()
+  let version: string | undefined
+  if (rest) {
+    const vm = /^(===|~=|==|!=|<=|>=|<|>)\s*(.+)$/.exec(rest)
+    if (!vm) return null
+    version = vm[0]
+  }
+  if (!nameRegexFor('pypi').test(name)) return null
   return { name, requestedVersion: version || undefined }
 }
 
@@ -143,15 +335,44 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
   if (!manager) return []
   i++
   if (i >= tokens.length) return []
-  const subcommand = tokens[i].toLowerCase()
-  if (!ADD_SUBCOMMANDS[manager].has(subcommand)) return []
-  i++
+  const consumed = matchAddSubcommand(manager, tokens, i)
+  if (consumed === null) return []
+  i += consumed
+
+  const ecosystem = MANAGER_ECOSYSTEM[manager]
+  const grammar = PIP_GRAMMAR_MANAGERS.has(manager) ? 'pip' : 'default'
+  const flagValues = FLAG_VALUE_CONSUMING[manager]
+
+  // pip's private-index case (3b) is a property of the WHOLE command, not
+  // any one token's position relative to a package name — `pip install
+  // mypkg --index-url https://...` and `pip install --index-url
+  // https://... mypkg` must both be caught regardless of flag order.
+  const privateIndex = grammar === 'pip' && tokens.slice(i).some(isPipIndexFlag)
+
   const specs: PackageSpec[] = []
   for (; i < tokens.length; i++) {
     const tok = tokens[i]
-    if (!tok || tok.startsWith('-')) continue // flags (and their inline values, best-effort)
+    if (!tok) continue
+    if (tok.startsWith('-')) {
+      // This flag's value is the NEXT token, not a package name — consume
+      // both (finding 3a). Managers with no table here (npm-family) keep
+      // the exact original "skip just this one token" behavior.
+      if (flagValues?.has(tok)) i++
+      continue
+    }
+    if (grammar === 'pip') {
+      // PEP 508 URL reference: `name @ url` is three separate shell
+      // tokens (unlike npm/cargo/go/poetry, where `pkg@1.2.3` is ONE
+      // token) — finding 3f. Skip all three; this is a URL dependency,
+      // not a registry-verifiable name.
+      if (tokens[i + 1] === '@') { i += 2; continue }
+      if (isNonRegistrySpec(tok)) continue
+      const parsed = parsePipSpec(tok)
+      if (parsed) specs.push({ ...parsed, manager, raw: tok, ...(privateIndex ? { privateIndex: true } : {}) })
+      continue
+    }
     if (isNonRegistrySpec(tok)) continue
-    const parsed = parseSpec(tok)
+    const parsed = parseSpec(tok, ecosystem)
     if (parsed) specs.push({ ...parsed, manager, raw: tok })
   }
   return specs
@@ -160,18 +381,32 @@ function extractSegmentInstalls(segment: string): PackageSpec[] {
 /**
  * Extract candidate registry package installs from a shell command string.
  *
- * Covers `npm install|i`, `pnpm add`, `yarn add`, `bun add`; versioned
- * (`pkg@1.2.3`) and scoped (`@scope/pkg`, `@scope/pkg@1.2.3`) names;
- * compound commands (`cd x && npm install y`) via `&&`/`||`/`;`/`|`
- * splitting. Ignores flags, local paths (`./`, `../`, `/`, `~`), `file:`,
+ * Covers `npm install|i`, `pnpm add`, `yarn add`, `bun add` (npm registry);
+ * `pip install`, `pip3 install`, `uv add`, `uv pip install` (PyPI);
+ * `poetry add` (PyPI); `cargo add` (crates.io); `go get`, `go install` (Go
+ * module proxy). Versioned (`pkg@1.2.3` / pip's PEP 440 operators) and
+ * scoped (`@scope/pkg`) names; compound commands (`cd x && npm install y`)
+ * via `&&`/`||`/`;`/`|` splitting. Ignores flags (including a manager-
+ * specific table of flags whose VALUE is a separate token — see
+ * `FLAG_VALUE_CONSUMING`), local paths (`./`, `../`, `/`, `~`), `file:`,
  * `git+`/`git:`/`github:` refs, bare GitHub shorthand (`user/repo`),
- * tarball URLs/paths, workspace/link protocol versions, and a bare
- * `npm install`/`npm ci`/`pnpm install`/`yarn` with no package args.
+ * tarball/non-package-file URLs or paths, workspace/link protocol
+ * versions, PEP 508 URL references (pip's `name @ url`), and a bare
+ * `npm install`/`npm ci`/`pnpm install`/`yarn`/`go install` with no
+ * package args (reads from the lockfile/manifest/current module).
  *
  * Known false-negative (documented, not fixed): `bash -c "npm install x"`
  * — the tokenizer treats the quoted string as a single opaque token, so the
  * inner command is invisible to this pass. Out of scope for a regex-level
- * extractor; a real shell parse would be needed to unwrap it.
+ * extractor; a real shell parse would be needed to unwrap it. This applies
+ * equally to every ecosystem covered here, not just npm.
+ *
+ * Deliberately out of scope (see this feature's own scoping notes):
+ * `python -m pip install`, `cargo install` (binary install — a different
+ * cargo subcommand than `add`), and ambient config files (`.npmrc`,
+ * `.cargo/config.toml`, `GOPRIVATE`) that could mark a name as private
+ * without any command-line signal — the same inherited gap npm's own
+ * `.npmrc` already has today.
  */
 export function extractPackageInstalls(command: string): PackageSpec[] {
   if (!command || !QUICK_PREFILTER.test(command)) return []
@@ -184,7 +419,9 @@ export function extractPackageInstalls(command: string): PackageSpec[] {
 // ── Registry lookups ─────────────────────────────────────────────────
 
 export type PackageVerdict = 'exists' | 'not_found' | 'unverified'
-export type UnverifiedReason = 'timeout' | 'network_error' | 'scoped_not_public' | 'budget_exhausted' | 'too_large' | 'not_yet_checked'
+export type UnverifiedReason =
+  | 'timeout' | 'network_error' | 'scoped_not_public' | 'budget_exhausted' | 'too_large' | 'not_yet_checked'
+  | 'private_index' | 'go_ambiguous'
 
 export interface PackageCheckResult {
   name: string
@@ -218,6 +455,27 @@ export function defaultRegistryBaseUrl(): string {
   if (process.env.KEEL_NPM_REGISTRY) return process.env.KEEL_NPM_REGISTRY
   if (process.env.VITEST) return 'http://127.0.0.1:1'
   return 'https://registry.npmjs.org'
+}
+
+/** Same call-time-read + VITEST-closed-loopback safety net as `defaultRegistryBaseUrl`, for PyPI's JSON API. */
+export function defaultPypiBaseUrl(): string {
+  if (process.env.KEEL_PYPI_REGISTRY) return process.env.KEEL_PYPI_REGISTRY
+  if (process.env.VITEST) return 'http://127.0.0.1:1'
+  return 'https://pypi.org/pypi'
+}
+
+/** Same call-time-read + VITEST-closed-loopback safety net as `defaultRegistryBaseUrl`, for crates.io's API. */
+export function defaultCratesBaseUrl(): string {
+  if (process.env.KEEL_CRATES_REGISTRY) return process.env.KEEL_CRATES_REGISTRY
+  if (process.env.VITEST) return 'http://127.0.0.1:1'
+  return 'https://crates.io/api/v1/crates'
+}
+
+/** Same call-time-read + VITEST-closed-loopback safety net as `defaultRegistryBaseUrl`, for the Go module proxy. */
+export function defaultGoProxyBaseUrl(): string {
+  if (process.env.KEEL_GO_PROXY) return process.env.KEEL_GO_PROXY
+  if (process.env.VITEST) return 'http://127.0.0.1:1'
+  return 'https://proxy.golang.org'
 }
 
 // Full packuments for very popular packages can be multi-MB (embedded
@@ -286,17 +544,52 @@ async function fetchJsonCapped(
   }
 }
 
+/** Status-only fetch, no body parsing — used by the Go module proxy's `@v/list` endpoint, which returns plain text (not JSON) and whose body content this module never needs (existence is entirely a function of the HTTP status). Shares the same abort/timeout/error-classification shape as `fetchJsonCapped`. */
+async function fetchStatusCapped(
+  url: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+): Promise<{ ok: boolean; status?: number; kind?: 'timeout' | 'network_error' | 'http_error' }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), Math.max(0, timeoutMs))
+  try {
+    const res = await fetchImpl(url, { signal: controller.signal, headers: { 'User-Agent': 'keel-package-verifier/0.1' } })
+    if (res.body && typeof (res.body as any).cancel === 'function') {
+      try { await res.body.cancel() } catch { /* best-effort drain, never fatal */ }
+    }
+    if (!res.ok) return { ok: false, status: res.status, kind: 'http_error' }
+    return { ok: true, status: res.status }
+  } catch (err) {
+    if (controller.signal.aborted) return { ok: false, kind: 'timeout' }
+    return { ok: false, kind: 'network_error' }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 interface LookupOptions {
   registryBaseUrl: string
   fetchImpl: typeof fetch
   maxBytes: number
 }
 
+/** All four ecosystems' base URLs together, threaded through `checkPackages` and dispatched per-spec by `checkExistenceForEcosystem`. */
+interface MultiLookupOptions {
+  registryBaseUrl: string
+  pypiBaseUrl: string
+  cratesBaseUrl: string
+  goProxyBaseUrl: string
+  fetchImpl: typeof fetch
+  maxBytes: number
+}
+
+type ExistenceResult = { verdict: PackageVerdict; reason?: UnverifiedReason; ageDays?: number; createdAt?: string }
+
 async function checkPackageExistence(
   name: string,
   opts: LookupOptions,
   timeoutMs: number,
-): Promise<{ verdict: PackageVerdict; reason?: UnverifiedReason; ageDays?: number; createdAt?: string }> {
+): Promise<ExistenceResult> {
   if (timeoutMs <= 0) return { verdict: 'unverified', reason: 'budget_exhausted' }
   const url = `${opts.registryBaseUrl}/${registryPath(name)}`
   const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes)
@@ -320,6 +613,161 @@ async function checkPackageExistence(
   return { verdict: 'unverified', reason: 'network_error' } // any other http_error (5xx, 429, ...) or network_error
 }
 
+/**
+ * PyPI JSON API existence + age check — finding 3d, the single most
+ * important correctness point in this feature. `urls[0].upload_time` (the
+ * LATEST release's upload time) is the easy-to-reach WRONG field: a
+ * squatted package's second release would clear a 30-day age gate on that
+ * field while the NAME itself is still exactly as fresh as its first
+ * publish. The correct field is `min()` over `upload_time_iso_8601` (or
+ * the older `upload_time`) across every file in every version in the
+ * `releases` map — the direct PyPI analog of npm's own (correct)
+ * `time.created` usage above, never `time.modified`.
+ */
+async function checkPyPiExistence(name: string, opts: LookupOptions, timeoutMs: number): Promise<ExistenceResult> {
+  if (timeoutMs <= 0) return { verdict: 'unverified', reason: 'budget_exhausted' }
+  const url = `${opts.registryBaseUrl}/${encodeURIComponent(name)}/json`
+  const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes)
+
+  if (outcome.ok) {
+    const releases = (outcome.json as { releases?: Record<string, Array<{ upload_time_iso_8601?: string; upload_time?: string }>> } | undefined)?.releases
+    let earliestMs: number | undefined
+    if (releases) {
+      for (const files of Object.values(releases)) {
+        if (!Array.isArray(files)) continue
+        for (const f of files) {
+          const t = f?.upload_time_iso_8601 ?? f?.upload_time
+          if (!t) continue
+          const ms = Date.parse(t)
+          if (Number.isNaN(ms)) continue
+          if (earliestMs === undefined || ms < earliestMs) earliestMs = ms
+        }
+      }
+    }
+    if (earliestMs === undefined) return { verdict: 'exists' } // no usable date anywhere -> no age signal, never blocks
+    return { verdict: 'exists', createdAt: new Date(earliestMs).toISOString(), ageDays: (Date.now() - earliestMs) / 86_400_000 }
+  }
+  // PyPI has no scoped-name convention like npm's `@scope/pkg` — an
+  // unscoped 404 really does mean "not on the registry" here (the
+  // private-index case is handled entirely upstream of this function, via
+  // `PackageSpec.privateIndex`, and never reaches a network call at all).
+  if (outcome.kind === 'http_error' && outcome.status === 404) return { verdict: 'not_found' }
+  if (outcome.kind === 'timeout') return { verdict: 'unverified', reason: 'timeout' }
+  if (outcome.kind === 'too_large') return { verdict: 'unverified', reason: 'too_large' }
+  return { verdict: 'unverified', reason: 'network_error' }
+}
+
+/** crates.io existence + age check. `crate.created_at` is the crate's own first-publish date directly (no per-version scan needed like PyPI's — crates.io's API already exposes the first-publish date as a top-level field). */
+async function checkCratesExistence(name: string, opts: LookupOptions, timeoutMs: number): Promise<ExistenceResult> {
+  if (timeoutMs <= 0) return { verdict: 'unverified', reason: 'budget_exhausted' }
+  const url = `${opts.registryBaseUrl}/${encodeURIComponent(name)}`
+  const outcome = await fetchJsonCapped(url, timeoutMs, opts.fetchImpl, opts.maxBytes)
+
+  if (outcome.ok) {
+    const created = (outcome.json as { crate?: { created_at?: string } } | undefined)?.crate?.created_at
+    if (!created) return { verdict: 'exists' }
+    const ms = Date.parse(created)
+    if (Number.isNaN(ms)) return { verdict: 'exists' }
+    return { verdict: 'exists', createdAt: created, ageDays: (Date.now() - ms) / 86_400_000 }
+  }
+  if (outcome.kind === 'http_error' && outcome.status === 404) return { verdict: 'not_found' }
+  if (outcome.kind === 'timeout') return { verdict: 'unverified', reason: 'timeout' }
+  if (outcome.kind === 'too_large') return { verdict: 'unverified', reason: 'too_large' }
+  return { verdict: 'unverified', reason: 'network_error' }
+}
+
+// Go module proxy path escaping (golang.org/x/mod/module.EscapePath):
+// every uppercase letter becomes `!` + its lowercase form, since Go module
+// paths ARE case-sensitive but the proxy's own storage layer commonly
+// isn't. Slashes are structural and must NOT be percent-encoded (unlike
+// this module's npm/PyPI/crates lookups, which encode the whole name — a
+// Go module path is not a single path segment).
+function escapeGoModulePath(p: string): string {
+  return p.replace(/[A-Z]/g, c => '!' + c.toLowerCase())
+}
+
+/** Strip the LAST path segment only — "at most ONE segment shorter", never further (finding 3e explicitly rules out walking all the way to the domain root). Returns `null` when there is nothing left to strip. */
+function shortenGoModulePath(name: string): string | null {
+  const idx = name.lastIndexOf('/')
+  if (idx <= 0) return null
+  return name.slice(0, idx)
+}
+
+async function goProxyListLookup(name: string, opts: LookupOptions, timeoutMs: number): Promise<{ verdict: 'exists' | 'not_found' | 'unverified'; reason?: UnverifiedReason }> {
+  if (timeoutMs <= 0) return { verdict: 'unverified', reason: 'budget_exhausted' }
+  const url = `${opts.registryBaseUrl}/${escapeGoModulePath(name)}/@v/list`
+  const outcome = await fetchStatusCapped(url, timeoutMs, opts.fetchImpl)
+  if (outcome.ok) return { verdict: 'exists' }
+  // 410 (Gone) shows up for modules the proxy has explicitly excluded/
+  // withdrawn — same "not confirmed at this exact path" shape as a 404 for
+  // our purposes, so it feeds the same one-segment-shorter retry.
+  if (outcome.kind === 'http_error' && (outcome.status === 404 || outcome.status === 410)) return { verdict: 'not_found' }
+  if (outcome.kind === 'timeout') return { verdict: 'unverified', reason: 'timeout' }
+  return { verdict: 'unverified', reason: 'network_error' }
+}
+
+/**
+ * Go module proxy existence check — finding 3e. Two load-bearing decisions:
+ *
+ *   1. A 404/410 at the LITERAL queried path is NOT deterministic
+ *      nonexistence, unlike npm/PyPI/crates.io's unscoped-404 case. The Go
+ *      proxy indexes MODULE roots (`@v/list` on a path with no `go.mod`
+ *      404s even though the path is a perfectly real, importable
+ *      SUBPACKAGE of a real module one or more segments up) — this is the
+ *      ROUTINE case for any multi-package Go repo, not a hallucination
+ *      signal. One retry at a single segment shorter (never further —
+ *      "don't walk to the domain root") disambiguates the common case
+ *      cheaply; whether that retry succeeds or also 404s, the LITERAL
+ *      queried path itself was never confirmed to exist either way, so the
+ *      verdict is `unverified`, NEVER `not_found`/deny, in both outcomes.
+ *
+ *   2. No age-gate signal is produced here — a deliberate, named scope
+ *      decision, not an oversight. Getting Go's FIRST-publish date
+ *      correctly (the `min()`-over-all-versions pattern this module uses
+ *      for npm and PyPI) would require `@v/list` (already fetched here)
+ *      PLUS `@v/<version>.info` for the EARLIEST of possibly many listed
+ *      versions to read its `Time` field. The easy-to-reach `@latest`
+ *      endpoint only gives the LATEST version's time — exactly the
+ *      wrong-field bug finding 3d calls out for PyPI, and this function
+ *      refuses to repeat it for Go rather than ship a plausible-looking
+ *      but backwards age gate. Doing it correctly would also cost 2-3 more
+ *      requests against the SAME shared ~2000ms command-wide budget that
+ *      finding 3e separately warns must not be starved by one Go path.
+ *      `exists` with no `ageDays` is treated exactly like every other
+ *      "age unknown" case in this module (see npm's `!created` branch
+ *      above): it never blocks. A same-day-squatted Go module therefore
+ *      passes this rule today on the age axis specifically — a known,
+ *      documented gap (see this module's test suite for an explicit
+ *      assertion of this exact allow outcome), not a silent one.
+ */
+async function checkGoExistence(name: string, opts: LookupOptions, timeoutMs: number): Promise<ExistenceResult> {
+  if (timeoutMs <= 0) return { verdict: 'unverified', reason: 'budget_exhausted' }
+  const perAttempt = Math.max(1, Math.floor(timeoutMs / 2))
+  const first = await goProxyListLookup(name, opts, perAttempt)
+  if (first.verdict === 'exists') return { verdict: 'exists' }
+  if (first.verdict === 'unverified') return { verdict: 'unverified', reason: first.reason }
+
+  const shorter = shortenGoModulePath(name)
+  if (!shorter) return { verdict: 'unverified', reason: 'go_ambiguous' }
+  const second = await goProxyListLookup(shorter, opts, Math.max(1, timeoutMs - perAttempt))
+  return { verdict: 'unverified', reason: second.reason ?? 'go_ambiguous' }
+}
+
+async function checkExistenceForEcosystem(
+  ecosystem: Ecosystem,
+  name: string,
+  opts: MultiLookupOptions,
+  timeoutMs: number,
+): Promise<ExistenceResult> {
+  const { fetchImpl, maxBytes } = opts
+  switch (ecosystem) {
+    case 'npm': return checkPackageExistence(name, { registryBaseUrl: opts.registryBaseUrl, fetchImpl, maxBytes }, timeoutMs)
+    case 'pypi': return checkPyPiExistence(name, { registryBaseUrl: opts.pypiBaseUrl, fetchImpl, maxBytes }, timeoutMs)
+    case 'crates': return checkCratesExistence(name, { registryBaseUrl: opts.cratesBaseUrl, fetchImpl, maxBytes }, timeoutMs)
+    case 'go': return checkGoExistence(name, { registryBaseUrl: opts.goProxyBaseUrl, fetchImpl, maxBytes }, timeoutMs)
+  }
+}
+
 async function searchDidYouMean(name: string, opts: LookupOptions, timeoutMs: number): Promise<string[]> {
   if (timeoutMs <= 0) return []
   try {
@@ -338,6 +786,12 @@ async function searchDidYouMean(name: string, opts: LookupOptions, timeoutMs: nu
 
 interface CachedVerdict {
   name: string
+  /**
+   * Defaults to 'npm' when absent — keeps every pre-existing on-disk
+   * cache file and every hand-built `CachedVerdict` test fixture that
+   * predates multi-ecosystem support valid without modification.
+   */
+  ecosystem?: Ecosystem
   verdict: PackageVerdict
   reason?: UnverifiedReason
   ageDays?: number
@@ -405,8 +859,20 @@ export class PackageVerifierCache {
     return now - entry.checkedAt > CACHE_TTL_MS[entry.verdict]
   }
 
-  get(name: string, now: number = Date.now()): CachedVerdict | null {
-    const entry = this.load()[name]
+  /**
+   * Cache key is namespaced `${ecosystem}:${name}`, not bare name —
+   * finding 3c. Four ecosystems now share one cache file; without this
+   * namespacing, a PyPI 404 for "foo" would poison the cache and deny an
+   * npm package also named "foo" for the cache's TTL, and
+   * `npm install foo && cargo add foo` in one command would incorrectly
+   * reuse one ecosystem's verdict for the other.
+   */
+  private key(name: string, ecosystem: Ecosystem): string {
+    return `${ecosystem}:${name}`
+  }
+
+  get(name: string, now: number = Date.now(), ecosystem: Ecosystem = 'npm'): CachedVerdict | null {
+    const entry = this.load()[this.key(name, ecosystem)]
     if (!entry) return null
     if (this.expired(entry, now)) return null
     return entry
@@ -414,7 +880,7 @@ export class PackageVerifierCache {
 
   set(entry: CachedVerdict, now: number = Date.now()): void {
     const all = this.load()
-    all[entry.name] = entry
+    all[this.key(entry.name, entry.ecosystem ?? 'npm')] = entry
     // Prune expired entries opportunistically (mirrors state-manager.ts's
     // load-time TTL prune) so the file doesn't grow unbounded. `now` must
     // be the SAME clock the caller used for `entry.checkedAt` (checkPackages
@@ -432,7 +898,14 @@ export class PackageVerifierCache {
 export interface EvaluateInstallOptions {
   ageThresholdDays?: number
   totalTimeoutMs?: number
+  /** npm registry base URL. Defaults to `defaultRegistryBaseUrl()`. */
   registryBaseUrl?: string
+  /** PyPI JSON API base URL. Defaults to `defaultPypiBaseUrl()`. */
+  pypiBaseUrl?: string
+  /** crates.io API base URL. Defaults to `defaultCratesBaseUrl()`. */
+  cratesBaseUrl?: string
+  /** Go module proxy base URL. Defaults to `defaultGoProxyBaseUrl()`. */
+  goProxyBaseUrl?: string
   fetchImpl?: typeof fetch
   cache?: PackageVerifierCache
   maxBytes?: number
@@ -440,75 +913,97 @@ export interface EvaluateInstallOptions {
 }
 
 /**
- * Check every extracted spec against the registry, sharing ONE total time
- * budget across all of them (default 2000ms — the binding total-lookup
- * timeout). A cache hit costs nothing against the budget. Once the budget
- * is exhausted, remaining unchecked specs get verdict 'unverified' /
- * 'budget_exhausted' rather than being silently skipped — silently skipping
- * would let a hallucinated name after a slow real one through unverified
- * without saying so, whereas 'unverified' correctly downgrades to prompt.
+ * Check every extracted spec against its ecosystem's registry, sharing ONE
+ * total time budget across all of them (default 2000ms — the binding
+ * total-lookup timeout). A cache hit costs nothing against the budget.
+ * Once the budget is exhausted, remaining unchecked specs get verdict
+ * 'unverified' / 'budget_exhausted' rather than being silently skipped —
+ * silently skipping would let a hallucinated name after a slow real one
+ * through unverified without saying so, whereas 'unverified' correctly
+ * downgrades to prompt.
  */
 export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallOptions = {}): Promise<PackageCheckResult[]> {
   const now = opts.now ?? Date.now
   const totalTimeoutMs = opts.totalTimeoutMs ?? 2000
   const registryBaseUrl = opts.registryBaseUrl ?? defaultRegistryBaseUrl()
+  const pypiBaseUrl = opts.pypiBaseUrl ?? defaultPypiBaseUrl()
+  const cratesBaseUrl = opts.cratesBaseUrl ?? defaultCratesBaseUrl()
+  const goProxyBaseUrl = opts.goProxyBaseUrl ?? defaultGoProxyBaseUrl()
   const fetchImpl = opts.fetchImpl ?? fetch
   const cache = opts.cache ?? new PackageVerifierCache()
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES
-  const lookupOpts: LookupOptions = { registryBaseUrl, fetchImpl, maxBytes }
+  const lookupOpts: MultiLookupOptions = { registryBaseUrl, pypiBaseUrl, cratesBaseUrl, goProxyBaseUrl, fetchImpl, maxBytes }
 
   const deadline = now() + totalTimeoutMs
   const seen = new Map<string, PackageCheckResult>()
   const results: PackageCheckResult[] = []
 
   for (const spec of specs) {
-    const already = seen.get(spec.name)
+    const ecosystem = ecosystemForManager(spec.manager)
+    const key = `${ecosystem}:${spec.name}`
+    const already = seen.get(key)
     if (already) {
       results.push({ ...already, requestedVersion: spec.requestedVersion })
       continue
     }
 
-    const cached = cache.get(spec.name, now())
     let result: PackageCheckResult
-    if (cached) {
-      result = {
-        name: spec.name,
-        requestedVersion: spec.requestedVersion,
-        verdict: cached.verdict,
-        reason: cached.reason,
-        ageDays: cached.ageDays,
-        createdAt: cached.createdAt,
-        didYouMean: cached.didYouMean,
-        fromCache: true,
-      }
+    if (spec.privateIndex) {
+      // Never queried — see the module header's private-index rationale
+      // (finding 3b): the URL a `--index-url` flag names comes from the
+      // AGENT's command line, not the rule author, and fetching it would
+      // reopen exactly the SSRF surface this module's header explains it
+      // otherwise doesn't have to defend against.
+      result = { name: spec.name, requestedVersion: spec.requestedVersion, verdict: 'unverified', reason: 'private_index', fromCache: false }
     } else {
-      const remaining = deadline - now()
-      const existence = await checkPackageExistence(spec.name, lookupOpts, remaining)
-      let didYouMean: string[] | undefined
-      if (existence.verdict === 'not_found') {
-        didYouMean = await searchDidYouMean(spec.name, lookupOpts, deadline - now())
+      const cached = cache.get(spec.name, now(), ecosystem)
+      if (cached) {
+        result = {
+          name: spec.name,
+          requestedVersion: spec.requestedVersion,
+          verdict: cached.verdict,
+          reason: cached.reason,
+          ageDays: cached.ageDays,
+          createdAt: cached.createdAt,
+          didYouMean: cached.didYouMean,
+          fromCache: true,
+        }
+      } else {
+        const remaining = deadline - now()
+        const existence = await checkExistenceForEcosystem(ecosystem, spec.name, lookupOpts, remaining)
+        let didYouMean: string[] | undefined
+        // Did-you-mean search only exists against npm's `-/v1/search`
+        // endpoint — PyPI/crates.io/the Go proxy have no equivalent this
+        // module calls, and guessing one would spend a second request out
+        // of the shared per-command budget for no benefit (the same
+        // budget-starvation concern finding 3e raises about Go applies
+        // here too).
+        if (existence.verdict === 'not_found' && ecosystem === 'npm') {
+          didYouMean = await searchDidYouMean(spec.name, { registryBaseUrl, fetchImpl, maxBytes }, deadline - now())
+        }
+        result = {
+          name: spec.name,
+          requestedVersion: spec.requestedVersion,
+          verdict: existence.verdict,
+          reason: existence.reason,
+          ageDays: existence.ageDays,
+          createdAt: existence.createdAt,
+          didYouMean,
+          fromCache: false,
+        }
+        cache.set({
+          name: spec.name,
+          ecosystem,
+          verdict: result.verdict,
+          reason: result.reason,
+          ageDays: result.ageDays,
+          createdAt: result.createdAt,
+          didYouMean: result.didYouMean,
+          checkedAt: now(),
+        }, now())
       }
-      result = {
-        name: spec.name,
-        requestedVersion: spec.requestedVersion,
-        verdict: existence.verdict,
-        reason: existence.reason,
-        ageDays: existence.ageDays,
-        createdAt: existence.createdAt,
-        didYouMean,
-        fromCache: false,
-      }
-      cache.set({
-        name: spec.name,
-        verdict: result.verdict,
-        reason: result.reason,
-        ageDays: result.ageDays,
-        createdAt: result.createdAt,
-        didYouMean: result.didYouMean,
-        checkedAt: now(),
-      }, now())
     }
-    seen.set(spec.name, result)
+    seen.set(key, result)
     results.push(result)
   }
   return results
@@ -527,8 +1022,16 @@ export async function checkPackages(specs: PackageSpec[], opts: EvaluateInstallO
  * `decidePackageAction` prompt instead of allowing an unverified install
  * through, without ever touching the network on this call.
  *
- * `misses` carries the deduplicated specs (by name) that need a real
- * registry lookup, in first-seen order — pass them to
+ * A `privateIndex` spec (finding 3b) never becomes a cache miss at all —
+ * it resolves to `unverified`/`private_index` directly, on every call,
+ * with zero I/O either way, and is never queued into `misses`: caching it
+ * under `pypi:<name>` would mean a LATER plain `pip install <same name>`
+ * (no `--index-url` this time) reads back the private-index verdict for
+ * the rest of the TTL — a fresh instance of the exact cross-context-bleed
+ * bug finding 3c fixes for cross-ecosystem collisions.
+ *
+ * `misses` carries the deduplicated specs (by ecosystem+name) that need a
+ * real registry lookup, in first-seen order — pass them to
  * `scheduleBackgroundVerification` to fill the cache for the NEXT call on
  * the same package.
  */
@@ -542,7 +1045,12 @@ export function checkPackagesCacheOnly(
   const missSeen = new Set<string>()
   const t = now()
   for (const spec of specs) {
-    const cached = cache.get(spec.name, t)
+    const ecosystem = ecosystemForManager(spec.manager)
+    if (spec.privateIndex) {
+      results.push({ name: spec.name, requestedVersion: spec.requestedVersion, verdict: 'unverified', reason: 'private_index', fromCache: false })
+      continue
+    }
+    const cached = cache.get(spec.name, t, ecosystem)
     if (cached) {
       results.push({
         name: spec.name,
@@ -562,8 +1070,9 @@ export function checkPackagesCacheOnly(
         reason: 'not_yet_checked',
         fromCache: false,
       })
-      if (!missSeen.has(spec.name)) {
-        missSeen.add(spec.name)
+      const missKey = `${ecosystem}:${spec.name}`
+      if (!missSeen.has(missKey)) {
+        missSeen.add(missKey)
         misses.push(spec)
       }
     }
@@ -603,12 +1112,18 @@ export interface PackageRuleDecision {
 
 function buildNotFoundMessage(r: PackageCheckResult): string {
   const suggestion = r.didYouMean?.length ? ` Did you mean: ${r.didYouMean.join(', ')}?` : ''
-  return `Package "${r.name}" does not exist on the npm registry — this install is unfulfillable regardless of intent.${suggestion}`
+  return `Package "${r.name}" does not exist on its package registry — this install is unfulfillable regardless of intent.${suggestion}`
 }
 
 function buildUnverifiedMessage(r: PackageCheckResult): string {
   if (r.reason === 'scoped_not_public') {
     return `unverified — "${r.name}" returned 404 from the public npm registry. Scoped names 404 publicly for private/org registry packages too, so this is not proof it doesn't exist — treating as unverified, not denying.`
+  }
+  if (r.reason === 'private_index') {
+    return `unverified — "${r.name}" targets a non-default package index (--index-url, --extra-index-url, or -i). PyPI has no scoped-name convention like npm to signal "private" by name alone, and keel does not query agent-supplied index URLs (that would reopen the SSRF surface this module's own registry lookups are otherwise exempt from) — approve only if you recognize and trust this index.`
+  }
+  if (r.reason === 'go_ambiguous') {
+    return `unverified — "${r.name}" 404'd at its literal import path on the Go module proxy. This is the routine, expected result for a subpackage of a larger module, not proof of nonexistence — the Go proxy indexes MODULE roots, not every importable subpackage path. Approve if this looks like a plausible subpackage of a real module.`
   }
   if (r.reason === 'budget_exhausted') {
     return `unverified — registry lookup budget exhausted before "${r.name}" could be checked`
@@ -644,7 +1159,7 @@ export function decidePackageAction(results: PackageCheckResult[], ageThresholdD
   const young = results.find(r => r.verdict === 'exists' && r.ageDays !== undefined && r.ageDays < ageThresholdDays)
   if (young) return { reason: 'age_gate', message: buildAgeGateMessage(young, ageThresholdDays), result: young }
 
-  return { reason: 'ok', message: 'All installed packages verified against the npm registry.' }
+  return { reason: 'ok', message: 'All installed packages verified against their package registries.' }
 }
 
 /** Convenience: extract + check + decide in one call. Primarily for tests/CLI use; the pipeline calls the three steps separately to keep the cheap extraction gate visible. */
