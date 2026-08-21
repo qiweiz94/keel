@@ -384,16 +384,59 @@ anyway. `KeelRule.patterns[].redact_span` (opt-in boolean, `types.ts`) is
 the fix: only a pattern explicitly marked `redact_span: true` — because its
 match span is known to fully cover the secret bytes, not just a nearby
 label — can drive a mutation. The shipped rule marks its five full-token
-patterns (`AKIA`, `ghp_`, `github_pat_`, `xox[baprs]-`, `sk-`) this way and
-deliberately leaves the three label/header patterns unmarked; a
-label/header match is still detected (it contributes to
-`EnforceResult.redacted_rule_ids` and the message) and still worth a
-warning, it just never contributes a span to `redacted_output`. Regression
-coverage for exactly this — a span-safe match redacting correctly *while a
-span-unsafe match in the same output survives fully intact* — lives in
-`packages/core/src/enforce/__tests__/output-redaction.test.ts`'s
+patterns (`AKIA`, `ghp_`, `github_pat_`, `xox[baprs]-`, `sk-`) this way. A
+label/header match that is NOT marked `redact_span: true` is still detected
+(it contributes to `EnforceResult.redacted_rule_ids` and the message) and
+still worth a warning even when it also can't drive a mutation itself —
+see `redact_widen` immediately below for the three patterns that now widen
+instead of staying label-only forever. Regression coverage for the
+redact_span invariant itself — a span-safe match redacting correctly
+*while a span-unsafe match in the same output survives fully intact* —
+lives in `packages/core/src/enforce/__tests__/output-redaction.test.ts`'s
 "redact_span correctness" block and `opencode-plugin/scripts/load-test.js`'s
 "redact_span correctness" check.
+
+**Widening a label/header match to cover the secret it precedes
+(`redact_widen`, this lane, `fix/output-redaction-span`)**: the three
+patterns above that only match a LABEL or HEADER — `aws_secret_access_key
+[\t ]*[:=]`, `BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY`, and `-----BEGIN
+PRIVATE KEY-----` — do not have their match span turned into `redact_span:
+true` (their match still isn't the secret), but each is now marked with
+`KeelRule.patterns[].redact_widen` (`'line' | 'pem'`, opt-in,
+**output-path-only** — Tier 5's write-side content check in
+`evaluateTiers()` ignores this field completely, exactly like
+`redact_span`; the write-side deny-on-write decision and its
+`secret-confidence.ts` false-positive filter are both untouched by this
+field's existence). `evaluateOutput()` uses it to extend the label match
+FORWARD, bounded, before adding it as a redaction span:
+
+- `aws_secret_access_key[\t ]*[:=]` → `redact_widen: line`: the value
+  typically follows on the same line, so the widened span runs from the
+  label to the next newline (or a 4KB bounded cap if no newline is found
+  that close — a single-line runaway/adversarial blob must not turn this
+  into an unbounded scan).
+- `BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY` / `-----BEGIN PRIVATE
+  KEY-----` → `redact_widen: pem`: PEM bodies are multi-line, so the
+  widened span runs from the label forward to a matching `-----END ...
+  PRIVATE KEY-----` footer (inclusive), searched within an 8KB bounded
+  window.
+
+Both searches are bounded — a SLICE of the scanned text, not an unbounded
+`[\s\S]*?`-shaped regex reaching for a footer that may not exist — because
+tool output can be adversarial or simply malformed (truncated, no closing
+boundary at all). When no footer/newline is found within the bound, the
+match is still redacted up to the bound (never left fully exposed just
+because the boundary wasn't found) and the rule id is added to
+`EnforceResult.redaction_incomplete_rule_ids` so a caller can tell "widened
+and redacted, but the boundary was never confirmed" apart from a clean,
+fully-bounded widen. See `pipeline.ts`'s `widenLabelSpan()` and
+`WIDEN_LINE_MAX_CHARS`/`WIDEN_PEM_MAX_CHARS`, and `types.ts`'s
+`redact_widen` doc comment, for the exact bounds and reasoning. This closes
+the gap the rest of this section used to describe as permanent — see "What
+this does NOT cover" below for what is still true after this change (only
+top-level metadata scanning, the 256KB overall scan bound, the missing
+Cursor/Cline/generic wiring, and the single-command combined read+send
+case remain out of scope).
 
 **Applying it — OpenCode** (`packages/opencode-plugin/src/plugin.ts`'s
 `tool.execute.after` handler): mutates `output.output`, `output.title`, and
@@ -448,15 +491,19 @@ document.
 
 ### What this does NOT cover, stated plainly
 
-- **Label/header-only pattern matches never redact**, by design (the
-  `redact_span` invariant above) — a PEM private key body or an
-  `aws_secret_access_key=...` value flows through completely unredacted on
-  every host, with at most a detection note in the trace/message. This is
-  a real, known gap, not an oversight: widening the span for these
-  patterns (e.g., a `BEGIN...END` block match) was considered and set
-  aside as its own, separately-risky piece of work (a multi-line match
-  spanning an unbounded body has its own correctness questions), not
-  folded into this lane silently.
+- **Label/header-only pattern matches now redact their value/body too, for
+  the three shipped patterns marked `redact_widen`** — see "Widening a
+  label/header match" above — a PEM private key body or an
+  `aws_secret_access_key=...` value is redacted along with its label on
+  OpenCode (the one host that can actually rewrite delivered output; see
+  the table above). This closes what used to be a permanent, "considered
+  and set aside" gap here. What is still true: the widen is BOUNDED (a
+  4KB/8KB cap, not an unbounded scan for the closing boundary) — a match
+  that hits its cap before finding a footer/newline is still redacted up
+  to the cap, but flagged `redaction_incomplete_rule_ids` rather than
+  claimed complete; a THIRD-PARTY custom `type: content` rule that sets
+  `redact_span` or `redact_widen` on its own pattern gets the exact same
+  treatment, this is not special-cased to the shipped rule.
 - **Only top-level `output.metadata` string values are scanned** on
   OpenCode — a tool whose metadata nests a secret inside a further object
   or array is not covered; no other tool's metadata shape has been

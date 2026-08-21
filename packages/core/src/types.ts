@@ -168,9 +168,40 @@ export interface KeelRule {
    * A pattern without `redact_span: true` can still MATCH and be detected
    * (contributes to `EnforceResult.redacted_rule_ids` and the message) —
    * it just never contributes to `redacted_output`, the same restraint
-   * `mode: observe` gets for a different reason.
+   * `mode: observe` gets for a different reason — UNLESS `redact_widen`
+   * (below) is also set on it.
+   *
+   * `redact_widen` (opt-in, default absent — output-path-only, exactly like
+   * `redact_span` above, and with the same "Tier 5's write-side content
+   * blocking ignores this field entirely" scoping): for a pattern whose
+   * match span is a LABEL/HEADER rather than the secret itself, this tells
+   * `EnforcementPipeline.evaluateOutput()` how to extend that match forward
+   * to cover the secret bytes that follow it, so the WHOLE span (label +
+   * value/body) gets redacted instead of leaving the label stripped and the
+   * real secret sitting next to it untouched. Ignored (has no effect) on a
+   * pattern that already has `redact_span: true` — that pattern's match
+   * already IS the whole secret, nothing to widen.
+   *
+   *   - `'line'`: the label is immediately followed by its value on the
+   *     SAME line (e.g. `aws_secret_access_key[:=]<value>`) — widen to the
+   *     next newline, or a bounded character cap if no newline is found
+   *     within that bound (a single-line runaway/adversarial blob must not
+   *     turn this into an unbounded scan).
+   *   - `'pem'`: the label is a PEM `BEGIN` header whose body is MULTI-LINE,
+   *     ending at a matching `END ... PRIVATE KEY` footer — widen forward to
+   *     that footer (inclusive), or up to a bounded character cap if no
+   *     footer is found within it. A capped, footer-less widen still
+   *     redacts everything up to the cap (never leaves the match fully
+   *     unredacted just because the footer wasn't found) and is flagged as
+   *     possibly incomplete — see `EnforceResult.redaction_incomplete_rule_ids`.
+   *
+   * Both widen strategies search a BOUNDED window forward of the label
+   * match, never an unbounded regex — see pipeline.ts's
+   * `WIDEN_LINE_MAX_CHARS`/`WIDEN_PEM_MAX_CHARS` and evaluateOutput()'s own
+   * comment for the DoS-safety reasoning. See docs/exfil.md's "Output
+   * redaction" section for the full design writeup.
    */
-  patterns?: ({ regex?: string; prefix?: string; redact_span?: boolean })[]
+  patterns?: ({ regex?: string; prefix?: string; redact_span?: boolean; redact_widen?: 'line' | 'pem' })[]
 
   // ── Network rules ──
   except?: string[]                 // domains to allow
@@ -590,6 +621,21 @@ export interface EnforceResult {
    * this field yet.
    */
   scan_truncated?: boolean
+  /**
+   * Every `type: content` rule id whose `redact_widen: 'pem'` (or `'line'`)
+   * pattern matched but hit its bounded search cap before finding a natural
+   * closing boundary (a matching PEM `END` footer, or a newline) —
+   * `types.ts`'s `redact_widen` doc comment on `KeelRule.patterns[]`. The
+   * span up to the cap was still redacted (never left fully exposed just
+   * because the boundary wasn't found), but the caller should treat the
+   * redaction as possibly incomplete: more secret bytes may sit past the
+   * cap, unscanned. Same "a human-readable message note is not enough for a
+   * caller that branches on the verdict programmatically" reasoning as
+   * `scan_truncated` above. Absent (not an empty array) when nothing hit
+   * the cap, so old trace lines and JSON.stringify output stay
+   * byte-identical for anyone not reading this field yet.
+   */
+  redaction_incomplete_rule_ids?: string[]
 }
 
 export interface RedirectDirective {

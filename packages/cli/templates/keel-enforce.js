@@ -8984,6 +8984,24 @@ function worstSecretVerdict(regexSource, content) {
 // ../core/src/enforce/pipeline.ts
 var OBSERVE_CONTINUE = /* @__PURE__ */ Symbol("keel:observe-continue");
 var MAX_OUTPUT_SCAN_CHARS = 256 * 1024;
+var WIDEN_LINE_MAX_CHARS = 4 * 1024;
+var WIDEN_PEM_MAX_CHARS = 8 * 1024;
+var PEM_FOOTER_REGEX = /-----END(?: (RSA|OPENSSH|EC|DSA))? PRIVATE KEY-----/gi;
+function widenLabelSpan(scanText, labelStart, labelEnd, strategy) {
+  if (strategy === "line") {
+    const cap2 = Math.min(scanText.length, labelEnd + WIDEN_LINE_MAX_CHARS);
+    const window2 = scanText.slice(labelEnd, cap2);
+    const nl = window2.indexOf("\n");
+    if (nl !== -1) return { end: labelEnd + nl, incomplete: false };
+    return { end: cap2, incomplete: cap2 < scanText.length };
+  }
+  const cap = Math.min(scanText.length, labelEnd + WIDEN_PEM_MAX_CHARS);
+  const window = scanText.slice(labelEnd, cap);
+  PEM_FOOTER_REGEX.lastIndex = 0;
+  const footer = PEM_FOOTER_REGEX.exec(window);
+  if (footer) return { end: labelEnd + footer.index + footer[0].length, incomplete: false };
+  return { end: cap, incomplete: cap < scanText.length };
+}
 var EnforcementPipeline = class {
   config;
   verificationTracker;
@@ -9235,6 +9253,7 @@ var EnforcementPipeline = class {
     const matchedRuleIds = [];
     const observeOnlyRuleIds = [];
     const spanUnsafeRuleIds = [];
+    const widenIncompleteRuleIds = [];
     let matchedPattern;
     const candidateSpans = [];
     for (const rule of rules) {
@@ -9254,7 +9273,20 @@ var EnforcementPipeline = class {
           continue;
         }
         if (pattern.redact_span !== true) {
-          if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id);
+          if (!pattern.redact_widen) {
+            if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id);
+            continue;
+          }
+          const widenFinder = new RegExp(pattern.regex, "gi");
+          let widenOccurrence;
+          while (widenOccurrence = widenFinder.exec(scanText)) {
+            const labelStart = widenOccurrence.index;
+            const labelEnd = labelStart + widenOccurrence[0].length;
+            const widened = widenLabelSpan(scanText, labelStart, labelEnd, pattern.redact_widen);
+            candidateSpans.push({ start: labelStart, end: widened.end, ruleId: rule.id });
+            if (widened.incomplete && !widenIncompleteRuleIds.includes(rule.id)) widenIncompleteRuleIds.push(rule.id);
+            if (widenOccurrence[0].length === 0) widenFinder.lastIndex++;
+          }
           continue;
         }
         const finder = new RegExp(pattern.regex, "gi");
@@ -9299,16 +9331,18 @@ var EnforcementPipeline = class {
       if (spanUnsafeRuleIds.length) notes.push(`${spanUnsafeRuleIds.join(", ")} matched a label/signature only (redact_span not set) \u2014 recorded, not redacted, because the match does not bound the secret`);
       const note = notes.length ? ` (${notes.join("; ")})` : "";
       const result2 = this.result("allow", "", `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5);
-      const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds];
+      const detectedOnly = [.../* @__PURE__ */ new Set([...observeOnlyRuleIds, ...spanUnsafeRuleIds])];
       if (detectedOnly.length) result2.redacted_rule_ids = detectedOnly;
       if (truncated) result2.scan_truncated = true;
       return result2;
     }
-    const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds];
-    const result = this.result("redact", matchedRuleIds[0], `Tool output contained secret-shaped content (${allIds.join(", ")}) \u2014 redacted before delivery${truncNote}.`, start, false, 5);
+    const allIds = [.../* @__PURE__ */ new Set([...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds])];
+    const widenNote = widenIncompleteRuleIds.length ? ` (${widenIncompleteRuleIds.join(", ")} widened to its bounded cap without finding a closing boundary \u2014 redacted up to the cap; treat as possibly incomplete)` : "";
+    const result = this.result("redact", matchedRuleIds[0], `Tool output contained secret-shaped content (${allIds.join(", ")}) \u2014 redacted before delivery${widenNote}${truncNote}.`, start, false, 5);
     result.matched_pattern = matchedPattern;
     result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted;
     result.redacted_rule_ids = allIds;
+    if (widenIncompleteRuleIds.length) result.redaction_incomplete_rule_ids = widenIncompleteRuleIds;
     if (truncated) result.scan_truncated = true;
     return result;
   }
@@ -12325,13 +12359,18 @@ rules:
     # EnforcementPipeline.evaluateOutput() (output redaction, a DIFFERENT
     # consumer than the deny-on-write check below \u2014 this field has no
     # effect on that check) to replace in place. The last three patterns
-    # here deliberately do NOT set it: they match only a LABEL or HEADER
-    # (aws_secret_access_key=, a PEM BEGIN line) \u2014 the real secret sits
-    # AFTER the match, uncovered by it. Redacting just the label would
-    # strip the label and leave the actual key/PEM body sitting right next
-    # to a "[redacted]" marker \u2014 a false-confidence signal worse than no
-    # redaction at all. See types.ts's redact_span doc comment and
-    # docs/exfil.md's "Output redaction" section.
+    # here match only a LABEL or HEADER (aws_secret_access_key=, a PEM
+    # BEGIN line) \u2014 the real secret sits AFTER the match, uncovered by it \u2014
+    # so they do NOT set redact_span. Redacting just the label would strip
+    # the label and leave the actual key/PEM body sitting right next to a
+    # "[redacted]" marker \u2014 a false-confidence signal worse than no
+    # redaction at all. redact_widen (opt-in, output-path-only, same "no
+    # effect on the deny-on-write check below" scoping as redact_span) is
+    # the fix: it tells evaluateOutput() how to extend a label/header match
+    # forward, bounded, to cover the value/body that follows it, so the
+    # WHOLE span gets redacted instead of just the label. See types.ts's
+    # redact_span and redact_widen doc comments and docs/exfil.md's "Output
+    # redaction" section.
     patterns:
       - regex: "AKIA[0-9A-Z]{16}"
         redact_span: true
@@ -12344,8 +12383,11 @@ rules:
       - regex: "sk-[A-Za-z0-9_]{24,}"
         redact_span: true
       - regex: "BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY"
+        redact_widen: pem
       - regex: "-----BEGIN PRIVATE KEY-----"
+        redact_widen: pem
       - regex: "aws_secret_access_key[	 ]*[:=]"
+        redact_widen: line
     action: deny
     level: sprint
     priority: 75

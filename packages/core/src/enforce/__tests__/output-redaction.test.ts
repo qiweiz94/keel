@@ -409,6 +409,276 @@ function makeOverlapPipeline(): EnforcementPipeline {
   })
 }
 
+// ── redact_widen (fix/output-redaction-span) ──────────────────────────
+//
+// The three shipped label/header-only patterns (`aws_secret_access_key
+// [\t ]*[:=]`, `BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY`, `-----BEGIN
+// PRIVATE KEY-----`) used to detect-but-never-redact: their match span
+// covers only the label/header, not the secret bytes that follow it, so
+// evaluateOutput() correctly refused to mutate them (see the "redact_span
+// correctness" block above). `redact_widen` (opt-in, output-path-only —
+// types.ts's doc comment on KeelRule.patterns[].redact_widen) extends a
+// label match forward, bounded, to cover the value/body that follows it,
+// so those three patterns can now actually redact the secret instead of
+// just flagging it. These tests use a dedicated rules fixture (not
+// CONTENT_RULES above) so the pre-existing "span-UNSAFE... NEVER mutates"
+// tests keep proving the field is opt-in: a pattern with no redact_widen
+// set is completely untouched by this feature.
+const WIDEN_RULES = `version: 1
+rules:
+  - id: no-pem-blocks-widen
+    type: content
+    patterns:
+      - regex: "-----BEGIN PRIVATE KEY-----"
+        redact_widen: pem
+    action: deny
+    message: "PEM private key material."
+  - id: no-aws-secret-label-widen
+    type: content
+    patterns:
+      - regex: "aws_secret_access_key[\\t ]*[:=]"
+        redact_widen: line
+    action: deny
+    message: "AWS secret access key label."
+`
+
+function makeWidenPipeline(): EnforcementPipeline {
+  const parsed = parseRulesContent(WIDEN_RULES, '/tmp/output-redaction-widen-rules.md')
+  expect(validateRules(parsed.rules)).toEqual([])
+  return new EnforcementPipeline({
+    level: 'balanced',
+    context: 'local',
+    cache: new ActionCache({ maxSize: 100 }),
+    contentTracker: new ContentTracker(),
+    sequenceDetector: new SequenceDetector(),
+    flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
+    ruleHierarchy: { global: null, user: null, project: parsed, local: null },
+    ruleVersion: 1,
+    allowedFixTransforms: true,
+  })
+}
+
+describe('evaluateOutput() — redact_widen widens a label/header match to cover the secret that follows it', () => {
+  it('a full PEM private key body is ENTIRELY redacted — header, base64 body, AND footer all gone, not just the BEGIN line', async () => {
+    const p = makeWidenPipeline()
+    const body = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEA\nAoIBAQC7VJTUt9Us8cKj\nsomeMoreBase64MaterialHere1234567890=='
+    const text = `key follows:\n-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\ndone`
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.rule_id).toBe('no-pem-blocks-widen')
+    expect(r.redacted_output).toBeDefined()
+    // The discriminating assertions: the actual key MATERIAL — not just the
+    // BEGIN header — must be gone. A bug that only widened to the next
+    // newline (stopping right after the header line) would still leave
+    // every one of these base64 lines present.
+    expect(r.redacted_output).not.toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEA')
+    expect(r.redacted_output).not.toContain('AoIBAQC7VJTUt9Us8cKj')
+    expect(r.redacted_output).not.toContain('someMoreBase64MaterialHere1234567890==')
+    expect(r.redacted_output).not.toContain('-----BEGIN PRIVATE KEY-----')
+    expect(r.redacted_output).not.toContain('-----END PRIVATE KEY-----')
+    // Content before and after the PEM block is untouched.
+    expect(r.redacted_output).toContain('key follows:')
+    expect(r.redacted_output).toContain('done')
+    expect(r.redacted_output).toContain('[redacted-by-keel:no-pem-blocks-widen]')
+    // The footer WAS found within the bound, so this is a clean, complete
+    // widen — never flagged incomplete.
+    expect(r.redaction_incomplete_rule_ids).toBeUndefined()
+  })
+
+  it('aws_secret_access_key=<value> redacts BOTH the label and the value — a following unrelated line of output is left completely untouched', async () => {
+    const p = makeWidenPipeline()
+    const text = 'aws_secret_access_key=abc123\nNEXT LINE OF LOG OUTPUT'
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.rule_id).toBe('no-aws-secret-label-widen')
+    // Both the label AND the value are gone — this is the exact assertion
+    // the pre-widen behavior failed (it left the label AND the value both
+    // fully present, having refused to mutate at all).
+    expect(r.redacted_output).not.toContain('aws_secret_access_key')
+    expect(r.redacted_output).not.toContain('abc123')
+    // Correctness discipline (task requirement): the widen must stop at the
+    // actual value boundary (the newline), never swallow the following,
+    // unrelated line.
+    expect(r.redacted_output).toContain('NEXT LINE OF LOG OUTPUT')
+    expect(r.redacted_output).toBe('[redacted-by-keel:no-aws-secret-label-widen]\nNEXT LINE OF LOG OUTPUT')
+    expect(r.redaction_incomplete_rule_ids).toBeUndefined()
+  })
+
+  it('a quoted aws_secret_access_key value stops at the line, not at the quote or a mid-value space', async () => {
+    const p = makeWidenPipeline()
+    const text = 'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG bPxRfiCYEXAMPLEKEY"\nafter'
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.redacted_output).not.toContain('wJalrXUtnFEMI')
+    expect(r.redacted_output).not.toContain('bPxRfiCYEXAMPLEKEY')
+    expect(r.redacted_output).toContain('after')
+  })
+
+  it('a PEM block with NO matching END footer within the bounded window degrades safely: redacts up to the cap, does not hang, does not swallow the rest of a large output, and still flags something was detected', async () => {
+    const p = makeWidenPipeline()
+    // No END footer anywhere in this text at all — a malformed/truncated
+    // capture, or an adversarial attempt to make the widen scan unboundedly.
+    const filler = 'A'.repeat(64 * 1024) // 64KB, comfortably past the 8KB PEM widen cap
+    const text = `-----BEGIN PRIVATE KEY-----\n${filler}`
+    const started = Date.now()
+    const r = await p.evaluateOutput(outputInput(text))
+    // Does not hang — a generous but finite budget for a pathological case.
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(r.action).toBe('redact')
+    expect(r.rule_id).toBe('no-pem-blocks-widen')
+    // Flags the redaction as possibly incomplete — the programmatic signal,
+    // not just prose in the message.
+    expect(r.redaction_incomplete_rule_ids).toEqual(['no-pem-blocks-widen'])
+    expect(r.message.toLowerCase()).toContain('incomplete')
+    // Does NOT swallow the rest of a large output: the vast majority of the
+    // 64KB filler — everything past the ~8KB bounded cap — must survive
+    // untouched in the output, proving this degraded to a BOUNDED redaction
+    // (well over half the original text survives) rather than either (a)
+    // redacting nothing (leaving the header exposed) or (b) redacting the
+    // entire remainder of the output. (Only ~8KB of the ~64KB is ever
+    // consumed by the redaction span + its short marker, so this bound is
+    // generous on purpose — it does not depend on the exact cap value.)
+    expect(r.redacted_output!.length).toBeGreaterThan(text.length / 2)
+    expect(r.redacted_output).toContain('A'.repeat(1024)) // untouched filler tail survives
+  })
+
+  it('an aws_secret_access_key value with NO newline within the bounded window also degrades safely, flagged incomplete', async () => {
+    const p = makeWidenPipeline()
+    const filler = 'B'.repeat(16 * 1024) // past the 4KB line-widen cap
+    const text = `aws_secret_access_key=${filler}`
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.redaction_incomplete_rule_ids).toEqual(['no-aws-secret-label-widen'])
+    // The tail of the filler, past the bounded cap, survives untouched.
+    expect(r.redacted_output).toContain('B'.repeat(1024))
+  })
+
+  it('a PEM block WITH its END footer found within the bound is NOT flagged incomplete, even in a large surrounding output', async () => {
+    const p = makeWidenPipeline()
+    const filler = 'C'.repeat(64 * 1024)
+    const text = `${filler}\n-----BEGIN PRIVATE KEY-----\nshortbody\n-----END PRIVATE KEY-----\n${filler}`
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.redacted_output).not.toContain('shortbody')
+    expect(r.redaction_incomplete_rule_ids).toBeUndefined()
+  })
+
+  it('does NOT affect a pattern with redact_span: true in the SAME output — the two mechanisms compose independently', async () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: no-full-secret
+    type: content
+    patterns:
+      - regex: "AKIA[0-9A-Z]{16}"
+        redact_span: true
+    action: deny
+    message: "Full secret."
+  - id: no-pem-blocks-widen
+    type: content
+    patterns:
+      - regex: "-----BEGIN PRIVATE KEY-----"
+        redact_widen: pem
+    action: deny
+    message: "PEM private key material."
+`, '/tmp/output-redaction-widen-compose.md')
+    expect(validateRules(parsed.rules)).toEqual([])
+    const p = new EnforcementPipeline({
+      level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(), flowTracker: new FlowTracker(),
+      overrideStore: noopOverrideStore,
+      ruleHierarchy: { global: null, user: null, project: parsed, local: null },
+      ruleVersion: 1, allowedFixTransforms: true,
+    })
+    const text = 'AKIAABCDEFGHIJKLMNOP\n-----BEGIN PRIVATE KEY-----\nbodyhere\n-----END PRIVATE KEY-----'
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    expect(r.redacted_output).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(r.redacted_output).not.toContain('bodyhere')
+    expect(r.redacted_rule_ids).toEqual(expect.arrayContaining(['no-full-secret', 'no-pem-blocks-widen']))
+  })
+
+  it('a pattern with NO redact_widen set stays opt-out: unaffected regression check reusing the original CONTENT_RULES fixture', async () => {
+    // Regression guard, not a new mechanism test: CONTENT_RULES' own
+    // no-aws-secret-label/no-pem-blocks rules (above) have no redact_widen,
+    // so this is the same assertion as the "span-UNSAFE... NEVER mutates"
+    // tests above, re-run here to make the opt-in boundary explicit right
+    // next to the widen tests that exercise the opted-IN behavior.
+    const p = makePipeline()
+    const text = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEA\n-----END PRIVATE KEY-----'
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('allow')
+    expect(r.redacted_output).toBeUndefined()
+  })
+
+  it('a rule mixing an UNMARKED pattern with a redact_span/redact_widen pattern does not duplicate its id in redacted_rule_ids or the message', async () => {
+    // A single content rule with two patterns: one plain (no redact_span,
+    // no redact_widen — lands in the internal "span-unsafe" bucket) and one
+    // redact_widen (lands in the "matched/mutated" bucket). Both patterns
+    // matching the same output is the case that used to produce a
+    // duplicate rule id across the two internal buckets when they were
+    // concatenated into the public redacted_rule_ids/message without
+    // dedup.
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: mixed-pattern-rule
+    type: content
+    patterns:
+      - regex: "UNMARKED_LABEL"
+      - regex: "-----BEGIN PRIVATE KEY-----"
+        redact_widen: pem
+    action: deny
+    message: "Mixed pattern safety within one rule."
+`, '/tmp/output-redaction-dedup.md')
+    expect(validateRules(parsed.rules)).toEqual([])
+    const p = new EnforcementPipeline({
+      level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(), flowTracker: new FlowTracker(),
+      overrideStore: noopOverrideStore,
+      ruleHierarchy: { global: null, user: null, project: parsed, local: null },
+      ruleVersion: 1, allowedFixTransforms: true,
+    })
+    const text = 'UNMARKED_LABEL and -----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY-----'
+    const r = await p.evaluateOutput(outputInput(text))
+    expect(r.action).toBe('redact')
+    // The id appears exactly ONCE, not twice, in redacted_rule_ids.
+    expect(r.redacted_rule_ids).toEqual(['mixed-pattern-rule'])
+    // And exactly once in the human-readable message too.
+    const occurrences = (r.message.match(/mixed-pattern-rule/g) || []).length
+    expect(occurrences).toBe(1)
+  })
+
+  it('trace-honesty invariant: evaluateOutput() itself never records or claims anything — it is a pure text-in, verdict-out function, same as every other redact_span consumer', async () => {
+    // evaluateOutput() has no trace-writing of its own (see pipeline.ts's
+    // header comment on this method and docs/exfil.md's "recordRedaction"
+    // discussion): the ONLY place a "redact" trace entry is ever written is
+    // a host integration (plugin.ts's recordRedaction), called strictly
+    // AFTER it has actually applied redacted_output back onto the real
+    // output object. This pipeline-level test pins the half of that
+    // invariant this file can see: a widen-driven redact verdict is still
+    // produced by a call that touches NOTHING but its own return value —
+    // no sequence/flow tracker contamination, no persisted state — so a
+    // caller applying (or not applying) redacted_output is the only thing
+    // that can ever make a trace claim true or false.
+    const sequenceDetector = new SequenceDetector()
+    const flowTracker = new FlowTracker()
+    const seqSpy = vi.spyOn(sequenceDetector, 'record')
+    const flowSpy = vi.spyOn(flowTracker, 'record')
+    const parsed = parseRulesContent(WIDEN_RULES, '/tmp/output-redaction-widen-trace.md')
+    const p = new EnforcementPipeline({
+      level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 100 }),
+      contentTracker: new ContentTracker(), sequenceDetector, flowTracker,
+      overrideStore: noopOverrideStore,
+      ruleHierarchy: { global: null, user: null, project: parsed, local: null },
+      ruleVersion: 1, allowedFixTransforms: true,
+    })
+    const r = await p.evaluateOutput(outputInput('aws_secret_access_key=abc123\ndone'))
+    expect(r.action).toBe('redact')
+    expect(seqSpy).not.toHaveBeenCalled()
+    expect(flowSpy).not.toHaveBeenCalled()
+  })
+})
+
 describe('evaluateOutput() — overlapping redact_span:true patterns never leave a "redacted" span exposed', () => {
   it('STAGGERED overlap: the trailing digits a buggy sequential mutation would leave exposed are gone, and every contributing rule is honestly credited only for bytes actually removed', async () => {
     const p = makeOverlapPipeline()

@@ -77,6 +77,71 @@ const OBSERVE_CONTINUE = Symbol('keel:observe-continue')
  */
 const MAX_OUTPUT_SCAN_CHARS = 256 * 1024
 
+/**
+ * Bounds for `redact_widen` (types.ts's doc comment on
+ * `KeelRule.patterns[].redact_widen`) — widening a LABEL/HEADER-only
+ * pattern's match forward to cover the secret bytes that follow it, for
+ * `EnforcementPipeline.evaluateOutput()` only. Both are deliberately
+ * BOUNDED character caps, not unbounded regexes (`[\s\S]*?` up to a
+ * lazily-matched footer, or similar): output can be adversarial or simply
+ * malformed (no closing boundary at all), and a widen search has to
+ * degrade to "redact up to a safe cap, flag possibly-incomplete" rather
+ * than either (a) scanning unboundedly looking for a footer that never
+ * appears, or (b) leaving the match fully unredacted just because the
+ * footer wasn't found — see `widenLabelSpan`'s own comment below.
+ */
+const WIDEN_LINE_MAX_CHARS = 4 * 1024
+const WIDEN_PEM_MAX_CHARS = 8 * 1024
+
+/**
+ * PEM footer, covering every key type the shipped `BEGIN (RSA|OPENSSH|EC|
+ * DSA) PRIVATE KEY` / `-----BEGIN PRIVATE KEY-----` patterns can widen
+ * from: `-----END PRIVATE KEY-----` (PKCS8, no type) or `-----END <TYPE>
+ * PRIVATE KEY-----` (traditional/OpenSSH). The optional type group makes
+ * one regex correct for both shipped BEGIN patterns' bodies.
+ */
+const PEM_FOOTER_REGEX = /-----END(?: (RSA|OPENSSH|EC|DSA))? PRIVATE KEY-----/gi
+
+/**
+ * Widen a single LABEL/HEADER match — `[labelStart, labelEnd)` — forward to
+ * cover the secret bytes that follow it, per `strategy` (types.ts's
+ * `redact_widen` doc comment). Always returns an end index; `incomplete:
+ * true` means the widen hit its bounded cap before finding a natural
+ * closing boundary (a newline for `'line'`, a matching PEM footer for
+ * `'pem'`) — the caller still redacts up to that cap (never leaves the
+ * match fully unredacted just because the boundary wasn't found), but flags
+ * the result as possibly incomplete (`EnforceResult.
+ * redaction_incomplete_rule_ids`).
+ *
+ * Both branches search a SLICE of `scanText` bounded to the relevant max
+ * (`WIDEN_LINE_MAX_CHARS`/`WIDEN_PEM_MAX_CHARS`), not the rest of
+ * `scanText` itself — `String.indexOf`/`RegExp.exec` are both linear, so
+ * neither is catastrophic-backtracking-prone, but bounding the search
+ * WINDOW (not just the eventual redaction span) is what actually caps the
+ * work done per match regardless of how far away (or entirely absent) the
+ * next newline/footer is in a large or adversarial output.
+ */
+function widenLabelSpan(scanText: string, labelStart: number, labelEnd: number, strategy: 'line' | 'pem'): { end: number; incomplete: boolean } {
+  if (strategy === 'line') {
+    const cap = Math.min(scanText.length, labelEnd + WIDEN_LINE_MAX_CHARS)
+    const window = scanText.slice(labelEnd, cap)
+    const nl = window.indexOf('\n')
+    if (nl !== -1) return { end: labelEnd + nl, incomplete: false }
+    // No newline within the bounded window: stop at the cap. Incomplete
+    // only if there is more text past the cap this widen never looked at —
+    // if the cap coincides with the actual end of scanText, the "value"
+    // legitimately just ends there and nothing was left unscanned.
+    return { end: cap, incomplete: cap < scanText.length }
+  }
+  // strategy === 'pem'
+  const cap = Math.min(scanText.length, labelEnd + WIDEN_PEM_MAX_CHARS)
+  const window = scanText.slice(labelEnd, cap)
+  PEM_FOOTER_REGEX.lastIndex = 0
+  const footer = PEM_FOOTER_REGEX.exec(window)
+  if (footer) return { end: labelEnd + footer.index + footer[0].length, incomplete: false }
+  return { end: cap, incomplete: cap < scanText.length }
+}
+
 export interface PipelineConfig {
   level: ProtectionLevel
   context: RuleContext
@@ -444,17 +509,22 @@ export class EnforcementPipeline {
     const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text
     // Three buckets, not two — see `KeelRule.patterns[].redact_span`'s doc
     // comment in types.ts for the full reasoning. A match only ever lands
-    // in `matchedRuleIds` (actually mutated) when BOTH are true: the rule
-    // itself is enforcing (not `mode: observe`) AND the specific pattern
-    // that matched has `redact_span: true` — meaning its match span is
-    // known to fully cover the secret bytes, not just a nearby label.
-    // Everything else that matched is still recorded (`detectedOnlyRuleIds`)
-    // with the reason it did NOT drive a mutation, because a partial
-    // redaction that strips a label while leaving the real secret verbatim
-    // is a false-confidence signal — worse than no redaction at all.
+    // in `matchedRuleIds` (actually mutated) when EITHER: the rule itself is
+    // enforcing (not `mode: observe`) AND the specific pattern that matched
+    // has `redact_span: true` (its match span is known to fully cover the
+    // secret bytes, not just a nearby label) — OR the pattern has
+    // `redact_widen` set (types.ts's doc comment on
+    // `KeelRule.patterns[].redact_widen`), in which case the label match is
+    // widened forward to cover the value/body that follows it before being
+    // added as a candidate span. Everything else that matched is still
+    // recorded (`spanUnsafeRuleIds`) with the reason it did NOT drive a
+    // mutation, because a partial redaction that strips a label while
+    // leaving the real secret verbatim is a false-confidence signal — worse
+    // than no redaction at all.
     const matchedRuleIds: string[] = []
     const observeOnlyRuleIds: string[] = []
     const spanUnsafeRuleIds: string[] = []
+    const widenIncompleteRuleIds: string[] = []
     let matchedPattern: string | undefined
 
     // Every redact_span:true pattern's occurrences are located against the
@@ -486,8 +556,26 @@ export class EnforcementPipeline {
           continue // recorded, never mutates — see this method's header comment
         }
         if (pattern.redact_span !== true) {
-          if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id)
-          continue // recorded, never mutates — the match span doesn't bound the secret (types.ts's redact_span doc)
+          if (!pattern.redact_widen) {
+            if (!spanUnsafeRuleIds.includes(rule.id)) spanUnsafeRuleIds.push(rule.id)
+            continue // recorded, never mutates — the match span doesn't bound the secret (types.ts's redact_span doc)
+          }
+          // `redact_widen` set: this is still a LABEL/HEADER-only match, but
+          // one this pattern has opted in to widening — extend each
+          // occurrence forward to cover the value/body that follows,
+          // bounded (widenLabelSpan's own comment, above), rather than
+          // leaving it in spanUnsafeRuleIds untouched.
+          const widenFinder = new RegExp(pattern.regex, 'gi')
+          let widenOccurrence: RegExpExecArray | null
+          while ((widenOccurrence = widenFinder.exec(scanText))) {
+            const labelStart = widenOccurrence.index
+            const labelEnd = labelStart + widenOccurrence[0].length
+            const widened = widenLabelSpan(scanText, labelStart, labelEnd, pattern.redact_widen)
+            candidateSpans.push({ start: labelStart, end: widened.end, ruleId: rule.id })
+            if (widened.incomplete && !widenIncompleteRuleIds.includes(rule.id)) widenIncompleteRuleIds.push(rule.id)
+            if (widenOccurrence[0].length === 0) widenFinder.lastIndex++ // guard a zero-width pattern from looping forever
+          }
+          continue
         }
         // Locate every occurrence of THIS pattern against the original
         // text — a fresh 'g'-flagged regex so `.lastIndex` starts at 0
@@ -550,7 +638,7 @@ export class EnforcementPipeline {
       if (spanUnsafeRuleIds.length) notes.push(`${spanUnsafeRuleIds.join(', ')} matched a label/signature only (redact_span not set) — recorded, not redacted, because the match does not bound the secret`)
       const note = notes.length ? ` (${notes.join('; ')})` : ''
       const result = this.result('allow', '', `No secret-shaped content in tool output${note}${truncNote}`, start, false, 5)
-      const detectedOnly = [...observeOnlyRuleIds, ...spanUnsafeRuleIds]
+      const detectedOnly = [...new Set([...observeOnlyRuleIds, ...spanUnsafeRuleIds])]
       if (detectedOnly.length) result.redacted_rule_ids = detectedOnly
       // See scan_truncated's doc comment (types.ts): this is the path that
       // was lying by omission — a truncated scan that happened to find
@@ -562,11 +650,27 @@ export class EnforcementPipeline {
       if (truncated) result.scan_truncated = true
       return result
     }
-    const allIds = [...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds]
-    const result = this.result('redact', matchedRuleIds[0], `Tool output contained secret-shaped content (${allIds.join(', ')}) — redacted before delivery${truncNote}.`, start, false, 5)
+    // Set-deduped: a custom `type: content` rule can mix an unmarked
+    // pattern (lands in spanUnsafeRuleIds) with a redact_span:true or
+    // redact_widen pattern (lands in matchedRuleIds) — same rule id,
+    // different pattern, different bucket. Without dedup here the id would
+    // appear twice in this message and in the public `redacted_rule_ids`
+    // field.
+    const allIds = [...new Set([...matchedRuleIds, ...observeOnlyRuleIds, ...spanUnsafeRuleIds])]
+    // See EnforceResult.redaction_incomplete_rule_ids' doc comment: a
+    // `redact_widen` match that hit its bounded cap before finding a
+    // natural closing boundary (newline / PEM footer) is STILL redacted up
+    // to that cap — it is not left exposed — but the caller should not
+    // treat it as a confirmed-complete removal the way a redact_span:true
+    // or a footer-terminated widen match is.
+    const widenNote = widenIncompleteRuleIds.length
+      ? ` (${widenIncompleteRuleIds.join(', ')} widened to its bounded cap without finding a closing boundary — redacted up to the cap; treat as possibly incomplete)`
+      : ''
+    const result = this.result('redact', matchedRuleIds[0], `Tool output contained secret-shaped content (${allIds.join(', ')}) — redacted before delivery${widenNote}${truncNote}.`, start, false, 5)
     result.matched_pattern = matchedPattern
     result.redacted_output = truncated ? redacted + text.slice(MAX_OUTPUT_SCAN_CHARS) : redacted
     result.redacted_rule_ids = allIds
+    if (widenIncompleteRuleIds.length) result.redaction_incomplete_rule_ids = widenIncompleteRuleIds
     if (truncated) result.scan_truncated = true
     return result
   }
