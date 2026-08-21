@@ -98,7 +98,11 @@ Beyond that:
 - **Honest host verification levels** — [docs/integrations.md](integrations.md) marks each
   host `live`, `types`, or `docs` rather than implying all are equally proven.
 - **`keel scan`** — audits which agents on a machine have no enforcement at all, and
-  flags MCP servers running unpinned packages or plaintext transports.
+  flags MCP servers running unpinned packages, plaintext transports, unsafe stdio
+  startup commands, dangerous URL schemes, SSRF-shaped URLs, or literal credentials in
+  config. All of it read from local client config — server-side-only MCP risks
+  (token passthrough, confused deputy, session hijacking) are out of scope for a
+  config scanner; see [docs/integrations.md](integrations.md#keel-scans-mcp-checks-are-client-config-only).
 
 ---
 
