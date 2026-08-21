@@ -357,7 +357,7 @@ export function validateRules(rules: unknown): string[] {
     'command', 'filesystem', 'content', 'env', 'network', 'rate', 'time',
     'sequence', 'flow', 'mcp', 'session', 'inheritance', 'context',
     'verification', 'meta', 'research', 'stuck', 'diagnosis', 'claim', 'oracle', 'package',
-    'budget', 'oscillation',
+    'budget', 'oscillation', 'injection',
   ])
   // `mask` (a rule-authorable `action: mask`) stays deliberately absent from
   // this set. CORRECTION (sprint/lane-c2): the previous version of this
@@ -389,6 +389,23 @@ export function validateRules(rules: unknown): string[] {
   // EnforcementAction in types.ts — but it is pipeline-emitted only
   // (`evaluateOutput()`'s own result), never a rule's `action:` field, and
   // is deliberately left out of this Set for that reason.
+  //
+  // Lane F (`type: injection` — tool-result prompt-injection scanning)
+  // reached the identical conclusion for the identical reason, one level
+  // down: EVERY injection rule's `action` is restricted to `warn` (checked
+  // explicitly below, not merely by omission from this Set), because the
+  // one verdict that would matter more — an actual REWRITE of a tool
+  // result the model hasn't seen yet — only ever reaches the model on one
+  // host (OpenCode's `tool.execute.after`; the same mutation channel
+  // `redact` above documents). A rule author writing `action: deny` (or
+  // any harder action) on an injection rule would get a real block on no
+  // host at all — the call already ran by the time keel's hook fires on
+  // every host except OpenCode, and OpenCode's own neutralization is a
+  // rewrite of the RESULT, not a block of the call. `warn` plus an audit
+  // record plus the `next_call_scrutiny` gate (a separate rule, keyed off
+  // the SAME detection — see types.ts's doc comment on that field) is the
+  // honest ceiling; see docs/injection.md's per-host table for the full
+  // reasoning.
   const validActions = new Set(['block', 'deny', 'warn', 'prompt', 'allow', 'fix', 'report', 'research', 'redirect'])
   const validLevels = new Set(['sprint', 'balanced', 'protect'])
   // Catalog metadata. These MUST be validated rather than passed through:
@@ -499,6 +516,34 @@ export function validateRules(rules: unknown): string[] {
       }
       if (rule.oscillation_window_size !== undefined && (typeof rule.oscillation_window_size !== 'number' || rule.oscillation_window_size < 4)) {
         errors.push(`Oscillation rule "${label}" has an invalid oscillation_window_size (must be a number >= 4 — too small to ever hold two repeats of even the shortest cycle)`)
+      }
+    }
+    // `type: injection` (Lane F): two independent forms, either of which is
+    // enough — a DETECTOR rule (`patterns`, scanned against a completed
+    // tool call's own output text) or a GATE rule (`next_call_scrutiny:
+    // true`, armed by any enforcing detector match this session and fired
+    // once on the session's next consequential call). A rule with neither
+    // could never fire, the same "declared but inert" shape `type:
+    // session`'s own validation (above) already rejects for the identical
+    // reason.
+    if (rule.type === 'injection') {
+      if (!rule.patterns?.length && !rule.next_call_scrutiny) {
+        errors.push(`Injection rule "${label}" needs patterns (detector form) or next_call_scrutiny: true (gate form) — without one it can never fire`)
+      }
+      if (rule.action !== undefined && rule.action !== 'warn') {
+        errors.push(`Injection rule "${label}" has action "${String(rule.action)}" — injection rules may only ever declare action: warn (see rule-parser.ts's validActions comment for why)`)
+      }
+      // `prefix`/`redact_span`/`redact_widen` are output-redaction-specific
+      // vocabulary (types.ts's `patterns` doc comment) that make no sense
+      // on an injection rule: neutralization always replaces the FULL
+      // regex match, so there is no "label vs. secret bytes" span-safety
+      // question to opt into, and `prefix` patterns have no well-defined
+      // match span to neutralize at all (injection-scan.ts only ever reads
+      // `pattern.regex`).
+      for (const pattern of rule.patterns || []) {
+        if (pattern.prefix !== undefined) errors.push(`Injection rule "${label}" has a pattern with "prefix" — injection patterns must use "regex" only (prefix has no defined match span to neutralize)`)
+        if (pattern.redact_span !== undefined) errors.push(`Injection rule "${label}" has a pattern with "redact_span" — that field is output-redaction-only (type: content); injection neutralization always replaces the full match, no span-safety opt-in needed`)
+        if (pattern.redact_widen !== undefined) errors.push(`Injection rule "${label}" has a pattern with "redact_widen" — that field is output-redaction-only (type: content); injection patterns are neutralized as-matched, never widened`)
       }
     }
     if (typeof rule.type === 'string' && notImplemented.has(rule.type)) {
