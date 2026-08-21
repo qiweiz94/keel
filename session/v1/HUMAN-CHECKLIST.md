@@ -111,9 +111,19 @@ human with credentials:
 - [ ] **Cline** — `cline --json -P cline` authenticated in one lane (paid);
       build the `cline.sh`/`cline-warn.sh` harness and resolve the `sessionId`
       field guess.
-- [ ] **OpenClaw / Hermes** — docs-confidence only; wire the plugin/daemon
-      config and run a real agent turn to test block/warn/approve end to end.
-      Check the openclaw#5943 `before_tool_call` finding.
+- [ ] **OpenClaw** — config wiring is DONE (`openclaw config set
+      plugins.load.paths|allow`, verified against a real installed OpenClaw
+      2026.4.15; `installOpenClaw()` prints the exact commands) and the
+      openclaw#5943 `before_tool_call` finding is CHECKED — the issue is
+      closed, and reading the installed runtime's compiled source confirms
+      the hook is wired into the tool-execution call graph (see
+      `docs/integrations.md` footnote 1). Still open: run a real
+      `openclaw agent` turn against a configured provider to test
+      block/warn/approve end to end — nothing done so far is an exercised
+      call.
+- [ ] **Hermes** — docs-confidence only, untouched by the OpenClaw pass
+      above; wire the plugin/daemon config and run a real agent turn to
+      test block/warn/approve end to end.
 - [ ] **Claude Code warn path** — the block path is live-verified; the warn
       path's marker round-trip through `--output-format json` is not.
 - [ ] Re-run each `scripts/live-verify/<host>.sh` verbatim once authed — they

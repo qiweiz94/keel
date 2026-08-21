@@ -335,9 +335,10 @@ Stated plainly, because a guardrail that oversells itself is worse than none:
   can't apply them. Don't rely on them as a hard control.
 - **The agent's process is the boundary.** In-process enforcement fails if the agent
   process itself is compromised.
-- **Hermes and OpenClaw fail open by design** — a throwing plugin is skipped. Both keel
-  plugins carry a local circuit breaker that still blocks catastrophic operations when the
-  daemon is unreachable, and print a loud DEGRADED notice.
+- **Hermes fails open by design; OpenClaw only does for a plugin load failure**, not a
+  handler that throws mid-call (that path denies — see `docs/integration-guides/openclaw.md`).
+  Both keel plugins carry a local circuit breaker that still blocks catastrophic operations
+  when the daemon is unreachable, and print a loud DEGRADED notice.
 
 More in [SECURITY.md](SECURITY.md).
 

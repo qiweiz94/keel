@@ -49,7 +49,7 @@ plugin loaded is only a load-time check; `session/EVIDENCE/wave3-warnsurface.md`
 a GitHub issue (openclaw/openclaw#5943, "Wire up `before_tool_call` plugin hook in tool
 execution pipeline") suggesting the hook might not fire at all. That issue is **closed**
 (2026-02-03), ~2.5 months before the `openclaw` 2026.4.15 build installed in this
-environment. Re-verified this lane, four ways, strongest first:
+environment. Re-verified this lane, three ways, strongest first:
   1. **Read the installed runtime's actual compiled source** (not docs, not type defs):
      every tool-execution path this lane inspected — `toToolDefinitions` and
      `toClientToolDefinitions` in `dist/pi-tool-definition-adapter-*.js`, and
@@ -72,9 +72,6 @@ environment. Re-verified this lane, four ways, strongest first:
      wires the plugin into an isolated `--profile` non-interactively — see
      `packages/cli/src/commands/install.ts`'s `installOpenClaw()`, which now prints these
      exact commands instead of a hand-edit sketch.
-  4. Live official docs (`docs.openclaw.ai/plugins/hooks`, fetched this lane) state
-     "The hook fires for every tool call. No exceptions are documented for specific builds
-     or versions."
   None of this is the same as **live** by this table's own definition: no actual tool call
   was run through a real agent turn and observed reaching keel's daemon, because this
   environment has no model-provider credentials (same AUTH-BLOCKED pattern as every other

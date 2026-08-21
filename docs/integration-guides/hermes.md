@@ -28,10 +28,12 @@ Tool call → pre_tool_call plugin hook → asks the keel daemon
                                    commands and says so loudly
 ```
 
-**Fails open, not closed, like OpenClaw** — a throwing plugin is skipped by
-Hermes itself. Keel's local circuit breaker only guarantees catastrophic-tier
-coverage during a daemon outage, not full rule coverage. See
-[`README.md`](../../README.md#limits).
+**Fails open, not closed, by design** — a throwing plugin is skipped by
+Hermes itself. (OpenClaw's own failure mode is more split than this: see
+[`docs/integration-guides/openclaw.md`](openclaw.md#how-it-works) for the
+load-failure-vs-handler-throw distinction verified there.) Keel's local
+circuit breaker only guarantees catastrophic-tier coverage during a daemon
+outage, not full rule coverage. See [`README.md`](../../README.md#limits).
 
 **`fix` rules are advisory-only on Hermes.** Hermes has no mechanism for a
 plugin to rewrite a tool call's arguments, so a keel `fix` rule (which
