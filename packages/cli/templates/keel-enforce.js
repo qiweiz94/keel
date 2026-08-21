@@ -6624,6 +6624,11 @@ function validateRules(rules) {
         errors.push(`Rule "${label}" has an invalid context: ${JSON.stringify(rule.context)} (expected a non-empty array of local, ci, both)`);
       }
     }
+    if (rule.agents !== void 0) {
+      if (!Array.isArray(rule.agents) || rule.agents.length === 0 || rule.agents.some((a) => typeof a !== "string" || !a.trim())) {
+        errors.push(`Rule "${label}" has an invalid agents: ${JSON.stringify(rule.agents)} (expected a non-empty array of host-identity strings, e.g. claude-code, opencode)`);
+      }
+    }
     if (typeof rule.message !== "string" || !rule.message.trim()) errors.push(`Rule "${label}" is missing a non-empty message`);
     if (rule.type === "filesystem" && (!Array.isArray(rule.paths) || rule.paths.length === 0)) errors.push(`Rule "${label}" is a filesystem rule but has no paths`);
     if (rule.type === "content" && (!Array.isArray(rule.patterns) || rule.patterns.length === 0)) errors.push(`Rule "${label}" is a content rule but has no patterns`);
@@ -6782,7 +6787,7 @@ function sameEnforcementSurface(existing, candidate) {
   };
   return JSON.stringify(strip(existing)) === JSON.stringify(strip(candidate));
 }
-function mergeRules(hierarchy, level, context) {
+function mergeRules(hierarchy, level, context, agent) {
   const all = [];
   const dialRank = { sprint: 0, balanced: 1, protect: 2 };
   const currentRank = dialRank[level] ?? 1;
@@ -6794,6 +6799,7 @@ function mergeRules(hierarchy, level, context) {
         continue;
       }
       if (rule.context && !rule.context.includes(context) && !rule.context.includes("both")) continue;
+      if (rule.agents && agent !== void 0 && !rule.agents.includes(agent)) continue;
       all.push({ ...rule, scope: rule.scope || scope });
     }
   };
@@ -9334,7 +9340,7 @@ var EnforcementPipeline = class {
     if (halted) return halted;
     this.checkRuleVersion();
     const level = this.effectiveLevel(input);
-    const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
+    const rules = this.mergedRules(input, level);
     for (const rule of rules) {
       if (rule.type !== "claim") continue;
       try {
@@ -9402,7 +9408,7 @@ var EnforcementPipeline = class {
     if (!text) return this.result("allow", "", "No tool output to scan", start, false, 5);
     this.checkRuleVersion();
     const level = this.effectiveLevel(input);
-    const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
+    const rules = this.mergedRules(input, level);
     const truncated = text.length > MAX_OUTPUT_SCAN_CHARS;
     const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text;
     const matchedRuleIds = [];
@@ -9569,7 +9575,7 @@ var EnforcementPipeline = class {
       }
     }
     this.config.flowTracker.record(input, "");
-    const rules = mergeRules(this.config.ruleHierarchy, level, input.context);
+    const rules = this.mergedRules(input, level);
     const deepChecks = depth !== "fast" || protectFloor(rules);
     const statefulRules = rules.filter(
       (rule) => ["verification", "claim", "research", "stuck", "oscillation", "rate", "time"].includes(rule.type) || deepChecks && ["sequence", "flow", "oracle"].includes(rule.type)
@@ -10047,7 +10053,7 @@ var EnforcementPipeline = class {
     return void 0;
   }
   markVerificationSatisfied(input) {
-    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+    const rules = this.mergedRules(input, this.effectiveLevel(input));
     for (const rule of rules) {
       if (rule.type === "verification" || rule.type === "claim") this.verificationTracker.markSatisfied(rule, input);
     }
@@ -10063,19 +10069,19 @@ var EnforcementPipeline = class {
       this.config.ledger.recordOutcome(input.cwd, cmd, exitCode, input.session_id);
     }
     if (this.config.researchTracker) {
-      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      const rules2 = this.mergedRules(input, this.effectiveLevel(input));
       for (const rule of rules2) {
         if (rule.type === "research" && rule.trigger) this.config.researchTracker.observeTrigger(rule, input, exitCode);
       }
     }
     {
-      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      const rules2 = this.mergedRules(input, this.effectiveLevel(input));
       for (const rule of rules2) {
         if (rule.type === "oracle") this.oracleTracker.observeOutcome(rule, input, exitCode);
       }
     }
     if (this.config.sessionTracker) {
-      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      const rules2 = this.mergedRules(input, this.effectiveLevel(input));
       for (const rule of rules2) {
         if (rule.type === "session" && rule.session_escalation?.length) {
           this.config.sessionTracker.recordOutcome(rule, input, exitCode);
@@ -10083,7 +10089,7 @@ var EnforcementPipeline = class {
       }
     }
     if (this.config.oscillationTracker && (input.tool === "Bash" || WRITE_TOOL_NAMES.has(input.tool.toLowerCase()))) {
-      const rules2 = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+      const rules2 = this.mergedRules(input, this.effectiveLevel(input));
       for (const rule of rules2) {
         if (rule.type !== "oscillation") continue;
         if (rule.match && !this.matchesRulePattern(rule.match, cmd)) continue;
@@ -10091,7 +10097,7 @@ var EnforcementPipeline = class {
       }
     }
     if (!this.config.stuckTracker) return;
-    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+    const rules = this.mergedRules(input, this.effectiveLevel(input));
     for (const rule of rules) {
       if (rule.type !== "stuck" || !rule.match) continue;
       if (!this.matchesRulePattern(rule.match, cmd)) continue;
@@ -10113,7 +10119,7 @@ var EnforcementPipeline = class {
    */
   recordBudgetSnapshot(input, spend) {
     if (!this.config.budgetTracker) return;
-    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context);
+    const rules = this.mergedRules(input, this.effectiveLevel(input));
     for (const rule of rules) {
       if (rule.type !== "budget") continue;
       this.config.budgetTracker.record(rule, input, spend);
@@ -10275,6 +10281,21 @@ var EnforcementPipeline = class {
     if (input.action_override) return input.action_override;
     return dialAction(rule, this.effectiveLevel(input));
   }
+  /**
+   * The single choke point for every real-enforcement mergeRules() call in
+   * this pipeline — every call site below has a concrete `input.agent`
+   * (unlike the administrative CLI commands, which intentionally omit it;
+   * see mergeRules' own doc comment in rule-parser.ts) and routing through
+   * here means a future enforcing code path literally cannot forget to
+   * pass it. mergeRules() itself is already called fresh per evaluate()
+   * invocation (never merged once and cached across calls), so a per-call
+   * `agent` that varies within one pipeline lifetime — e.g. a host that
+   * proxies calls from more than one sub-agent — is filtered correctly
+   * without any extra re-merge machinery.
+   */
+  mergedRules(input, level) {
+    return mergeRules(this.config.ruleHierarchy, level, input.context, input.agent);
+  }
   cacheContext(input, depth) {
     return {
       cwd: input.cwd,
@@ -10282,7 +10303,20 @@ var EnforcementPipeline = class {
       context: input.context,
       depth,
       action: input.action_override,
-      rules_hash: this.lastRulesHash
+      rules_hash: this.lastRulesHash,
+      // `agents`-scoped rules mean the SAME tool/args/cwd/level/context/
+      // depth call can legitimately produce a DIFFERENT verdict depending
+      // on which host made it (agentic-eval note: the stateless verdict
+      // cache below is otherwise agent-blind). Without this, two different
+      // hosts making the identical call within one pipeline lifetime would
+      // collide on the same cache key and the second host would silently
+      // receive the FIRST host's verdict — including a verdict from a rule
+      // that doesn't even apply to it. Included unconditionally (not only
+      // when agent-scoped rules are present) because that fact isn't known
+      // at cache-key time without re-merging rules just to check, and a
+      // wider cache key is always safe, only ever costs a few extra
+      // distinct keys.
+      agent: input.agent
     };
   }
   effectiveDepth(input) {

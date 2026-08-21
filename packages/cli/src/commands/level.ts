@@ -155,6 +155,8 @@ export function computeDialDiff(
   previous: ProtectionLevel,
   level: ProtectionLevel,
 ): DialDiff {
+  // No `agent` arg — the dial-switch diff is host-agnostic by design; it
+  // reports what changes for the ruleset as a whole, not for one host.
   const before = new Map<string, KeelRule>(mergeRules(hierarchy, previous, 'local').map(r => [r.id, r]))
   const after = new Map<string, KeelRule>(mergeRules(hierarchy, level, 'local').map(r => [r.id, r]))
 

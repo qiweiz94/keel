@@ -119,6 +119,39 @@ the full `rules:` form — see the `## Rules` section of the top-level README fo
 complete worked example, and `docs/tiers.md` for how `level`/`mode` interact with the
 speed dial.
 
+## Scoping a rule to specific hosts (`agents:`)
+
+`agents:` is a full-form-only field — it is not one of the five `simple_rules:`
+fields, so it needs the full `rules:` form (see "What you get for free, and what
+you don't" above). It restricts a rule to specific hosts:
+
+```yaml
+version: 1
+rules:
+  - id: no-npx-on-claude-code
+    type: command
+    match: "npx .*"
+    agents: [claude-code]
+    action: warn
+    message: "Prefer an installed binary over npx on this host."
+```
+
+A rule with no `agents:` field — the overwhelming majority of rules, including
+every rule keel ships by default — applies to every host, exactly as before;
+`agents:` is purely additive and never changes existing behavior. When present,
+it's a plain array of host-identity strings (`claude-code`, `opencode`, `cline`,
+etc — whatever your integration's own `agent` value is) and the rule only fires
+for a call from one of them.
+
+**Scope note:** `agent` here is HOST identity — the string a host's own
+integration declares itself as (`opencode` / `claude-code` / `cline` / etc) — not
+a true multi-agent-fleet identity concept. No host today emits a distinct
+identity per agent *instance*: two separate Claude Code sessions are
+indistinguishable by this field. `agents:` therefore scopes a rule to an
+*integration*, not to "which agent" in a fleet-of-agents sense. Real per-instance
+agent identity/RBAC is a bigger, deliberately deferred question — this reuses the
+existing host-identity semantics as-is rather than inventing a new one.
+
 ## Getting the error messages right
 
 If a `simple_rules:` entry is missing something required, `keel validate` (and the

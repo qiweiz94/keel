@@ -678,7 +678,8 @@ export async function enforceCommand(options: {
     const activeRules = parsed.rules.length
     console.log(chalk.green(`  ✓ ${activeRules} rules loaded`))
 
-    // Check conflicts
+    // Check conflicts. No `agent` arg — this is `keel enforce`'s startup
+    // banner over the whole ruleset, not a specific host's live call.
     const merged = mergeRulesFn(hierarchy, level, 'local')
     const conflicts = detectConflicts(merged)
     if (conflicts.length > 0) {

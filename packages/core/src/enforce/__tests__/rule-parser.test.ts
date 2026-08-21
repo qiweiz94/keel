@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   parseRulesContent, validateRules, sprintExpiryStatus, resolvedLevel,
-  DEFAULT_SPRINT_EXPIRY_HOURS, mergeRules,
+  DEFAULT_SPRINT_EXPIRY_HOURS, mergeRules, detectConflicts,
 } from '../rule-parser.js'
 import type { KeelConfig, KeelRule } from '../../types.js'
 import type { RuleHierarchy, ParsedRules } from '../rule-parser.js'
@@ -269,6 +269,66 @@ rules:
     expect(issues.some(i => i.includes('invalid context'))).toBe(false)
   })
 
+  // ── agent-scoped rules (`agents:` field) ──
+  //
+  // Host identity (EnforceInput.agent) is HOST identity — 'opencode' |
+  // 'claude-code' | 'cline' | etc. — not a true multi-agent-fleet identity
+  // concept (see types.ts's KeelRule.agents doc comment). Unlike
+  // `context`, there is no fixed enum of valid hosts, so validation only
+  // checks shape: a non-empty array of non-empty strings.
+  it('rejects a rule with an invalid agents field', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-agents
+    type: command
+    match: "rm -rf"
+    agents: []
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('invalid agents'))).toBe(true)
+  })
+
+  it('rejects a rule whose agents field is not an array', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: bad-agents-shape
+    type: command
+    match: "rm -rf"
+    agents: claude-code
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('invalid agents'))).toBe(true)
+  })
+
+  it('accepts a valid agents array and survives parseRulesContent -> mergeRules unmodified', () => {
+    const parsed = parseRulesContent(`version: 1
+rules:
+  - id: ok-agents
+    type: command
+    match: "rm -rf"
+    agents: [claude-code, opencode]
+    action: deny
+    message: "no"
+`, '/tmp/rules.yaml')
+
+    const issues = validateRules(parsed.rules)
+    expect(issues.some(i => i.includes('invalid agents'))).toBe(false)
+
+    // Real end-to-end check that the field is not silently stripped
+    // somewhere between YAML parsing and the merged rule the pipeline
+    // actually evaluates — a schema-stripping step elsewhere would make
+    // every mergeRules-level unit test below pass vacuously.
+    const hierarchy: RuleHierarchy = { global: parsed, user: null, project: null, local: null }
+    const merged = mergeRules(hierarchy, 'balanced', 'local', 'claude-code')
+    expect(merged.find(r => r.id === 'ok-agents')?.agents).toEqual(['claude-code', 'opencode'])
+  })
+
   // `type: session` used to be in this list — see git history and
   // session-tracker.ts / pipeline.ts's session-trip branch for the real
   // handler it now has (a composite runaway-loop trip across five
@@ -510,6 +570,89 @@ function hierarchyOf(global: KeelRule[], local: KeelRule[]): RuleHierarchy {
     local: parsedFrom(local),
   }
 }
+
+describe('mergeRules — agent (host) scoping', () => {
+  it('a rule with agents: [claude-code] fires for a claude-code call and not for an opencode call', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'claude-only', type: 'command', action: 'deny', message: 'claude-code only', agents: ['claude-code'] }],
+      [],
+    )
+    const forClaude = mergeRules(hierarchy, 'balanced', 'local', 'claude-code')
+    const forOpencode = mergeRules(hierarchy, 'balanced', 'local', 'opencode')
+    expect(forClaude.some(r => r.id === 'claude-only')).toBe(true)
+    expect(forOpencode.some(r => r.id === 'claude-only')).toBe(false)
+  })
+
+  it('a rule with no agents field fires for every host — regression check for the overwhelming majority of rules', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', message: 'no agents field at all' }],
+      [],
+    )
+    for (const agent of ['claude-code', 'opencode', 'cline', 'unknown', 'anything-at-all']) {
+      const merged = mergeRules(hierarchy, 'balanced', 'local', agent)
+      expect(merged.some(r => r.id === 'no-force-push')).toBe(true)
+    }
+  })
+
+  it('omitting `agent` entirely (the administrative/introspection call shape) does not filter agent-scoped rules', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'claude-only', type: 'command', action: 'deny', message: 'claude-code only', agents: ['claude-code'] }],
+      [],
+    )
+    const merged = mergeRules(hierarchy, 'balanced', 'local')
+    expect(merged.some(r => r.id === 'claude-only')).toBe(true)
+  })
+
+  it('a rule can list multiple agents — matches any of them', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'multi-host', type: 'command', action: 'deny', message: 'two hosts', agents: ['claude-code', 'cline'] }],
+      [],
+    )
+    expect(mergeRules(hierarchy, 'balanced', 'local', 'claude-code').some(r => r.id === 'multi-host')).toBe(true)
+    expect(mergeRules(hierarchy, 'balanced', 'local', 'cline').some(r => r.id === 'multi-host')).toBe(true)
+    expect(mergeRules(hierarchy, 'balanced', 'local', 'opencode').some(r => r.id === 'multi-host')).toBe(false)
+  })
+
+  // The safe direction of the push-time-filter gap documented in
+  // mergeRules' pushRules(): an override that ADDS `agents` to a
+  // level:protect floor's id differs from the floor under
+  // sameEnforcementSurface's exclusion-based comparison (agents is not in
+  // OVERRIDE_COSMETIC_FIELDS or OVERRIDE_STRENGTH_CHECKED_FIELDS), so it is
+  // rejected as a surface-changing weakening — the floor stands, exactly
+  // like any other surface-changing override.
+  it('a local override that ADDS agents to a level:protect floor (same id) is rejected as a surface change — the unscoped floor stands', () => {
+    const hierarchy = hierarchyOf(
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'unscoped floor' }],
+      [{ id: 'no-force-push', type: 'command', action: 'deny', level: 'protect', message: 'local narrows to one host', agents: ['claude-code'] }],
+    )
+    // Call with an agent NOT in the override's list — if the override had
+    // incorrectly won, the floor would vanish for this host entirely.
+    const merged = mergeRules(hierarchy, 'balanced', 'local', 'opencode')
+    const rule = merged.find(r => r.id === 'no-force-push')
+    expect(rule?.message).toBe('unscoped floor')
+    expect(rule?.agents).toBeUndefined()
+  })
+})
+
+describe('detectConflicts — agent-disjoint rules are not false conflicts', () => {
+  it('does not flag a conflict between two rules with the same match but disjoint agents', () => {
+    const rules: KeelRule[] = [
+      { id: 'deny-for-claude', type: 'command', match: 'npx .*', action: 'deny', message: 'no', agents: ['claude-code'] },
+      { id: 'allow-for-opencode', type: 'command', match: 'npx .*', action: 'allow', message: 'ok', agents: ['opencode'] },
+    ]
+    const conflicts = detectConflicts(rules)
+    expect(conflicts).toHaveLength(0)
+  })
+
+  it('still flags a real conflict when agent sets overlap', () => {
+    const rules: KeelRule[] = [
+      { id: 'deny-for-claude', type: 'command', match: 'npx .*', action: 'deny', message: 'no', agents: ['claude-code', 'opencode'] },
+      { id: 'allow-for-opencode', type: 'command', match: 'npx .*', action: 'allow', message: 'ok', agents: ['opencode'] },
+    ]
+    const conflicts = detectConflicts(rules)
+    expect(conflicts).toHaveLength(1)
+  })
+})
 
 describe('mergeRules — floor rules cannot be weakened by scope', () => {
   it('a local override that WEAKENS a level:protect floor is rejected — the floor stands', () => {

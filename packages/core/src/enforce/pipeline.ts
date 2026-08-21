@@ -428,7 +428,7 @@ export class EnforcementPipeline {
     if (halted) return halted
     this.checkRuleVersion()
     const level = this.effectiveLevel(input)
-    const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
+    const rules = this.mergedRules(input, level)
     for (const rule of rules) {
       if (rule.type !== 'claim') continue
       try {
@@ -504,7 +504,7 @@ export class EnforcementPipeline {
     // it at every dial is the scan itself (bounded below), and a leaked
     // secret is not a cost sprint's speed/safety trade-off was ever meant to
     // accept. A stated choice, not an oversight.
-    const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
+    const rules = this.mergedRules(input, level)
     const truncated = text.length > MAX_OUTPUT_SCAN_CHARS
     const scanText = truncated ? text.slice(0, MAX_OUTPUT_SCAN_CHARS) : text
     // Three buckets, not two — see `KeelRule.patterns[].redact_span`'s doc
@@ -772,7 +772,7 @@ export class EnforcementPipeline {
     this.config.flowTracker.record(input, '')
 
     // Get merged rules for current level and context
-    const rules = mergeRules(this.config.ruleHierarchy, level, input.context)
+    const rules = this.mergedRules(input, level)
     const deepChecks = depth !== 'fast' || protectFloor(rules)
     const statefulRules = rules.filter(rule =>
       ['verification', 'claim', 'research', 'stuck', 'oscillation', 'rate', 'time'].includes(rule.type)
@@ -1772,7 +1772,7 @@ export class EnforcementPipeline {
   }
 
   markVerificationSatisfied(input: EnforceInput): void {
-    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+    const rules = this.mergedRules(input, this.effectiveLevel(input))
     for (const rule of rules) {
       if (rule.type === 'verification' || rule.type === 'claim') this.verificationTracker.markSatisfied(rule, input)
     }
@@ -1789,7 +1789,7 @@ export class EnforcementPipeline {
       this.config.ledger.recordOutcome(input.cwd, cmd, exitCode, input.session_id)
     }
     if (this.config.researchTracker) {
-      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      const rules = this.mergedRules(input, this.effectiveLevel(input))
       for (const rule of rules) {
         if (rule.type === 'research' && rule.trigger) this.config.researchTracker.observeTrigger(rule, input, exitCode)
       }
@@ -1799,7 +1799,7 @@ export class EnforcementPipeline {
     // see the constructor). Must run before the stuckTracker early-return
     // below, which only concerns the stuck-loop branch.
     {
-      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      const rules = this.mergedRules(input, this.effectiveLevel(input))
       for (const rule of rules) {
         if (rule.type === 'oracle') this.oracleTracker.observeOutcome(rule, input, exitCode)
       }
@@ -1812,7 +1812,7 @@ export class EnforcementPipeline {
     // what command ran. Must run before the stuckTracker early-return
     // below, same reasoning as the oracle block above.
     if (this.config.sessionTracker) {
-      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      const rules = this.mergedRules(input, this.effectiveLevel(input))
       for (const rule of rules) {
         if (rule.type === 'session' && rule.session_escalation?.length) {
           this.config.sessionTracker.recordOutcome(rule, input, exitCode)
@@ -1830,7 +1830,7 @@ export class EnforcementPipeline {
     // before the stuckTracker early-return below, same reasoning as the
     // oracle/session blocks above.
     if (this.config.oscillationTracker && (input.tool === 'Bash' || WRITE_TOOL_NAMES.has(input.tool.toLowerCase()))) {
-      const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+      const rules = this.mergedRules(input, this.effectiveLevel(input))
       for (const rule of rules) {
         if (rule.type !== 'oscillation') continue
         if (rule.match && !this.matchesRulePattern(rule.match, cmd)) continue
@@ -1839,7 +1839,7 @@ export class EnforcementPipeline {
     }
 
     if (!this.config.stuckTracker) return
-    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+    const rules = this.mergedRules(input, this.effectiveLevel(input))
     for (const rule of rules) {
       if (rule.type !== 'stuck' || !rule.match) continue
       if (!this.matchesRulePattern(rule.match, cmd)) continue
@@ -1862,7 +1862,7 @@ export class EnforcementPipeline {
    */
   recordBudgetSnapshot(input: EnforceInput, spend: BudgetSpend): void {
     if (!this.config.budgetTracker) return
-    const rules = mergeRules(this.config.ruleHierarchy, this.effectiveLevel(input), input.context)
+    const rules = this.mergedRules(input, this.effectiveLevel(input))
     for (const rule of rules) {
       if (rule.type !== 'budget') continue
       this.config.budgetTracker.record(rule, input, spend)
@@ -2097,6 +2097,22 @@ export class EnforcementPipeline {
     return dialAction(rule, this.effectiveLevel(input))
   }
 
+  /**
+   * The single choke point for every real-enforcement mergeRules() call in
+   * this pipeline — every call site below has a concrete `input.agent`
+   * (unlike the administrative CLI commands, which intentionally omit it;
+   * see mergeRules' own doc comment in rule-parser.ts) and routing through
+   * here means a future enforcing code path literally cannot forget to
+   * pass it. mergeRules() itself is already called fresh per evaluate()
+   * invocation (never merged once and cached across calls), so a per-call
+   * `agent` that varies within one pipeline lifetime — e.g. a host that
+   * proxies calls from more than one sub-agent — is filtered correctly
+   * without any extra re-merge machinery.
+   */
+  private mergedRules(input: EnforceInput, level: ProtectionLevel): KeelRule[] {
+    return mergeRules(this.config.ruleHierarchy, level, input.context, input.agent)
+  }
+
   private cacheContext(input: EnforceInput, depth: string): CacheContext {
     return {
       cwd: input.cwd,
@@ -2105,6 +2121,19 @@ export class EnforcementPipeline {
       depth,
       action: input.action_override,
       rules_hash: this.lastRulesHash,
+      // `agents`-scoped rules mean the SAME tool/args/cwd/level/context/
+      // depth call can legitimately produce a DIFFERENT verdict depending
+      // on which host made it (agentic-eval note: the stateless verdict
+      // cache below is otherwise agent-blind). Without this, two different
+      // hosts making the identical call within one pipeline lifetime would
+      // collide on the same cache key and the second host would silently
+      // receive the FIRST host's verdict — including a verdict from a rule
+      // that doesn't even apply to it. Included unconditionally (not only
+      // when agent-scoped rules are present) because that fact isn't known
+      // at cache-key time without re-merging rules just to check, and a
+      // wider cache key is always safe, only ever costs a few extra
+      // distinct keys.
+      agent: input.agent,
     }
   }
 

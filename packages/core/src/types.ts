@@ -104,6 +104,23 @@ export interface KeelRule {
   level?: ProtectionLevel           // sprint | balanced | protect — when is this rule active
   scope?: RuleScope                 // where in the hierarchy this rule applies
   context?: RuleContext[]           // local | ci | both
+  /**
+   * Restrict this rule to specific hosts (mergeRules' agent filter,
+   * rule-parser.ts). No `agents` field (the overwhelming majority of
+   * rules) means "applies to every host" — unchanged default behavior.
+   *
+   * IMPORTANT SCOPE NOTE: `agent` (EnforceInput.agent, below) is HOST
+   * identity — 'opencode' | 'claude-code' | 'cline' | etc, the string a
+   * host's own integration declares itself as — not a true multi-agent-
+   * fleet identity concept. No host today emits a distinct identity per
+   * agent INSTANCE (e.g. two claude-code sessions are indistinguishable
+   * by this field); `agents` therefore scopes a rule to a HOST/integration,
+   * not to "which agent" in a fleet-of-agents sense. That is a bigger,
+   * deliberately deferred question — see the project's roadmap discussion.
+   * Building real per-instance agent identity/RBAC is explicitly out of
+   * scope here; this reuses the existing host-identity semantics as-is.
+   */
+  agents?: string[]
   action: EnforcementAction
   message: string
   priority?: number                 // higher = evaluated first
@@ -522,7 +539,7 @@ export interface EnforceInput {
   context_tokens: number
   level: ProtectionLevel
   context: RuleContext
-  agent: string                     // 'opencode' | 'claude-code' | 'cline' | etc.
+  agent: string                     // 'opencode' | 'claude-code' | 'cline' | etc. — HOST identity, not a true per-agent-instance identity. See KeelRule.agents' doc comment.
   subagent_of: string | null
   reasoning?: string                // agent's chain-of-thought, if available
   depth?: EnforcementDepth          // fast | full | deep evaluation depth

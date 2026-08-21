@@ -1477,6 +1477,84 @@ rules:
       expect(second.cache_hit).toBe(true)
       expect(second.action).toBe('allow')
     })
+
+    // The stateless verdict cache (`this.config.cache`, keyed by
+    // tool/args/ruleVersion/cacheContext) is otherwise agent-BLIND: two
+    // different hosts making the identical call would collide on the same
+    // key without `agent` folded into cacheContext(). Deliberately built
+    // from a MINIMAL, non-stateful, non-`prompt` ruleset — the shipped
+    // catalog's verification/claim/research/stuck/oscillation/rate rules
+    // (statefulRules/gatedRules, pipeline.ts's cache-eligibility gate)
+    // would make the cache path never engage at all here, and this test
+    // would pass vacuously without ever exercising the bug it guards
+    // against.
+    it('does not leak one host\'s cached verdict to a different host for an otherwise-identical call', async () => {
+      // Deliberately NOT `level: protect` on the rule itself: a rule-level
+      // floor is evaluated in `evaluateTiers()`'s floorTieredRules pass,
+      // which runs BEFORE the Tier-1 cache lookup and therefore never
+      // reads (though it does write) the cache — cache_hit would stay
+      // false forever and this test couldn't observe the thing it's
+      // checking. Instead the PIPELINE's dial is set to `protect`
+      // (`level: 'protect'` below, config/dial-level, not rule-level) —
+      // `evaluateTiers()`'s blockFirst check is `effectiveLevel(input) ===
+      // 'protect' || rule.level === 'protect'`, so a plain rule with no
+      // `level` field still blocks (never warns) on the first hit at this
+      // dial, while staying in the normal cache-eligible tiered path.
+      const rules = parseRulesContent(`version: 1
+rules:
+  - id: claude-only-block
+    type: command
+    match: "^dangerous-cmd$"
+    action: block
+    agents: [claude-code]
+    message: "blocked for claude-code only"
+`, '/tmp/agent-scope-cache-rules.md')
+      const pipeline = new EnforcementPipeline({
+        level: 'protect',
+        context: 'local' as RuleContext,
+        cache: new ActionCache({ maxSize: 100 }),
+        contentTracker: new ContentTracker(),
+        sequenceDetector: new SequenceDetector(),
+        flowTracker: new FlowTracker(),
+        ruleHierarchy: { global: null, user: null, project: rules, local: null },
+        ruleVersion: 1,
+        allowedFixTransforms: true,
+        haltFile: SHARED_HALT_FILE,
+      })
+
+      const baseCall = (agent: string) => ({
+        tool: 'Bash',
+        args: { command: 'dangerous-cmd' },
+        cwd: '/tmp',
+        session_id: 'agent-scope-cache-test',
+        turn_number: 1,
+        context_tokens: 0,
+        level: 'protect' as const,
+        context: 'local' as const,
+        agent,
+        subagent_of: null,
+      })
+
+      // claude-code: the rule applies -> deny. First call is a cache miss.
+      const claudeFirst = await pipeline.evaluate(baseCall('claude-code'))
+      expect(claudeFirst.action).toBe('deny')  // block()'s result action is always 'deny', regardless of the rule's own declared action (deny vs block)
+      expect(claudeFirst.cache_hit).toBe(false)
+
+      // claude-code again, identical call -> cache HIT, still deny. Proves
+      // the cache path is actually live for this ruleset — a control
+      // assertion, not the thing under test.
+      const claudeSecond = await pipeline.evaluate(baseCall('claude-code'))
+      expect(claudeSecond.action).toBe('deny')
+      expect(claudeSecond.cache_hit).toBe(true)
+
+      // opencode: the rule does NOT apply -> allow. Same tool/args/cwd/
+      // level/context/depth as the claude-code call above — if `agent`
+      // were missing from the cache key, this would incorrectly return
+      // the cached claude-code 'deny' verdict instead of evaluating fresh.
+      const opencodeResult = await pipeline.evaluate(baseCall('opencode'))
+      expect(opencodeResult.action).toBe('allow')
+      expect(opencodeResult.cache_hit).toBe(false)
+    })
   })
 
   describe('Auto-fix', () => {

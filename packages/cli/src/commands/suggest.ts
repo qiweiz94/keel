@@ -42,7 +42,9 @@ export async function suggestCommand(options: {
     console.log(chalk.dim(`  ${entries.length} events across ${uniqueSessions} sessions`))
   }
 
-  // Get active rules
+  // Get active rules. No `agent` arg — trace events span every host that
+  // called `keel enforce`, so suggestions are analyzed against the whole
+  // ruleset, not one host's view.
   const hierarchy = loadRuleHierarchy(dir)
   const activeRules = mergeRules(hierarchy, level, 'local')
 

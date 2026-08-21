@@ -215,6 +215,9 @@ export async function statusCommand() {
     const note = isRepeat && duplicatePaths.has(scope.sourcePath) ? chalk.dim(' (same file as above)') : ''
     console.log(chalk.dim(`  Rules (${name}):`) + ` ${badge}${chalk.dim(` — ${scope.sourcePath}`)}${note}`)
   }
+  // No `agent` arg — this is an audit of the whole ruleset, not one host's
+  // live call, so agent-scoped rules count as active regardless of which
+  // host they're scoped to. See mergeRules' doc comment (rule-parser.ts).
   const activeRules = mergeRules(hierarchy, dial, 'local')
   const active = activeRules.length
   console.log(chalk.dim(`  Active at current dial:`) + ` ${chalk.white(active.toString())} of ${distinct}${invalid ? chalk.red(` (${invalid} rule issue(s) — run keel validate)`) : ''}`)
