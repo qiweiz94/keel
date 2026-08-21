@@ -117,6 +117,38 @@ describe('interpreter body extraction and recursion', () => {
   })
 })
 
+describe('keel run unwrap: the wrapped agent-cmd is exposed as a matching surface', () => {
+  it('exposes a plain payload wrapped by keel run as a surface', () => {
+    const n = normalizeCommand(`keel run "rm -rf /"`)
+    expect(n.surfaces).toContain('rm -rf /')
+  })
+
+  it('recurses one level so a shell wrapped inside keel run is also unwrapped', () => {
+    const n = normalizeCommand(`keel run bash -c "rm -rf /"`)
+    expect(n.surfaces).toContain('rm -rf /')
+  })
+
+  it('skips a literal -- separator between run and the wrapped command (matches the CLI\'s own commander registration)', () => {
+    const n = normalizeCommand(`keel run -- rm -rf /`)
+    expect(n.surfaces).toContain('rm -rf /')
+  })
+
+  it('still unwraps when the keel binary is invoked via a full path, not a bare "keel" token', () => {
+    const n = normalizeCommand(`/usr/local/bin/keel run "rm -rf /"`)
+    expect(n.surfaces).toContain('rm -rf /')
+  })
+
+  it('still surfaces keel-control-gate\'s OWN protected verbs when embedded in a keel run payload', () => {
+    const n = normalizeCommand(`keel run "keel halt --kill"`)
+    expect(n.surfaces).toContain('keel halt --kill')
+  })
+
+  it('does not treat "keel runner" or an unrelated second token as the run wrapper', () => {
+    const n = normalizeCommand(`keel runner "rm -rf /"`)
+    expect(n.surfaces).not.toContain('rm -rf /')
+  })
+})
+
 describe('sprint-2 fixes: five bugs found via live reproduction during the audit', () => {
   it('fix 1: a trailing/lone unescaped backslash does not hang tokenize() (was an infinite loop / OOM crash)', () => {
     // Reproduced pre-fix: both calls made zero progress in tokenize()'s

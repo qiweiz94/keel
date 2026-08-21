@@ -78,6 +78,17 @@
  *    exposed as flat text only — it is not shell syntax and is not
  *    re-tokenized as such.
  *
+ * 4b. `keel run <agent-cmd...>` (packages/cli/src/commands/run.ts) is
+ *    handled the same way as rule (4)'s shell `-c` bodies: everything
+ *    after `run` (skipping a literal `--`, if present) is extracted as
+ *    `interpreterBody` and re-parsed one level deep. There is no
+ *    single-flag trigger here — `argv0` basename `keel` immediately
+ *    followed by the literal token `run` is the whole detection — but the
+ *    reason is the same one-liner as (4)'s: without this, `keel run "rm
+ *    -rf /"` presents every command-type rule with the wrapper text only,
+ *    never the payload about to execute, which is a total bypass of the
+ *    default ruleset, not a narrow gap.
+ *
  * ── What stays open (see SECURITY.md) ──
  *   - Command substitution / backticks / arithmetic expansion are not
  *     parsed; their text is left as literal characters in whatever token
@@ -428,7 +439,49 @@ function normalizeSubcommand(rawSub: string, dict: Record<string, string>, depth
   if (commandTokens.length > 0) {
     const argv0 = commandTokens[0].value
     const kind = classifyInterpreter(basename(argv0))
-    if (kind) {
+    if (basename(argv0) === 'keel' && commandTokens[1]?.value === 'run') {
+      // `keel run <agent-cmd...>` wraps an ENTIRE command the same way
+      // `bash -c` wraps a single string, except there is no `-c`-style flag
+      // introducing the body — it is just "every token after `run`"
+      // (optionally after a literal `--`, which `keel run`'s own commander
+      // registration accepts to stop ITS OWN option parsing before the
+      // wrapped command's flags — see index.ts). Unwrapping this the same
+      // way `bash -lc` is unwrapped above closes what would otherwise be a
+      // TOTAL bypass of every command-type rule in the default ruleset
+      // (destructive commands, force-push, secrets, exfil,
+      // keel-control-gate itself, ...): every one of those rules matches
+      // against the raw command TEXT via `commandSurfaces()`
+      // (arg-utils.ts), and `keel run "rm -rf /"` would otherwise present
+      // the rule engine with only the wrapper text, never the payload
+      // actually about to execute.
+      let bodyIndex = 2
+      if (commandTokens[bodyIndex]?.value === '--') bodyIndex++
+      const bodyTokens = commandTokens.slice(bodyIndex)
+      if (bodyTokens.length > 0) {
+        // A single-token body (`keel run "rm -rf /"`) is exactly the shell
+        // `-c 'body'` shape one level up — use the DECODED value directly,
+        // same as the shell-body extraction just below, so a whitespace-
+        // bearing quoted body surfaces unquoted.
+        //
+        // A multi-token body (`keel run bash -c "rm -rf /"`) is a real argv,
+        // not one string — joining DECODED values with bare spaces would
+        // destroy the original quoting (`"rm -rf /"`, one argument, would
+        // become indistinguishable from three separate arguments `rm`,
+        // `-rf`, `/`, corrupting the recursive re-parse below: a `bash -c`
+        // wrapped one level in would see its OWN `-c` consume only the next
+        // bare word instead of the real multi-word body). Joining RENDERED
+        // forms instead reconstructs a string that reproduces the original
+        // quote structure, so the recursive `normalizeCommand` call below
+        // re-tokenizes it back into the same logical tokens.
+        const bodyValue = bodyTokens.length === 1
+          ? bodyTokens[0].value
+          : bodyTokens.map(t => t.rendered).join(' ')
+        sub.interpreterBody = bodyValue
+        if (depth < MAX_INTERPRETER_DEPTH) {
+          sub.nested = normalizeCommand(bodyValue, depth + 1)
+        }
+      }
+    } else if (kind) {
       const flags = interpreterFlags(kind)
       for (let k = 1; k < commandTokens.length - 1; k++) {
         const tok = commandTokens[k].value

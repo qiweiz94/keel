@@ -69,9 +69,42 @@ describe('keel-control-gate', () => {
     'keel audit --tail 20',
     'keel validate',
     'keel retrospective',
+    // `keel run <agent-cmd>` is DELIBERATELY NOT gated, unlike the verbs
+    // above: every one of those directly reconfigures/disarms enforcement
+    // (turns it off, changes strictness, edits rules.yaml, clears a
+    // lockdown). `keel run` starts something NEW — it doesn't touch any
+    // existing control. An agent that wants an un-intercepted execution
+    // channel already has one today via plain shell backgrounding
+    // (`nohup cmd &`, `setsid cmd`, `disown`), which this gate cannot and
+    // does not attempt to close; singling out `keel run` for that same
+    // class of risk would not close the real gap while removing the one
+    // channel that gives a human something to `keel halt --kill` — net
+    // LESS operator visibility, not more. See run.ts's own header and this
+    // change's report for the fuller reasoning.
+    'keel run claude',
+    'keel run -- claude --dangerously-skip-permissions',
   ]
 
   it.each(allowed)('does not block read-only: %s', (command) => {
     expect(controlGatePattern().test(command)).toBe(false)
+  })
+
+  it('still blocks a gated verb embedded literally inside an UNQUOTED keel run payload (unanchored substring match, no unwrap needed)', () => {
+    expect(controlGatePattern().test('keel run keel halt --kill')).toBe(true)
+    expect(controlGatePattern().test('keel run "keel halt --kill"')).toBe(true)
+  })
+
+  it('a QUOTED embedded verb immediately followed by the closing quote needs the command-normalizer unwrap (raw substring alone misses it — the boundary after "disable" is a quote char, not whitespace/end-of-string)', async () => {
+    const raw = 'keel run "keel disable"'
+    // The raw string alone does NOT match — this is exactly the gap
+    // command-normalizer.ts's `keel run` unwrap exists to close (see its
+    // own module doc, section 4b): commandSurfaces() never evaluates a
+    // command-type rule against the raw string alone.
+    expect(controlGatePattern().test(raw)).toBe(false)
+
+    const { normalizeCommand } = await import('../core/enforce/command-normalizer.js')
+    const surfaces = normalizeCommand(raw).surfaces
+    expect(surfaces).toContain('keel disable') // unwrapped, unquoted — now matches
+    expect(surfaces.some(s => controlGatePattern().test(s))).toBe(true)
   })
 })

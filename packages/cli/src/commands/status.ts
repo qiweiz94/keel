@@ -137,6 +137,37 @@ export async function statusCommand() {
     console.log(`  Kill switch: ${chalk.green('enabled (enforcement active)')}`)
   }
 
+  // ── keel run supervision — inlined against `home` the same way HALTED/
+  // DISABLED are just above, for the same reason (one `home` value governs
+  // every sentinel this function reads, rather than each reader re-resolving
+  // resolveHome() independently). Not read via run-state.ts's exported
+  // readers on purpose, matching this file's existing convention. ──
+  const runStateFile = join(home, '.keel', 'RUN_STATE')
+  if (existsSync(runStateFile)) {
+    try {
+      const data = JSON.parse(readFileSync(runStateFile, 'utf8'))
+      const entries = data && typeof data === 'object' ? Object.values(data) as Array<Record<string, unknown>> : []
+      if (entries.length) {
+        console.log(chalk.dim('  Supervised run(s):'))
+        for (const e of entries) {
+          const pid = typeof e.pid === 'number' ? e.pid : null
+          const cmd = Array.isArray(e.command) ? e.command.join(' ') : '?'
+          let alive = false
+          if (pid !== null) {
+            try { process.kill(pid, 0); alive = true } catch { alive = false }
+          }
+          const startedAt = typeof e.started_at === 'string' ? Date.parse(e.started_at) : NaN
+          const uptime = Number.isFinite(startedAt) ? `${Math.round((Date.now() - startedAt) / 1000)}s` : '?'
+          const state = e.unverified ? chalk.yellow('unverified') : alive ? chalk.green('alive') : chalk.dim('dead')
+          const stale = e.stale ? chalk.yellow(' (marked stale — pid likely reused)') : ''
+          console.log(chalk.dim(`    • pid ${pid ?? '?'} — ${state} — up ${uptime} — ${cmd}${stale}`))
+        }
+      }
+    } catch {
+      console.log(chalk.dim('  Supervised run(s): unreadable RUN_STATE file'))
+    }
+  }
+
   // ── Armed overrides ──
   const store = new FileRuleOverrideStore(home)
   const overrides = store.list()
