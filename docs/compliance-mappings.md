@@ -182,6 +182,26 @@ organization that has separately determined some AI-Act obligation applies to it
 of AI coding agents, and is asking which of that obligation's technical controls Keel
 can help satisfy.
 
+**Where the Act's own text currently stands, verified directly against the European
+Commission's own summary** ([digital-strategy.ec.europa.eu](https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai)):
+Article 50's transparency obligations take effect in August 2026 ("the transparency
+rules of the AI Act will come into effect in August 2026," per that source), and the
+compliance deadline for the Article 9–15 high-risk-system rules this section maps
+against is **December 2, 2027** ("Rules for systems used in certain high-risk areas —
+including biometrics, critical infrastructure, education, employment, migration, asylum
+and border control — apply starting this date"). Neither that page nor
+[artificialintelligenceact.eu](https://artificialintelligenceact.eu/high-level-summary/)
+names AI development tools, coding assistants, or coding-agent guardrails as a
+regulated category anywhere in the Act's text — the high-risk classification runs by
+*use case* (the Annex III list above), not by tool type. That is exactly why the
+paragraph above puts the high-risk determination on the deploying organization rather
+than on Keel or on "AI coding agents" as a class: there is currently no gray-zone
+carve-out to resolve, because the Act does not address this tool category at all, one
+way or the other. This page shows how Keel's rules *relate* to the Act's Article 9–15
+principles if an organization has separately made that determination — it is not a
+claim that Keel, or AI coding tools generally, fall within the Act's regulated scope,
+and nothing on this page is legal advice on whether they do or will.
+
 ### Article 9 — Risk management system: weak
 
 Article 9 requires a continuous, iterative risk-management *process* for the AI system
