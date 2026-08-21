@@ -124,12 +124,24 @@ Results (full detail and exact inputs in `session/v1/AUDIT.md`):
   `bash -lc 'ls -la'` still allows. Guarded by `shell-normalize-bypass.test.ts`
   and `scripts/redteam/round2.mjs`. (The finding is retained in classes 1/3
   above and AUDIT.md §1 as the honest record; both are annotated RESOLVED.)
-- **Interpreter-body floor evadable by Python aliasing** —
-  `python3 -c "__import__('shutil').rmtree('/')"` and the `getattr(...)` form
-  allow: the floor regex requires the literal token `shutil.rmtree`, and an
-  aliased call omits it. This is the disclosed non-shell-obfuscation residual
-  class (the floor is a best-effort regex over a decoded body, not a Python
-  parser); noted for completeness, not a new class.
+- **Interpreter-body floor evadable by Python aliasing — FOUND then FIXED
+  (floor-hardening lane).** `python3 -c "__import__('shutil').rmtree('/')"`
+  and the `getattr(...)` form (`getattr(shutil, 'rmtree')(...)` /
+  `getattr(__import__('shutil'), 'rmtree')(...)`) previously allowed: the
+  floor regex required the literal token `shutil.rmtree`, and an aliased
+  call omits it. ✅ **Now closed:** `no-destructive-interpreter-body`'s
+  `match` in `install.ts`/`plugin.ts` widens the module-resolution surface
+  to also accept `__import__('shutil')` in place of a plain `shutil` name,
+  and the call surface to also accept `getattr(<module>, 'rmtree')(...)`
+  in place of dot notation — same root/home scoping as before, no widened
+  false-positive surface. Verified:
+  `python3 -c "__import__('shutil').rmtree('/')"` and
+  `python3 -c "getattr(__import__('shutil'),'rmtree')('/')"` both deny.
+  Still a best-effort regex over a decoded body, not a Python parser — an
+  arbitrarily obfuscated aliasing chain (e.g. assigning the bound method to
+  an intermediate variable before calling it) is not covered by this
+  widening and remains a disclosed residual of the same class. Guarded by
+  `scripts/redteam/round2.mjs`.
 - **`os.remove('/etc/passwd')` allows by design** — the interpreter-body floor
   is deliberately scoped to a literal `/` or `~` target only (mirroring
   `no-destructive-commands`); a non-root sensitive path like `/etc/passwd` is
