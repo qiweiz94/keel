@@ -19,10 +19,10 @@ import type { KeelRule } from '@get-keel/core'
  * 3. Behavioral checks through real pipeline: network, test-file-edits, --no-verify
  * 4. Conditional checks: rules that may not exist yet (test-before-commit, etc.)
  *
- * Failures are expected on this branch if another lane is restructuring the
- * ruleset; all assertions should pass after the pending merge. For each failure,
- * the evidence file documents whether it's an expected-pending-merge reason,
- * a test wiring bug, or a genuine ruleset finding.
+ * Every assertion below must PASS, unconditionally. This suite carries no known
+ * failing case. If one of these fails, treat it as either a real regression in
+ * the default ruleset or a bug in the test itself, and fix the underlying cause
+ * rather than the assertion.
  */
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
@@ -238,24 +238,28 @@ describe('do-not-ship: false-positive guardrail patterns', () => {
   })
 
   // ── BEHAVIORAL CHECK: --no-verify is not hard-blocked ──────────────────
-  // Assertion 6: The rule matching --no-verify should have action warn (not deny/block).
-  // Current default has action: deny, level: sprint (expected to FAIL).
-  // The pending merge from another lane softens this from deny to warn.
-  // This test documents the expected-pending-merge failure.
+  // Assertion 6: The rule matching --no-verify ships action: warn, not deny/block.
+  // This assertion passes today and exists to keep it that way: --no-verify is a
+  // legitimate escape hatch agents sometimes need, and the ruleset must never
+  // regress it to a hard block.
 
   it('6. --no-verify is not hard-blocked: action should be warn (not deny)', () => {
     const noVerify = rules.find(r => r.id === 'no-verify-bypass' || r.id === 'hook-bypass')
     expect(noVerify, 'no-verify bypass rule not found').toBeDefined()
 
-    // EXPECTED FAILURE: The rule currently has action: deny, level: sprint.
-    // At balanced, the warn-first-then-block ladder softens this to warn on first hit,
-    // deny on second. However, the stated intent is that --no-verify should NOT be
-    // hard-blocked, meaning action should be warn (not deny/block).
-    // This is the one genuinely expected failure, pending the other lane's merge.
+    // The rule's own declared action is warn, level: sprint. Note this is orthogonal
+    // to the warn-first-then-block DIAL ladder every warn-tier rule goes through at
+    // balanced/protect — that escalation on repeat violations is fine and expected.
+    // What must never happen is the RULE itself declaring action: deny/block, which
+    // would hard-block on the very first hit regardless of the dial. `keel check`
+    // used to re-raise this rule to a block regardless of its declared action; that
+    // path was removed when `check.ts` moved onto the shared EnforcementPipeline
+    // (see CHANGELOG.md), so this assertion now holds across every enforcement
+    // surface, not just most of them.
     const hasWarnAction = noVerify!.action === 'warn' || noVerify!.action === 'prompt'
     expect(
       hasWarnAction,
-      `Rule ${noVerify!.id} currently has action: ${noVerify!.action}, expected warn (pending merge)`,
+      `Rule ${noVerify!.id} must never be hard-blocked by the rule's own declared action (currently: ${noVerify!.action})`,
     ).toBe(true)
   })
 
