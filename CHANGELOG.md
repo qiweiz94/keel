@@ -66,6 +66,72 @@ session — verified via the built plugin bundle and its own load-test script, t
 same verification tier the existing `isDisabled()` kill-switch check in that file
 carries.
 
+Widens `unverified-package-install` — the slopsquatting gate that shipped in 0.4.0
+as an npm-only resolve-check — to PyPI, crates.io, and Go modules, and teaches the
+package verifier to read the same ambient registry configuration a real package
+manager would before it denies anything. Both halves exist for the same reason: an
+npm-only check is a check most agents route around by using a different ecosystem,
+and a check that ignores a team's own private index denies that team's real packages
+on the first try, with no warn-first grace period.
+
+### Added
+
+- **Package provenance beyond npm** (`packages/core/src/enforce/package-verifier.ts`).
+  `unverified-package-install` now resolves install targets against PyPI, crates.io,
+  and the Go module proxy in addition to the npm registry. Six real gaps a design
+  audit found in the naive port were fixed before this shipped rather than after:
+  flag-value tokens being read as package names (`pip -r`, `--index-url`, and
+  friends produced false denies), PyPI private-index false denies, cross-ecosystem
+  cache collisions on a shared name, pip extras and version-operator parsing
+  (`pkg[extra]>=1.2`), a Go proxy 404 being treated as deterministic nonexistence
+  when it is not, and — the one that would have silently defeated the entire defense —
+  the PyPI age gate reading the **latest release date** instead of the package's
+  **first-ever publish date**. A squatted name published yesterday and republished
+  today reads as old under the former and new under the latter; only the latter is
+  the signal the age gate exists to test. `cargo install` (a binary-install
+  subcommand, not a dependency add) is explicitly out of scope.
+- **Ambient package-resolution config awareness**
+  (`packages/core/src/enforce/ambient-registry-config.ts`, new). A separate,
+  offline, local-only pass that reads the same files and environment variables a
+  real package manager would — `.npmrc`, `pip.conf`, `.cargo/config.toml`,
+  `GOPRIVATE` — and downgrades a would-be deny onto the existing `privateIndex`
+  path when a team's internal registry is configured ambiently with no command-line
+  flag at all. This closes a real false-deny class: the rule denies on the first
+  unscoped 404 with no warn-first grace, so a team whose internal index lives only
+  in `.npmrc` had its own real packages denied on the very first attempt. Zero
+  network access; config files only.
+- **Dependency-confusion detection.** A new warn for the inverse shape: ambient
+  config marks a name as belonging to a private index, but the command explicitly
+  forces the public registry. `decidePackageAction` places this warn strictly BELOW
+  `not_found`/`unverified`/`age_gate` in the decision ladder, so a forced-public
+  flag can never be used to escape a real deny by shifting the verdict onto a
+  softer reason.
+
+### Fixed
+
+- **An `npm --registry=` deny-escape in the ambient-config downgrade, caught in
+  review and closed before merge.** The first cut of `applySpecAmbient`'s npm path
+  treated ANY explicit `--registry=<value>` that wasn't the public registry as proof
+  of a private index, with no on-disk config required at all — meaning an agent
+  could append `--registry=https://evil.example` to its own hallucinated install and
+  permanently turn a real deny into a mere prompt. Ambient config is what a team sets
+  up ahead of time; it is not a flag the policed agent writes for itself. The explicit-
+  override path now downgrades on exactly one case: ambient config ALREADY marks the
+  name private AND the flag forces the public registry. Any other `--registry=` value
+  with no matching on-disk config falls through untouched. Cargo's `--registry <name>`
+  form was left as-is — it requires the name to already exist in a
+  `[registries.<name>]` table read from disk, so a flag alone cannot fabricate it the
+  way npm's could.
+
+Verified: new `package-verifier.test.ts` coverage for all four ecosystems and each
+of the six ported-gap classes; a dedicated security regression test proving the
+`--registry=` escape stays closed; cache-only coverage for the ambient downgrade
+(the code path `pipeline.ts` actually calls, as distinct from the direct-call path);
+and a pipeline test showing the ambient case resolves on the first attempt against a
+no-config control that still needs a retry to deny. Registry reachability itself is
+network-dependent by construction — a network failure resolves to `unverified`
+(prompt), never to a silent allow and never to a deny.
+
 Adds `type: session`'s first real handler — a composite runaway-loop trip
 (`session-runaway-trip`) across five session-scoped dimensions. `rule-parser.ts`
 previously rejected every `type: session` rule outright (`notImplemented` Set) and
@@ -266,6 +332,141 @@ OpenCode's SQLite shape are both live-verified against real installs on the mach
 this lane was built on; every other host (`docs/integrations.md`'s new "Real
 token/dollar spend" table) is explicitly unsupported, not silently assumed to work.
 
+Fixes a false-positive class in `no-secrets-in-code` that made the rule actively
+hostile to ordinary documentation work: AWS's OWN documented example key,
+`AKIAIOSFODNN7EXAMPLE`, is secret-shaped by construction and denied every real
+write of a doc, test fixture, or README that quoted it. The fix is deliberately
+narrow — an allowlist of deterministic shapes only, with entropy demoted to a
+diagnostic that can never soften a verdict.
+
+### Fixed
+
+- **A local, offline placeholder-shape allowlist for `no-secrets-in-code`**
+  (`packages/core/src/enforce/secret-confidence.ts`, new; wired in
+  `packages/core/src/enforce/pipeline.ts`). Exactly three things clear a match: an
+  exact known literal from a small shipped list, AWS's documented `EXAMPLE`-suffix
+  convention, and a redaction-shaped run of one repeated character
+  (`xxxxxxxx`, `********`). Everything else that is genuinely secret-shaped still
+  blocks exactly as it did before. No network call, no model call, no heuristic
+  scoring on the deciding path.
+- **Entropy is computed and logged, but is diagnostic-only and never softens a
+  deny.** This is the deliberate design choice, not an unfinished one: an
+  entropy threshold that can downgrade a verdict is a threshold an attacker tunes
+  a payload under. Entropy appears in the recorded diagnostic so a human reviewing
+  a trace can see what the scorer thought; it has no path to the verdict.
+- **The write path stays gated on `redact_span`**, so the label-only patterns
+  (both PEM `BEGIN` headers, `aws_secret_access_key[\t ]*[:=]`) are untouched by
+  this allowlist — a placeholder-shaped VALUE never clears a match on the LABEL.
+
+Verified: `packages/core/src/enforce/__tests__/secret-confidence.test.ts` (new)
+covers each allowlist shape, the entropy-never-softens property, and a corpus of
+real-shaped credentials that must all still deny. `install.ts` and `plugin.ts`'s
+copies of `DEFAULT_RULES_YAML` took the matching one-line edit and
+`packages/cli/src/__tests__/drift.test.ts` confirms they stayed field-identical.
+
+Adds `type: oscillation`, the A→B→A cycle detector ROADMAP.md named as a planned
+sibling of `type: stuck`. `no-repeat-loops` catches an agent hammering ONE failing
+command; this catches an agent alternating between two or three failing
+commands/edits — a real stuck pattern that looks like activity and goes nowhere.
+The other half of that roadmap item, semantic livelock, was assessed and
+deliberately NOT pursued; see below.
+
+### Added
+
+- **`type: oscillation` rule type** (`RuleType` in `packages/core/src/types.ts`,
+  `validTypes` in `rule-parser.ts`) with `min_cycle_length` (default 2),
+  `max_cycle_length` (default 4), `min_cycle_repeats` (default 2), and the same
+  `require_failure`/`escalation` fields `type: stuck` already uses. Detects a
+  repeating CYCLE of >= 2 DIFFERENT command fingerprints
+  (A→B→A→B, or A→B→C→A→B→C) inside a session's small rolling window (default: the
+  last 8 calls).
+- **`oscillation-tracker.ts` / `oscillation-store.ts` (new,
+  `packages/core/src/enforce/`)**, mirroring `stuck-tracker.ts`/`stuck-store.ts`'s
+  file-locked, TTL-bounded shape rather than inventing a second persistence
+  pattern. One documented deviation: `check()`'s persisted-vs-local comparison uses
+  `>=` where `stuck-tracker.ts` uses a strict `>`. This is safe and is commented in
+  place — entry-array length can tie without the two disagreeing, because
+  `recordOutcome` writes through and then mirrors the exact result.
+- **Complementary to `no-repeat-loops`, never redundant with it — by
+  construction.** An exact single-command repeat can never satisfy oscillation's
+  distinct-fingerprint requirement, and a distinct-fingerprint cycle can never
+  satisfy the exact-repeat detector. The two structurally cannot double-count the
+  same evidence.
+- **`command-oscillation`, a new default rule** (`install.ts` and `plugin.ts`'s
+  `DEFAULT_RULES_YAML`, byte-identical). Ships `require_failure: true`, mirroring
+  `no-repeat-loops`' own discriminator: a legitimate TDD red-green-refactor loop
+  (edit test, edit code, edit test, edit code — literally period-2 alternation) is
+  excluded by construction because each step succeeds. Ships `mode: observe` with
+  zero measured hit-rate evidence — see `docs/tiers.md` for the same promotion bar
+  `no-repeat-loops` had to clear.
+- **Known gap, left undone rather than force-fit:** an agent oscillating between
+  edits that each individually SUCCEED (reverting a file to a prior state and back)
+  needs a content-state signal no tracker in this codebase feeds today.
+- **Semantic livelock — the other half of the roadmap item — was assessed and not
+  pursued.** Keel's actual signal set is command fingerprints plus exit codes, with
+  no visibility into what a command DOES; it has no notion of semantic convergence.
+  A real "no net progress" detector needs content-state hashing nothing here feeds.
+  Forcing a weak proxy (treating any non-exact, non-cyclical activity as
+  "not converging") would be indistinguishable from normal work, and was rejected
+  rather than shipped.
+
+Verified: `packages/core/src/enforce/__tests__/oscillation.test.ts` (new) covers the
+escalation ladder, the `require_failure` discriminator, non-double-counting against
+`no-repeat-loops`, and window aging; plus
+`tests/rules/command-oscillation/{must-block,must-allow}.yaml` fixtures through the
+per-rule fixture harness. Wired into `pipeline.ts`, `enforce.ts`, `daemon.ts`, and
+the OpenCode plugin's own bundled copy.
+
+Adds `keel run`, a supervisor that spawns an agent command detached so
+`keel halt --kill` can reach a call that is ALREADY EXECUTING — the gap the halt
+latch left open, since a hook can only stop a call it sees before it starts. Tier B
+in the halt design: Tier A denies the next call, Tier B terminates the current one.
+
+### Added
+
+- **`keel run <command...>`** (`packages/cli/src/commands/run.ts`,
+  `run-state.ts`). Spawns detached on POSIX and records pid, pgid, and a process
+  identity triple (start time + argv + boot id, all treated as OPAQUE strings, never
+  parsed) into a keyed state file, so more than one supervised run can be tracked
+  concurrently.
+- **`keel halt --kill`** (`packages/cli/src/commands/run-kill.ts`). Re-verifies
+  liveness AND identity before sending any signal; refuses on pgid 0 or 1; refuses
+  on keel's own pgid; refuses when identity cannot be confirmed; and escalates
+  SIGTERM → SIGKILL only after a grace window. **Every ambiguous case resolves to
+  refusal — the opposite fail-safe direction from the rest of this codebase's binary
+  flags**, deliberately, because a wrong-target kill signal has no safe default the
+  way a wrong-direction deny does.
+- **`keel status` surfaces supervised runs**, so a human can see what `--kill`
+  would target before running it.
+
+### Fixed
+
+- **A bypass in the command-text normalizer that `keel run` would otherwise have
+  opened.** Every `type: command` rule — `no-destructive-commands`, `no-force-push`,
+  the secret patterns, `keel-control-gate` itself — matched only the raw command
+  string, so `keel run "rm -rf /"` would have hidden the real payload from the
+  entire ruleset behind a benign-looking wrapper. `command-normalizer.ts` now
+  unwraps the wrapped agent command the same way it already unwraps a `shell -c`
+  body, before any rule sees it.
+
+Deliberately not done, with reasons:
+
+- **`keel run` is NOT on `keel-control-gate`'s blocked-verb list.** Every other
+  gated verb turns enforcement off or clears a lockdown; `run` starts something new.
+  An agent already has an ungated path to the same background-process risk through
+  plain shell detach syntax, so gating `run` would remove the one channel a human
+  can later kill without closing the real gap.
+- **Windows gets a plain, unsupervised `run` rather than a refusal to work at
+  all.** Job-object supervision needs native bindings this repo does not ship, and
+  the Windows CI lane only runs a type check.
+
+Verified: `run.test.ts` and `run-kill.test.ts` (new) cover the identity-verification
+refusals (dead pid, reused pid with a different identity, pgid 0/1, keel's own
+pgid), the SIGTERM→SIGKILL grace escalation, and multi-run state keying;
+`control-gate.test.ts` covers the deliberate `run` non-gating decision;
+`no-side-effects.test.ts` covers the new command paths; and
+`command-normalizer.test.ts` covers the wrapper-unwrapping bypass fix.
+
 A batch of six correctness and security-hardening lanes closed via targeted
 follow-up investigation across the enforcement pipeline, package-provenance
 checks, and host integrations: a stale-discharge race in verification-obligation
@@ -314,16 +515,6 @@ runtime's actual behavior, and two package-manager detection gaps.
   `rm${IFS:0:1}-rf${IFS:0:1}/` (a parameter-expansion modifier `VAR_RE` doesn't
   recognize) — tracked as a `bypass-attempt` probe in
   `scripts/redteam/round2.mjs`.
-- **`keel check`'s weaker command-matching path is now disclosed in
-  SECURITY.md.** `keel check`/`keel check --ci` route through the legacy
-  `PolicyEngine` (`packages/core/src/policy-engine.ts`), which matches the raw
-  command string with none of `command-normalizer.ts`'s hardening — no
-  quote-strip, no compound-command splitting, no variable expansion, no `${IFS}`
-  defeat protection, no interpreter-body extraction (`keel hook
-  <host>`/`keel evaluate`/`keel daemon` are the hardened path). Every
-  obfuscation-bypass fix on this page that closed on the real enforcement path
-  is still open against `keel check` specifically, since it never runs through
-  the fixed code at all — previously left implied, now stated plainly.
 - **Output redaction now widens a label-only secret match to cover the secret
   bytes that follow it, instead of leaving them exposed.** `evaluateOutput()`
   detected but never redacted the three label/header-only patterns
@@ -411,6 +602,333 @@ verification-race, output-redaction-widening, `.npmrc` interpolation, and
 test additions); and the Cursor/Cline hook wiring against the installed
 runtimes' own compiled source and type definitions, still short of a live
 exercised call on either host.
+
+Moves `keel check` off the legacy `PolicyEngine` and onto the same
+`EnforcementPipeline` every other host already uses. This supersedes the earlier
+disclosure of `keel check`'s weaker command-matching path: that gap is closed
+rather than merely documented, and SECURITY.md's corresponding section has been
+rewritten to match. Several real behavior changes came with the move, listed
+plainly below — including two capabilities that were dropped outright with no
+replacement anywhere in the platform.
+
+### Changed
+
+- **`keel check`/`keel check --ci` now evaluate through `initEnforce` /
+  `evaluateToolCall` against the `.keel/rules.yaml` four-tier hierarchy**
+  (`packages/cli/src/commands/check.ts`), exactly as `keel hook <host>`,
+  `keel evaluate`, and `keel daemon` do. It previously built its own `PolicyEngine`
+  against `.keel.yaml` — **a file only the old `keel init` ever wrote, which the
+  real install flow never creates** — so in practice this command was quietly
+  grading every project against a hardcoded default policy rather than against the
+  user's actual rules. All of `command-normalizer.ts`'s hardening (quote-strip,
+  compound-command splitting, inline variable expansion, `${IFS}` defeat
+  protection, interpreter-body extraction, `keel run` wrapper-unwrapping) now
+  applies to `keel check` identically. Only CLI-specific ergonomics — the `--ci`
+  staged-file loop and `--analyze-reasoning` — remain distinct from the other hosts.
+- **`no-verify-bypass` and `broad-privilege-escalation` now warn through
+  `keel check` rather than hard-blocking.** This is a severity DROP via
+  `keel check` specifically, and it is a correction, not a regression: the old code
+  re-raised both to a block regardless of what the rule itself declared, making
+  `keel check` stricter than every other enforcement surface on the same two rules.
+  Both rules ship `action: warn`; `keel check` now honors that, matching every
+  other host.
+- **A plain `keel check --file <path>` read (no `--write`) no longer scans file
+  content for secrets.** `type: content` rules are write-side only — this is the
+  read/write split every other host already has, now applied here too.
+  `--write` and `--ci` still scan content.
+- **Two pieces of coverage were dropped outright, with no replacement anywhere in
+  the platform yet:** the MCP-github-specific bypass message
+  (`mcp__github__*` writes bypassing local git hooks), and the
+  `HUSKY=0` / `LEFTHOOK=0` / `SKIP=`-prefixed environment-variable hook-bypass
+  detection. Neither has a default-rule equivalent. `--no-verify` and
+  `core.hooksPath` bypass detection itself is still covered, via the
+  `no-verify-bypass` rule.
+- **`keel check` no longer emits the legacy signed, hash-chained receipts and audit
+  log** (`.keel/audit/audit.log`, `.keel/receipts/`). Nothing is lost that ever
+  worked through another host: that log was a `PolicyEngine`-only artifact, and no
+  enforcement host ever fed it. `keel check` still produces the same unsigned
+  per-call audit trail every other host does (`~/.keel/traces/`, rendered by
+  `keel enforce --audit`); it simply no longer keeps a second, signed copy that
+  nothing else in the platform wrote to either. `audit.ts` and `verify.ts` had their
+  messaging corrected accordingly — `keel verify`'s receipt/chain-verification half
+  only ever had legacy-path coverage to begin with.
+
+### Added
+
+- **`packages/cli/src/commands/check-helpers.ts` (new)** — faithful, standalone
+  ports of `PolicyEngine`'s `checkPKillPython` method and `checkSecret`'s pattern
+  list, landed one lane ahead of the migration precisely so these two checks would
+  not be lost in it. Both fill a real gap in the modern default ruleset:
+  `no-destructive-commands` has zero `pkill` coverage, and `no-secrets-in-code`
+  only ever scans write-tool CONTENT, never a Bash tool's `command` argument. The
+  migration imports both directly.
+- **New fail-loud behavior when no rules file exists at any of the four tiers**
+  (global, user, project, local): `keel check` prints a loud warning and exits 0
+  instead of quietly treating every action as allowed. Helper checks, syntax
+  verification, behavioral-anomaly detection, and reasoning analysis all keep
+  running in that state — only the rule-driven evaluation is skipped — so a bare
+  project still gets partial coverage instead of going fully silent, and a
+  pre-commit hook wired to `--ci` does not fail every commit just because rules
+  were never set up.
+
+Verified: `cli.test.ts` and `install.test.ts` now provision a real
+`.keel/rules.yaml` fixture for the check-related cases and assert the warn-not-block
+outcomes above; `check-helpers.test.ts` (new) covers both ported checks.
+`evidence.test.ts` drove its audit-log/receipt-chain setup through `keel check` —
+the only remaining command that touched `PolicyEngine`'s audit writer — and now
+calls `PolicyEngine` directly, one real subprocess per call across ten tests,
+keeping the same coverage. `init.ts`, `index.ts`, and SECURITY.md were updated
+wherever their wording pointed at the file this command no longer reads.
+
+Three CLI surfaces land together: a runnable version of the OWASP Agentic Top 10
+mapping that was previously prose-only, four new `keel scan` finding classes for
+MCP client configs, and an evidence gate on `keel promote` that finally consumes
+the `promotion_fp_threshold` config field that has existed and gone unread since it
+was added.
+
+### Added
+
+- **`keel conformance` — the OWASP Agentic Top 10 mapping, made runnable**
+  (`packages/cli/src/commands/conformance.ts`, plus one shipped scenario file per
+  category at `packages/cli/conformance/ASI01.yaml` … `ASI10.yaml`).
+  `docs/owasp-agentic-top10.md` asserted which shipped rules cover each category as
+  prose, with no way for a user to check that claim against their OWN loaded
+  `rules.yaml`. This evaluates every scenario through the real enforcement pipeline
+  and reports pass / fail / not-covered per category, deliberately telling apart a
+  genuinely absent rule (informational — keel makes no coverage claim there) from a
+  rule that IS present but did not fire the way the defaults promise (a real gap
+  worth a look). `--level` evaluates against a chosen dial, `--json` emits
+  machine-readable output, `--dir` picks the project to load rules from, and the
+  opt-in `--ci` exits 1 on a real gap only — a "not-covered" scenario never fails
+  the gate — matching how `keel scan` and `keel check` already use that flag.
+- **`keel scan` MCP hardening — four new finding classes**
+  (`packages/cli/src/commands/scan-risk.ts`). `parseMCPConfig` now captures `env`
+  and `headers`, which it previously dropped on the floor. On top of them:
+  **unsafe startup-command patterns** (`sudo`, destructive `rm -rf`, pipe-to-shell),
+  reusing `command-normalizer.ts`'s own tokenizer and deobfuscation rather than a
+  second string matcher; **dangerous URL schemes** (`javascript:`, `data:`,
+  `file:`, `vbscript:`); **SSRF-shaped URLs** (private address ranges and cloud
+  metadata endpoints); and **literal credentials sitting in `env`/`headers`**,
+  reusing `checkSecret`'s provider-shape patterns plus the placeholder filter, so a
+  config carrying a real key still flags while `AKIAIOSFODNN7EXAMPLE`-style
+  placeholders stay quiet. `--json` output deliberately drops raw `env`/`headers`
+  VALUES, so the plaintext-credential check cannot leak the thing it just found.
+  Explicitly documented as out of scope in `docs/integrations.md`, per the MCP
+  spec's own security page: token passthrough, confused deputy, and session
+  hijacking all depend on a server's RUNTIME behavior, not on anything visible in a
+  client config file, and a client-config-only scanner cannot see them.
+- **`keel promote` is now gated on measured evidence**
+  (`packages/cli/src/commands/promote.ts`). The command previously moved a Tier-3
+  rule's `mode:` up a rung with no check that the rule had earned it. Promoting
+  FROM `mode: observe` now reads `KeelConfig.promotion_fp_threshold` (`types.ts`) —
+  a field that existed and was never consumed until now — and reuses
+  `retrospective.ts`'s own `computePromotionReport` pipeline rather than a parallel
+  computation. It refuses the edit outright (**exit 1, file untouched**) when the
+  rule hasn't seen enough traffic (`insufficient_data`) or when its measured
+  would-block rate hasn't cleared the threshold (`stay_observe`), pointing at
+  `keel retrospective` either way. `--force` lets a human override, with its own
+  distinct "may not be ready" warning rather than a silent success.
+  **`warn → block` stays deliberately ungated**: that rung is real enforcement, not
+  shadow-recorded, so keel has no measured signal to check against and promoting it
+  remains a judgment call informed by `keel report`.
+
+Verified: `conformance.test.ts` (new) covers all ten scenario categories, the
+pass/fail/not-covered three-way classification, and the `--ci` gate's
+not-covered-never-fails property; `scan-risk.test.ts` (new) covers each of the four
+finding classes plus the `--json` value-redaction property; `promote.test.ts` gained
+coverage for both refusal reasons, the file-untouched guarantee, `--force`'s
+override and its warning, and the ungated `warn → block` rung. `keel-control-gate`
+already denies an agent invoking `keel promote` on your behalf, before and after
+this change.
+
+Two new signals on `unverified-package-install`'s decision ladder, at opposite ends
+of the confidence spectrum, plus one detection-gap cleanup. Together with the
+multi-ecosystem widening earlier in this section, the ladder now reads:
+`known_hallucination` (exact match, deny) → `not_found` / `unverified` / `age_gate`
+(prompt) → `typosquat` (similarity heuristic, warn).
+
+### Added
+
+- **A known-package-hallucination registry as a deny signal**
+  (`packages/core/src/enforce/known-hallucinated-packages.ts`, new).
+  `package-verifier.ts` previously only asked whether an install target resolves on
+  its registry right now — which misses the slopsquatting case entirely: an
+  attacker registers a name frontier models are KNOWN to repeatedly invent, then
+  waits for an agent to hallucinate that same name and be told to install it. The
+  package now resolves, so a plain resolves-check waves it straight through. This
+  adds a static, zero-network lookup that runs on every checked install spec
+  regardless of verdict, a new `PackageCheckResult.knownHallucination` field, and a
+  `decidePackageAction` reason (`known_hallucination`) that turns an
+  exists-but-listed name into a strong deny, kept separate from the ordinary
+  `not_found`/`unverified` paths in both reason code and message text. A match on a
+  `not_found` or `unverified` result deliberately STAYS on that path — never deny on
+  a network failure — with the pattern match noted in the message for the human
+  reviewing the prompt.
+  **PLACEHOLDER DATA, stated up front rather than in a footnote:** the 53 names
+  currently in `known-hallucinated-packages.ts` (41 PyPI + 12 npm, matching the
+  source's reported counts) are **structurally-valid stand-ins, not the real
+  research data** — this build had no live internet access to pull the actual list
+  from Socket.dev's 2026 research. The mechanism (lookup, normalization, decision
+  wiring, tests) is built to work correctly with whatever names populate the array.
+  **A human with access to the source research still needs to swap the placeholders
+  for the real 53 names before this is a live production signal.** The refresh
+  procedure is in the file header.
+- **Levenshtein typosquat detection, as a warn tier**
+  (`packages/core/src/enforce/popular-packages.ts`, new; wired into
+  `package-verifier.ts`). Compares each install candidate against a shipped list of
+  popular, well-known package names per ecosystem (`react`, `requests`, `serde`,
+  `gin`, …) and flags names landing within two character edits of one. Guarded by a
+  minimum-length floor, an exemption for scoped npm names, and a small allowlist for
+  verified legitimate near-duplicates. This is a similarity heuristic with real
+  false-positive risk and is priced accordingly: it stays a **warn**, sitting below
+  the exact-match `known_hallucination` deny tier and below the
+  `not_found`/`unverified`/`age_gate` prompt tiers. It never escalates a verdict
+  another signal already reached.
+
+### Fixed
+
+- **`python3.11 -m pip install <pkg>` and other versioned interpreter basenames are
+  now recognized as pip installs.** `extractSegmentInstalls`'s inline `pyBase` check
+  (`package-verifier.ts`) matched only the literal `python` or `python3`, so a
+  perfectly ordinary versioned invocation silently fell through unrecognized and
+  skipped the ambient-registry, hallucination, and typosquat checks entirely.
+  `command-normalizer.ts` already had an equivalent regex private to
+  `classifyInterpreter`; it is now exported as `PYTHON_INTERPRETER_RE` and both call
+  sites point at it, so there is exactly one definition rather than two that can
+  drift. Confirmed that `python-config` still does not falsely match.
+- **A stale doc comment above `extractPackageInstalls` corrected.** It claimed the
+  `python -m pip install` prefix check lived in a helper named `isPythonModulePip`.
+  No such helper has ever existed — the real logic is the inline `pyBase` check
+  above. The comment now names the real check.
+
+Verified: `package-verifier.test.ts` gained coverage for the registry lookup
+(including the deliberate never-deny-on-network-failure property), normalization,
+and every ladder-ordering case; for the typosquat check's edit-distance boundary,
+minimum-length floor, scoped-name exemption, and allowlist; and for
+`python3.11`/`python3.12` detection alongside a `python-config` negative case.
+`packages/cli/templates/keel-enforce.js` was regenerated so the OpenCode plugin
+carries the same logic.
+
+Two rule-authoring capabilities that were previously impossible to express: sharing
+a common rule base across files, and scoping a rule to specific hosts. Both are
+composition axes over the existing four-tier hierarchy, not replacements for it.
+
+### Added
+
+- **`extends:` rule composition in `rules.yaml`**
+  (`packages/core/src/enforce/rule-parser.ts`; `KeelRule`/config shape in
+  `types.ts`). Any `rules.yaml` — or `CLAUDE.md`/`AGENTS.md` frontmatter — may
+  declare `extends: <path>` or `extends: [<path>, ...]`, resolved relative to the
+  DECLARING file's own directory and merged in before that file's own rules.
+  `extends` is a **within-tier** composition axis: it resolves entirely before
+  `loadRuleHierarchy`'s own four-tier (global/user/project/local) merge, and works
+  inside any one of those tiers.
+- **A weakening `extends:` override of an inherited `level: protect` floor is
+  refused at load time, loudly, naming the rule id.** Same-id overrides across an
+  extends chain reuse the exact tightening-only floor logic `mergeRules` already
+  uses for scope-based dedup (`floorTightensOrEqual`, built from
+  `ACTION_STRENGTH`/`MODE_STRENGTH`/`sameEnforcementSurface` — not a parallel
+  reimplementation). This is deliberately STRICTER than `mergeRules`' behavior for
+  cross-scope overrides, which silently keeps the stronger floor: an `extends`
+  chain is authored deliberately, so a weakening attempt is a mistake worth
+  surfacing rather than silently absorbing. It composes with `pipeline.ts`'s
+  existing last-known-good fail-closed reload path, so **a `rules.yaml` edit that
+  would weaken an inherited floor never takes effect at all.**
+- **Circular `extends` chains are detected and a maximum depth is enforced**, and a
+  missing or unreadable (`EISDIR`/`EACCES`) extends target reports a clear error
+  rather than degrading to defaults.
+- **The rules-hash reload check now covers every file an extends chain actually
+  depends on**, not just each tier's own `sourcePath` (`pipeline.ts`, `daemon.ts`,
+  `enforce.ts`) — so editing a shared base file is picked up by a running daemon
+  instead of being invisible until restart.
+- **Agent-scoped rule matching via `agents:`** (`KeelRule.agents?: string[]`,
+  `types.ts`; filtered in `mergeRules()`). `EnforceInput` already carried `agent` —
+  a host's own declared identity string — but no rule could match on it. Threaded
+  through every real enforcement call site in `pipeline.ts` via a new private
+  `mergedRules()` choke point rather than 15 scattered call sites, plus
+  `validateRules()` shape checks and a `detectConflicts()` guard for host-disjoint
+  rule pairs. **This is HOST identity, not a true multi-agent-fleet identity
+  concept** — `claude-code`, `cline`, `opencode`, the string a host's own
+  integration declares itself as. No host today emits a distinct identity per agent
+  INSTANCE, and this field does not pretend otherwise. Documented as such in
+  `types.ts`, `docs/custom-rules.md`, README.md, and SPEC.md. A rule with no
+  `agents` field (the default) applies everywhere, unchanged.
+
+### Fixed
+
+- **A latent `parseRulesContent` gap**: a file whose only top-level keys were
+  `extends`/`level` — no `rules:` and no `simple_rules:` — was silently dropped to
+  defaults instead of being read.
+- **A cache-key gap found while wiring `agents:`.** The stateless verdict cache's
+  `CacheContext` (`packages/core/src/enforce/cache.ts`) did not carry the host, so
+  an agent-scoped rule could leak one host's cached verdict to a DIFFERENT host's
+  otherwise-identical call — a correctness hole that only becomes reachable once
+  agent-scoped rules exist, closed in the same lane that creates them. Covered by a
+  regression test that fails without the fix.
+
+Verified: `rule-parser.test.ts` gained substantial coverage for extends resolution,
+relative-path anchoring, the protect-floor weakening refusal, cycle detection, depth
+limits, and each unreadable-target error class, plus the `agents:` shape validation
+and conflict-detection cases; `pipeline.test.ts` covers agent-scoped matching
+end-to-end and the cache-context regression; `agentic-eval.test.ts` covers the
+composed-rules evaluation path. `packages/cli/templates/keel-enforce.js` was
+regenerated so the OpenCode plugin resolves extends chains identically.
+
+Documentation, competitive positioning, and harness work landed across this whole
+range rather than in one lane, grouped here rather than scattered: regulatory
+framework mappings, a corrected account of what competing tools actually enforce, a
+drift check for the hand-maintained price table, and a red-team harness relabeling
+that turns four now-closed bypass classes into real regression gates.
+
+### Added
+
+- **`docs/compliance-mappings.md` — rule-level mapping to NIST AI RMF, the EU AI
+  Act, and ISO/IEC 42001**, including, explicitly, where keel has NO coverage
+  rather than only the categories it maps cleanly onto. Linked from README.md and
+  ROADMAP.md.
+- **An EU AI Act gray-zone caveat, sourced rather than hedged.** The Article 50
+  transparency obligations and the high-risk-system deadlines are now cited
+  directly from EU pages, replacing an earlier NIST-style hedge on unverified dates
+  in `docs/compliance-mappings.md`.
+- **A real spend-control comparison in `docs/comparison.md`, sourced from Langfuse's
+  and Helicone's own documentation.** The correction that matters: **Helicone
+  DOES block spend** — via a rolling time-window rate limit applied at its proxy —
+  it is not alerts-only, as an earlier assumption had it. What differs is the
+  mechanism, not the presence of enforcement: Helicone limits requests inside a
+  rolling window at a proxy; keel's `type: budget` rule limits a CUMULATIVE session
+  total read from the host's own local record, with no proxy in the path. Stated as
+  a real difference in shape rather than as a capability gap keel wins.
+- **`docs/defense-in-depth.md`** — a layered dev/staging/production pattern pairing
+  keel with a container boundary, linked from `docs/comparison.md`'s
+  weaker-coverage row. Keel gates tool calls; it is not a sandbox, and this page
+  says what to put underneath it rather than implying it needs nothing.
+- **`scripts/check-price-table-drift.mjs` + `scripts/reference-pricing.json`** — a
+  drift check comparing the built `DEFAULT_PRICE_TABLE` (`claude-transcript.ts`)
+  against a hand-maintained JSON snapshot of real vendor pricing kept alongside it.
+  Only a mismatch on a model BOTH files price fails the check; a model the pricing
+  file tracks but the table does not ship is reported as informational, never a
+  failure — deliberately, so the tool cannot pressure a future editor into guessing
+  a price for an alias, which is the exact failure `DEFAULT_PRICE_TABLE`'s
+  exact-match design exists to prevent. **No live fetch**: the pricing file needs
+  periodic manual updates against the vendor's own pricing page; wiring a real
+  fetch into CI is out of scope here and not claimed. Never writes to the shipped
+  table or any source file — detection only, matching the read-only shape of
+  `scripts/redteam/round2.mjs`.
+
+### Fixed
+
+- **Four `scripts/redteam/round2.mjs` probes are now real regression gates instead
+  of informational lines.** Two Python `shutil`-aliasing probes and two quoted
+  `${IFS}` probes were still marked `kind: bypass-attempt` even though the floor
+  fixes that close them landed earlier in this same range (`install.ts`'s
+  `no-destructive-interpreter-body` match widened to accept the
+  `__import__('shutil')`/`getattr(...)` aliased forms; `command-normalizer.ts`'s
+  `renderToken` now expands `${VAR}` inside the quoted-run path too, not just the
+  unquoted one). All four verdicts are `deny` today, but `kind: bypass-attempt` is
+  purely informational and never touches the harness exit code — so a future
+  regression on these bypass classes would have scrolled past unnoticed. All four
+  are promoted to `control-catch`, following the existing `bash -lc`
+  control-gate-bypass pattern in the same file, so a regression now flips exit 1.
 
 ### Added
 
