@@ -1,9 +1,9 @@
 # Roadmap
 
-Where keel is and where it's going. Anything under **Shipped** is in the current
-release and covered by tests; anything under **Planned** is not built yet.
+Where keel is and where it's going. Anything under **Shipped** is built and
+covered by tests; anything under **Planned** is not built yet.
 
-## Shipped (v0.2.x)
+## Shipped
 
 **Enforcement**
 - Tool-call interception for 8 hosts — see [docs/integrations.md](docs/integrations.md)
@@ -14,12 +14,52 @@ release and covered by tests; anything under **Planned** is not built yet.
 - 24 rule types; 10 actions (9 rule-authorable — the 10th, `redact`, is system-only, applied by keel's own output-redaction pipeline rather than written into a rule's `action:` field; the earlier `mask` action was removed from `EnforcementAction` entirely, not merely declared-but-rejected by the parser — see [docs/exfil.md](docs/exfil.md)), including `prompt` approval gates and `fix` command rewriting. `type: injection`'s `action` is further restricted to `warn` only, for the same "only actually reaches the model on one host" reason `redact` is system-only — see [docs/injection.md](docs/injection.md).
 - Warn-once-then-block escalation, with `prompt` gates never downgraded by the dial
 - Protection levels (`sprint` / `balanced` / `protect`) with per-rule `level:` floors
+- `extends:` rule composition — any `rules.yaml` (or `CLAUDE.md`/`AGENTS.md`
+  frontmatter) may declare `extends: <path>` or a list, resolved relative to the
+  declaring file and merged before that file's own rules. A within-tier axis,
+  resolved entirely ahead of the four-tier global/user/project/local merge. An
+  extends override that would WEAKEN an inherited `level: protect` floor is refused
+  at load time with a loud error naming the rule id — stricter than `mergeRules`'
+  silent keep-the-stronger-floor behavior for cross-scope overrides — and composes
+  with the fail-closed last-known-good reload path, so such an edit never takes
+  effect. See `packages/core/src/enforce/rule-parser.ts`.
+- Agent-scoped rule matching via `agents:` — a rule may declare `agents: [claude-code, opencode, ...]`
+  to apply only to specific hosts; a rule with no `agents:` field applies everywhere,
+  unchanged. This is HOST identity (the string a host's own integration declares
+  itself as), not a true multi-agent-fleet identity concept — no host today emits a
+  distinct identity per agent instance, and this field does not pretend otherwise.
+  See `packages/core/src/enforce/rule-parser.ts` and `docs/custom-rules.md`.
 - Self-protection: agents cannot run keel's control commands or edit its rules
 - `keel halt` / `keel resume` — a lockdown latch, separate from the `keel disable`
   kill switch: denies every subsequent call (instead of allowing everything, like
   disable), has no `--until`/expiry of any kind, and only clears via `keel resume`
   run by a human. `keel-control-gate` blocks an agent from running either command
   on itself, same as it already blocks `keel disable`.
+  `keel run <command...>` supervises a detached agent process so `keel halt --kill`
+  can terminate a call that is ALREADY EXECUTING (Tier B), not only deny the next
+  one (Tier A); every ambiguous identity/liveness case resolves to REFUSING to
+  signal — the opposite fail-safe direction from the rest of this codebase,
+  because a wrong-target kill has no safe default. `keel run` is deliberately NOT
+  on the control gate's blocked-verb list: it starts something new rather than
+  turning enforcement off, and an agent already has an ungated path to the same
+  risk via plain shell detach syntax.
+- Supply-chain checks on `unverified-package-install`, across npm, PyPI, crates.io,
+  and Go modules — a four-tier decision ladder rather than a single resolve-check:
+  a static, zero-network known-hallucination registry (exact match → deny, the
+  slopsquatting case a plain resolves-check waves through once an attacker has
+  actually registered the invented name); `not_found`/`unverified`/first-publish
+  age gate (→ prompt); and a Levenshtein near-miss check against a shipped
+  popular-package list (→ warn only, a similarity heuristic with real
+  false-positive risk, deliberately priced below every exact-match tier). Ambient
+  registry config (`.npmrc`, `pip.conf`, `.cargo/config.toml`, `GOPRIVATE`) is read
+  offline before any deny, so a team's own private index does not produce
+  first-try false denies, with a dependency-confusion warn for the inverse shape.
+  **The 53 hallucinated-package names shipped today are structurally-valid
+  PLACEHOLDERS, not the real research data** — the mechanism works; a human with
+  access to the source research still needs to populate it. See
+  `packages/core/src/enforce/package-verifier.ts`,
+  `known-hallucinated-packages.ts`, `popular-packages.ts`,
+  `ambient-registry-config.ts`.
 - `type: session`'s first real handler: a composite runaway-loop trip
   (`session-runaway-trip`) across five session-scoped dimensions — wall-clock
   duration, cumulative tool-call count, cumulative Bash-call count, distinct-file-write
@@ -87,11 +127,35 @@ release and covered by tests; anything under **Planned** is not built yet.
   bundled). See `docs/comparison.md` and `SPEC.md`'s "Rego/OPA Backend" section.
 
 **Visibility**
-- `keel scan` — machine audit: unprotected hosts and risky MCP servers, ranked by severity
+- `keel scan` — machine audit: unprotected hosts and risky MCP servers, ranked by
+  severity. MCP config checks cover unsafe startup commands (`sudo`, destructive
+  `rm -rf`, pipe-to-shell, via the shared command normalizer's deobfuscation),
+  dangerous URL schemes, SSRF-shaped URLs, and plaintext credentials in
+  `env`/`headers` (`--json` drops raw values so the check cannot leak what it
+  found). Token passthrough, confused deputy, and session hijacking are out of
+  scope by construction — they depend on a server's runtime behavior, not on
+  anything visible in a client config file.
 - `keel audit`, `keel watch`, `keel status`
 - Signed, hash-chained receipts (`keel verify`, `keel receipts rotate`)
 - `keel dashboard` (terminal and `--web`), human-owned by construction
 - `keel retrospective` — where agents repeated themselves or skipped research
+- `keel promote <rule-id>` — evidence-gated promotion out of `mode: observe`. Reads
+  `KeelConfig.promotion_fp_threshold` (`types.ts`) and reuses `keel retrospective`'s
+  own `computePromotionReport` (`retrospective.ts`) to refuse the edit — file
+  untouched, exit 1 — when a rule hasn't seen enough traffic (`insufficient_data`)
+  or its measured would-block rate hasn't cleared the threshold (`stay_observe`),
+  pointing at `keel retrospective` either way. `--force` overrides, with a distinct
+  "may not be ready" warning. Known gap, left deliberate: the `warn → block` rung
+  has no gate, because `mode: warn` is real enforcement rather than
+  shadow-recorded, so there is no measured signal to check — that rung remains a
+  judgment call informed by `keel report`.
+- `keel conformance` — runs the shipped OWASP Agentic Top 10 scenario suite
+  (`packages/cli/conformance/ASI01–ASI10.yaml`) through the real enforcement
+  pipeline against your OWN loaded rules, making `docs/owasp-agentic-top10.md`'s
+  prose claims checkable. Distinguishes a genuinely absent rule (informational)
+  from a rule that is present but did not fire as the defaults promise (a real
+  gap). `--json`, and an opt-in `--ci` gate that a "not-covered" scenario never
+  fails.
 - [docs/compliance-mappings.md](docs/compliance-mappings.md) — rule-level mapping to NIST AI RMF, the EU AI Act, and ISO/IEC 42001
 
 **Learning**
@@ -121,18 +185,6 @@ bullet above.
 ## Planned
 
 **Near term**
-- A guided way to raise a Tier-3 rule's `mode:` from `observe` to `warn`/`block` once
-  its observed-hit record justifies it — `keel promote <rule-id>` now gates that FROM
-  `mode: observe` on real evidence, reading the previously-unused `promotion_fp_threshold`
-  (`KeelConfig`, `types.ts`) and reusing `keel retrospective`'s own would-block-rate
-  computation (`computePromotionReport` in `retrospective.ts`) to refuse the edit — file
-  untouched, exit 1 — when a rule hasn't seen enough traffic (`insufficient_data`) or its
-  measured rate hasn't cleared the threshold (`stay_observe`), pointing at
-  `keel retrospective` either way. `--force` overrides, with a distinct "may not be
-  ready" warning, for the human who wants to promote anyway. Still manual: the
-  `warn → block` rung has no gate, because `mode: warn` is real enforcement (not
-  shadow-recorded) and keel has no measured signal for it — promoting that rung remains a
-  judgment call informed by `keel report`.
 - Semantic livelock detection ("not really making progress" without literal
   command repetition or oscillation, e.g. rewriting the same logic slightly
   differently each time without converging) — assessed, not pursued: Keel's
