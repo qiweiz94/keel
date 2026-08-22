@@ -145,6 +145,9 @@ Requires Node.js 22.12.0+. Install one host at a time with `--opencode`,
 | Turn recurring blocks into rules | `keel gather` (proposes; never auto-applies) |
 | Check a command without running it | `keel evaluate --tool Bash --args '{"command":"git push --force"}'` |
 | Freeze all enforcement immediately, no exceptions | `keel halt` — deny everything until `keel resume` |
+| Raise an observe-mode rule once its record earns it | `keel promote <rule-id>` (refuses without measured evidence) |
+| Check your rules against the OWASP Agentic Top 10 | `keel conformance` |
+| Kill an agent process that's already running | `keel run <cmd>` to supervise, then `keel halt --kill` |
 
 ## Supported hosts
 
@@ -181,6 +184,11 @@ project wins for the same id). New to writing rules? **[docs/custom-rules.md](do
 covers a minimal five-field `simple_rules:` form (id, type, one match condition,
 action, message) that skips the full shape below entirely, with worked examples.
 
+A rules file can also compose: `extends: ../team-base.yaml` (or a list) merges another
+file's rules in before its own, resolved relative to the declaring file. An `extends`
+override that would weaken an inherited `level: protect` floor is refused at load time
+rather than silently absorbed, so a shared base's floors survive composition.
+
 ```yaml
 version: 1
 level: balanced
@@ -210,8 +218,9 @@ suggested next step) · `research` (block on a stale knowledge-freshness gate) �
 `report` (log only).
 
 **Rule types:** `command`, `filesystem`, `content`, `network`, `env`, `rate`, `budget`,
-`time`, `sequence`, `flow`, `session`, `verification`, `context`, `package`, plus the
-problem-solving types below (`stuck`, `oscillation`, `research`, `diagnosis`, `claim`, `oracle`).
+`time`, `sequence`, `flow`, `session`, `verification`, `context`, `package`, `injection`,
+plus the problem-solving types below (`stuck`, `oscillation`, `research`, `diagnosis`,
+`claim`, `oracle`).
 
 Any rule can also be scoped to specific hosts with `agents: [claude-code]` — no
 `agents` field (the default) means the rule applies everywhere, unchanged. `agent`
@@ -220,18 +229,29 @@ host's own integration declares itself as), not a true multi-agent-fleet identit
 concept — no host today emits a distinct identity per agent instance. See
 [docs/custom-rules.md](docs/custom-rules.md#scoping-a-rule-to-specific-hosts-agents).
 
-`keel install` ships 49 rules by default, split into three tiers — what's an
+`keel install` ships 53 rules by default, split into three tiers — what's an
 un-bypassable floor, what warns-then-blocks, and what only observes today:
 **[docs/tiers.md](docs/tiers.md)**. The shipped defaults cover destructive commands,
 `curl | sh`, hardcoded secrets and credential files, secret exfiltration, force-push
 and hook-bypass, and approval gates for DB destruction, protected-branch pushes,
-publishing, and `npx`/`bunx` of unpinned packages. Run `keel validate` after editing.
+publishing, and `npx`/`bunx` of unpinned packages.
+
+Package installs across npm, PyPI, crates.io, and Go are checked on a ladder: a
+name on a known-hallucinated-package list denies, a name that doesn't resolve or is
+brand new prompts, and a name within two edits of a popular package warns. Your own
+private index is read from `.npmrc` / `pip.conf` / `.cargo/config.toml` /
+`GOPRIVATE` first, so internal packages aren't denied on the first try. (The
+known-hallucinated-package list currently ships structurally-valid placeholder
+names pending a human populating the real research data — the mechanism is live,
+the data is not.)
+
+Run `keel validate` after editing.
 
 ### Stopping agents that circle
 
 Several rule types target the failure everyone recognises — an agent retrying the same
 broken command forever, or circling between a couple of broken approaches without ever
-landing one. Four ship as part of the default 49:
+landing one. Four ship as part of the default 53:
 
 - **`stuck`** (`no-repeat-loops`) — N identical failures in a window → redirect, then deny
 - **`oscillation`** (`command-oscillation`) — a short repeating CYCLE of 2+ *different*
@@ -240,10 +260,10 @@ landing one. Four ship as part of the default 49:
 - **`research`** (`research-before-fix`) — armed only by a *failing* command; blocks patching before looking anything up
 - **`diagnosis`** (`root-cause-before-refactor`) — destructive or structural changes need a hypothesis or real investigation (`git log/blame/bisect`) first
 
-`research-before-fix` and `root-cause-before-refactor` — plus ten more behavioural
+`research-before-fix` and `root-cause-before-refactor` — plus eleven more behavioural
 rules (`claim`, `oracle` ×2, two verification checks, the rate-based
-`runaway-budget-*` pair, `session`, the `type: budget` rule, and `command-oscillation`
-above) — ship as
+`runaway-budget-*` pair, `session`, the `type: budget` rule, `command-oscillation`
+above, and the `type: injection` rule `untrusted-content-role-markers`) — ship as
 `mode: observe`: evaluated and recorded on every matching call, never interrupting
 anything, until a human decides otherwise. `no-repeat-loops` has since been PROMOTED
 out of observe: this project's own traces cite 41 distinct repeat loops across 20
@@ -275,6 +295,22 @@ visibility into actual LLM token/dollar spend and their own rationale says so. T
 usage from a host's own local record (a Claude Code transcript's usage fields, an
 OpenCode session row's own cost/token columns) and enforces on that instead — see
 [docs/tiers.md](docs/tiers.md) for why it ships `mode: observe`.
+
+`type: injection` rules detect indirect prompt injection — instructions embedded in
+a file, web page, API response, or other tool result that get read as new
+instructions on the agent's next turn, rather than a command the agent itself
+typed. Two forms: a DETECTOR (`patterns`, matched against a completed tool call's
+own output text) and a GATE (`next_call_scrutiny: true`, arming a warning on the
+session's next write/shell call — optionally narrowed with
+`taint_correlation: true`, which fires only when that later call's own arguments
+or content reference a URL, host, file path, or email found within 400 characters
+of the enforcing marker in the earlier flagged result, instead of any
+consequential call in the window). `action` is restricted to `warn` for every rule
+of this type everywhere — only OpenCode can rewrite a flagged result before the
+model reads it; every other host is detection-only, after the fact. This is a
+heuristic tripwire over literal, well-attested marker shapes, not a completeness
+guarantee — a paraphrased, translated, or encoded payload still passes. See
+[docs/injection.md](docs/injection.md) for the full per-host honesty table.
 
 ```bash
 keel rules harness            # print the legacy standalone set, with what they'd have caught in your history
@@ -354,9 +390,11 @@ More in [SECURITY.md](SECURITY.md).
 - [docs/landing.md](docs/landing.md) — the measured number, the scan→protected hook, and the live-block demo, as a single page
 - [docs/custom-rules.md](docs/custom-rules.md) — write your first custom rule with the minimal `simple_rules:` form, three worked examples
 - [docs/tiers.md](docs/tiers.md) — the three rule tiers, the speed dial, and how observe-mode rules get promoted
+- [docs/injection.md](docs/injection.md) — indirect prompt-injection scanning, the detector/gate split, and the full per-host honesty table
 - [docs/integrations.md](docs/integrations.md) — every host, what it can block, how well it's verified
 - [docs/integration-guides/](docs/integration-guides/) — per-host setup, one guide per agent
 - [docs/comparison.md](docs/comparison.md) — how keel relates to Cupcake, agentsh, Semgrep, and others
+- [docs/defense-in-depth.md](docs/defense-in-depth.md) — a layered dev/staging/production pattern pairing keel with a container boundary
 - [docs/owasp-agentic-top10.md](docs/owasp-agentic-top10.md) — how keel's rules map to the OWASP Agentic AI Top 10, category by category, including where keel has no coverage
 - [docs/compliance-mappings.md](docs/compliance-mappings.md) — how keel's rules map to NIST AI RMF, the EU AI Act, and ISO/IEC 42001, including where keel has no coverage
 - [SECURITY.md](SECURITY.md) — threat model, enforcement limits, reporting
