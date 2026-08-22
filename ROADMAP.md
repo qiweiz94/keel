@@ -23,6 +23,12 @@ covered by tests; anything under **Planned** is not built yet.
   silent keep-the-stronger-floor behavior for cross-scope overrides — and composes
   with the fail-closed last-known-good reload path, so such an edit never takes
   effect. See `packages/core/src/enforce/rule-parser.ts`.
+- Agent-scoped rule matching via `agents:` — a rule may declare `agents: [claude-code, opencode, ...]`
+  to apply only to specific hosts; a rule with no `agents:` field applies everywhere,
+  unchanged. This is HOST identity (the string a host's own integration declares
+  itself as), not a true multi-agent-fleet identity concept — no host today emits a
+  distinct identity per agent instance, and this field does not pretend otherwise.
+  See `packages/core/src/enforce/rule-parser.ts` and `docs/custom-rules.md`.
 - Self-protection: agents cannot run keel's control commands or edit its rules
 - `keel halt` / `keel resume` — a lockdown latch, separate from the `keel disable`
   kill switch: denies every subsequent call (instead of allowing everything, like
