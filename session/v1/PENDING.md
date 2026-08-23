@@ -1,5 +1,42 @@
 # Keel v1.0.0 — PENDING / handoff for a new session
 
+## UPDATE 2026-08-22 — pushed public, PR #17 open, blocked on one CI bug
+
+**Read this block first — it supersedes the "NOTHING has been pushed" line below.** Full narrative:
+`session/v1/SESSION-LOG-2026-08-21-push-pr-and-docs-remediation.md`. Ready-to-paste next-session
+prompt: `session/v1/NEXT-SESSION-PROMPT.md`.
+
+- **`v0.4-thesis` is now pushed to `origin`.** PR open: **https://github.com/qiweiz94/keel/pull/17**
+  (`v0.4-thesis` → `main`, 373 commits). `mergeable: MERGEABLE`, `mergeStateStatus: UNSTABLE`.
+- **THE ONLY BLOCKER: CI fails on all 3 platforms** (ubuntu/macos/windows, Node 22.12.0) with a
+  bug unrelated to the 372 commits' actual logic — every single test/check passes, including every
+  line of `packages/opencode-plugin/scripts/load-test.js` up through its own `All checks passed`
+  log line, and then the process still exits 1. Confirmed via `gh run view <id> --log-failed`,
+  reproduced-as-failing on CI run `32565266549` against head `60c3744`. **Does NOT reproduce
+  locally** (exit 0 every time, this session and prior). Leading unconfirmed hypothesis: local
+  Node is v26.0.0, CI is pinned to 22.12.0 — never actually tested locally against 22.12.0. This
+  is also NOT Windows-specific (all 3 platforms fail identically), ruling out the known
+  Windows EBUSY/path-separator gap. See the session log §3 and the next-session prompt §1 for the
+  concrete diagnostic step (install Node 22.12.0 via nvm, reproduce, then read `load-test.js` for
+  an async leak / unhandled rejection / dangling child-process handle after the sync body ends).
+- **Docs remediation is DONE, separately from the above.** `CHANGELOG.md`/`README.md`/
+  `ROADMAP.md`/`SPEC.md`/`do-not-ship.test.ts` were backfilled and de-staled (merge `60c3744`,
+  already pushed) — verified fresh this session against every specific claim (53-rule count,
+  NIST/regulatory CHANGELOG entry, de-versioned ROADMAP header, no stale "pending" test comments),
+  full `npm test --workspaces` green (exit 0) and `round2.mjs` green (no floor regression, only
+  the 3 pre-existing disclosed residuals). This item is CLOSED — do not redo it.
+- **Competitive research done** on `keel-harness/keel` (a different, unrelated project despite the
+  name — full standalone agent harness w/ real OS sandboxing, not an interception-layer
+  competitor; timeline evidence does NOT support "they copied us"). Conversational only, no doc
+  artifact produced. Optional follow-up if wanted: add it to `docs/comparison.md` alongside the
+  existing `agentsh` "layer underneath us" framing.
+- **Release still NOT cut** (no tag, no `npm publish`) — correctly withheld: the user chose a
+  PR-review checkpoint before merge, and the CI bug above would also fail `release.yml`'s own
+  pre-publish `test` job if a tag were pushed anyway. Once CI is green and PR #17 is merged, the
+  rest of §1 below (the original human-gated release sequence) still applies as-is.
+
+---
+
 **State at handoff (updated 2026-08-20):** branch `v0.4-thesis`, version **1.0.0**, suite green
 (core 726 / cli 934 / mcp 10 / plugin all-pass), `round2.mjs` exit 0, `drift.test.ts` 9/9.
 **NOTHING has been pushed, published, or merged.** Full record of the original v1.0 build:
