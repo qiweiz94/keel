@@ -58,7 +58,15 @@ jobs:
       #      inside the suite itself (packages/cli/src/__tests__/helpers/
       #      platform.ts). NOT this lane's scope to fake.
       - run: npm test
-      - run: npx vitest run packages/cli/src/__tests__
+      # Duplicates `npm test`'s cli coverage on purpose (CI=true explicitly
+      # set — some tests branch on it), but running from repo root means
+      # vitest never discovers packages/cli/vitest.config.ts, so it silently
+      # loses that config's testTimeout: 30_000 (added specifically because
+      # slow CI runners exceed vitest's 5s default — see that file's own
+      # header) and its src/core/** exclude. Pass --config explicitly so
+      # this step behaves the same as `npm test`'s cli portion instead of
+      # reverting to vitest's bare defaults.
+      - run: npx vitest run packages/cli/src/__tests__ --config packages/cli/vitest.config.ts
         env:
           CI: true
       - run: npm run lint
