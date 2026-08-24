@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { rmSafe } from './helpers/fs-safe.js'
+import { daemonStatePath } from '../commands/daemon.js'
 
 /**
  * Stage 2: the MCP layer is a thin client of the keel daemon.
@@ -72,35 +73,35 @@ beforeEach(() => {
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms))
 
 async function stopDaemonIfRunning(): Promise<void> {
-  // DEBUG (see git blame): 15s of rmSafe retries STILL hit EBUSY after this
-  // ran, which means something is not merely slow to release its handle but
-  // never releasing it at all -- either this function isn't finding the
-  // real daemon's PID (a resolveHome()/KEEL_HOME mismatch between this
-  // process and the spawned one would do that silently, since HOME here is
-  // set correctly but KEEL_HOME is never touched by this file at all) or
-  // the kill/poll genuinely isn't confirming a real exit. Logging every
-  // branch, unconditionally, until a run reveals which.
+  // Root cause of the EBUSY that survived three widenings of rmSafe's retry
+  // budget (500ms -> 3000ms -> 15000ms, none of which helped): this
+  // function used runtime `require('../commands/daemon.js')` instead of a
+  // static import, which threw "Cannot find module" on windows-latest
+  // specifically -- silently swallowed by the outer try/catch, so this
+  // whole function was a no-op on every single call, on every platform.
+  // It only ever mattered on Windows: POSIX allows removing a directory
+  // while another process still has a file open inside it (the daemon kept
+  // running, harmlessly, for the rest of the file); Windows enforces
+  // mandatory locking, so a live daemon holding a handle inside home/
+  // project turned into a real, unfixable-by-waiting EBUSY on rmdir no
+  // matter how generous the retry budget got. Fixed with a real top-level
+  // import instead of the fragile runtime require(). The wide rmSafe
+  // budget from chasing this stays as harmless extra headroom.
   try {
-    if (!home) { console.error('stopDaemonIfRunning: no home set, skipping'); return }
-    const { daemonStatePath } = require('../commands/daemon.js')
-    const { readFileSync } = require('node:fs')
+    if (!home) return
     const statePath = daemonStatePath()
-    console.error(`stopDaemonIfRunning: HOME=${JSON.stringify(process.env.HOME)} KEEL_HOME=${JSON.stringify(process.env.KEEL_HOME)} statePath=${JSON.stringify(statePath)}`)
     const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-    console.error(`stopDaemonIfRunning: state=${JSON.stringify(state)}`)
-    if (!state?.pid) { console.error('stopDaemonIfRunning: no pid in state, skipping'); return }
+    if (!state?.pid) return
     process.kill(state.pid, 'SIGTERM')
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
       try {
         process.kill(state.pid, 0) // throws once the process is gone
       } catch {
-        console.error(`stopDaemonIfRunning: pid ${state.pid} confirmed gone`)
         return
       }
       await sleep(50)
     }
-    console.error(`stopDaemonIfRunning: pid ${state.pid} still alive after 5s poll, giving up`)
   } catch (e) {
     console.error(`stopDaemonIfRunning: caught ${(e as Error).message}`)
   }
