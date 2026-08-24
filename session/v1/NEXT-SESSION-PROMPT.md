@@ -5,47 +5,45 @@ Copy everything below the line into a fresh session to resume with full context.
 ---
 
 I'm resuming work on **keel** (`/Users/nanoclaw/code/keel`, branch `v0.4-thesis`, Apache-2.0
-AI-coding-agent guardrail CLI). Read `session/v1/PENDING.md`'s new **"UPDATE 2026-08-22"** block
-at the top first, then `session/v1/SESSION-LOG-2026-08-21-push-pr-and-docs-remediation.md` for
-full narrative if you need it. Here's the state and what I need from you:
+AI-coding-agent guardrail CLI). Read `session/v1/PENDING.md`'s **"UPDATE 2026-08-24"** block at
+the top first — it corrects an earlier misdiagnosis, so don't trust anything below this point that
+contradicts it. Full detail on both fixes is in the commit messages for `d04295d` and `0261377` on
+`v0.4-thesis`. Here's the state and what I need from you:
 
 ## Where things stand
 
 - `v0.4-thesis` is pushed to `origin`. **PR #17 is open**: https://github.com/qiweiz94/keel/pull/17
-  (`v0.4-thesis` → `main`). It is `MERGEABLE` but `UNSTABLE` — blocked by CI.
-- **Docs remediation is DONE and merged** (commit `60c3744` — CHANGELOG/README/ROADMAP/SPEC/
-  do-not-ship.test.ts). Verified fresh, full suite green. Don't redo this.
-- **The one open blocker is a CI-only bug**, unrelated to any of the 372 commits' real logic:
-  `packages/opencode-plugin`'s `npm test` (which runs `node ./scripts/load-test.js` directly, not
-  vitest) prints every single `PASS` line, then `All checks passed` (confirming its internal
-  `failures` counter is genuinely 0), and then **the process still exits with code 1** — on all 3
-  CI platforms (ubuntu/macos/windows-latest, Node 22.12.0) identically. This does NOT reproduce
-  locally — every local run this whole prior session, on Node v26.0.0, exits 0 cleanly with
-  identical output. The CI run to look at: `gh run view 32565266549 --repo qiweiz94/keel
-  --log-failed` (ran against head `60c3744`, still the current HEAD).
+  (`v0.4-thesis` → `main`).
+- **Docs remediation is DONE and merged** (commit `60c3744`). Don't redo this.
+- **The earlier "load-test.js prints All checks passed yet exits 1" diagnosis was WRONG** — a
+  misreading of the CI log (only the tail near the exit code was grepped, missing a real failure
+  earlier in the same step). `npm test --workspaces` runs core/cli/opencode-plugin in one step and
+  only reports its own aggregate exit code at the end, so an early failure in `core` surfaces only
+  after every later workspace's own successful output has already printed.
+- **Two real bugs were found and fixed, both pushed:**
+  1. `d04295d` — a genuine Windows self-protection gap: `no-enforcer-removal` and
+     `no-self-protection-write`'s regexes hardcoded forward slashes, so a Windows-style backslash
+     path (`rm C:\...\.opencode\plugins\keel-enforce.js`) bypassed both rules on a real Windows
+     machine. Fixed in both `DEFAULT_RULES_YAML` copies, with a new platform-independent
+     regression test. Mutation-probed (revert → red → restore → green).
+  2. `0261377` — `opencode-db.test.ts` needs `--experimental-sqlite` on Node 22.12.0 (CI's exact
+     pinned version); without it `node:sqlite` throws `ERR_UNKNOWN_BUILTIN_MODULE` outright.
+     Reproduced by downloading Node 22.12.0 directly and running the test against it locally.
+     Fixed via `NODE_OPTIONS` in `packages/core/vitest.config.ts`. Also mutation-probed.
+- **CI run for `0261377` was triggered but had not finished as of this being written.** Check it
+  first, don't assume either outcome:
+  `gh run list --repo qiweiz94/keel --branch v0.4-thesis --limit 1 --json databaseId,status,conclusion`
+  then, if needed, `gh run view <id> --repo qiweiz94/keel --log-failed`.
 
-## Task 1 (primary): diagnose and fix the CI-only exit-1 bug
+## Task 1 (primary): confirm CI is actually green, or finish the job if not
 
-This is the only thing standing between here and merging PR #17 (and, transitively, cutting the
-actual release — `.github/workflows/release.yml`'s `test` job runs this exact same check before
-`npm publish`, so it would abort a real publish too).
+If the run above shows `conclusion: success` on all 3 platforms: great, move straight to Task 2.
 
-**The one concrete lead not yet tried:** local Node is v26.0.0; CI is pinned to 22.12.0. Install
-22.12.0 via `nvm install 22.12.0 && nvm use 22.12.0`, then run `cd packages/opencode-plugin && node
-./scripts/load-test.js; echo "EXIT: $?"` directly. If it reproduces the failure there, you have
-your root cause — bisect from there (Node's unhandled-rejection/exit-code defaults changed across
-majors; look for anything in `load-test.js` — the multiple `spawnSync('git', ...)` calls
-(~line 537-541), the trailing `spawnSync('opencode', ...)` probe (~line 1060-1072, only fires
-`if (opencodeProbe.status === 0)`), or any unawaited async operation — that could leave a
-dangling handle or fire an unhandled rejection *after* the synchronous script body finishes
-printing "All checks passed" but *before* the process naturally exits). If it does NOT reproduce
-even at 22.12.0, the CI environment itself (sandboxed shell, non-TTY, resource limits) is the next
-thing to interrogate — compare against the raw CI log line-by-line for anything after "All checks
-passed" that a local terminal wouldn't show.
-
-**Once fixed:** re-push, confirm `gh pr view 17 --json mergeStateStatus` reports something other
-than `UNSTABLE`, and confirm all 3 `test (*, 22.12.0)` checks show `conclusion: SUCCESS` via
-`gh run list --branch v0.4-thesis --limit 3`.
+If it's still red: **read the ENTIRE failure log, not just the tail** — that exact shortcut is
+what produced the wrong diagnosis before. `grep -c "FAIL" <log>` per platform first to get a real
+count, then look at every occurrence, not just the ones near the exit code. Two fixes landed this
+session; a third distinct issue is possible but hasn't been seen yet — don't assume it's a
+variation on either bug already fixed without checking.
 
 ## Task 2: once CI is green, merge PR #17
 

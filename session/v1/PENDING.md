@@ -1,6 +1,56 @@
 # Keel v1.0.0 — PENDING / handoff for a new session
 
-## UPDATE 2026-08-22 — pushed public, PR #17 open, blocked on one CI bug
+## UPDATE 2026-08-24 — both real CI blockers found, fixed, and pushed; awaiting a green run
+
+**Read this block first — it corrects and supersedes the 2026-08-22 block below.** The prior
+session's CI diagnosis was a genuine misdiagnosis, corrected this session with hard evidence, not
+a guess. Full narrative and mutation-probe evidence: commit messages on `d04295d` and `0261377`
+(both on `v0.4-thesis`, pushed) — each one documents its own root cause and verification in full.
+
+- **The "load-test.js prints All checks passed yet exits 1" framing was WRONG.** What's actually
+  happening: `npm test --workspaces` runs `core`, then `cli`, then `opencode-plugin` in one shell
+  step and only reports its OWN aggregate exit code at the very end — so a real failure early in
+  `core`'s suite surfaces only after every later workspace's own output, including
+  opencode-plugin's "All checks passed", has already printed. There was never a phantom bug in
+  `load-test.js` itself; a first pass grepped only the log's tail around the exit code and missed
+  a real failure further upstream in the same step.
+- **Bug 1 (real, fixed, `d04295d`): a genuine Windows self-protection gap**, not a test artifact.
+  `no-enforcer-removal` and `no-self-protection-write`'s command regexes hardcoded forward slashes
+  (`[.]opencode/plugins/`). A real Windows agent constructing a path via `path.win32.join`
+  produces backslashes, so `rm C:\...\.opencode\plugins\keel-enforce.js` silently bypassed both
+  rules on a real Windows machine — this was actually exploitable, not CI noise. Fixed in both
+  `DEFAULT_RULES_YAML` copies (`opencode-plugin/src/plugin.ts` + `cli/commands/install.ts`, kept
+  byte-identical). Getting a literal backslash through JS-template-literal → YAML → regex
+  character-class escaping by hand was a real trap (one attempt threw "Unterminated character
+  class"); resolved by empirically determining the exact byte count through the real toolchain
+  rather than hand-deriving it. Added a platform-independent regression test in
+  `threat-model.test.ts` (literal Windows-style path strings, so every CI leg catches a future
+  regression, not just `windows-latest`). Mutation-probed: reverted, confirmed the new test goes
+  red, restored, confirmed green.
+- **Bug 2 (real, fixed, `0261377`): `opencode-db.test.ts`'s 4 "point 6" tests fail on Node 22.12.0
+  (CI's exact pinned version) with `ERR_UNKNOWN_BUILTIN_MODULE`** — `node:sqlite` needs
+  `--experimental-sqlite` on that Node version; without it the module doesn't exist at all (not a
+  warning). Confirmed by downloading Node 22.12.0 directly and reproducing the exact CI failure
+  locally. The production code (`opencode-db.ts`) already degrades this gracefully with a
+  try/catch to `unavailable: true` — only the test's own fixture-building helper had no reason to.
+  Fixed via `NODE_OPTIONS=--experimental-sqlite` set at `packages/core/vitest.config.ts` load
+  time. First attempt (`poolOptions.<pool>.execArgv`) silently had no effect — that key doesn't
+  exist in vitest 4.x's actual schema (verified against `node_modules/vitest`'s own `.d.ts`
+  files); don't repeat that path. Mutation-probed the same way: reverted, confirmed red under
+  22.12.0, restored, confirmed green — and confirmed the fix doesn't affect the normal dev Node
+  (v26) suite either.
+- **Both fixes pushed to `origin/v0.4-thesis`** (`d04295d`, then `0261377`). A CI run was
+  triggered for `0261377` (the sqlite fix, which is expected to be the last blocker) —
+  **check `gh run list --repo qiweiz94/keel --branch v0.4-thesis --limit 1` for its actual
+  outcome; it had not finished as of this being written.** If it's green: PR #17 should now be
+  mergeable — re-check `gh pr view 17 --json mergeStateStatus`. If it's still red: read the fresh
+  failure log with `gh run view <id> --log-failed` in full, not just the tail (that's exactly the
+  mistake that produced the wrong diagnosis last time) — grep for `FAIL` broadly across the whole
+  log for all 3 platforms before forming a theory.
+
+---
+
+## UPDATE 2026-08-22 — pushed public, PR #17 open, blocked on one CI bug (SUPERSEDED — see above)
 
 **Read this block first — it supersedes the "NOTHING has been pushed" line below.** Full narrative:
 `session/v1/SESSION-LOG-2026-08-21-push-pr-and-docs-remediation.md`. Ready-to-paste next-session
