@@ -45,6 +45,112 @@ interface DataTag {
  * rule instead — see install.ts's `no-exfil-flow-cross-call` and
  * docs/exfil.md.
  */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Heredoc operator (`<<`/`<<-`, quoted or bare delimiter), any preceding
+ * command — deliberately NOT gated to interpreter commands the way
+ * command-normalizer.ts's own heredoc extraction (`HEREDOC_START_RE`) is
+ * gated: that one exists to EXPOSE a heredoc body as a matching surface for
+ * interpreter-body rules (`python3 <<'EOF'` genuinely executes its body as
+ * code), so it only fires when the preceding token IS a recognized
+ * interpreter. This regex still needs to find EVERY heredoc operator,
+ * interpreter or not — `stripHeredocBodies()` below decides per-match
+ * whether to strip, using its own lightweight lookback (`heredocInterpreter()`)
+ * rather than requiring the interpreter token to sit immediately at a
+ * command-start boundary the way `HEREDOC_START_RE` does (that stricter
+ * anchoring is what lets this same operator also match `cat >> file <<'EOF'`,
+ * where the invoking command is not immediately adjacent to `<<`).
+ */
+const HEREDOC_OPERATOR_RE =
+  /<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g
+
+/**
+ * Recognizes the same interpreter classes as command-normalizer.ts's
+ * private `classifyInterpreter()` (shell / python / node / perl) — kept as
+ * its own local, non-exported check rather than importing that function,
+ * since it isn't exported and this module's use case (deciding whether to
+ * SUPPRESS a heredoc body from sink matching) is the mirror image of that
+ * function's (deciding whether to EXPOSE one to interpreter-body rules),
+ * not a call site of it.
+ */
+const HEREDOC_INTERPRETER_RE = /^(?:sh|bash|dash|zsh|ksh|fish|csh|tcsh|ash|python[0-9.]*|node|nodejs|perl[0-9.]*)$/
+
+/**
+ * Best-effort: does ANY whitespace-separated token in the same command
+ * segment preceding the `<<` operator at `matchStart` (since the last
+ * `;`/`&`/`|`/newline/`&&`/`||` separator, or start of string) resolve to a
+ * recognized interpreter? Deliberately checks every token in the segment,
+ * not just the one immediately adjacent to `<<` — a prefix like `env`,
+ * `timeout 5`, `nice`, or `ssh host` sits between the real interpreter and
+ * the operator (`env python3 <<'PY'`, `timeout 5 bash <<'SH'`), exactly the
+ * same argv0-obfuscation idiom `no-destructive-interpreter-body` and
+ * `scripts/redteam/round2.mjs` already catalog for THIS codebase's other
+ * interpreter-body rule — requiring strict adjacency here would open a new
+ * bypass that a matching prefix-stripped command would already be denied
+ * for elsewhere. Scanning the whole segment is deliberately permissive in
+ * the OTHER direction too (a stray word that happens to collide with an
+ * interpreter name anywhere in the segment also counts as "don't strip") —
+ * that is the safe direction to be wrong in: under-stripping can only
+ * reintroduce an already-pre-existing-elsewhere prose false positive,
+ * while over-stripping can hide a genuine sink invocation on a
+ * `level: protect` floor.
+ */
+function heredocInterpreterPrecedes(command: string, matchStart: number): boolean {
+  const before = command.slice(0, matchStart)
+  const segment = before.split(/(?:[;&|\n]|&&|\|\|)/).pop() || before
+  return segment.split(/[ \t]+/).some(tok => {
+    if (!tok) return false
+    const basename = tok.split(/[\\/]/).pop() || tok
+    return HEREDOC_INTERPRETER_RE.test(basename)
+  })
+}
+
+/**
+ * Removes heredoc BODY text (the lines between the operator and the
+ * matching delimiter line) from `command`, leaving the invoking command
+ * text intact — EXCEPT for a heredoc whose invoking command is a
+ * recognized interpreter (`bash <<'SH'`, `python3 <<'PY'`, ...), which is
+ * left untouched: unlike `cat >> file <<'EOF'` (body is inert data, never
+ * executed), an interpreter heredoc's body genuinely RUNS as real code, so
+ * a sink verb inside it is a real invocation, not descriptive prose — see
+ * `heredocInterpreterPrecedes()`. Best-effort: an unterminated/malformed
+ * heredoc is left as-is rather than throwing or over-stripping.
+ */
+function stripHeredocBodies(command: string): string {
+  let result = ''
+  let cursor = 0
+  HEREDOC_OPERATOR_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = HEREDOC_OPERATOR_RE.exec(command))) {
+    const tabStrip = m[1] === '-'
+    const delim = m[2] ?? m[3] ?? m[4]
+    const opLineEnd = command.indexOf('\n', HEREDOC_OPERATOR_RE.lastIndex)
+    if (!delim || opLineEnd === -1) continue // no body on this line: nothing to strip
+
+    const bodyStart = opLineEnd + 1
+    const rest = command.slice(bodyStart)
+    const delimLineRe = new RegExp('^' + (tabStrip ? '\\t*' : '') + escapeRegExp(delim) + '[ \\t]*$', 'm')
+    const end = delimLineRe.exec(rest)
+    if (!end) continue // unterminated heredoc: best-effort, leave as-is
+
+    const bodyEnd = bodyStart + end.index + end[0].length
+    if (heredocInterpreterPrecedes(command, m.index)) {
+      // Interpreter heredoc: body genuinely executes, leave it visible to
+      // the sink regex — do not add it to the stripped ranges.
+      HEREDOC_OPERATOR_RE.lastIndex = bodyEnd
+      continue
+    }
+    result += command.slice(cursor, opLineEnd)
+    cursor = bodyEnd
+    HEREDOC_OPERATOR_RE.lastIndex = bodyEnd
+  }
+  result += command.slice(cursor)
+  return result
+}
+
 export class FlowTracker {
   private taggedValues: Map<string, DataTag[]> = new Map()
   // tag_key → tool name that created the tag
@@ -245,11 +351,54 @@ export class FlowTracker {
     return `Cross-call data flow correlation (this session, an earlier hook process): data from ${sources} flowing to ${sinks} (rule: ${rule.id})`
   }
 
-  /** Does a read command reference a configured source pattern? */
+  /**
+   * Does a read command reference a configured source pattern? Both checks
+   * require a non-identifier boundary adjacent to the match — a bare
+   * `.includes()` let an unrelated word that merely CONTAINS the pattern
+   * as a substring count as a real path reference. Measured false
+   * positive: a `grep os.environ ...` search (a Python attribute lookup,
+   * not a file read) satisfied the dotenv source pattern because
+   * `"os.environ".includes(".env")` is true, tagging the session as having
+   * read a secret file it never touched — see session/EVIDENCE or the
+   * commit that added this comment for the full incident.
+   *
+   * Two different boundary shapes are needed depending on the pattern:
+   *
+   * - Dotfile / name-prefix patterns (`.env*`, `.ssh/`, `.npmrc`, ...) name
+   *   a COMPLETE basename or directory — a genuine reference always has a
+   *   path separator or start-of-token immediately BEFORE it (`cat .env`,
+   *   `/home/.ssh/id_rsa`), while the false-positive shape has an
+   *   alphanumeric immediately before (`.env` inside "os.environ").
+   *   `(?<![A-Za-z0-9_])` (LEADING boundary) rejects the false positive
+   *   while keeping genuine matches.
+   * - Extension-wildcard patterns (`*.pem`) name a wildcard basename plus a
+   *   FIXED extension — a genuine reference (`server.pem`, `id.pem`)
+   *   always has an ordinary filename character immediately BEFORE the
+   *   extension, so a leading-boundary requirement would reject every real
+   *   match. These instead require a TRAILING boundary
+   *   (`(?![A-Za-z0-9_])`, nothing alphanumeric immediately after) — which
+   *   still rejects a mid-identifier embedding on the trailing side. This
+   *   is deliberately NOT applied to dotfile patterns too: doing so would
+   *   reintroduce an equally real false positive (`grep "process.env" ...`
+   *   — a bare trailing match with nothing alphanumeric following either).
+   */
   private commandSourceMatches(command: string, pattern: string): boolean {
     const stripped = pattern.replace(/\*\*/g, '').replace(/\*/g, '')
     const base = stripped.split('/').filter(Boolean).pop() || stripped
-    return command.includes(stripped) || (base.length > 2 && command.includes(base))
+    const lastSegment = pattern.replace(/\*\*/g, '').split('/').filter(Boolean).pop() || ''
+    const isExtensionPattern = /^\*\.[A-Za-z0-9]+$/.test(lastSegment)
+    const hasBoundaryMatch = (needle: string): boolean => {
+      if (!needle) return false
+      try {
+        const re = isExtensionPattern
+          ? new RegExp(`${escapeRegExp(needle)}(?![A-Za-z0-9_])`)
+          : new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(needle)}`)
+        return re.test(command)
+      } catch {
+        return command.includes(needle)
+      }
+    }
+    return hasBoundaryMatch(stripped) || (base.length > 2 && hasBoundaryMatch(base))
   }
 
   /**
@@ -304,7 +453,7 @@ export class FlowTracker {
     if (url && (url.toLowerCase().includes(normalized) || normalized === 'network')) return true
 
     if (normalized !== 'network') return false
-    const command = String(args.command || args.cmd || '').toLowerCase()
+    const command = stripHeredocBodies(String(args.command || args.cmd || '')).toLowerCase()
     // Both-side word boundaries: a trailing `\b` alone lets `nc` match the
     // tail of unrelated words like "sync" or "finch". Sink verbs must be
     // real tokens (nc -l, curl url), not substrings of legitimate commands.

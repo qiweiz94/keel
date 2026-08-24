@@ -11349,6 +11349,47 @@ var SequenceDetector = class {
 
 // ../core/src/enforce/flow-tracker.ts
 import { existsSync as existsSync8 } from "node:fs";
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+var HEREDOC_OPERATOR_RE = /<<(-)?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/g;
+var HEREDOC_INTERPRETER_RE = /^(?:sh|bash|dash|zsh|ksh|fish|csh|tcsh|ash|python[0-9.]*|node|nodejs|perl[0-9.]*)$/;
+function heredocInterpreterPrecedes(command, matchStart) {
+  const before = command.slice(0, matchStart);
+  const segment = before.split(/(?:[;&|\n]|&&|\|\|)/).pop() || before;
+  return segment.split(/[ \t]+/).some((tok) => {
+    if (!tok) return false;
+    const basename3 = tok.split(/[\\/]/).pop() || tok;
+    return HEREDOC_INTERPRETER_RE.test(basename3);
+  });
+}
+function stripHeredocBodies(command) {
+  let result = "";
+  let cursor = 0;
+  HEREDOC_OPERATOR_RE.lastIndex = 0;
+  let m;
+  while (m = HEREDOC_OPERATOR_RE.exec(command)) {
+    const tabStrip = m[1] === "-";
+    const delim = m[2] ?? m[3] ?? m[4];
+    const opLineEnd = command.indexOf("\n", HEREDOC_OPERATOR_RE.lastIndex);
+    if (!delim || opLineEnd === -1) continue;
+    const bodyStart = opLineEnd + 1;
+    const rest = command.slice(bodyStart);
+    const delimLineRe = new RegExp("^" + (tabStrip ? "\\t*" : "") + escapeRegExp(delim) + "[ \\t]*$", "m");
+    const end = delimLineRe.exec(rest);
+    if (!end) continue;
+    const bodyEnd = bodyStart + end.index + end[0].length;
+    if (heredocInterpreterPrecedes(command, m.index)) {
+      HEREDOC_OPERATOR_RE.lastIndex = bodyEnd;
+      continue;
+    }
+    result += command.slice(cursor, opLineEnd);
+    cursor = bodyEnd;
+    HEREDOC_OPERATOR_RE.lastIndex = bodyEnd;
+  }
+  result += command.slice(cursor);
+  return result;
+}
 var FlowTracker = class {
   constructor(persistentStore) {
     this.persistentStore = persistentStore;
@@ -11489,11 +11530,52 @@ var FlowTracker = class {
     const sinks = rule.sinks.join(", ");
     return `Cross-call data flow correlation (this session, an earlier hook process): data from ${sources} flowing to ${sinks} (rule: ${rule.id})`;
   }
-  /** Does a read command reference a configured source pattern? */
+  /**
+   * Does a read command reference a configured source pattern? Both checks
+   * require a non-identifier boundary adjacent to the match — a bare
+   * `.includes()` let an unrelated word that merely CONTAINS the pattern
+   * as a substring count as a real path reference. Measured false
+   * positive: a `grep os.environ ...` search (a Python attribute lookup,
+   * not a file read) satisfied the dotenv source pattern because
+   * `"os.environ".includes(".env")` is true, tagging the session as having
+   * read a secret file it never touched — see session/EVIDENCE or the
+   * commit that added this comment for the full incident.
+   *
+   * Two different boundary shapes are needed depending on the pattern:
+   *
+   * - Dotfile / name-prefix patterns (`.env*`, `.ssh/`, `.npmrc`, ...) name
+   *   a COMPLETE basename or directory — a genuine reference always has a
+   *   path separator or start-of-token immediately BEFORE it (`cat .env`,
+   *   `/home/.ssh/id_rsa`), while the false-positive shape has an
+   *   alphanumeric immediately before (`.env` inside "os.environ").
+   *   `(?<![A-Za-z0-9_])` (LEADING boundary) rejects the false positive
+   *   while keeping genuine matches.
+   * - Extension-wildcard patterns (`*.pem`) name a wildcard basename plus a
+   *   FIXED extension — a genuine reference (`server.pem`, `id.pem`)
+   *   always has an ordinary filename character immediately BEFORE the
+   *   extension, so a leading-boundary requirement would reject every real
+   *   match. These instead require a TRAILING boundary
+   *   (`(?![A-Za-z0-9_])`, nothing alphanumeric immediately after) — which
+   *   still rejects a mid-identifier embedding on the trailing side. This
+   *   is deliberately NOT applied to dotfile patterns too: doing so would
+   *   reintroduce an equally real false positive (`grep "process.env" ...`
+   *   — a bare trailing match with nothing alphanumeric following either).
+   */
   commandSourceMatches(command, pattern) {
     const stripped = pattern.replace(/\*\*/g, "").replace(/\*/g, "");
     const base = stripped.split("/").filter(Boolean).pop() || stripped;
-    return command.includes(stripped) || base.length > 2 && command.includes(base);
+    const lastSegment = pattern.replace(/\*\*/g, "").split("/").filter(Boolean).pop() || "";
+    const isExtensionPattern = /^\*\.[A-Za-z0-9]+$/.test(lastSegment);
+    const hasBoundaryMatch = (needle) => {
+      if (!needle) return false;
+      try {
+        const re = isExtensionPattern ? new RegExp(`${escapeRegExp(needle)}(?![A-Za-z0-9_])`) : new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(needle)}`);
+        return re.test(command);
+      } catch {
+        return command.includes(needle);
+      }
+    };
+    return hasBoundaryMatch(stripped) || base.length > 2 && hasBoundaryMatch(base);
   }
   /**
    * Does a tag's recorded source satisfy a rule source pattern? Path patterns
@@ -11543,7 +11625,7 @@ var FlowTracker = class {
     const url = String(args.url || args.uri || args.host || "");
     if (url && (url.toLowerCase().includes(normalized) || normalized === "network")) return true;
     if (normalized !== "network") return false;
-    const command = String(args.command || args.cmd || "").toLowerCase();
+    const command = stripHeredocBodies(String(args.command || args.cmd || "")).toLowerCase();
     return /\b(?:curl|wget|fetch|http|https|nc|netcat|socat|rsync|scp)\b/.test(`${toolName} ${command}`);
   }
   clear() {
