@@ -72,23 +72,38 @@ beforeEach(() => {
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms))
 
 async function stopDaemonIfRunning(): Promise<void> {
+  // DEBUG (see git blame): 15s of rmSafe retries STILL hit EBUSY after this
+  // ran, which means something is not merely slow to release its handle but
+  // never releasing it at all -- either this function isn't finding the
+  // real daemon's PID (a resolveHome()/KEEL_HOME mismatch between this
+  // process and the spawned one would do that silently, since HOME here is
+  // set correctly but KEEL_HOME is never touched by this file at all) or
+  // the kill/poll genuinely isn't confirming a real exit. Logging every
+  // branch, unconditionally, until a run reveals which.
   try {
-    if (!home) return
+    if (!home) { console.error('stopDaemonIfRunning: no home set, skipping'); return }
     const { daemonStatePath } = require('../commands/daemon.js')
     const { readFileSync } = require('node:fs')
-    const state = JSON.parse(readFileSync(daemonStatePath(), 'utf-8'))
-    if (!state?.pid) return
+    const statePath = daemonStatePath()
+    console.error(`stopDaemonIfRunning: HOME=${JSON.stringify(process.env.HOME)} KEEL_HOME=${JSON.stringify(process.env.KEEL_HOME)} statePath=${JSON.stringify(statePath)}`)
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    console.error(`stopDaemonIfRunning: state=${JSON.stringify(state)}`)
+    if (!state?.pid) { console.error('stopDaemonIfRunning: no pid in state, skipping'); return }
     process.kill(state.pid, 'SIGTERM')
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
       try {
         process.kill(state.pid, 0) // throws once the process is gone
       } catch {
+        console.error(`stopDaemonIfRunning: pid ${state.pid} confirmed gone`)
         return
       }
       await sleep(50)
     }
-  } catch { /* no daemon state file: nothing was spawned */ }
+    console.error(`stopDaemonIfRunning: pid ${state.pid} still alive after 5s poll, giving up`)
+  } catch (e) {
+    console.error(`stopDaemonIfRunning: caught ${(e as Error).message}`)
+  }
 }
 
 afterEach(async () => {
