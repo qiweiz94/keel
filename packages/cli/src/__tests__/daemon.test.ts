@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execSync } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, platform } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -61,7 +61,19 @@ describe('keel daemon', () => {
     try {
       const tokenPath = daemonTokenPath()
       expect(existsSync(tokenPath)).toBe(true)
-      expect((statSync(tokenPath).mode & 0o777)).toBe(0o600)
+      // daemon.ts already passes { mode: 0o600 } to writeFileSync -- the
+      // production code does the correct, honest thing everywhere. NTFS has
+      // no POSIX owner/group/other permission-bit model at all (it's ACLs),
+      // so Node can't honor that mode on win32 and statSync().mode reports
+      // 0o666 there regardless of what was requested -- a real platform
+      // limitation, not something this test or the daemon can fix. Genuine
+      // owner-only enforcement on Windows would need ACL-based hardening,
+      // out of scope here; asserting a POSIX-only guarantee on a platform
+      // that structurally cannot provide it would just be a permanent,
+      // unfixable red on every windows-latest run.
+      if (platform() !== 'win32') {
+        expect((statSync(tokenPath).mode & 0o777)).toBe(0o600)
+      }
       expect(readFileSync(tokenPath, 'utf-8').trim()).toBe(handle.token)
 
       const health = await (await fetch(`http://127.0.0.1:${handle.port}/v1/health`)).json()

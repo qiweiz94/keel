@@ -30,8 +30,8 @@ export async function validateCommand() {
 
   // Check for rules files
   const files = [
-    { path: `${home}/.keel/rules.yaml`, name: 'Global rules', ok: false },
-    { path: `${home}/.config/keel/rules.yaml`, name: 'Legacy global rules', ok: false },
+    { path: join(home, '.keel', 'rules.yaml'), name: 'Global rules', ok: false },
+    { path: join(home, '.config', 'keel', 'rules.yaml'), name: 'Legacy global rules', ok: false },
     { path: projectFile.path, name: 'Project rules', ok: false },
     { path: localFile.path, name: 'Local rules', ok: false },
   ]

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
@@ -9,6 +9,7 @@ import { FlowTracker } from '../flow-tracker.js'
 import { parseRulesContent } from '../rule-parser.js'
 import { ProblemLedger, problemKey, ledgerPath } from '../problem-ledger.js'
 import type { EnforceInput } from '../../types.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Phase 2b — the root-cause layer:
@@ -97,7 +98,7 @@ describe('problem ledger', () => {
   let previousStateDir: string | undefined
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-ledger-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
     // ledgerPath() prefers KEEL_STATE_DIR over the HOME-derived fallback
@@ -116,7 +117,7 @@ describe('problem ledger', () => {
     else process.env.HOME = previousHome
     if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = previousStateDir
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('tracks failures, the active session problem, and resolution', () => {
@@ -176,7 +177,7 @@ describe('diagnosis rules (root-cause marker)', () => {
   let ledger: ProblemLedger
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-ledger-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
     // See the 'problem ledger' describe block above: KEEL_STATE_DIR must
@@ -192,7 +193,7 @@ describe('diagnosis rules (root-cause marker)', () => {
     else process.env.HOME = previousHome
     if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
     else process.env.KEEL_STATE_DIR = previousStateDir
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('redirects a complex fix when no hypothesis exists for the active problem', async () => {
@@ -270,7 +271,7 @@ describe('problem key derivation', () => {
 describe('problem ledger — bounded growth (stale pruning wired into load)', () => {
   const tmpDirs: string[] = []
   function freshLedgerPath(): string {
-    const dir = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    const dir = mkdtempSync(join(tmpdir(), 'keel-ledger-test-'))
     tmpDirs.push(dir)
     return join(dir, 'ledger.json')
   }
@@ -278,7 +279,7 @@ describe('problem ledger — bounded growth (stale pruning wired into load)', ()
   afterEach(() => {
     while (tmpDirs.length) {
       const dir = tmpDirs.pop()!
-      execSync(`rm -rf "${dir}"`)
+      rmSafe(dir)
     }
   })
 

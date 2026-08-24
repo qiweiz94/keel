@@ -19,6 +19,21 @@ import { rmSafe } from './helpers/fs-safe.js'
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 
+// Waits for the child to actually exit before resolving, not just for the
+// kill signal to be sent — on Windows, terminating a process does not
+// synchronously release its handles on files inside home/project, and this
+// suite's afterEach runs rmSafe() on both right after each test body
+// returns. A bare child.kill() raced that teardown against the still-exiting
+// child, throwing EBUSY on rmdir (real Windows CI failure; the race window
+// is far narrower locally, so this never reproduced there).
+function killAndWait(child: ChildProcess): Promise<void> {
+  return new Promise(res => {
+    if (child.exitCode !== null || child.signalCode !== null) { res(); return }
+    child.once('exit', () => res())
+    child.kill()
+  })
+}
+
 let home: string
 let project: string
 let previousHome: string | undefined
@@ -114,7 +129,7 @@ describe('keel serve (MCP stdio, thin client of the daemon)', () => {
     expect(first).toMatch(/VERDICT: warn/)
     const second = (responses[3].result as { content: Array<{ text: string }> }).content[0].text
     expect(second).toMatch(/VERDICT: deny/)
-    child.kill()
+    await killAndWait(child)
   }, 20000)
 })
 
@@ -170,7 +185,7 @@ rl.on('line', (line) => {
     const log = existsSync(upstreamLog) ? readFileSync(upstreamLog, 'utf-8') : ''
     expect((log.match(/tools\/call:danger/g) || [])).toHaveLength(1)
     expect(log).toContain('tools/call:echo')
-    child.kill()
+    await killAndWait(child)
   }, 20000)
 })
 

@@ -32,7 +32,14 @@ const PLUGIN = join(
 const PYTHON_ENV = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }
 
 function python(script: string): string {
-  return execFileSync('python3', ['-c', script], { encoding: 'utf-8', timeout: 30000, env: PYTHON_ENV }).trim()
+  // Windows' python3 writes CRLF line endings by default (text-mode stdout
+  // translates '\n' to os.linesep). Callers below split output on a bare
+  // '\n', which leaves a trailing '\r' attached to every line's content on
+  // Windows ('block\r' !== 'block') -- normalize here, once, rather than at
+  // every split() call site in this file.
+  return execFileSync('python3', ['-c', script], { encoding: 'utf-8', timeout: 30000, env: PYTHON_ENV })
+    .replace(/\r\n/g, '\n')
+    .trim()
 }
 
 const LOAD = `

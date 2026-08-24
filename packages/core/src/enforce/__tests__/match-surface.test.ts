@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { execSync } from 'node:child_process'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { rmSafe } from './helpers/fs-safe.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -298,7 +300,7 @@ describe('diagnosis rule match surface (type: diagnosis)', () => {
   // content-bearing keys) would silently blind the gate — this must keep
   // passing after the lane's fix, unchanged from its pre-fix behavior.
   const withLedger = () => {
-    const home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    const home = mkdtempSync(join(tmpdir(), 'keel-match-surface-test-'))
     const previousHome = process.env.HOME
     process.env.HOME = home
     // ledgerPath() (problem-ledger.ts) prefers KEEL_STATE_DIR over the
@@ -316,7 +318,7 @@ describe('diagnosis rule match surface (type: diagnosis)', () => {
         else process.env.HOME = previousHome
         if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
         else process.env.KEEL_STATE_DIR = previousStateDir
-        execSync(`rm -rf "${home}"`)
+        rmSafe(home)
       },
     }
   }

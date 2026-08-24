@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { rmSafe } from './helpers/fs-safe.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -137,7 +138,7 @@ describe('research cache', () => {
   let previousHome: string | undefined
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-research-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
   })
@@ -145,7 +146,7 @@ describe('research cache', () => {
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('puts, gets, lists, and probes freshness per session', () => {
@@ -188,7 +189,7 @@ describe('research rules (knowledge freshness gate)', () => {
   let cache: ResearchCache
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-research-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
     cache = new ResearchCache()
@@ -197,7 +198,7 @@ describe('research rules (knowledge freshness gate)', () => {
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('gates on missing research with a directive', async () => {
@@ -287,7 +288,7 @@ describe('research-before-solve obligation (trigger/satisfy/boundaries)', () => 
   let cache: ResearchCache
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-research-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
     cache = new ResearchCache()
@@ -296,7 +297,7 @@ describe('research-before-solve obligation (trigger/satisfy/boundaries)', () => 
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('arms on a failing test run and redirects the next fix', async () => {

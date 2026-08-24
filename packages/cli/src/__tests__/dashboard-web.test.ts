@@ -78,7 +78,7 @@ afterEach(() => {
   rmSafe(dir); rmSafe(home)
 })
 
-function startServer(): Promise<{ port: number; token: string; kill: () => void }> {
+function startServer(): Promise<{ port: number; token: string; kill: () => Promise<void> }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, 'dashboard', '--web'], {
       cwd: dir,
@@ -89,12 +89,25 @@ function startServer(): Promise<{ port: number; token: string; kill: () => void 
     // first and this descriptive message ("server did not start: <stdout>")
     // is replaced by a bare "Test timed out in 5000ms" that says nothing.
     const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 10000)
+    // kill() waits for the child to actually exit before resolving, not just
+    // for the kill signal to be sent — on Windows, terminating the process
+    // does not synchronously release its handles on files inside dir/home,
+    // and this test's afterEach runs rmSafe() on both right after the test
+    // body returns. Firing kill() and moving on raced that teardown against
+    // the still-exiting child, throwing EBUSY on rmdir (real Windows CI
+    // failure, not reproducible locally where the race window is far
+    // narrower).
+    const kill = () => new Promise<void>(res => {
+      if (child.exitCode !== null || child.signalCode !== null) { res(); return }
+      child.once('exit', () => res())
+      child.kill()
+    })
     child.stdout.on('data', (chunk: Buffer) => {
       out += chunk.toString()
       const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)\/#token=([a-f0-9]+)/)
       if (m) {
         clearTimeout(timer)
-        resolve({ port: Number(m[1]), token: m[2], kill: () => child.kill() })
+        resolve({ port: Number(m[1]), token: m[2], kill })
       }
     })
     child.on('exit', (code) => clearTimeout(timer) && reject(new Error(`server exited ${code}: ${out}`)))
@@ -128,7 +141,7 @@ describe('keel dashboard --web', () => {
       const page = await fetch(`http://127.0.0.1:${server.port}/`)
       expect(page.status).toBe(200)
     } finally {
-      server.kill()
+      await server.kill()
     }
   }, SPAWN_TIMEOUT_MS)
 
@@ -145,7 +158,7 @@ describe('keel dashboard --web', () => {
       expect(body.ok).toBe(true)
       expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: protect$/m)
     } finally {
-      server.kill()
+      await server.kill()
     }
   }, SPAWN_TIMEOUT_MS)
 
@@ -159,7 +172,7 @@ describe('keel dashboard --web', () => {
       })
       expect(res.status).toBe(401)
     } finally {
-      server.kill()
+      await server.kill()
     }
   }, SPAWN_TIMEOUT_MS)
 })
