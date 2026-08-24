@@ -1,4 +1,4 @@
-import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync } from 'node:fs'
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { currentFlavor, type PathFlavor } from './path-normalize.js'
 
 /**
@@ -218,5 +218,70 @@ export function withFileLock<T>(lockPath: string, fn: () => T, options: LockOpti
     return fn()
   } finally {
     if (token !== null) releaseLock(lockPath, token)
+  }
+}
+
+/**
+ * Write `content` to `path` via write-to-tmp + atomic rename, retrying the
+ * rename on transient Windows lock contention (EBUSY/EPERM) instead of
+ * treating it as fatal. Every ProblemLedger/StateManager/-Store class in
+ * this directory writes its own JSON state with this exact write-tmp-then-
+ * rename shape wrapped in a bare catch-and-ignore block around the WHOLE
+ * body ("best effort", "non-critical", "state persistence is non-critical"
+ * -- same idea, worded differently per file): a
+ * transient rename failure was treated identically to a permanent one and
+ * silently dropped the write, with the in-memory mutation that produced it
+ * gone the moment the next reader reloads from disk under a fresh lock.
+ *
+ * Reproduced on real windows-latest CI: ledger-concurrency.test.ts and
+ * state-manager-concurrency.test.ts (200 iterations across 5 processes,
+ * all serialized through the SAME withFileLock-protected read-modify-write
+ * cycle) each intermittently lost 1-3 of 200 increments, on runs where the
+ * lock itself was never lost (no fail-safe-unlocked branch taken --
+ * confirmed by re-reading those logs: every "PASS"/deny/warn-once
+ * escalation elsewhere in the same suite that also depends on this lock
+ * behaved correctly on the same run). A silently-dropped SAVE under an
+ * otherwise-healthy lock is exactly what a swallowed transient rename
+ * failure looks like from the outside, and matches the small, rare
+ * loss counts far better than a lock-acquisition problem would (losing the
+ * LOCK typically loses a whole worker's remaining iterations at once, not
+ * 1-3 scattered ones -- a bounded-timeout widening on the lock's own
+ * knobs, tried first here as the more obvious suspect, made no measurable
+ * difference across three real CI runs, which is the evidence that
+ * redirected the investigation to the write side instead).
+ *
+ * Kept deliberately short-lived (2s, not the 5-30s lock-acquire budgets):
+ * this runs WHILE the caller's own lock is held, so a long retry here
+ * would itself risk making the current holder look abandoned to a stale-
+ * reclaim check on the lock file, the opposite of what this is trying to
+ * fix. Never throws -- preserves every existing caller's "best effort,
+ * persistence failure is not fatal" contract unchanged; the boolean return
+ * is new and safe for every current caller to ignore.
+ */
+export function writeFileAtomic(path: string, content: string, options: { mode?: number } = {}): boolean {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+  try {
+    if (options.mode !== undefined) writeFileSync(tmp, content, { mode: options.mode })
+    else writeFileSync(tmp, content)
+  } catch {
+    return false
+  }
+
+  const deadline = Date.now() + 2000
+  let backoff = INITIAL_BACKOFF_MS
+  for (;;) {
+    try {
+      renameSync(tmp, path)
+      return true
+    } catch (err) {
+      const isContention = classifyLockError((err as NodeJS.ErrnoException).code) === 'contention'
+      if (!isContention || Date.now() >= deadline) {
+        try { unlinkSync(tmp) } catch { /* best effort cleanup of our own tmp file */ }
+        return false
+      }
+      const jittered = Math.random() * backoff
+      sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())))
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
+    }
   }
 }

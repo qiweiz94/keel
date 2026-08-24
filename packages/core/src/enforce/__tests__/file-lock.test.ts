@@ -1,9 +1,30 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { acquireLock, releaseLock, withFileLock, classifyLockError } from '../file-lock.js'
+import { acquireLock, releaseLock, withFileLock, classifyLockError, writeFileAtomic } from '../file-lock.js'
 import { rmSafe } from './helpers/fs-safe.js'
+
+// vi.spyOn cannot touch native ESM module exports directly ("Module
+// namespace is not configurable in ESM"), and a plain vi.mock('node:fs')
+// would also intercept file-lock.ts's OWN internal fs calls used by every
+// other test in this file, not just the two below that need to inject a
+// failure. This indirection is a pass-through by default (every existing
+// test in this file is unaffected) and is only ever reassigned, then
+// restored, inside the two writeFileAtomic tests that need it.
+const mockState = vi.hoisted(() => ({
+  renameSyncOverride: null as typeof import('node:fs').renameSync | null,
+  realRenameSync: null as unknown as typeof import('node:fs').renameSync,
+}))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  mockState.realRenameSync = actual.renameSync
+  return {
+    ...actual,
+    renameSync: (...args: Parameters<typeof actual.renameSync>) =>
+      (mockState.renameSyncOverride ?? actual.renameSync)(...args),
+  }
+})
 
 /**
  * Unit tests for the two properties file-lock.ts's header comment claims
@@ -183,5 +204,83 @@ describe('classifyLockError — Windows sharing-violation codes are contention, 
 
   it('an undefined code is fatal (do not spin on something backoff cannot fix)', () => {
     expect(classifyLockError(undefined, 'win32')).toBe('fatal')
+  })
+})
+
+/**
+ * writeFileAtomic — added after ledger-concurrency.test.ts and
+ * state-manager-concurrency.test.ts intermittently lost 1-3 of 200
+ * increments on real windows-latest CI even with the lock itself healthy.
+ * Root cause: every store's save() wrapped write-tmp-then-rename in a bare
+ * catch-and-ignore, so a single transient rename contention silently
+ * dropped the write instead of retrying it, and the in-memory mutation
+ * that produced it was gone the moment the next lock holder reloaded from
+ * disk. These inject a failure via renameSyncOverride (EEXIST classifies
+ * as contention on every platform, same as the real Windows EBUSY/EPERM
+ * this exists for, so the retry loop's actual logic is exercised
+ * deterministically here rather than only trusted by inference from the
+ * classifyLockError unit tests above).
+ */
+describe('writeFileAtomic — retries transient rename contention instead of silently dropping the write', () => {
+  afterEach(() => {
+    mockState.renameSyncOverride = null
+  })
+
+  it('retries past a transient rename failure and still writes the content', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'keel-write-atomic-test-'))
+    tmpDirs.push(dir)
+    const target = join(dir, 'state.json')
+
+    let calls = 0
+    mockState.renameSyncOverride = ((...args: Parameters<typeof import('node:fs').renameSync>) => {
+      calls += 1
+      if (calls < 3) {
+        const err = new Error('EEXIST: file already exists') as NodeJS.ErrnoException
+        err.code = 'EEXIST'
+        throw err
+      }
+      return mockState.realRenameSync(...args)
+    }) as typeof import('node:fs').renameSync
+
+    const ok = writeFileAtomic(target, JSON.stringify({ n: 1 }))
+
+    expect(ok).toBe(true)
+    expect(calls).toBe(3) // two forced failures, then the real rename
+    expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ n: 1 })
+  })
+
+  it('gives up and returns false, without throwing, on a fatal (non-contention) error', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'keel-write-atomic-test-'))
+    tmpDirs.push(dir)
+    const target = join(dir, 'state.json')
+
+    mockState.renameSyncOverride = (() => {
+      const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException
+      err.code = 'EACCES'
+      throw err
+    }) as typeof import('node:fs').renameSync
+
+    let threw = false
+    let ok = true
+    try {
+      ok = writeFileAtomic(target, JSON.stringify({ n: 1 }))
+    } catch {
+      threw = true
+    }
+
+    expect(threw).toBe(false)
+    expect(ok).toBe(false)
+    expect(existsSync(target)).toBe(false) // never landed at the real path
+  })
+
+  it('KNOWN-HEALTHY: an uncontended write succeeds on the first attempt, no retries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'keel-write-atomic-test-'))
+    tmpDirs.push(dir)
+    const target = join(dir, 'state.json')
+
+    const ok = writeFileAtomic(target, JSON.stringify({ n: 42 }), { mode: 0o600 })
+
+    expect(ok).toBe(true)
+    expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ n: 42 })
   })
 })

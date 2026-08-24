@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { withFileLock, type LockOptions } from './file-lock.js'
+import { withFileLock, writeFileAtomic, type LockOptions } from './file-lock.js'
 import { resolveHome } from '../home.js'
 
 export interface DenyState {
@@ -134,10 +134,7 @@ export class StateManager {
   private saveFile(name: string, data: unknown): void {
     try {
       mkdirSync(this.dir, { recursive: true })
-      const p = this.statePath(name)
-      const tmp = p + '.tmp'
-      writeFileSync(tmp, JSON.stringify(data))
-      renameSync(tmp, p)
+      writeFileAtomic(this.statePath(name), JSON.stringify(data))
     } catch { /* state persistence is non-critical */ }
   }
 

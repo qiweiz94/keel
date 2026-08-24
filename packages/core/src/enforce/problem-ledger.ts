@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { commandFingerprint } from './command-fingerprint.js'
-import { withFileLock, type LockOptions } from './file-lock.js'
+import { withFileLock, writeFileAtomic, type LockOptions } from './file-lock.js'
 import { resolveHome } from '../home.js'
 
 /**
@@ -192,10 +192,9 @@ export class ProblemLedger {
   private save(): void {
     try {
       mkdirSync(join(this.path, '..'), { recursive: true })
-      const tmp = `${this.path}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify(this.data), { mode: 0o600 })
-      renameSync(tmp, this.path)
-      this.lastMtimeMs = statSync(this.path).mtimeMs
+      if (writeFileAtomic(this.path, JSON.stringify(this.data), { mode: 0o600 })) {
+        this.lastMtimeMs = statSync(this.path).mtimeMs
+      }
     } catch { /* best effort */ }
   }
 

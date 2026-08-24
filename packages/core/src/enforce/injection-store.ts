@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { withFileLock, type LockOptions } from './file-lock.js'
+import { withFileLock, writeFileAtomic, type LockOptions } from './file-lock.js'
 import { stateDir } from './state-manager.js'
 
 /** One correlatable artifact (URL, hostname, file path, or email address) recorded near an enforcing marker — see injection-taint.ts. */
@@ -172,9 +172,7 @@ export class PersistentInjectionStore {
     try {
       mkdirSync(this.dir, { recursive: true })
       const p = this.filePath()
-      const tmp = `${p}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify(data))
-      renameSync(tmp, p)
+      writeFileAtomic(p, JSON.stringify(data))
     } catch { /* best-effort persistence — same posture as StateManager.saveFile */ }
   }
 
