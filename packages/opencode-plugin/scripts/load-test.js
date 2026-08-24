@@ -129,7 +129,7 @@ rules:
     message: "tampering blocked"
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED|HALTED)"
+    match: "rm[^|;&]*[.]opencode.plugins.|rm[^|;&]*[.]keel.(rules[.]yaml|plugins|DISABLED|HALTED)"
     action: deny
     level: protect
     message: "enforcer removal blocked"
