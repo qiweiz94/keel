@@ -341,15 +341,27 @@ const controlGated = async (sessionId, command) => {
   // First violation warns, repeat denies — but the rule may already be
   // escalated by an earlier check in this session, so accept either a warn
   // on the first call or an immediate deny; the SECOND call must deny.
+  //
+  // On any unexpected outcome, print the actual command and both attempts'
+  // results before returning — a plain boolean here gave no way to tell "the
+  // rule genuinely didn't match" from "something else threw and got silently
+  // swallowed by the message-prefix check," which cost real time diagnosing
+  // a Windows CI failure this couldn't distinguish (see git blame).
+  let firstOutcome = 'no error'
   try {
     await hooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
   } catch (e) {
+    firstOutcome = e.message
     if (e.message.startsWith('[Keel]')) return true
   }
   try {
     await hooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
+    console.error(`controlGated DEBUG: neither call denied. command=${JSON.stringify(command)} firstOutcome=${JSON.stringify(firstOutcome)} secondOutcome=no error`)
     return false
   } catch (e) {
+    if (!e.message.startsWith('[Keel]')) {
+      console.error(`controlGated DEBUG: second call threw a NON-Keel error. command=${JSON.stringify(command)} firstOutcome=${JSON.stringify(firstOutcome)} secondOutcome=${JSON.stringify(e.message)}`)
+    }
     return e.message.startsWith('[Keel]')
   }
 }
