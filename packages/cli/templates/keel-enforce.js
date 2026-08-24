@@ -9080,11 +9080,11 @@ function matchesAnyTestGlob(value, patterns) {
 }
 
 // ../core/src/enforce/overrides.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync as renameSync3, writeFileSync as writeFileSync4 } from "node:fs";
 import { join as join5 } from "node:path";
 
 // ../core/src/enforce/file-lock.ts
-import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync as readFileSync4 } from "node:fs";
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync as readFileSync4, writeFileSync as writeFileSync3, renameSync as renameSync2 } from "node:fs";
 var DEFAULT_TIMEOUT_MS = 5e3;
 var DEFAULT_STALE_MS = 8e3;
 var INITIAL_BACKOFF_MS = 4;
@@ -9176,6 +9176,35 @@ function withFileLock(lockPath, fn, options = {}) {
     return fn();
   } finally {
     if (token !== null) releaseLock(lockPath, token);
+  }
+}
+function writeFileAtomic(path2, content, options = {}) {
+  const tmp = `${path2}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    if (options.mode !== void 0) writeFileSync3(tmp, content, { mode: options.mode });
+    else writeFileSync3(tmp, content);
+  } catch {
+    return false;
+  }
+  const deadline = Date.now() + 2e3;
+  let backoff = INITIAL_BACKOFF_MS;
+  for (; ; ) {
+    try {
+      renameSync2(tmp, path2);
+      return true;
+    } catch (err) {
+      const isContention = classifyLockError(err.code) === "contention";
+      if (!isContention || Date.now() >= deadline) {
+        try {
+          unlinkSync(tmp);
+        } catch {
+        }
+        return false;
+      }
+      const jittered = Math.random() * backoff;
+      sleepSync(Math.min(jittered, Math.max(0, deadline - Date.now())));
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    }
   }
 }
 
@@ -9295,8 +9324,8 @@ var FileRuleOverrideStore = class {
   }
   write(overrides) {
     const temporary = `${this.file}.${process.pid}.tmp`;
-    writeFileSync3(temporary, JSON.stringify(overrides, null, 2));
-    renameSync2(temporary, this.file);
+    writeFileSync4(temporary, JSON.stringify(overrides, null, 2));
+    renameSync3(temporary, this.file);
   }
 };
 
@@ -11105,7 +11134,7 @@ var EnforcementPipeline = class {
 };
 
 // ../core/src/enforce/cache.ts
-import { readFileSync as readFileSync7, existsSync as existsSync7, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync7, writeFileSync as writeFileSync5, mkdirSync as mkdirSync4 } from "node:fs";
 import { createHash } from "node:crypto";
 var ActionCache = class {
   session = /* @__PURE__ */ new Map();
@@ -11178,7 +11207,7 @@ var ActionCache = class {
     for (const [k, v] of this.persistent) {
       data[k] = v;
     }
-    writeFileSync4(this.persistentPath, JSON.stringify(data, null, 0));
+    writeFileSync5(this.persistentPath, JSON.stringify(data, null, 0));
   }
   clear() {
     this.session.clear();
@@ -11524,11 +11553,11 @@ var FlowTracker = class {
 };
 
 // ../core/src/enforce/flow-store.ts
-import { readFileSync as readFileSync10, writeFileSync as writeFileSync6, existsSync as existsSync10, mkdirSync as mkdirSync6, renameSync as renameSync4 } from "node:fs";
+import { readFileSync as readFileSync10, existsSync as existsSync10, mkdirSync as mkdirSync6 } from "node:fs";
 import { join as join8 } from "node:path";
 
 // ../core/src/enforce/state-manager.ts
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync5, existsSync as existsSync9, mkdirSync as mkdirSync5, renameSync as renameSync3 } from "node:fs";
+import { readFileSync as readFileSync9, existsSync as existsSync9, mkdirSync as mkdirSync5 } from "node:fs";
 import { join as join7 } from "node:path";
 function stateDir() {
   return process.env.KEEL_STATE_DIR || join7(resolveHome(), ".keel", "state");
@@ -11599,10 +11628,7 @@ var StateManager = class {
   saveFile(name, data) {
     try {
       mkdirSync5(this.dir, { recursive: true });
-      const p = this.statePath(name);
-      const tmp = p + ".tmp";
-      writeFileSync5(tmp, JSON.stringify(data));
-      renameSync3(tmp, p);
+      writeFileAtomic(this.statePath(name), JSON.stringify(data));
     } catch {
     }
   }
@@ -11739,7 +11765,7 @@ var StateManager = class {
 var FLOW_TAG_TTL_MS = 60 * 60 * 1e3;
 
 // ../core/src/enforce/injection-store.ts
-import { readFileSync as readFileSync11, writeFileSync as writeFileSync7, existsSync as existsSync11, mkdirSync as mkdirSync7, renameSync as renameSync5 } from "node:fs";
+import { readFileSync as readFileSync11, existsSync as existsSync11, mkdirSync as mkdirSync7 } from "node:fs";
 import { join as join9 } from "node:path";
 import { randomBytes } from "node:crypto";
 var INJECTION_TAG_TTL_MS = 15 * 60 * 1e3;
@@ -11779,9 +11805,7 @@ var PersistentInjectionStore = class {
     try {
       mkdirSync7(this.dir, { recursive: true });
       const p = this.filePath();
-      const tmp = `${p}.${process.pid}.tmp`;
-      writeFileSync7(tmp, JSON.stringify(data));
-      renameSync5(tmp, p);
+      writeFileAtomic(p, JSON.stringify(data));
     } catch {
     }
   }
@@ -12025,7 +12049,7 @@ function defaultMessage(ruleId, fingerprint, attempts, action) {
 }
 
 // ../core/src/enforce/stuck-store.ts
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync8, existsSync as existsSync12, mkdirSync as mkdirSync8, renameSync as renameSync6 } from "node:fs";
+import { readFileSync as readFileSync12, existsSync as existsSync12, mkdirSync as mkdirSync8 } from "node:fs";
 import { join as join10 } from "node:path";
 var STUCK_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
@@ -12186,7 +12210,7 @@ function defaultMessage2(unit, attempts, action) {
 }
 
 // ../core/src/enforce/oscillation-store.ts
-import { readFileSync as readFileSync13, writeFileSync as writeFileSync9, existsSync as existsSync13, mkdirSync as mkdirSync9, renameSync as renameSync7 } from "node:fs";
+import { readFileSync as readFileSync13, existsSync as existsSync13, mkdirSync as mkdirSync9 } from "node:fs";
 import { join as join11 } from "node:path";
 var OSCILLATION_STATE_MAX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
@@ -12340,12 +12364,12 @@ function defaultMessage3(step, value) {
 }
 
 // ../core/src/enforce/session-store.ts
-import { readFileSync as readFileSync14, writeFileSync as writeFileSync10, existsSync as existsSync14, mkdirSync as mkdirSync10, renameSync as renameSync8 } from "node:fs";
+import { readFileSync as readFileSync14, existsSync as existsSync14, mkdirSync as mkdirSync10 } from "node:fs";
 import { join as join12 } from "node:path";
 var SESSION_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/src/enforce/budget-store.ts
-import { readFileSync as readFileSync15, writeFileSync as writeFileSync11, existsSync as existsSync15, mkdirSync as mkdirSync11, renameSync as renameSync9 } from "node:fs";
+import { readFileSync as readFileSync15, existsSync as existsSync15, mkdirSync as mkdirSync11 } from "node:fs";
 import { join as join13 } from "node:path";
 var BUDGET_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 var MAX_ENTRIES = 500;
@@ -12377,9 +12401,7 @@ var PersistentBudgetStore = class {
     try {
       mkdirSync11(this.dir, { recursive: true });
       const p = this.filePath();
-      const tmp = `${p}.${process.pid}.tmp`;
-      writeFileSync11(tmp, JSON.stringify(data));
-      renameSync9(tmp, p);
+      writeFileAtomic(p, JSON.stringify(data));
     } catch {
     }
   }
@@ -12662,7 +12684,7 @@ var ResearchTracker = class {
 };
 
 // ../core/src/enforce/problem-ledger.ts
-import { existsSync as existsSync16, mkdirSync as mkdirSync12, readFileSync as readFileSync16, writeFileSync as writeFileSync12, renameSync as renameSync10, statSync as statSync3 } from "node:fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync12, readFileSync as readFileSync16, statSync as statSync3 } from "node:fs";
 import { join as join14 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var TTL_MS2 = 24 * 60 * 60 * 1e3;
@@ -12709,7 +12731,7 @@ import {
   createHash as createHash3,
   randomUUID
 } from "node:crypto";
-import { existsSync as existsSync18, readFileSync as readFileSync18, writeFileSync as writeFileSync14, mkdirSync as mkdirSync14, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync11 } from "node:fs";
+import { existsSync as existsSync18, readFileSync as readFileSync18, writeFileSync as writeFileSync7, mkdirSync as mkdirSync14, appendFileSync as appendFileSync2, readdirSync as readdirSync2, renameSync as renameSync4 } from "node:fs";
 import { join as join16 } from "node:path";
 var signingKey = null;
 function keyPath() {
@@ -12756,7 +12778,7 @@ function initReceiptKey() {
   try {
     const dir = join16(resolveHome(), ".keel");
     if (!existsSync18(dir)) mkdirSync14(dir, { recursive: true });
-    writeFileSync14(keyPath(), JSON.stringify(newKey), { mode: 384 });
+    writeFileSync7(keyPath(), JSON.stringify(newKey), { mode: 384 });
   } catch {
   }
   return signingKey;
