@@ -1,6 +1,54 @@
 # Keel v1.0.0 — PENDING / handoff for a new session
 
-## UPDATE 2026-08-24 — both real CI blockers found, fixed, and pushed; awaiting a green run
+## UPDATE 2026-08-24 (evening) — PR #17 MERGED into main; one post-merge gap found+fixed in PR #19
+
+**Read this block first — supersedes everything below it.** The CI investigation from earlier
+today (next block down) fully resolved: 11 real, independent bugs found and fixed across the
+session (self-protection regex, node:sqlite Node-version flag, a duplicate CI test-config gap, a
+non-portable mktemp shell-out, two unawaited child-process-kill races, an unfixable-by-design NTFS
+permission assertion, a CRLF leak, a real path-construction bug in `validate.ts`, a genuine
+**production data-loss bug** in 8 persistence stores — see `13d14e9`'s commit message for the full
+mechanism — and an orphaned-process bug in `keel gateway`). All 3 CI platforms went green,
+`mergeStateStatus: CLEAN`, and **PR #17 was merged into `main`** (merge commit `ccd81f1`, all 373+
+commits' history preserved — a real merge commit chosen over squash specifically to keep the
+detailed diagnostic trail in each commit message browsable on `main`).
+
+**Immediately after merging, a post-merge audit (prompted by the user asking to double-check for
+data loss) caught one real gap the merge itself did not introduce but that had been latent since
+the writeFileAtomic fix (`13d14e9`):** `packages/cli/templates/keel-enforce.js` — a checked-in,
+pre-built copy of the opencode-plugin bundle that `keel install --opencode` copies verbatim for
+any user installing from the published npm package rather than building from source — was never
+rebuilt after that fix, so the committed bundle was missing the write-retry hardening entirely.
+CI's own drift check structurally cannot catch this (it rebuilds both sides of the comparison
+fresh in the same ephemeral checkout before comparing, so it only ever verifies CI's own two
+artifacts agree with each other, never that the committed file matches current source). Checked
+every commit between the template's last real rebuild and HEAD against actual bundle-relevant
+source (excluding test files) to confirm this was the ONLY gap, not one of several — confirmed via
+`git log` + `git show --stat`, not assumed. Fixed (`80d745d` on `v0.4-thesis`, no source change,
+just a rebuild) and opened as **PR #19** (`v0.4-thesis` → `main`) rather than pushed directly,
+maintaining the same PR-review discipline used for everything else this session even though the
+fix itself is small — check `gh pr view 19 --repo qiweiz94/keel` for its current state before
+assuming it's merged.
+
+**Audit findings, for the record (nothing was actually lost):** checking out a stale LOCAL `main`
+ref (388 commits behind `origin/main`, last synced long before this session) briefly made
+`git status` show `scripts/perf/` and `session/` as "untracked" — this was never data loss, just
+git correctly removing tracked-on-v0.4-thesis-but-not-on-stale-local-main files from the working
+directory, exactly as designed; the objects were always safe in `origin/v0.4-thesis`/`origin/main`
+(verified byte-identical via `git diff`). The repo's own keel self-protection guard (`G91`) then
+correctly blocked a branch switch until the small pile of pre-existing, already-documented-as-
+deletable `session/v1/stale-worktree-patches/` files (from a much earlier session, unrelated to
+this one) were stashed rather than silently dropped — stashed, not deleted, fully reversible
+(`git stash list` shows it as the newest entry). Local `v0.4-thesis` is confirmed identical to
+`origin/v0.4-thesis`; nothing from this session was ever at risk.
+
+**What's left:** confirm PR #19 merges cleanly, then the original release sequence still applies
+(tag `v1.0.0` against `main`'s new HEAD, push the tag, verify the real npm publish) — see Task 3
+in `session/v1/NEXT-SESSION-PROMPT.md`, not yet started as of this update.
+
+---
+
+## UPDATE 2026-08-24 (morning) — both real CI blockers found, fixed, and pushed; awaiting a green run
 
 **Read this block first — it corrects and supersedes the 2026-08-22 block below.** The prior
 session's CI diagnosis was a genuine misdiagnosis, corrected this session with hard evidence, not
