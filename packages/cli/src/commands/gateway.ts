@@ -39,6 +39,21 @@ export async function gatewayCommand(options: { upstream?: string; command?: str
     return
   }
 
+  // Nothing anywhere in this command previously stopped the spawned
+  // upstream process on shutdown -- gateway.stop() existed but was never
+  // called. Killing this process (SIGTERM, the default for a graceful
+  // stop) does not automatically kill a spawned child on either POSIX or
+  // Windows, so the upstream process was silently orphaned every time,
+  // left running with its own open handles (including whatever log file
+  // it may be writing to) for an indeterminate time after. Confirmed as
+  // the source of an intermittent Windows CI failure: mcp.test.ts's
+  // gateway test killed this process, then its own teardown hit EBUSY
+  // removing the temp HOME the orphaned upstream was still holding a file
+  // open in.
+  const shutdown = () => { gateway.stop(); process.exit(0) }
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
+
   // Listen on stdin for incoming MCP requests
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
 
