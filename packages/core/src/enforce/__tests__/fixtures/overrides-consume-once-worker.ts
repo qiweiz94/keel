@@ -18,6 +18,6 @@ import { FileRuleOverrideStore } from '../../overrides.js'
 // See cb-worker.ts: a wide lock wait keeps this adversarial probe from
 // tripping file-lock.ts's own bounded-wait fail-safe under CI load.
 const [, , home] = process.argv
-const store = new FileRuleOverrideStore(home, { timeoutMs: 30_000 })
+const store = new FileRuleOverrideStore(home, { timeoutMs: 30_000, staleMs: 15_000 })
 const result = store.consume('shared-once-rule')
 console.log(`RESULT:${result}`)

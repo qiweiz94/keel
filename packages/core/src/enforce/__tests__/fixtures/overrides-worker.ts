@@ -18,7 +18,7 @@ import { FileRuleOverrideStore } from '../../overrides.js'
 // tripping file-lock.ts's own bounded-wait fail-safe under CI load.
 const [, , home, workerId, countArg] = process.argv
 const count = Number(countArg)
-const store = new FileRuleOverrideStore(home, { timeoutMs: 30_000 })
+const store = new FileRuleOverrideStore(home, { timeoutMs: 30_000, staleMs: 15_000 })
 for (let i = 0; i < count; i++) {
   store.grant(`rule-w${workerId}-i${i}`, { expires_at: Date.now() + 3_600_000, mode: 'window' })
 }

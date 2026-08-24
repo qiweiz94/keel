@@ -22,7 +22,7 @@ const count = Number(countArg)
 // false red. The property under test is "no lost updates under a real
 // lock", not "the lock's own bounded-wait fail-safe never fires" — same
 // reasoning as cb-worker.ts.
-const store = new PersistentFlowStore(dir, { timeoutMs: 30_000 })
+const store = new PersistentFlowStore(dir, { timeoutMs: 30_000, staleMs: 15_000 })
 for (let i = 0; i < count; i++) {
   store.recordTag(sessionId, {
     source: `sensitive-path:worker-${workerId}-tag-${i}`,

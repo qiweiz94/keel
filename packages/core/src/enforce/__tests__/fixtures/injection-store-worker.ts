@@ -18,7 +18,7 @@ const count = Number(countArg)
 // deliberately adversarial tight-loop probe, not a production timing
 // scenario — the property under test is "no lost updates under a real
 // lock", not "the lock's own bounded-wait fail-safe never fires".
-const store = new PersistentInjectionStore(dir, { timeoutMs: 30_000 })
+const store = new PersistentInjectionStore(dir, { timeoutMs: 30_000, staleMs: 15_000 })
 for (let i = 0; i < count; i++) {
   store.recordTag(sessionId, {
     source: 'tool_output',

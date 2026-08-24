@@ -18,6 +18,6 @@ const [, , dir, sessionId, ruleId, tagId] = process.argv
 // Same wide lock-wait rationale as injection-store-worker.ts: a
 // deliberately adversarial tight-race probe, not a production timing
 // scenario.
-const store = new PersistentInjectionStore(dir, { timeoutMs: 30_000 })
+const store = new PersistentInjectionStore(dir, { timeoutMs: 30_000, staleMs: 15_000 })
 const consumed = store.consumePending(sessionId, ruleId, [tagId])
 process.stdout.write(JSON.stringify({ consumedCount: consumed.length }))

@@ -16,7 +16,7 @@ import { ProblemLedger } from '../../problem-ledger.js'
 // tripping file-lock.ts's own bounded-wait fail-safe under CI load.
 const [, , ledgerJsonPath, workerId, countArg] = process.argv
 const count = Number(countArg)
-const ledger = new ProblemLedger(ledgerJsonPath, { timeoutMs: 30_000 })
+const ledger = new ProblemLedger(ledgerJsonPath, { timeoutMs: 30_000, staleMs: 15_000 })
 for (let i = 0; i < count; i++) {
   ledger.recordOutcome(`/shared/worker-${workerId}/iter-${i}`, 'npm test', 1)
 }
