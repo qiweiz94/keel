@@ -95,16 +95,19 @@ afterEach(async () => {
   await stopDaemonIfRunning()
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
-  // rmSafe's own default retry budget (10 x 50ms = 500ms) still hit EBUSY
-  // here even after stopDaemonIfRunning() confirms the daemon's PID is
-  // gone -- process exit and OS-level handle release are not synchronous
-  // on Windows, and a full daemon (log file, listening socket, state db)
-  // evidently holds handles longer past its own exit than a plain spawned
-  // child does (dashboard-web.test.ts's lighter-weight case needed no
-  // override). A wider budget here, not a global rmSafe change, since no
-  // other caller has shown this gap.
-  rmSafe(home, { maxRetries: 30, retryDelay: 100 })
-  rmSafe(project, { maxRetries: 30, retryDelay: 100 })
+  // rmSafe's own default retry budget (500ms) hit EBUSY even after
+  // stopDaemonIfRunning() confirms the daemon's PID is gone; a first
+  // widening to 3000ms (30 x 100ms) STILL wasn't enough on a real
+  // windows-latest run. Process exit and OS-level handle release are
+  // provably not synchronous on Windows for this daemon (log file,
+  // listening socket, state db) in a way dashboard-web.test.ts's
+  // lighter-weight plain-child case never needed headroom for. Rather
+  // than keep nibbling at this number one CI round-trip at a time, going
+  // decisively generous once: 15s budget, comfortably above every
+  // gap observed so far. A wider budget here, not a global rmSafe change,
+  // since no other caller has shown this gap.
+  rmSafe(home, { maxRetries: 100, retryDelay: 150 })
+  rmSafe(project, { maxRetries: 100, retryDelay: 150 })
 })
 
 // Redundant with the per-test stop above in the normal case; kept as a
