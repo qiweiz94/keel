@@ -1,0 +1,29 @@
+cases:
+  - note: "DROP TABLE against a $PROD_DATABASE_URL-tagged connection"
+    tool: Bash
+    args:
+      command: "psql $PROD_DATABASE_URL -c \"DROP TABLE users;\""
+  - note: "TRUNCATE via a database name prefixed prod_"
+    tool: Bash
+    args:
+      command: "PGDATABASE=prod_orders psql -c \"TRUNCATE orders\""
+  - note: "DROP DATABASE against a hostname containing prod-db"
+    tool: Bash
+    args:
+      command: "psql postgres://user:pass@prod-db.example.com/app -c \"DROP DATABASE app\""
+  - note: "wave-3 bypass: doubled space inside the SQL verb"
+    tool: Bash
+    args:
+      command: "psql -h prod-db.example.com -c 'DROP  TABLE users'"
+  - note: "wave-3 bypass: a newline inside the SQL verb"
+    tool: Bash
+    args:
+      command: "psql -h prod-db.example.com -c 'DROP\nTABLE users'"
+  - note: "wave-3 bypass: DROP SCHEMA CASCADE destroys as much as DROP TABLE"
+    tool: Bash
+    args:
+      command: "psql -h prod-db.example.com -c 'DROP SCHEMA public CASCADE'"
+  - note: "DELETE FROM against a production-tagged connection — the sibling no-db-destructive rule already covers this verb, this rule's lookahead was missing it"
+    tool: Bash
+    args:
+      command: "psql $PROD_DATABASE_URL -c \"DELETE FROM users\""

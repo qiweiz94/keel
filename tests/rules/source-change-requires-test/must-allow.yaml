@@ -1,0 +1,13 @@
+cases:
+  - note: "src/ edited, a real test run observed, then push — obligation satisfied"
+    steps:
+      - tool: write
+        args:
+          path: "src/index.ts"
+          content: "export const x = 1"
+      - tool: Bash
+        args:
+          command: "npm test"
+      - tool: Bash
+        args:
+          command: "git push origin feature"

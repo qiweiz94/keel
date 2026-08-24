@@ -61,10 +61,16 @@ async function daemon(path, payload) {
 }
 
 // ── Circuit breaker ───────────────────────────────────────────────────
-// OpenClaw fails open: a plugin that throws or fails to load is logged and
-// skipped, and every tool call proceeds unguarded (issue #20914, closed as
-// stale without a fix). keel fails closed. A thin client cannot bundle the
-// engine, so when the daemon is unreachable neither extreme is right:
+// OpenClaw fails open on a load-time failure: a plugin that fails to load
+// (crashes at import/register time) is logged and skipped, and every tool
+// call proceeds unguarded (issue #20914, closed as stale without a fix).
+// That is a different case from THIS handler throwing mid-call — reading
+// the installed 2026.4.15 runtime shows before_tool_call handler
+// exceptions are caught by OpenClaw's own hook runner and turned into a
+// block, i.e. fail-closed there. Either way, when the DAEMON is
+// unreachable (the case this breaker exists for), neither host-level
+// extreme is what fires: this catch block runs first, so nothing throws
+// up to OpenClaw at all. A thin client cannot bundle the engine, so
 // silent fail-open means protection vanishes while the user believes they
 // have it; blocking everything gets the plugin uninstalled the first time
 // the daemon is not running.
@@ -151,7 +157,33 @@ export function exitCodeFrom(event) {
   return typeof event?.result === 'undefined' ? null : 0
 }
 
+/**
+ * Best available channel for a non-blocking advisory message.
+ *
+ * The installed SDK's `before_tool_call` return type (see the module
+ * header) has no field for "let this proceed but show the human a
+ * message" — only `block`/`blockReason` and `requireApproval`, both of
+ * which stop the call. `api.logger.warn` is real (OpenClaw's plugin SDK
+ * docs list `api.logger.{debug,info,warn,error}` as the scoped per-plugin
+ * logger), so it is a strict upgrade over the bare `console.warn` this
+ * used to fall back to — a plugin's own `console.warn` output is not
+ * guaranteed to reach the same place OpenClaw's own logging does.
+ *
+ * What is NOT confirmed here, and is recorded honestly rather than
+ * claimed: whether `api.logger.warn` output reaches the end user's chat
+ * surface, or only an operator-facing server/gateway log. The installed
+ * hook-types.d.ts this adapter is otherwise built against does not settle
+ * that, and this environment has no live OpenClaw to check against.
+ * session/EVIDENCE/wave3-warnsurface.md and HUMAN-CHECKLIST.md carry this
+ * as an open item for a human with a running OpenClaw instance.
+ */
+export function emitFor(api) {
+  const warn = api?.logger?.warn
+  return typeof warn === 'function' ? (text) => warn.call(api.logger, text) : console.warn
+}
+
 export function register(api) {
+  const emit = emitFor(api)
   api.on('before_tool_call', async (event, ctx) => {
     const result = await daemon('/v1/check', {
       tool: event?.toolName || 'unknown',
@@ -165,7 +197,7 @@ export function register(api) {
       console.warn(DEGRADED)
       return offlineVerdict(event?.params)
     }
-    return translate(result)
+    return translate(result, emit)
   }, { priority: 100 })
 
   api.on('after_tool_call', async (event, ctx) => {

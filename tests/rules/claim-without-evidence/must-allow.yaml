@@ -1,0 +1,9 @@
+cases:
+  - note: "hedged WIP commit message is not a claim"
+    tool: Bash
+    args:
+      command: 'git commit -m "wip: partial, tests not run yet"'
+  - note: "claim with no armed obligation (no prior edit) does not fire"
+    tool: Bash
+    args:
+      command: git commit -m "docs formatting"

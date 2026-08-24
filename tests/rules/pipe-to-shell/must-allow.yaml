@@ -1,0 +1,33 @@
+cases:
+  - note: "plain curl download, no pipe to a shell"
+    tool: Bash
+    args:
+      command: "curl -O https://example.com/file.tar.gz"
+  - note: "curl piped into jq, not a shell"
+    tool: Bash
+    args:
+      command: "curl -s https://api.example.com | jq .name"
+  - note: "rsync is not a shell-piping verb (word-boundary near-miss on sh/nc-style substrings)"
+    tool: Bash
+    args:
+      command: "rsync -av src/ dest/"
+  - note: "a script literally named wash.sh run directly is not curl/wget piped or substituted"
+    tool: Bash
+    args:
+      command: "./wash.sh --clean"
+  - note: "bash -c with a plain string, no command substitution or curl/wget"
+    tool: Bash
+    args:
+      command: 'bash -c "echo hello"'
+  - note: "wave-3 regression guard: a multi-stage pipe that never reaches a shell"
+    tool: Bash
+    args:
+      command: "curl -s https://api.example.com | jq . | head -20"
+  - note: "wave-3 regression guard: piping into ssh, which starts with the same two letters as sh"
+    tool: Bash
+    args:
+      command: "curl -s https://example.com/h | ssh deploy@host 'cat > /tmp/h'"
+  - note: "wave-3 regression guard: unpacking a download is not executing it"
+    tool: Bash
+    args:
+      command: "curl -sL https://example.com/x.tgz | tar xz -C ./vendor"

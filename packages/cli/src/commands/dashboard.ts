@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
 import { writeRulesLevel } from './level.js'
+import { isInteractive } from './interactive.js'
+import { resolveHome } from '../core/home.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -28,6 +29,12 @@ interface DashboardState {
   dialGlobal: ProtectionLevel | null
   dialProject: ProtectionLevel | null
   killSwitch: { state: 'disabled' | 'enabled' | 'corrupt'; expires_at?: string; reason?: string }
+  // Separate from killSwitch — a halt is a distinct, stronger control (see
+  // halt.ts's own header comment) and can be set simultaneously with
+  // DISABLED. Rendered as one resolved "Enforcement: HALTED" line ahead of
+  // the kill-switch line, not folded into killSwitch's state union, so the
+  // two can never contradict each other on screen.
+  halted: { active: boolean; reason?: string }
   overrides: Array<{ id: string; mode: string; minutes_left: number }>
   expiredOverrides: number
   rules: Array<{ scope: string; count: number; issues: number; source: string }>
@@ -42,6 +49,24 @@ export function collectState(dir: string, home: string): DashboardState {
   const dialProject = hierarchy.project?.config?.level ?? null
   const dialGlobal = hierarchy.global?.config?.level ?? null
   const dial = dialProject || dialGlobal || 'balanced'
+
+  // Inlined against the `home` PARAMETER, the same way the DISABLED read
+  // just below is — not a call to halt.ts's isHalted()/haltReason(), which
+  // resolve their own resolveHome() independently. Every current caller of
+  // collectState() passes home = resolveHome() so the two would agree
+  // today, but this keeps collectState() self-consistent with itself (one
+  // `home` value governs every sentinel it reads) rather than depending on
+  // that always being true.
+  let halted: DashboardState['halted'] = { active: false }
+  const haltFile = join(home, '.keel', 'HALTED')
+  if (existsSync(haltFile)) {
+    try {
+      const state = JSON.parse(readFileSync(haltFile, 'utf8'))
+      halted = { active: true, reason: typeof state?.reason === 'string' && state.reason ? state.reason : 'Manual halt' }
+    } catch {
+      halted = { active: true, reason: 'unknown (corrupt sentinel)' }
+    }
+  }
 
   let killSwitch: DashboardState['killSwitch'] = { state: 'enabled' }
   const disableFile = join(home, '.keel', 'DISABLED')
@@ -73,6 +98,8 @@ export function collectState(dir: string, home: string): DashboardState {
     total += scope.rules.length
     rules.push({ scope: name, count: scope.rules.length, issues: issues.length, source: scope.sourcePath })
   }
+  // No `agent` arg — dashboard reports the whole ruleset's active count,
+  // not one host's live view. See mergeRules' doc comment (rule-parser.ts).
   const active = mergeRules(hierarchy, dial, 'local').length
 
   const today = new Date().toISOString().slice(0, 10)
@@ -99,6 +126,7 @@ export function collectState(dir: string, home: string): DashboardState {
     dialGlobal,
     dialProject,
     killSwitch,
+    halted,
     overrides: armed.map(([id, o]) => ({
       id,
       mode: o.mode === 'window' ? 'window' : 'once',
@@ -127,7 +155,17 @@ function renderPanel(state: DashboardState, target: 'global' | 'project'): strin
   out.push(chalk.dim(`  Target: ${chalk.white(target.toUpperCase())}   (press p to switch)`))
   out.push('')
   out.push(`  ${chalk.dim('Speed dial:')} ${dialLabel(state.dial)} ${chalk.dim('(sprint=warn-only · balanced=warn-then-block · protect=block-first)')}`)
-  if (state.killSwitch.state === 'disabled') {
+  // Halt is checked and rendered FIRST, as one resolved line — it wins
+  // over the kill switch below (see halted's own field comment), so this
+  // must never read as a second, independently-true state next to it.
+  if (state.halted.active) {
+    out.push(`  ${chalk.dim('Enforcement:')} ${chalk.bgRed.white.bold(' HALTED ')} ${chalk.red.bold('— every call is being denied')}`)
+    out.push(chalk.dim(`    Reason: ${state.halted.reason || 'Manual halt'}`))
+    out.push(chalk.dim('    Clear with: keel resume (your own terminal only)'))
+    if (state.killSwitch.state !== 'enabled') {
+      out.push(chalk.dim(`    (kill switch is ALSO ${state.killSwitch.state} — clearing the halt alone will not restore enforcement; run keel enable too)`))
+    }
+  } else if (state.killSwitch.state === 'disabled') {
     const expires = state.killSwitch.expires_at ? ` until ${new Date(state.killSwitch.expires_at).toLocaleString()}` : ' (until restart)'
     out.push(`  ${chalk.dim('Kill switch:')} ${chalk.red('DISABLED')}${chalk.dim(`${expires} — ${state.killSwitch.reason || 'no reason'}`)}`)
   } else if (state.killSwitch.state === 'corrupt') {
@@ -160,7 +198,7 @@ function renderPanel(state: DashboardState, target: 'global' | 'project'): strin
 }
 
 export function switchLevel(target: 'global' | 'project', level: ProtectionLevel): { ok: boolean; message: string } {
-  const home = homedir()
+  const home = resolveHome()
   const path = target === 'global' ? join(home, '.keel', 'rules.yaml') : join(process.cwd(), '.keel', 'rules.yaml')
   if (!existsSync(path)) {
     return { ok: false, message: target === 'global' ? 'No global rules file — run `keel install` first.' : 'No project rules file in this directory.' }
@@ -174,7 +212,7 @@ export function switchLevel(target: 'global' | 'project', level: ProtectionLevel
 }
 
 export async function dashboardCommand(options: { once?: boolean; json?: boolean } = {}) {
-  const home = homedir()
+  const home = resolveHome()
   const dir = process.cwd()
 
   if (options.json) {
@@ -183,7 +221,7 @@ export async function dashboardCommand(options: { once?: boolean; json?: boolean
     return
   }
 
-  if (options.once || !process.stdin.isTTY) {
+  if (options.once || !isInteractive()) {
     const state = collectState(dir, home)
     console.log(renderPanel(state, 'global'))
     console.log(chalk.dim('  Change with: keel level sprint|balanced|protect [--project]  |  dashboard: run `keel dashboard` in a terminal'))

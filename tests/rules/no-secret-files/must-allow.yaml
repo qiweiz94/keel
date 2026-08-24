@@ -1,0 +1,26 @@
+cases:
+  - note: ".env.example is explicitly excluded (a template, not a real credential file)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env.example"
+      content: "SECRET=changeme"
+  - note: ".env.sample is explicitly excluded (a template, not a real credential file)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env.sample"
+      content: "SECRET=changeme"
+  - note: ".env.test is explicitly excluded (test fixtures, not a real credential file)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.env.test"
+      content: "SECRET=changeme"
+  - note: "env.txt has no leading dot, so it is not an .env* file at all"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/env.txt"
+      content: "not a credential file"
+  - note: "foo.pemx must not match *.pem — the wildcard is not a prefix match on the extension"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/foo.pemx"
+      content: "not a certificate"

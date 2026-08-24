@@ -1,12 +1,20 @@
 /**
  * The problem-solving rules — the half of keel that stops agents circling.
  *
- * keel has shipped `stuck`, `research` and `diagnosis` rule types since
- * Phase 2, but a fresh install writes none of them: the default
- * rules.yaml is destructive-command guards. So the anti-circling
- * machinery sits inert until someone pastes these in, and on this
- * machine's own traces that cost 41 distinct repeat loops across 20
- * sessions — one command retried 39 times.
+ * AS OF THE wave2-rules TIER RESTRUCTURE, all three of these ship as part
+ * of DEFAULT_RULES_YAML itself (Tier 3 — mode: observe) — a fresh `keel
+ * install` now writes them automatically. This module and `keel rules
+ * harness --append` are KEPT for existing users on an older install whose
+ * rules.yaml predates the change (`appendHarnessRules` checks by rule id,
+ * so it correctly reports "already present" against a rules.yaml created by
+ * the new installer — never a duplicate).
+ *
+ * Original rationale, still accurate: keel has shipped `stuck`, `research`
+ * and `diagnosis` rule types since Phase 2, but for a long time a fresh
+ * install wrote none of them — the default rules.yaml was destructive-
+ * command guards only. So the anti-circling machinery sat inert until
+ * someone pasted these in, and on this project's own traces that cost 41
+ * distinct repeat loops across 20 sessions — one command retried 39 times.
  *
  * Emitted in `mode: observe` on purpose. These are behavioural rules with
  * no false-positive history on YOUR traffic yet, and a new rule that

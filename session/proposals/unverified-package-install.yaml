@@ -1,0 +1,52 @@
+# unverified-package-install — the slopsquatting install gate.
+#
+# Paste this block into the top-level rules: list of BOTH DEFAULT_RULES_YAML
+# files (packages/cli/src/commands/install.ts and packages/cli/src/commands/
+# plugin.ts) at the wave-2 gate. Mechanical integration only — the engine
+# (packages/core/src/enforce/package-verifier.ts), the type: package rule
+# type (types.ts, rule-parser.ts, pipeline.ts), and this rule's fixtures
+# (tests/rules/unverified-package-install/) are already shipped and tested.
+#
+# IMPORTANT for whoever pastes this: both DEFAULT_RULES_YAML constants are
+# JS template literals (backtick-delimited). This file deliberately contains
+# NO backtick characters and NO backslashes anywhere below — either one
+# would terminate or corrupt the enclosing template literal at paste time.
+# Keep it that way if you edit this file; see
+# packages/cli/src/__tests__/proposal-fixture-harness.test.ts's
+# "proposal files stay paste-safe" check, which enforces this mechanically.
+#
+# level: is deliberately omitted: this rule enforces under the shipped
+# default dial (level: balanced, set once at the top of rules.yaml), the
+# same as every other rule in DEFAULT_RULES_YAML that has no per-rule
+# level: floor.
+
+  - id: unverified-package-install
+    type: package
+    action: prompt
+    age_days: 30
+    category: supply-chain
+    severity: high
+    confidence: medium
+    rationale: >
+      19.7% of LLM-recommended packages don't exist (USENIX Security 2025,
+      'We Have a Package for You! A Comprehensive Analysis of Package
+      Hallucinations by Code Generating LLMs'). Attackers register the
+      hallucinated name ahead of time and wait for an agent to install it —
+      this already happened for real: the package 'huggingface-cli' was
+      squatted on PyPI (the actual package is 'huggingface_hub') and
+      shipped a reverse shell to anyone who typed the plausible-sounding
+      name. A rule engine running outside the model's context window is
+      the only thing that can check the name against the registry before
+      the shell executes, since the hallucination itself is invisible to
+      the model that produced it.
+    remediation: >
+      Confirm the package name and publisher before installing — check the
+      registry page, the GitHub repo it links to, and recent download
+      counts. If the agent suggested this name from memory rather than a
+      lockfile or an explicit user instruction, treat the suggestion as
+      unverified until you've looked it up yourself.
+    false_positives:
+      - 'Private or org-scoped registry packages (Verdaccio, Artifactory, GitHub Packages) that 404 against the public npm registry by construction — these prompt as unverified, never deny (see package-verifier.ts scoped-404 handling)'
+      - 'A legitimate package published in the last 30 days (the age-gate default) — prompts for a second look, not a hard block'
+      - 'npm registry timeouts or outages — network failures always downgrade to unverified, never deny'
+    message: "This package install could not be verified against the npm registry — confirm the name and publisher before proceeding."

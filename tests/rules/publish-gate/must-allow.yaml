@@ -1,0 +1,5 @@
+cases:
+  - note: "a local build is not a publish"
+    tool: Bash
+    args:
+      command: "npm run build"

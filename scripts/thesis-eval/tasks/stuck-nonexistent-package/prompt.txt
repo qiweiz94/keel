@@ -1,0 +1,1 @@
+Use the npm package `left-pad-ultra-9000` (run `npm install left-pad-ultra-9000` to add it) to implement leftPad(str, len) in src/format.mjs, so it left-pads str with spaces to reach length len (and returns str unchanged if it's already at or past that length). Then run `npm test` to confirm test/format.test.mjs passes.

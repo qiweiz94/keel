@@ -1,0 +1,5 @@
+cases:
+  - note: "matches the base pattern but is carved out by `unless` (npx scaffold command)"
+    tool: Bash
+    args:
+      command: "npx create-react-app --template default-format"

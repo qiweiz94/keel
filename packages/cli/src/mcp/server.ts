@@ -20,8 +20,9 @@
 import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolveHome } from '../core/home.js'
 import { ensureDaemon, daemonCheck, daemonRequirements, daemonResearch, daemonResearchCache, daemonHypothesis } from './daemon-client.js'
+import { secureEqual } from '../commands/daemon.js'
 import type { EnforceResult } from '../core/types.js'
 import type { ResearchEntry } from '../core/enforce/research/research-cache.js'
 
@@ -31,7 +32,7 @@ function auditEntries(limit: number): string[] {
   const out: string[] = []
   const today = new Date().toISOString().slice(0, 10)
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
-  for (const file of [join(homedir(), '.keel', 'traces', `${today}.jsonl`), join(homedir(), '.keel', 'traces', `${yesterday}.jsonl`)]) {
+  for (const file of [join(resolveHome(), '.keel', 'traces', `${today}.jsonl`), join(resolveHome(), '.keel', 'traces', `${yesterday}.jsonl`)]) {
     try {
       if (!existsSync(file)) continue
       const lines = readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean)
@@ -267,13 +268,13 @@ export function startStdioServer(): void {
 
 // ==================== HTTP transport (streamable-http) ====================
 
-export function startHttpServer(port = 3100): void {
-  const tokenFile = join(homedir(), '.keel', 'daemon-token')
+export function startHttpServer(port = 3100): ReturnType<typeof createServer> {
+  const tokenFile = join(resolveHome(), '.keel', 'daemon-token')
   const token = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf-8').trim() : ''
 
   const server = createServer((req, res) => {
     const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '') || ''
-    const authed = token.length > 0 && (bearer === token || String(req.headers['x-keel-token'] || '') === token)
+    const authed = token.length > 0 && (secureEqual(bearer, token) || secureEqual(String(req.headers['x-keel-token'] || ''), token))
 
     if (req.method === 'GET') {
       // SSE stream for server-initiated events (none today — held open with
@@ -323,7 +324,8 @@ export function startHttpServer(port = 3100): void {
     })
   })
 
-  server.listen(port, () => {
-    console.error(`keel MCP server listening on port ${port} (streamable-http, token from ~/.keel/daemon-token)`)
+  server.listen(port, '127.0.0.1', () => {
+    console.error(`keel MCP server listening on 127.0.0.1:${port} (streamable-http, token from ~/.keel/daemon-token)`)
   })
+  return server
 }

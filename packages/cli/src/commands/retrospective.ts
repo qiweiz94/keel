@@ -1,8 +1,9 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
 import { commandFingerprint } from '../core/enforce/command-fingerprint.js'
+import { loadRuleHierarchy, winningPromotionThreshold } from '../core/enforce/rule-parser.js'
 import type { AuditEntry } from '../core/types.js'
 
 /**
@@ -70,6 +71,21 @@ export interface TraceEntry {
   /** Real per-session turn index. Was hardcoded 0 before the plugin fix,
    *  so absent-or-zero means the trace predates working turn telemetry. */
   turn_number?: number
+  /**
+   * Mirrors EnforceResult.observed_action: set when exactly one `mode:
+   * observe` rule matched (or, for older/simpler entries, whichever one
+   * landed in the single-slot legacy field). See observed_matches for the
+   * complete picture when more than one observe rule matched on the call.
+   */
+  observed_action?: string
+  /**
+   * Mirrors EnforceResult.observed_matches — every `mode: observe` rule
+   * that matched during this call, written by opencode-plugin's `record()`
+   * (plugin.ts's `before()` hook) straight from the pipeline result. This
+   * is the promotion pipeline's shadow-counter source: see
+   * computePromotionReport() below.
+   */
+  observed_matches?: Array<{ rule_id: string; observed_action: string; message?: string }>
 }
 
 const TEST_RE = /(npm|pnpm|yarn|bun)( run)? (run )?(test|vitest|jest|pytest)|npx vitest|go test/i
@@ -119,7 +135,15 @@ export function loadTraceEntries(auditDir: string, since?: string): TraceEntry[]
  */
 export const TRACKED_AGENTS = new Set(['opencode-plugin', 'openclaw-plugin', 'hermes-plugin', 'claude-code-hook'])
 
-function isBefore(e: TraceEntry): boolean {
+/**
+ * Exported so the promotion pipeline (computePromotionReport, below) reuses
+ * the SAME "which entries count as a real enforcement evaluation" filter
+ * every other retrospective metric uses — a would-block rate computed
+ * against a different denominator than attempts-to-success or stuck-loops
+ * would silently disagree with the rest of this report for no principled
+ * reason.
+ */
+export function isBefore(e: TraceEntry): boolean {
   return e.hook === 'tool.execute.before' && TRACKED_AGENTS.has(String(e.agent))
 }
 
@@ -397,6 +421,265 @@ export function computeLessons(sessions: SessionMetrics[]): Pick<RetrospectiveRe
   }
 }
 
+// ── Action summary ──────────────────────────────────────────────────
+//
+// "What did keel do for me": raw counts of enforcement actions in the
+// window, independent of the per-session productivity metrics above. Feeds
+// `keel report` (report.ts). Scoped to the same TRACKED_AGENTS / isBefore
+// filter as everything else in this file — see isBefore's comment for why
+// that filter is mandatory (the `keel evaluate` test harness would
+// otherwise inflate every count with entries that never enforced anything).
+
+export interface RuleTally {
+  rule_id: string
+  count: number
+}
+
+export interface ActionSummary {
+  total_evaluations: number
+  /** deny | block | prompt — the pipeline interrupted the call. */
+  blocked: number
+  /** warn — surfaced but did not interrupt. */
+  warned: number
+  /** redirect — interrupted with a suggested alternative (escalation ladder). */
+  redirected: number
+  /** Every `mode: observe` rule match, whether or not it would have blocked. */
+  observe_fires: number
+  top_blocking_rules: RuleTally[]
+  top_warning_rules: RuleTally[]
+  top_observe_rules: RuleTally[]
+}
+
+function topN(counts: Map<string, number>, n = 5): RuleTally[] {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([rule_id, count]) => ({ rule_id, count }))
+}
+
+export function computeActionSummary(entries: TraceEntry[]): ActionSummary {
+  const before = entries.filter(isBefore)
+  let blocked = 0
+  let warned = 0
+  let redirected = 0
+  let observeFires = 0
+  const blockingCounts = new Map<string, number>()
+  const warningCounts = new Map<string, number>()
+  const observeCounts = new Map<string, number>()
+  const bump = (m: Map<string, number>, id: string) => m.set(id, (m.get(id) || 0) + 1)
+
+  for (const e of before) {
+    if (e.rule_id) {
+      if (e.action === 'deny' || e.action === 'block' || e.action === 'prompt') {
+        blocked++
+        bump(blockingCounts, e.rule_id)
+      } else if (e.action === 'warn') {
+        warned++
+        bump(warningCounts, e.rule_id)
+      } else if (e.action === 'redirect') {
+        redirected++
+        bump(blockingCounts, e.rule_id)
+      }
+    }
+
+    // observed_matches is the comprehensive list (every observe rule that
+    // matched this call, see its field comment above); observed_action is
+    // the single-slot legacy fallback for entries written before
+    // observed_matches existed. Preferring the comprehensive list when
+    // present avoids both under- and double-counting: a call where the
+    // winning verdict's own rule_id happens to differ from the observe
+    // rule's id would misattribute the legacy single-slot count.
+    if (e.observed_matches && e.observed_matches.length > 0) {
+      observeFires += e.observed_matches.length
+      for (const m of e.observed_matches) bump(observeCounts, m.rule_id)
+    } else if (e.observed_action && e.rule_id) {
+      observeFires += 1
+      bump(observeCounts, e.rule_id)
+    }
+  }
+
+  return {
+    total_evaluations: before.length,
+    blocked,
+    warned,
+    redirected,
+    observe_fires: observeFires,
+    top_blocking_rules: topN(blockingCounts),
+    top_warning_rules: topN(warningCounts),
+    top_observe_rules: topN(observeCounts),
+  }
+}
+
+// ── Promotion pipeline ───────────────────────────────────────────────
+//
+// Shadow counters per `mode: observe` rule, derived from the SAME trace
+// stream the rest of this report reads (loadTraceEntries + isBefore — no
+// second parser). Every tracked `tool.execute.before` event is one
+// evaluation opportunity for every active rule; an observe rule that
+// matched during that call records itself either in the single-slot
+// legacy `rule_id`/`observed_action` fields (exactly one observe rule
+// matched) or in `observed_matches` (any number, including zero — see
+// pipeline.ts's evaluate()/violation() for why more than one can now
+// land on a single call: a matched observe rule records and evaluation
+// CONTINUES instead of blinding a lower-priority rule).
+
+export type PromotionRecommendation = 'eligible' | 'stay_observe' | 'insufficient_data'
+
+export interface PromotionRow {
+  rule_id: string
+  total_evaluations: number
+  would_block_count: number
+  /** would_block_count / total_evaluations, or null when there is no traffic at all. */
+  rate: number | null
+  threshold: number
+  recommendation: PromotionRecommendation
+  /** Whether this rule's denominator was scoped to one project's traces (see ObserveRuleRef). */
+  scoped: boolean
+  detail: string
+}
+
+/** A `mode: observe` rule to report on, plus where it lives in the hierarchy. */
+export interface ObserveRuleRef {
+  id: string
+  /**
+   * true for a rule declared in a project/local rules.yaml — its
+   * denominator must be scoped to THAT project's traces (see
+   * computePromotionReport's projectDir param), or traffic from every
+   * OTHER project using keel inflates the denominator and pushes an
+   * under-measured rate toward `eligible`. false for a global/user rule,
+   * which genuinely applies (and is genuinely measured) across every
+   * project — its denominator is the full trace stream.
+   */
+  scoped: boolean
+}
+
+/**
+ * would-block: the action the rule WOULD have taken is one the host
+ * actually THROWS on (interrupts the tool call), not merely "sounds
+ * severe". Verified against opencode-plugin/src/plugin.ts's `before()`:
+ * `deny`, `block`, and `prompt` throw via the block/gate path, and
+ * `redirect` throws too (`throw new Error('[Keel] REDIRECT ...')`) — it is
+ * NOT a soft signal, it interrupts exactly like a deny does. `warn`
+ * surfaces without interrupting and `fix` mutates args and lets the call
+ * proceed, so neither counts. Getting this wrong is not cosmetic: three of
+ * the six rules this pipeline exists to serve (no-repeat-loops's
+ * escalation ladder, research-before-fix, root-cause-before-refactor) use
+ * `redirect` as their primary — often their ONLY — interrupting action;
+ * excluding it would make every one of them measure a false-positive rate
+ * of zero regardless of how often they actually fire.
+ */
+function isWouldBlock(action: string | undefined): boolean {
+  return action === 'deny' || action === 'block' || action === 'prompt' || action === 'redirect'
+}
+
+function projectMatches(cwd: string | undefined, projectDir: string): boolean {
+  if (!cwd) return false
+  return cwd === projectDir || cwd.startsWith(`${projectDir}/`)
+}
+
+/**
+ * Per-rule would-block rate and promotion recommendation, computed purely
+ * from already-loaded trace entries — no disk I/O, so this is directly
+ * unit-testable against synthetic JSONL fixtures. `rules` is the set of
+ * `mode: observe` rules to report on (including ones with ZERO matches —
+ * "never fired in M evaluations" is itself a real, reportable data point,
+ * not silence); the CLI command below derives it from the live
+ * rules.yaml hierarchy via collectObserveRuleIds().
+ *
+ * `threshold` is `promotion_fp_threshold` (default
+ * DEFAULT_PROMOTION_FP_THRESHOLD, 1 per 1000) — read from the winning
+ * rules.yaml by the caller, never hardcoded here.
+ *
+ * `projectDir`, when given, scopes the denominator for every `scoped:
+ * true` rule (declared in a project/local rules.yaml) to entries whose
+ * `cwd` falls under it — a project-only rule measured against every OTHER
+ * project's traffic too would report a rate diluted by calls it was never
+ * even loaded for, silently pushing it toward `eligible`. Global/user
+ * rules are unaffected: they are genuinely active everywhere, so the full
+ * trace stream is their correct denominator. Omitting `projectDir`
+ * degrades every rule to the unscoped (whole-trace-stream) denominator —
+ * still correct, just less precise for project-local rules.
+ *
+ * A rate below threshold is NOT automatically "eligible": with too few
+ * evaluations, a rate near zero is indistinguishable from "we simply
+ * haven't seen enough traffic yet" — recommending promotion off three
+ * observations is a correctness bug in the headline claim, not caution.
+ * `minEvaluations` (1 / threshold — the sample size at which a single
+ * would-block would still register above threshold) gates a third
+ * recommendation, `insufficient_data`, distinct from both `eligible` and
+ * `stay_observe`.
+ */
+export function computePromotionReport(entries: TraceEntry[], rules: ObserveRuleRef[], threshold: number, projectDir?: string): PromotionRow[] {
+  const allBefore = entries.filter(isBefore)
+  const scopedBefore = projectDir ? allBefore.filter((e) => projectMatches(e.cwd, projectDir)) : allBefore
+  const minEvaluations = threshold > 0 ? Math.ceil(1 / threshold) : Infinity
+
+  const countFor = (before: TraceEntry[]) => {
+    const wouldBlockCounts = new Map<string, number>()
+    const bump = (ruleId: string | null | undefined, action: string | undefined) => {
+      if (!ruleId || !isWouldBlock(action)) return
+      wouldBlockCounts.set(ruleId, (wouldBlockCounts.get(ruleId) || 0) + 1)
+    }
+    for (const e of before) {
+      bump(e.rule_id, e.observed_action)
+      for (const m of e.observed_matches || []) bump(m.rule_id, m.observed_action)
+    }
+    return wouldBlockCounts
+  }
+  const allCounts = countFor(allBefore)
+  const scopedCounts = projectDir ? countFor(scopedBefore) : allCounts
+
+  return rules.map(({ id: ruleId, scoped }) => {
+    const useScoped = scoped && !!projectDir
+    const before = useScoped ? scopedBefore : allBefore
+    const counts = useScoped ? scopedCounts : allCounts
+    const totalEvaluations = before.length
+    const wouldBlock = counts.get(ruleId) || 0
+    const rate = totalEvaluations > 0 ? wouldBlock / totalEvaluations : null
+    let recommendation: PromotionRecommendation
+    let detail: string
+    const scopeLabel = useScoped ? 'this project' : 'all traces'
+    if (totalEvaluations === 0 || totalEvaluations < minEvaluations) {
+      recommendation = 'insufficient_data'
+      detail = `${wouldBlock} would-block(s) in ${totalEvaluations} eval(s), ${scopeLabel} — need ${minEvaluations}+ evaluations to trust a rate this small`
+    } else if ((rate ?? 1) < threshold) {
+      recommendation = 'eligible'
+      detail = `${wouldBlock} would-block(s) in ${totalEvaluations} evals, ${scopeLabel} (${((rate ?? 0) * 100).toFixed(3)}%) — eligible for promotion to warn`
+    } else {
+      recommendation = 'stay_observe'
+      detail = `${wouldBlock} would-block(s) in ${totalEvaluations} evals, ${scopeLabel} — review before promoting`
+    }
+    return { rule_id: ruleId, total_evaluations: totalEvaluations, would_block_count: wouldBlock, rate, threshold, recommendation, scoped: useScoped, detail }
+  })
+}
+
+/**
+ * Every `mode: observe` rule across the whole hierarchy (global, user,
+ * project, local), deduped by id. `scoped` marks a project/local rule so
+ * computePromotionReport() can scope its denominator to this project's
+ * own traces — see ObserveRuleRef's field comment. A rule id that appears
+ * at BOTH an unscoped (global/user) source and a scoped (project/local)
+ * source is treated as unscoped: global/user is the wider claim ("this
+ * rule applies everywhere"), and the wider claim wins when the two
+ * disagree, matching how a promotion decision should read the ambiguity —
+ * as "measure it against everything", not "measure it against less".
+ */
+export function collectObserveRuleIds(hierarchy: import('../core/enforce/rule-parser.js').RuleHierarchy): ObserveRuleRef[] {
+  const scopedById = new Map<string, boolean>()
+  const add = (source: { rules: import('../core/types.js').KeelRule[] } | null | undefined, scoped: boolean) => {
+    for (const rule of source?.rules || []) {
+      if (rule.mode !== 'observe') continue
+      const existing = scopedById.get(rule.id)
+      if (existing === undefined || existing === true) scopedById.set(rule.id, scoped)
+    }
+  }
+  add(hierarchy.global, false)
+  add(hierarchy.user, false)
+  add(hierarchy.project, true)
+  add(hierarchy.local, true)
+  return [...scopedById.entries()].map(([id, scoped]) => ({ id, scoped }))
+}
+
 export function buildReport(entries: TraceEntry[], since?: string, project?: string): RetrospectiveReport {
   const bySession = new Map<string, TraceEntry[]>()
   for (const e of entries) {
@@ -440,12 +723,28 @@ function num(v: number | null, digits = 1): string {
 }
 
 export async function retrospectiveCommand(options: { since?: string; project?: string; json?: boolean; write?: boolean } = {}) {
-  const auditDir = join(homedir(), '.keel', 'traces')
+  // Read fresh on every call, not a module-level const: a module-level
+  // const is fixed at first import of this file (whichever test happens
+  // to import it first, process-wide) and defeats a test that sets
+  // KEEL_TRACES_DIR in its own setup after some other file already
+  // triggered the import — the exact reasoning documented on AuditLog's
+  // constructor (audit.ts) for the identical env-override-else-real-home
+  // shape.
+  const auditDir = process.env.KEEL_TRACES_DIR || join(resolveHome(), '.keel', 'traces')
   const entries = loadTraceEntries(auditDir, options.since)
   const filtered = buildReport(entries, options.since, options.project)
 
+  const hierarchy = loadRuleHierarchy(process.cwd())
+  const observeRules = collectObserveRuleIds(hierarchy)
+  const threshold = winningPromotionThreshold(hierarchy)
+  // projectDir scopes a project/local rule's denominator to THIS
+  // project's own traces (see computePromotionReport's field comment) —
+  // without it, a project-only rule's rate is diluted by every other
+  // project's traffic and reads more eligible than it is.
+  const promotion = computePromotionReport(entries, observeRules, threshold, process.cwd())
+
   if (options.json) {
-    console.log(JSON.stringify(filtered, null, 2))
+    console.log(JSON.stringify({ ...filtered, promotion }, null, 2))
     return
   }
 
@@ -482,11 +781,28 @@ export async function retrospectiveCommand(options: { since?: string; project?: 
       console.log(`    • ${chalk.white(l.text)} ${chalk.dim(`(${l.count})`)}`)
     }
   }
+  if (promotion.length) {
+    console.log()
+    console.log(chalk.dim(`  Promotion (mode: observe rules, threshold ${threshold} = ${(threshold * 100).toFixed(2)}% would-block rate)`))
+    for (const p of promotion) {
+      const label = p.recommendation === 'eligible'
+        ? chalk.green('eligible for promotion to warn')
+        : p.recommendation === 'insufficient_data'
+          ? chalk.dim('insufficient data')
+          : chalk.yellow('stay observe')
+      console.log(`    ${chalk.white(p.rule_id.padEnd(30))}${label}`)
+      console.log(`      ${chalk.dim(p.detail)}`)
+    }
+    console.log(chalk.dim('    Promote with: keel promote <rule-id> (run from your own terminal — never through the agent)'))
+  } else if (observeRules.length === 0) {
+    console.log()
+    console.log(chalk.dim('  Promotion: no `mode: observe` rules found in the current rules.yaml hierarchy.'))
+  }
   console.log()
 
   if (options.write) {
     const week = filtered.window.end
-    const dir = join(homedir(), '.keel', 'retrospectives', options.project || 'all')
+    const dir = join(resolveHome(), '.keel', 'retrospectives', options.project || 'all')
     mkdirSync(dir, { recursive: true })
     const path = join(dir, `${week}.md`)
     const lines = [`## keel retrospective (${filtered.window.start} → ${filtered.window.end})`, '']

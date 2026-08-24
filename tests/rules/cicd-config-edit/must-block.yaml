@@ -1,0 +1,16 @@
+cases:
+  - note: "editing a GitHub Actions workflow"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.github/workflows/deploy.yml"
+      content: "on: push"
+  - note: "editing the Jenkinsfile"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/Jenkinsfile"
+      content: "pipeline {}"
+  - note: "editing a CircleCI config"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/.circleci/config.yml"
+      content: "version: 2.1"

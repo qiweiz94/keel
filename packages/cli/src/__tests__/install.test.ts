@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { describePosixShim } from './helpers/platform.js'
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, chmodSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, chmodSync, mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * Install-time and fail-closed behaviour.
@@ -20,13 +21,23 @@ const CLI = join(HERE, '..', '..', 'dist', 'index.js')
 let dir: string
 let shim: string
 
-function run(args: string, opts: { cwd?: string; path?: string; home?: string } = {}) {
+function run(args: string, opts: { cwd?: string; path?: string; home?: string; keelHome?: string } = {}) {
   try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: opts.home ?? process.env.HOME,
+      PATH: opts.path ?? `${shim}:${process.env.PATH}`,
+    }
+    if (opts.keelHome) {
+      env.KEEL_HOME = opts.keelHome
+    } else {
+      delete env.KEEL_HOME
+    }
     const stdout = execSync(`node "${CLI}" ${args}`, {
       encoding: 'utf-8',
       cwd: opts.cwd ?? dir,
       timeout: 10000,
-      env: { ...process.env, HOME: opts.home ?? process.env.HOME, PATH: opts.path ?? `${shim}:${process.env.PATH}` },
+      env,
     })
     return { stdout, code: 0 }
   } catch (err: any) {
@@ -46,7 +57,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true })
+  rmSafe(dir)
 })
 
 describePosixShim('init --hooks', () => {
@@ -110,49 +121,94 @@ describePosixShim('init --hooks', () => {
   })
 })
 
-describePosixShim('policy loading fails closed', () => {
-  it('denies when the policy file is empty', () => {
-    // parseYaml("") returns null without throwing, so this must be checked
-    // explicitly — it used to throw a TypeError and crash the CLI.
-    writeFileSync(join(dir, '.keel.yaml'), '', 'utf-8')
-    const { stdout, code } = run('check --command "ls -la"')
+describePosixShim('rules loading fails closed', () => {
+  // `check` now routes through the same EnforcementPipeline/.keel/rules.yaml
+  // path as `keel hook`/`keel evaluate`/`keel daemon` — the legacy
+  // PolicyEngine .keel.yaml fail-closed/defaults behavior this describe
+  // block used to test no longer applies to `check` at all. Both `home`
+  // dirs below are fresh empty tmp dirs (not the real process HOME) so a
+  // developer machine's own ~/.keel/rules.yaml can't leak into either
+  // test — the "absent" case especially would otherwise pass vacuously
+  // (or fail) depending on what's actually on disk outside this test.
+  let home: string
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'keel-test-rules-home-')) })
+  afterEach(() => { rmSafe(home) })
+
+  it('denies when .keel/rules.yaml is malformed', () => {
+    mkdirSync(join(dir, '.keel'), { recursive: true })
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), 'not: [valid yaml\n', 'utf-8')
+    const { stdout, code } = run('check --command "ls -la"', { home })
     expect(stdout).toContain('BLOCKED')
     expect(code).not.toBe(0)
   })
 
-  it('denies when the policy file is malformed', () => {
-    writeFileSync(join(dir, '.keel.yaml'), 'not: [valid yaml\n', 'utf-8')
-    const { stdout, code } = run('check --command "ls -la"')
-    expect(stdout).toContain('BLOCKED')
-    expect(code).not.toBe(0)
-  })
-
-  it('uses defaults — not fail-closed — when no policy file exists', () => {
-    const { stdout, code } = run('check --command "ls -la"')
+  it('warns loudly and exits 0 — not fail-closed, not silently allowed — when no rules exist anywhere', () => {
+    const { stdout, code } = run('check --command "ls -la"', { home })
+    expect(stdout).toContain('No Keel rules found')
     expect(stdout).not.toContain('BLOCKED')
     expect(code).toBe(0)
   })
 })
 
-describePosixShim('the policy protects its own configuration', () => {
+describePosixShim('the rules protect their own configuration', () => {
+  // Minimal-but-real fixture: a filesystem-type no-rules-tampering-shaped
+  // rule scoped to just the paths these tests exercise, rather than
+  // shelling out to the full `keel install` (host-detection this fixture
+  // doesn't need). Pinned to level: protect — matching the real
+  // no-rules-tampering rule's actual shipped level (install.ts) — so it
+  // blocks on the first match rather than warning once and blocking on a
+  // repeat (dialAction()'s protect-floor rule in pipeline.ts).
+  //
+  // Isolated HOME (a fresh empty tmp dir, not the real machine HOME) AND a
+  // rule id distinct from the real shipped `no-rules-tampering` — belt and
+  // suspenders against a real ~/.keel/rules.yaml on the machine running
+  // this suite. Found empirically: a real global `no-rules-tampering`
+  // (level: protect, wider `paths` list) merging alongside this narrower
+  // same-id fixture rule hits mergeRules()'s floor-can-only-tighten guard
+  // (rule-parser.ts) — a same-id project override of a protect floor is
+  // discarded, not applied, unless it matches the SAME enforcement
+  // surface — so three of the four `protectedPaths` below silently fell
+  // through to the (real, but untested-here) global rule while one
+  // happened to still match by coincidence. A distinct id sidesteps that
+  // merge logic entirely; the isolated HOME means there is no colliding
+  // global rule to merge against in the first place either.
+  const RULES = `version: 1
+rules:
+  - id: test-no-rules-tampering
+    type: filesystem
+    paths:
+      - "**/.keel/rules.yaml"
+      - "**/.mcp.json"
+      - "**/.claude/settings.json"
+      - "**/.git/hooks/**"
+    action: deny
+    level: protect
+    message: "Writes to Keel's own configuration are blocked."
+`
   const protectedPaths = [
-    '.keel.yaml',
-    '.keel/audit/audit.log',
+    '.keel/rules.yaml',
+    '.mcp.json',
     '.claude/settings.json',
     '.git/hooks/pre-commit',
   ]
 
+  let home: string
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'keel-test-protect-home-'))
+    mkdirSync(join(dir, '.keel'), { recursive: true })
+    writeFileSync(join(dir, '.keel', 'rules.yaml'), RULES, 'utf-8')
+  })
+  afterEach(() => { rmSafe(home) })
+
   for (const p of protectedPaths) {
     it(`blocks writes to ${p}`, () => {
-      run('init')
-      const { stdout } = run(`check --file "${p}" --write`)
+      const { stdout } = run(`check --file "${p}" --write`, { home })
       expect(stdout).toContain('BLOCKED')
     })
   }
 
   it('does not block writes to ordinary source files', () => {
-    run('init')
-    const { stdout, code } = run('check --file "src/index.ts" --write')
+    const { stdout, code } = run('check --file "src/index.ts" --write', { home })
     expect(stdout).not.toContain('BLOCKED')
     expect(code).toBe(0)
   })
@@ -166,7 +222,7 @@ describe('install --opencode creates the global rules', () => {
   })
 
   afterEach(() => {
-    rmSync(home, { recursive: true, force: true })
+    rmSafe(home)
   })
 
   it('creates ~/.keel/rules.yaml with the current defaults', () => {
@@ -184,5 +240,414 @@ describe('install --opencode creates the global rules', () => {
     const out = run('install --opencode', { home })
     expect(out.stdout).toContain('already exists (skipping)')
     expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).toBe('# custom\nversion: 1\n')
+  })
+})
+
+describe('install honors KEEL_HOME over HOME', () => {
+  // Two DISTINCT tmp dirs. os.homedir() on POSIX reads $HOME, so a test that
+  // only overrides HOME (or only checks KEEL_HOME's contents) could pass by
+  // accident even if install.ts still called bare homedir(). Using separate
+  // dirs for HOME and KEEL_HOME, and asserting the HOME side stays empty,
+  // is what makes this test actually exercise the KEEL_HOME override.
+  let sysHome: string
+  let keelHome: string
+
+  beforeEach(() => {
+    sysHome = mkdtempSync(join(tmpdir(), 'keel-test-syshome-'))
+    keelHome = mkdtempSync(join(tmpdir(), 'keel-test-keelhome-'))
+  })
+
+  afterEach(() => {
+    rmSafe(sysHome)
+    rmSafe(keelHome)
+  })
+
+  it('writes global install targets under KEEL_HOME, never under HOME', () => {
+    const out = run('install --opencode', { home: sysHome, keelHome })
+    expect(out.stdout).toContain('Created ~/.keel/rules.yaml')
+
+    // KEEL_HOME received the writes.
+    expect(existsSync(join(keelHome, '.keel', 'rules.yaml'))).toBe(true)
+    expect(existsSync(join(keelHome, '.opencode', 'plugins', 'keel-enforce.js'))).toBe(true)
+
+    // The real/system HOME must be untouched.
+    expect(existsSync(join(sysHome, '.keel'))).toBe(false)
+    expect(existsSync(join(sysHome, '.opencode'))).toBe(false)
+  })
+
+  it('falls back to HOME when KEEL_HOME is unset', () => {
+    const out = run('install --opencode', { home: sysHome })
+    expect(out.stdout).toContain('Created ~/.keel/rules.yaml')
+    expect(existsSync(join(sysHome, '.keel', 'rules.yaml'))).toBe(true)
+  })
+
+  // `install --opencode` alone only exercises 4 of the 10 resolveHome() call
+  // sites (~/.keel, ~/.opencode, ~/.keel/requirements.md; upgradePluginConfig
+  // is an upgrade path that no-ops unless ~/.config/opencode/opencode.json
+  // already exists, so it's seeded below). `--all` additionally reaches the
+  // Cline, Codex, Hermes, OpenClaw, and Gemini host installers, covering
+  // every global target install.ts writes. Everything else `--all` touches
+  // (project plugin, Claude Code hooks, Cursor) is cwd-scoped, so it cannot
+  // leak into sysHome by a different route.
+  it('install --all writes every global target under KEEL_HOME, nothing under HOME', () => {
+    // upgradePluginConfig() only rewrites an EXISTING opencode.json — seed
+    // one under keelHome (never under sysHome) so this run actually
+    // exercises that resolveHome() call site instead of silently no-op'ing.
+    const ocConfigDir = join(keelHome, '.config', 'opencode')
+    mkdirSync(ocConfigDir, { recursive: true })
+    const ocConfigPath = join(ocConfigDir, 'opencode.json')
+    writeFileSync(ocConfigPath, JSON.stringify({ plugin: ['old/keel-enforce.js'] }), 'utf-8')
+
+    run('install --all', { home: sysHome, keelHome })
+
+    for (const p of [
+      join(keelHome, '.keel', 'rules.yaml'),
+      join(keelHome, '.opencode', 'plugins', 'keel-enforce.js'),
+      join(keelHome, '.keel', 'requirements.md'),
+      join(keelHome, '.cline', 'hooks', 'PreToolUse'),
+      join(keelHome, '.cline', 'hooks', 'PostToolUse'),
+      join(keelHome, '.cline', 'hooks', 'TaskComplete'),
+      join(keelHome, '.codex', 'hooks', 'keel-enforce.sh'),
+      join(keelHome, '.hermes', 'plugins', 'keel', 'keel_plugin.py'),
+      join(keelHome, '.openclaw', 'plugins', 'keel', 'index.mjs'),
+      join(keelHome, '.gemini', 'hooks', 'PreToolUse'),
+    ]) {
+      expect(existsSync(p)).toBe(true)
+    }
+
+    // The seeded opencode.json was rewritten in place (old keel-enforce
+    // entry filtered out) — proves upgradePluginConfig() resolved keelHome,
+    // not a bare homedir().
+    const rewritten = JSON.parse(readFileSync(ocConfigPath, 'utf-8'))
+    expect(rewritten.plugin).toEqual([])
+
+    // sysHome must stay completely empty — nothing install.ts writes should
+    // route to homedir() when KEEL_HOME is set.
+    expect(existsSync(sysHome)).toBe(true) // the tmp dir itself still exists
+    expect(readdirSync(sysHome)).toEqual([])
+  })
+})
+
+describe('install → read consistency under KEEL_HOME (M1r-3b)', () => {
+  // The block above (M1r-3) proved install.ts itself honors KEEL_HOME. That
+  // was necessary but not sufficient: every READER (daemon.ts, rules.ts,
+  // status.ts, mcp/server.ts, state-manager.ts, the opencode plugin, ...)
+  // used to resolve a bare homedir() independently, so an install under
+  // KEEL_HOME wrote to the redirected location while a reader kept looking
+  // under the real home directory — a split-brain. M1r-3b closed it by
+  // routing every reader through the SAME resolveHome() install.ts uses.
+  //
+  // These tests drive the full install → write → read path through the
+  // REAL built CLI (separate `node dist/index.js ...` processes per step,
+  // not in-process unit calls), so a regression in any layer — install, a
+  // writer command, or a reader command — is caught here. Two distinct tmp
+  // dirs (sysHome / keelHome) throughout, same as the block above, so a
+  // reader/writer that silently fell back to homedir() (which resolves
+  // sysHome via $HOME on POSIX) would fail these assertions rather than
+  // passing by coincidence.
+  let sysHome: string
+  let keelHome: string
+
+  beforeEach(() => {
+    sysHome = mkdtempSync(join(tmpdir(), 'keel-test-syshome-'))
+    keelHome = mkdtempSync(join(tmpdir(), 'keel-test-keelhome-'))
+  })
+
+  afterEach(() => {
+    rmSafe(sysHome)
+    rmSafe(keelHome)
+  })
+
+  it('`keel status` (reader) sees the kill switch armed by `keel disable` (writer) under the SAME KEEL_HOME install used', () => {
+    const installOut = run('install --opencode', { home: sysHome, keelHome })
+    expect(installOut.stdout).toContain('Created ~/.keel/rules.yaml')
+
+    // Arm the kill switch. disable.ts used to resolve `process.env.HOME ||
+    // '~'` directly — never KEEL_HOME, and not even a homedir() fallback.
+    const disableOut = run('disable --reason "M1r-3b consistency test"', { home: sysHome, keelHome })
+    expect(disableOut.stdout).toContain('Keel DISABLED')
+
+    // The sentinel must land under KEEL_HOME, never under HOME.
+    expect(existsSync(join(keelHome, '.keel', 'DISABLED'))).toBe(true)
+    expect(existsSync(join(sysHome, '.keel', 'DISABLED'))).toBe(false)
+
+    // Read it back with `keel status` — a DIFFERENT command, same env. If
+    // status.ts (or pipeline.ts's own kill-switch check) still resolved a
+    // bare homedir(), this would report "enabled" — it would be looking at
+    // sysHome (empty) instead of keelHome (where the sentinel actually is).
+    const statusOut = run('status', { home: sysHome, keelHome })
+    expect(statusOut.stdout).toContain('DISABLED')
+    expect(statusOut.stdout).not.toContain('enabled (enforcement active)')
+
+    // `keel enable` (writer) then `keel status` (reader) again — both must
+    // keep agreeing under the same KEEL_HOME.
+    const enableOut = run('enable', { home: sysHome, keelHome })
+    expect(enableOut.stdout.toLowerCase()).toContain('re-enabled')
+    expect(existsSync(join(keelHome, '.keel', 'DISABLED'))).toBe(false)
+    const statusOut2 = run('status', { home: sysHome, keelHome })
+    expect(statusOut2.stdout).toContain('enabled (enforcement active)')
+  })
+
+  it('`keel status` (reader) sees an override armed by `keel allow` (writer) under KEEL_HOME, with KEEL_OVERRIDES_DIR unset — proving the *_DIR family unifies under KEEL_HOME rather than a coincidental match', () => {
+    run('install --opencode', { home: sysHome, keelHome })
+
+    // Arm an override on a rule id that actually ships in DEFAULT_RULES_YAML
+    // (see install.ts). allow.ts's overridesDirectory() falls back through
+    // KEEL_OVERRIDES_DIR (deliberately UNSET here) to resolveHome() — the
+    // same base FileRuleOverrideStore's own default construction uses — so
+    // this only passes if both ends agree on KEEL_HOME, not by KEEL_OVERRIDES_DIR
+    // coincidentally pointing both writer and reader at the same place.
+    const allowOut = run('allow no-verify-bypass --once', { home: sysHome, keelHome })
+    expect(allowOut.stdout).toContain('overridden for')
+
+    expect(existsSync(join(keelHome, '.keel', 'overrides.json'))).toBe(true)
+    expect(existsSync(join(sysHome, '.keel', 'overrides.json'))).toBe(false)
+
+    const statusOut = run('status', { home: sysHome, keelHome })
+    expect(statusOut.stdout).toContain('1')
+    expect(statusOut.stdout).toContain('armed')
+    expect(statusOut.stdout).toContain('no-verify-bypass')
+  })
+})
+
+describe('install --cursor preserves user customization on reinstall', () => {
+  it('does not clobber a hand-edited keel.mdc, and stops claiming "Created" once configured', () => {
+    // First install — genuinely fresh.
+    const first = run('install --cursor')
+    expect(first.stdout).toContain('Created')
+    const rulePath = join(dir, '.cursor', 'rules', 'keel.mdc')
+    expect(existsSync(rulePath)).toBe(true)
+
+    // User customizes the installed file.
+    const original = readFileSync(rulePath, 'utf-8')
+    const customized = original + '\n\n<!-- MY CUSTOM NOTE: do not remove this -->\n'
+    writeFileSync(rulePath, customized, 'utf-8')
+
+    // Reinstall must not clobber the customization.
+    const second = run('install --cursor')
+    const after = readFileSync(rulePath, 'utf-8')
+    expect(after).toContain('MY CUSTOM NOTE: do not remove this')
+    expect(after).toContain('# Keel enforcement')
+
+    // And it must not misreport a preserved file as freshly "Created".
+    expect(second.stdout).not.toMatch(/✓ Created.*keel\.mdc/)
+    expect(second.stdout).toMatch(/already configured/)
+  })
+
+  it('writes keel rules to a separate file rather than appending into keel.mdc when it exists but was never keel-managed', () => {
+    // MDC/YAML frontmatter is only recognized at position 0 of a file.
+    // Appending keel's own '---...---' block into the middle of a
+    // pre-existing keel.mdc would never be parsed as frontmatter, silently
+    // making 'alwaysApply: true' inert — so the fix writes a separate file
+    // with its own frontmatter at position 0 instead of appending.
+    const rulesDir = join(dir, '.cursor', 'rules')
+    mkdirSync(rulesDir, { recursive: true })
+    const rulePath = join(rulesDir, 'keel.mdc')
+    const untouched = '# Some unrelated pre-existing rule\nDo the thing.\n'
+    writeFileSync(rulePath, untouched, 'utf-8')
+
+    const out = run('install --cursor')
+
+    // The pre-existing file must be left completely untouched.
+    expect(readFileSync(rulePath, 'utf-8')).toBe(untouched)
+
+    // Keel's rules land in their own file, with valid frontmatter at position 0.
+    const ownRulePath = join(rulesDir, 'keel-enforcement.mdc')
+    expect(existsSync(ownRulePath)).toBe(true)
+    const ownContent = readFileSync(ownRulePath, 'utf-8')
+    expect(ownContent.startsWith('---\n')).toBe(true)
+    expect(ownContent).toContain('alwaysApply: true')
+    expect(ownContent).toContain('# Keel enforcement')
+    expect(out.stdout).toMatch(/Created.*keel-enforcement\.mdc/)
+  })
+
+  it('does not create a duplicate keel-enforcement.mdc on repeated installs', () => {
+    const rulesDir = join(dir, '.cursor', 'rules')
+    mkdirSync(rulesDir, { recursive: true })
+    writeFileSync(join(rulesDir, 'keel.mdc'), '# Unrelated\n', 'utf-8')
+
+    run('install --cursor')
+    const out = run('install --cursor')
+
+    expect(out.stdout).toMatch(/already configured/)
+    expect(out.stdout).not.toMatch(/✓ Created.*keel-enforcement\.mdc/)
+  })
+})
+
+describe('install --claude-code merges hooks instead of replacing them wholesale', () => {
+  it('preserves an unrelated PreToolUse/PostToolUse/Stop hook registered by another tool', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const seeded = {
+      someUnrelatedTopLevelKey: 'preserved-value',
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: '.other-tool/hooks/pre.sh' }],
+          },
+        ],
+        PostToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: '.other-tool/hooks/post.sh' }],
+          },
+        ],
+        Stop: [
+          {
+            hooks: [{ type: 'command', command: '.other-tool/hooks/stop.sh' }],
+          },
+        ],
+      },
+    }
+    writeFileSync(settingsPath, JSON.stringify(seeded, null, 2) + '\n', 'utf-8')
+
+    run('install --claude-code')
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+
+    // Other top-level keys and the other tool's own hook entries must survive.
+    expect(settings.someUnrelatedTopLevelKey).toBe('preserved-value')
+    const preCommands = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.other-tool/hooks/pre.sh')
+    const postCommands = settings.hooks.PostToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(postCommands).toContain('.other-tool/hooks/post.sh')
+    const stopCommands = settings.hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(stopCommands).toContain('.other-tool/hooks/stop.sh')
+
+    // And keel's own entries must be correctly present alongside them.
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-enforce')
+    expect(postCommands).toContain('.claude/hooks/PostToolUse/keel-reinject')
+    expect(postCommands).toContain('.claude/hooks/PostToolUse/keel-verify')
+    expect(stopCommands).toContain('.claude/hooks/Stop/keel-claim')
+  })
+
+  it('does not accumulate duplicate keel entries across repeated installs', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    run('install --claude-code')
+    run('install --claude-code')
+    run('install --claude-code')
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands.filter((c: string) => c === '.claude/hooks/PreToolUse/keel-enforce')).toHaveLength(1)
+  })
+
+  it('preserves another tool\'s hook that shares keel\'s own matcher group, without duplicating keel\'s entry on reinstall', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+
+    // First install — keel writes its own PreToolUse group under matcher '*'.
+    run('install --claude-code')
+
+    // Simulate another tool joining the SAME matcher group keel already
+    // occupies, rather than adding its own separate group.
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const group = settings.hooks.PreToolUse.find((g: any) => g.matcher === '*')
+    group.hooks.push({ type: 'command', command: '.other-tool/hooks/pre.sh' })
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
+
+    // Reinstall must not drop the other tool's hook by discarding the whole
+    // shared group, and must not duplicate keel's own entry.
+    run('install --claude-code')
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.other-tool/hooks/pre.sh')
+    expect(preCommands.filter((c: string) => c === '.claude/hooks/PreToolUse/keel-enforce')).toHaveLength(1)
+  })
+
+  it('does not delete a user hook script merely because its basename starts with "keel-"', () => {
+    // isKeelHookCommand used to match on a loose basename prefix, so a
+    // project's own hook coincidentally named e.g. keel-audit-log would be
+    // silently deleted on reinstall even though keel never wrote it.
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const seeded = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: '.claude/hooks/PreToolUse/keel-audit-log' }],
+          },
+        ],
+      },
+    }
+    writeFileSync(settingsPath, JSON.stringify(seeded, null, 2) + '\n', 'utf-8')
+
+    run('install --claude-code')
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-audit-log')
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-enforce')
+  })
+
+  it('warns and does not crash when hooks.PreToolUse is present but not an array', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { PreToolUse: 'not-an-array' } }, null, 2) + '\n', 'utf-8')
+
+    const out = run('install --claude-code')
+
+    expect(out.code).toBe(0)
+    expect(out.stdout).toMatch(/not an array/)
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const preCommands = after.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command))
+    expect(preCommands).toContain('.claude/hooks/PreToolUse/keel-enforce')
+  })
+
+  it('preserves keel\'s original position in the hook array across reinstall, instead of always moving it to the end', () => {
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+
+    // Keel installs first, occupying slot 0.
+    run('install --claude-code')
+    let settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+
+    // Another tool's group is added AFTER keel's.
+    settings.hooks.PreToolUse.push({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: '.other-tool/hooks/pre.sh' }],
+    })
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
+
+    // Reinstall must not silently move keel's group past the other tool's.
+    run('install --claude-code')
+    settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const groups = settings.hooks.PreToolUse
+    const keelIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.claude/hooks/PreToolUse/keel-enforce'))
+    const otherIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.other-tool/hooks/pre.sh'))
+    expect(keelIndex).toBeLessThan(otherIndex)
+  })
+
+  it('places keel\'s group correctly even with a literal null entry before it in a hand-corrupted hooks array', () => {
+    // A null group is not valid Claude Code config, but the merge must not
+    // crash on it, and — the specific edge case this test targets — the
+    // slot-preservation index math must agree with which groups actually
+    // survive the filter, or keel's re-inserted group can land on the wrong
+    // side of another tool's group.
+    const settingsPath = join(dir, '.claude', 'settings.json')
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const seeded = {
+      hooks: {
+        PreToolUse: [
+          null,
+          { matcher: '*', hooks: [{ type: 'command', command: '.claude/hooks/PreToolUse/keel-enforce' }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: '.other-tool/hooks/pre.sh' }] },
+        ],
+      },
+    }
+    writeFileSync(settingsPath, JSON.stringify(seeded, null, 2) + '\n', 'utf-8')
+
+    const out = run('install --claude-code')
+    expect(out.code).toBe(0)
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const groups = settings.hooks.PreToolUse
+    expect(groups.some((g: any) => g == null)).toBe(false)
+    const keelIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.claude/hooks/PreToolUse/keel-enforce'))
+    const otherIndex = groups.findIndex((g: any) => g.hooks.some((h: any) => h.command === '.other-tool/hooks/pre.sh'))
+    expect(keelIndex).toBeLessThan(otherIndex)
   })
 })

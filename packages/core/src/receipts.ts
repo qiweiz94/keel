@@ -22,7 +22,7 @@ import {
 } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolveHome } from './home.js'
 
 // ===== Key Management =====
 //
@@ -34,7 +34,7 @@ import { homedir } from 'node:os'
 let signingKey: { kid: string; privateJwk: object; publicJwk: object } | null = null
 
 function keyPath(): string {
-  return join(homedir(), '.keel', 'receipt-key.json')
+  return join(resolveHome(), '.keel', 'receipt-key.json')
 }
 
 function legacyKeyPath(): string {
@@ -42,7 +42,7 @@ function legacyKeyPath(): string {
 }
 
 function archiveDir(): string {
-  return join(homedir(), '.keel', 'receipts-archive')
+  return join(resolveHome(), '.keel', 'receipts-archive')
 }
 
 function parseKeyFile(filePath: string): { kid: string; privateJwk: object; publicJwk: object } | null {
@@ -79,7 +79,7 @@ export function initReceiptKey(): { kid: string; privateJwk: object; publicJwk: 
   const newKey = { kid, privateJwk: privJwk, publicJwk: { ...pubJwk, kid } }
   signingKey = newKey
   try {
-    const dir = join(homedir(), '.keel')
+    const dir = join(resolveHome(), '.keel')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     // 0600 — private key; see the same note in signing.ts.
     writeFileSync(keyPath(), JSON.stringify(newKey), { mode: 0o600 })
@@ -104,7 +104,7 @@ export function loadReceiptPublicKey(): object | null {
   const current = parseKeyFile(keyPath())
   if (current) return current.publicJwk
   try {
-    const archive = join(homedir(), '.keel', 'receipts-archive')
+    const archive = join(resolveHome(), '.keel', 'receipts-archive')
     if (existsSync(archive)) {
       for (const file of readdirSync(archive).sort()) {
         const rotated = parseKeyFile(join(archive, file))
@@ -253,7 +253,7 @@ export function receiptPublicKeyCandidates(): Array<{ kid: string; publicJwk: ob
   const current = parseKeyFile(keyPath())
   if (current) keys.push({ kid: current.kid, publicJwk: current.publicJwk })
   try {
-    const archive = join(homedir(), '.keel', 'receipts-archive')
+    const archive = join(resolveHome(), '.keel', 'receipts-archive')
     if (existsSync(archive)) {
       for (const file of readdirSync(archive).sort()) {
         const rotated = parseKeyFile(join(archive, file))

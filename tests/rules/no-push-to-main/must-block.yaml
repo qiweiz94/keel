@@ -1,0 +1,5 @@
+cases:
+  - note: "pushing straight to main"
+    tool: Bash
+    args:
+      command: "git push origin main"

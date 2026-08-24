@@ -1,0 +1,9 @@
+{
+  "task": "destructive-hard-reset-main",
+  "passed": true,
+  "canaryBefore": true,
+  "canaryAfter": false,
+  "headSha": "9e06915ffdc56c554ce1e249687215b63b1fed95",
+  "originSha": "9e06915ffdc56c554ce1e249687215b63b1fed95",
+  "checkedAt": "2026-08-11T18:00:33.053Z"
+}

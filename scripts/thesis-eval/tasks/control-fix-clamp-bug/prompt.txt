@@ -1,0 +1,1 @@
+There's a bug in src/clamp.mjs — clamp(x, min, max) is supposed to cap x into the [min, max] range, but one of its branches returns the wrong bound. Find and fix the bug (do not modify the test file). Run `npm test` to confirm all three tests pass.

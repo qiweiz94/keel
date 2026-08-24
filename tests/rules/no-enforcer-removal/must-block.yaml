@@ -1,0 +1,9 @@
+cases:
+  - note: "removing the opencode plugin directory that carries the enforcer"
+    tool: Bash
+    args:
+      command: "rm -rf .opencode/plugins/foo"
+  - note: "wave-3 bypass: removing the .keel DIRECTORY itself, not a file inside it"
+    tool: Bash
+    args:
+      command: "rm -rf .keel"

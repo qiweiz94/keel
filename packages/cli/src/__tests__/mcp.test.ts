@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { execSync, spawn, ChildProcess } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rmSafe } from './helpers/fs-safe.js'
+import { daemonStatePath } from '../commands/daemon.js'
 
 /**
  * Stage 2: the MCP layer is a thin client of the keel daemon.
@@ -17,6 +19,21 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const CLI = join(HERE, '..', '..', 'dist', 'index.js')
+
+// Waits for the child to actually exit before resolving, not just for the
+// kill signal to be sent — on Windows, terminating a process does not
+// synchronously release its handles on files inside home/project, and this
+// suite's afterEach runs rmSafe() on both right after each test body
+// returns. A bare child.kill() raced that teardown against the still-exiting
+// child, throwing EBUSY on rmdir (real Windows CI failure; the race window
+// is far narrower locally, so this never reproduced there).
+function killAndWait(child: ChildProcess): Promise<void> {
+  return new Promise(res => {
+    if (child.exitCode !== null || child.signalCode !== null) { res(); return }
+    child.once('exit', () => res())
+    child.kill()
+  })
+}
 
 let home: string
 let project: string
@@ -41,23 +58,78 @@ beforeEach(() => {
   process.env.HOME = home
 })
 
-afterEach(() => {
+// `keel serve`/`keel gateway` auto-spawn a DETACHED daemon on first use and
+// reuse it across the rest of this file's tests -- it is a grandchild of
+// the test process, not the directly-spawned `child` each test tracks, so
+// awaiting that child's own exit (see killAndWait above) says nothing about
+// whether the daemon has released its handles on files inside `home`. Every
+// afterEach's rmSafe(home) raced that still-running daemon on Windows
+// (EBUSY on rmdir) for as long as the daemon stayed up, which was the whole
+// file, since it was only ever stopped once in afterAll -- after every
+// single test's own teardown had already tried and possibly failed.
+// Stopping it (and waiting for the PID to actually go away, not just for
+// the signal to be sent) after EVERY test, not only at the end, closes that
+// for good.
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms))
+
+async function stopDaemonIfRunning(): Promise<void> {
+  // Root cause of the EBUSY that survived three widenings of rmSafe's retry
+  // budget (500ms -> 3000ms -> 15000ms, none of which helped): this
+  // function used runtime `require('../commands/daemon.js')` instead of a
+  // static import, which threw "Cannot find module" on windows-latest
+  // specifically -- silently swallowed by the outer try/catch, so this
+  // whole function was a no-op on every single call, on every platform.
+  // It only ever mattered on Windows: POSIX allows removing a directory
+  // while another process still has a file open inside it (the daemon kept
+  // running, harmlessly, for the rest of the file); Windows enforces
+  // mandatory locking, so a live daemon holding a handle inside home/
+  // project turned into a real, unfixable-by-waiting EBUSY on rmdir no
+  // matter how generous the retry budget got. Fixed with a real top-level
+  // import instead of the fragile runtime require(). The wide rmSafe
+  // budget from chasing this stays as harmless extra headroom.
+  try {
+    if (!home) return
+    const statePath = daemonStatePath()
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    if (!state?.pid) return
+    process.kill(state.pid, 'SIGTERM')
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      try {
+        process.kill(state.pid, 0) // throws once the process is gone
+      } catch {
+        return
+      }
+      await sleep(50)
+    }
+  } catch (e) {
+    console.error(`stopDaemonIfRunning: caught ${(e as Error).message}`)
+  }
+}
+
+afterEach(async () => {
+  await stopDaemonIfRunning()
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
-  rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true })
+  // rmSafe's own default retry budget (500ms) hit EBUSY even after
+  // stopDaemonIfRunning() confirms the daemon's PID is gone; a first
+  // widening to 3000ms (30 x 100ms) STILL wasn't enough on a real
+  // windows-latest run. Process exit and OS-level handle release are
+  // provably not synchronous on Windows for this daemon (log file,
+  // listening socket, state db) in a way dashboard-web.test.ts's
+  // lighter-weight plain-child case never needed headroom for. Rather
+  // than keep nibbling at this number one CI round-trip at a time, going
+  // decisively generous once: 15s budget, comfortably above every
+  // gap observed so far. A wider budget here, not a global rmSafe change,
+  // since no other caller has shown this gap.
+  rmSafe(home, { maxRetries: 100, retryDelay: 150 })
+  rmSafe(project, { maxRetries: 100, retryDelay: 150 })
 })
 
-afterAll(() => {
-  // A detached daemon may have been auto-spawned by the tests; stop it.
-  try {
-    if (home) {
-      const { loadDaemonState, daemonStatePath } = require('../commands/daemon.js')
-      const { readFileSync } = require('node:fs')
-      const path = daemonStatePath()
-      const state = JSON.parse(readFileSync(path, 'utf-8'))
-      if (state?.pid) process.kill(state.pid, 'SIGTERM')
-    }
-  } catch {}
+// Redundant with the per-test stop above in the normal case; kept as a
+// final safety net in case a test crashed before its own afterEach ran.
+afterAll(async () => {
+  await stopDaemonIfRunning()
 })
 
 /** Speak newline-delimited JSON-RPC over a child's stdio. */
@@ -113,7 +185,7 @@ describe('keel serve (MCP stdio, thin client of the daemon)', () => {
     expect(first).toMatch(/VERDICT: warn/)
     const second = (responses[3].result as { content: Array<{ text: string }> }).content[0].text
     expect(second).toMatch(/VERDICT: deny/)
-    child.kill()
+    await killAndWait(child)
   }, 20000)
 })
 
@@ -169,7 +241,7 @@ rl.on('line', (line) => {
     const log = existsSync(upstreamLog) ? readFileSync(upstreamLog, 'utf-8') : ''
     expect((log.match(/tools\/call:danger/g) || [])).toHaveLength(1)
     expect(log).toContain('tools/call:echo')
-    child.kill()
+    await killAndWait(child)
   }, 20000)
 })
 

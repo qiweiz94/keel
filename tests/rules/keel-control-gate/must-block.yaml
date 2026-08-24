@@ -1,0 +1,13 @@
+# Fixture schema: see tests/rules/README (or fixture-harness.test.ts header).
+# Each case: { note, tool, args } for a single call, or { note, steps: [{tool,args},...] }
+# for a multi-step scenario. Optional: skip: true + reason: "..." to mark a case
+# that cannot be exercised (must never be used to hide a real failure).
+cases:
+  - note: "agent tries to run keel's own control commands through itself"
+    tool: Bash
+    args:
+      command: "keel disable"
+  - note: "wave-3 bypass: a tab instead of a space after the verb"
+    tool: Bash
+    args:
+      command: "keel\tdisable"

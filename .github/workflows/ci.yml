@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -16,34 +21,60 @@ jobs:
         node-version: ['22.12.0']
 
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
 
       - run: npm ci
       - run: npm audit --audit-level=moderate
       - run: npm run build
-      # Windows still runs lint only — but the reason is now specific and
-      # tracked, not a blanket "assumes POSIX". Enabling the suites there
-      # surfaced four distinct classes, in rough order of size:
-      #   1. CRLF checkout broke source-reading regexes and line counts.
-      #      Fixed at the root by .gitattributes (eol=lf).
-      #   2. EBUSY on rmdir — Windows will not remove a directory a spawned
-      #      child process still holds open. Fixture teardown needs a retry.
-      #   3. Path-pattern semantics: negated paths and separator handling in
-      #      the core matcher genuinely differ. Real work, in the roadmap.
-      #   4. PATH-shim suites, already gated by `describePosixShim`.
-      # Fixture plumbing (mktemp/rm -rf/chmod → Node APIs) is done, so 1 and
-      # 4 are handled; 2 and 3 are what remain before this flag comes off.
+      # v1/M3-windows — the full suite now runs on windows-latest too, not
+      # lint-only. Of the four classes that blocked this (see the prior
+      # version of this comment / session/v1/EVIDENCE/m3-windows.md for the
+      # full audit):
+      #   1. CRLF checkout — fixed by .gitattributes (eol=lf). DONE, prior lane.
+      #   2. EBUSY on rmdir/unlink — a spawned child process (or Windows'
+      #      pending-delete state) can hold a fixture path open a few ms
+      #      past teardown. Fixed: file-lock.ts retries the unlink and
+      #      classifies EBUSY/EPERM as retryable contention (not just
+      #      EEXIST) on win32; every `rmSync(dir, { recursive, force })`
+      #      fixture teardown across both packages now goes through
+      #      `rmSafe()` (fs.rmSync's own maxRetries/retryDelay). DONE, this lane.
+      #   3. Path-pattern semantics — separator (`\` vs `/`), drive-letter,
+      #      UNC, and NTFS case-insensitivity handling in every path/glob
+      #      comparator (pipeline.ts, flow-tracker.ts, policy-engine.ts,
+      #      oracle-glob.ts, sequencer.ts, rule-parser.ts's global-rules
+      #      HOME lookup) now goes through the centralized
+      #      packages/core/src/enforce/path-normalize.ts util, unit-tested
+      #      deterministically on macOS via an explicit win32 flavor
+      #      parameter (see path-normalize.test.ts). DONE, this lane —
+      #      RUNTIME-VERIFIED PENDING this job going green on a real
+      #      windows-latest runner (no Windows machine in the loop that
+      #      built this).
+      #   4. PATH-shim suites (a `#!/bin/bash` shim on PATH, which has no
+      #      Windows equivalent without a parallel `.cmd` shim asserted
+      #      only by hope) — still gated, honestly, by `describePosixShim`
+      #      inside the suite itself (packages/cli/src/__tests__/helpers/
+      #      platform.ts). NOT this lane's scope to fake.
       - run: npm test
-        if: matrix.os != 'windows-latest'
-      - run: npx vitest run packages/cli/src/__tests__
-        if: matrix.os != 'windows-latest'
+      # Duplicates `npm test`'s cli coverage on purpose (CI=true explicitly
+      # set — some tests branch on it), but running from repo root means
+      # vitest never discovers packages/cli/vitest.config.ts, so it silently
+      # loses that config's testTimeout: 30_000 (added specifically because
+      # slow CI runners exceed vitest's 5s default — see that file's own
+      # header) and its src/core/** exclude. Pass --config explicitly so
+      # this step behaves the same as `npm test`'s cli portion instead of
+      # reverting to vitest's bare defaults.
+      - run: npx vitest run packages/cli/src/__tests__ --config packages/cli/vitest.config.ts
         env:
           CI: true
       - run: npm run lint
       # The npm-shim retry test uses a POSIX shebang shim; the underlying
       # check-published.mjs is what release.yml consumes (ubuntu-only).
+      # Still Windows-gated — this is the one class (3, item 4's release
+      # counterpart) this lane did not touch, deliberately: a real fix
+      # needs a Windows-native package-manager shim story, not a fixture
+      # workaround.
       - run: npm run test:publish-check
         if: matrix.os != 'windows-latest'

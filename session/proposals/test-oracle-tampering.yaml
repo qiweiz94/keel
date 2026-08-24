@@ -1,0 +1,126 @@
+# test-oracle-tampering — Wave-2 Lane 4 deliverable.
+#
+# Mechanical integration note (session/DECISIONS.md, 2026-08-11, "Tier-3 NEW
+# rule YAML"): this file is the exact snippet the supervisor pastes into
+# both DEFAULT_RULES_YAML copies (packages/cli/src/commands/install.ts and
+# packages/opencode-plugin/src/plugin.ts) at the Wave-2 gate. Lane 4 does
+# not edit those files directly (single-owner elsewhere).
+#
+# Engine: packages/core/src/enforce/oracle-tracker.ts (recency window,
+# StateManager-backed) + oracle-signatures.ts (content-diff heuristics),
+# wired into pipeline.ts's 'oracle' rule-type branch. Fixtures + evidence:
+# packages/core/src/enforce/__tests__/oracle.test.ts,
+# session/EVIDENCE/wave2-oracle.md.
+#
+# ── Why 'mode: observe', not a default block ──
+# Reward-hacking research documents agents making tests pass by WEAKENING
+# the oracle instead of fixing the implementation — deleting a failing
+# assertion, adding .skip, rewriting an expected value, inflating a timeout
+# past a flaky threshold. ImpossibleBench found read-only visible tests the
+# best safety/performance balance point among the test-oracle protections it
+# evaluated. But legitimate engineering does every one of those same edits
+# too: renaming a test, retiring an obsolete case, intentionally refreshing
+# a snapshot after a real UI change. A blanket block on test-file edits is
+# on this build's do-not-ship list for exactly that reason — it would make
+# Keel an obstacle to ordinary refactors, not just to tampering. This rule
+# ships 'action: warn' at 'mode: observe': it evaluates and records what it
+# WOULD have done on every call (visible in the audit trail / 'keel
+# insights'), so its false-positive rate is measurable before anyone
+# proposes promoting it toward 'mode: warn' or 'block'. The stronger,
+# blunter control (test files read-only, no tampering-detection attempted)
+# ships separately and OPT-IN in tests-read-only.yaml — never as a default.
+#
+# ── Confidence: LOW, deliberately ──
+# The detector is regex/line-diff heuristics over unparsed source, not an
+# AST (oracle-signatures.ts). 'confidence: low' is honest about that: it
+# misses weakening hidden behind indirection (a helper function whose body
+# is the real assertion, a constant extracted two files away) and it can
+# over-count on files that legitimately look diff-heavy. 'severity: high'
+# is independent of confidence — Semgrep/Falco's two-axis convention this
+# project already follows elsewhere (see types.ts's KeelRule doc comment):
+# IF this rule is right, disguising a broken implementation as a passing
+# one is a serious integrity failure, even though the check itself is not
+# highly sure it is right.
+#
+# ── Recency semantics (the honest threshold design) ──
+# The signal this rule fires on is NOT "a weakening pattern exists in this
+# diff" — that fires on nearly every good-faith test cleanup a codebase's
+# suite ever receives (renames, removing obsolete cases, tightening a
+# flaky timeout back DOWN after fixing the real flake). The signal is a
+# weakening pattern landing inside 'window_seconds' (default 900s / 15min)
+# of a NONZERO-exit run of a recognized test command ('trigger'). Outside
+# that window, the identical edit produces NO finding at all in this
+# shipped snippet — not a lower-severity finding, a silent pass. That is a
+# deliberate design choice: with no recency gate, "weakening pattern
+# present" alone would fire constantly and the one signal this rule exists
+# to surface (a tampering edit that follows red) would drown in noise from
+# routine test maintenance, defeating the entire point of shipping it in
+# 'mode: observe' to measure a real false-positive rate. A future maturity
+# bump could add a separate, explicitly-lower-severity variant with no
+# recency requirement purely for telemetry; this snippet intentionally does
+# not, to keep the observe-mode audit trail legible from day one.
+#
+# The window is scoped per (rule, cwd, session) — not per file and not per
+# specific failing test name. Session-scoping (matching the
+# research-before-solve obligation's pattern, the closest sibling in this
+# engine) means one agent session's red run cannot arm the window for a
+# DIFFERENT session editing the same repo. It does NOT protect against the
+# SAME session's monorepo-wide test run failing in one package and arming
+# the window for an edit in an unrelated package — see false_positives
+# below for what that coarseness costs.
+#
+# 'version: 1' / no top-level 'level:' below is this file's OWN
+# self-parse header (so it validates standalone — see
+# packages/core/src/enforce/__tests__/oracle.test.ts's
+# loadShippedOracleRule, which loads this exact file through the real
+# parser/validator). When the supervisor integrates this at the Wave-2
+# gate, only the single list item under 'rules:' gets pasted into
+# DEFAULT_RULES_YAML's existing 'rules:' array — this header is not
+# duplicated there.
+version: 1
+rules:
+  - id: test-oracle-tampering
+    type: oracle
+    level: balanced
+    mode: observe
+    action: warn
+    category: verification
+    severity: high
+    confidence: low
+    maturity: incubating
+    message: >-
+      A test-oracle weakening pattern (skip/only added, assertions or a
+      test block removed, a snapshot or expected value rewritten,
+      timeout/retry inflated) landed shortly after a failing test run.
+      This may be making the test pass by weakening it, not by fixing the
+      code — verify this is an intentional refactor, not a shortcut
+      around a red run.
+    rationale: >-
+      Reward-hacking research documents agents making tests pass by
+      editing the oracle instead of the implementation. ImpossibleBench
+      found read-only visible tests the best safety/performance balance
+      among test-oracle protections; short of that (see the opt-in
+      tests-read-only.yaml), the next best deterministic control is
+      flagging a weakening EDIT that follows a RED run — exactly the shape
+      a reward-hacked "fix" takes, and rare enough in legitimate work that
+      the recency gate keeps it a real signal.
+    false_positives:
+      - "Legitimate refactor: renaming a test or reorganizing describe blocks while preserving every assertion — no assertion-count, test-block-count, or skip-count delta, so this does not fire regardless of recency."
+      - "Intentional snapshot update after a real UI/output change (jest -u / vitest -u) run within 15 minutes of an UNRELATED failing test elsewhere in the same command invocation — the recency window is per (rule, cwd, session), not per file or per failing test name, so the SAME session's monorepo-wide test run failing in module A can arm the window for that session's intentional, correct snapshot refresh in module B moments later."
+      - "Removing a genuinely obsolete test (the feature it covered was deleted) shortly after a failing run of a DIFFERENT test in the same suite invocation — the trigger is the exit code of the whole test command, not evidence that THIS test was the one failing."
+      - "Fixing a wrong expected value in the test itself (the test asserted the wrong thing, not the code) — indistinguishable at this detector's confidence level from rewriting a correct expectation to dodge a real failure; this is exactly why the rule ships at 'confidence: low' and 'mode: observe' rather than blocking."
+    review_by: "2026-11-11"
+    paths:
+      - "**/*.test.*"
+      - "**/*.spec.*"
+      - "**/tests/**"
+      - "**/test_*.py"
+      - "**/conftest.py"
+      - "**/*.snap"
+      - "**/__snapshots__/**"
+    trigger:
+      tools: [Bash]
+      pattern: "(npm|pnpm|yarn|npx) +(run +)?test|vitest|jest|pytest|go +test|cargo +test|rspec|phpunit|mvn +test|gradle +test"
+      exit: nonzero
+    match: "(?<![A-Za-z0-9_])(jest|vitest)(?![A-Za-z0-9_])[^|;&]*(--update-snapshot(?![A-Za-z0-9-])|--updateSnapshot(?![A-Za-z0-9])|(?:^| )-u(?![A-Za-z0-9-]))"
+    window_seconds: 900

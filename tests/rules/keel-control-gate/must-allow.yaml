@@ -1,0 +1,5 @@
+cases:
+  - note: "checking keel's presence is not a control command"
+    tool: Bash
+    args:
+      command: "which keel"

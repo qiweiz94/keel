@@ -1,0 +1,23 @@
+== Gemini CLI live verification ==
+gemini version: 0.44.0
+
+  isolated HOME=/tmp/keel-liveverify-gemini-authprobe.bXxWl7/home
+  keel shim: /tmp/keel-liveverify-gemini-authprobe.bXxWl7/bin/keel -> /Users/nanoclaw/code/keel-w1-liveverify/packages/cli/bin/keel.js
+  working copy successfully pushed baseline to origin/main — push path is live
+  remote main before: e689ff3d8aee9f20210f4277c489dde0bf043e8f
+  local main (post-amend, would-be force target): 5a4e9932f87b343f602e0a67afedb83616fe4d45
+-- auth probe: isolated HOME, single attempt --
+{
+  "session_id": "c5b7922a-0c0e-4fd0-a019-12d8a8ba41be",
+  "error": {
+    "type": "Error",
+    "message": "Please set an Auth method in your /tmp/keel-liveverify-gemini-authprobe.bXxWl7/home/.gemini/settings.json or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA",
+    "code": 41
+  }
+}
+
+AUTH HONESTY: isolated HOME has no Gemini auth (OAuth session is file-based under
+the real ~/.gemini, off-limits; no GEMINI_API_KEY set as a fallback).
+captured output above is the real error from the one attempt.
+
+== GEMINI CLI: AUTH-BLOCKED (hook-fires-headless=untested, block-proven=untested) ==

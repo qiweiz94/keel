@@ -1,10 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, mkdtempSync } from 'node:fs'
+import { tmpdir, platform } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startDaemon, daemonTokenPath, daemonStatePath, daemonCommand } from '../commands/daemon.js'
+import {
+  startDaemon,
+  daemonTokenPath,
+  daemonStatePath,
+  daemonCommand,
+  DaemonPortInUseError,
+  PIPELINE_CACHE_MAX,
+  pipelineCacheSize,
+} from '../commands/daemon.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel daemon` — the local enforcement service.
@@ -43,7 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
-  rmSync(home, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true })
+  rmSafe(home); rmSafe(project)
 })
 
 describe('keel daemon', () => {
@@ -52,7 +61,19 @@ describe('keel daemon', () => {
     try {
       const tokenPath = daemonTokenPath()
       expect(existsSync(tokenPath)).toBe(true)
-      expect((statSync(tokenPath).mode & 0o777)).toBe(0o600)
+      // daemon.ts already passes { mode: 0o600 } to writeFileSync -- the
+      // production code does the correct, honest thing everywhere. NTFS has
+      // no POSIX owner/group/other permission-bit model at all (it's ACLs),
+      // so Node can't honor that mode on win32 and statSync().mode reports
+      // 0o666 there regardless of what was requested -- a real platform
+      // limitation, not something this test or the daemon can fix. Genuine
+      // owner-only enforcement on Windows would need ACL-based hardening,
+      // out of scope here; asserting a POSIX-only guarantee on a platform
+      // that structurally cannot provide it would just be a permanent,
+      // unfixable red on every windows-latest run.
+      if (platform() !== 'win32') {
+        expect((statSync(tokenPath).mode & 0o777)).toBe(0o600)
+      }
       expect(readFileSync(tokenPath, 'utf-8').trim()).toBe(handle.token)
 
       const health = await (await fetch(`http://127.0.0.1:${handle.port}/v1/health`)).json()
@@ -195,6 +216,116 @@ describe('keel daemon', () => {
         body: JSON.stringify({ session_id: 'ledger-2' }),
       })
       expect(noStatement.status).toBe(400)
+    } finally {
+      await handle.close()
+    }
+  })
+})
+
+describe('keel daemon — second invocation on an occupied port', () => {
+  it('rejects with a typed error instead of an unhandled EADDRINUSE crash', async () => {
+    const first = await startDaemon({})
+    try {
+      await expect(startDaemon({ port: first.port })).rejects.toBeInstanceOf(DaemonPortInUseError)
+    } finally {
+      await first.close()
+    }
+  })
+
+  it('daemonCommand prints a clean message and exits non-zero instead of crashing', async () => {
+    const first = await startDaemon({})
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number): never => {
+      throw new Error(`__exit_${code}__`)
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(daemonCommand({ port: first.port })).rejects.toThrow('__exit_1__')
+      expect(exitSpy).toHaveBeenCalledWith(1)
+      const printed = errorSpy.mock.calls.map((call) => String(call[0])).join('\n')
+      expect(printed).toContain('already')
+      expect(printed).not.toContain('EADDRINUSE')
+    } finally {
+      exitSpy.mockRestore()
+      errorSpy.mockRestore()
+      await first.close()
+    }
+  })
+})
+
+describe('keel daemon — pipeline cache is bounded', () => {
+  it('evicts old entries instead of growing without limit', async () => {
+    const handle = await startDaemon({})
+    try {
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${handle.token}` }
+      const total = PIPELINE_CACHE_MAX + 10
+      for (let i = 0; i < total; i++) {
+        await fetch(`http://127.0.0.1:${handle.port}/v1/check`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ tool: 'Bash', args: { command: 'echo hi' }, cwd: `/nonexistent/keel-cache-test-${i}`, session_id: 'cache-test' }),
+        })
+      }
+      // Every request above used a distinct cwd, so the cache saw
+      // PIPELINE_CACHE_MAX + 10 unique inserts; eviction runs on every
+      // insert past the cap, so the size must land exactly at the cap —
+      // not merely "at or under" it (which a broken/never-hit code path
+      // would also satisfy).
+      expect(pipelineCacheSize()).toBe(PIPELINE_CACHE_MAX)
+    } finally {
+      await handle.close()
+    }
+  }, 20000)
+})
+
+describe('keel daemon — malformed project rules fail closed, not silently', () => {
+  const badRules = `version: 1\nlevel: not-a-real-level\nrules: []\n`
+  let badProject: string
+
+  beforeEach(() => {
+    badProject = mkdtempSync(join(tmpdir(), 'keel-test-'))
+    mkdirSync(join(badProject, '.keel'), { recursive: true })
+    writeFileSync(join(badProject, '.keel', 'rules.yaml'), badRules, 'utf-8')
+  })
+
+  afterEach(() => {
+    rmSafe(badProject)
+    delete process.env.KEEL_STRICT
+  })
+
+  it('falls back to the built-in defaults and logs loudly (mirrors the plugin fallback)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const handle = await startDaemon({})
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${handle.token}` },
+        body: JSON.stringify({ tool: 'Bash', args: { command: 'echo hi' }, cwd: badProject, session_id: 'invalid-rules' }),
+      })
+      expect(res.status).toBe(200)
+      const result = await res.json()
+      expect(result.action).toBeDefined()
+      const logged = errorSpy.mock.calls.map((call) => String(call[0])).join('\n')
+      expect(logged).toContain('invalid rules')
+      expect(logged).toContain('Invalid protection level')
+    } finally {
+      await handle.close()
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('throws under KEEL_STRICT=1 instead of silently merging broken rules', async () => {
+    process.env.KEEL_STRICT = '1'
+    const handle = await startDaemon({})
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${handle.token}` },
+        body: JSON.stringify({ tool: 'Bash', args: { command: 'echo hi' }, cwd: badProject, session_id: 'strict-test' }),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('KEEL_STRICT')
+      expect(body.error).toContain('Invalid protection level')
     } finally {
       await handle.close()
     }

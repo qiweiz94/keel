@@ -1,0 +1,5 @@
+cases:
+  - note: "commit with --no-verify skips hooks"
+    tool: Bash
+    args:
+      command: 'git commit -m "x" --no-verify'

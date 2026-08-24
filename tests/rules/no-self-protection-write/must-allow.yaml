@@ -1,0 +1,9 @@
+cases:
+  - note: "ordinary redirect to a project file"
+    tool: Bash
+    args:
+      command: "echo hello > src/output.txt"
+  - note: "cp between ordinary files"
+    tool: Bash
+    args:
+      command: "cp README.md docs/README.copy.md"

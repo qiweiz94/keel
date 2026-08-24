@@ -1,17 +1,18 @@
 import { createServer } from 'node:http'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
+import { resolveHome } from '../core/home.js'
 import chalk from 'chalk'
 import { EnforcementPipeline } from '../core/enforce/pipeline.js'
 import { ActionCache, ContentTracker } from '../core/enforce/cache.js'
 import { SequenceDetector } from '../core/enforce/sequencer.js'
 import { FlowTracker } from '../core/enforce/flow-tracker.js'
 import { StateManager } from '../core/enforce/state-manager.js'
-import { loadRuleHierarchy, parseRulesContent } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, parseRulesFile, ruleFileSources, validateRules } from '../core/enforce/rule-parser.js'
 import { ProblemLedger } from '../core/enforce/problem-ledger.js'
 import { StuckTracker } from '../core/enforce/stuck-tracker.js'
+import { OscillationTracker } from '../core/enforce/oscillation-tracker.js'
 import { ResearchTracker } from '../core/enforce/research-tracker.js'
 import { commandString } from '../core/enforce/arg-utils.js'
 import { ResearchCache } from '../core/enforce/research/research-cache.js'
@@ -42,11 +43,11 @@ import type { EnforceInput, ProtectionLevel } from '../core/types.js'
 export const DAEMON_PORT = 31990
 
 export function daemonTokenPath(): string {
-  return join(homedir(), '.keel', 'daemon-token')
+  return join(resolveHome(), '.keel', 'daemon-token')
 }
 
 export function daemonStatePath(): string {
-  return join(homedir(), '.keel', 'daemon.json')
+  return join(resolveHome(), '.keel', 'daemon.json')
 }
 
 export function loadOrCreateDaemonToken(): string {
@@ -58,7 +59,7 @@ export function loadOrCreateDaemonToken(): string {
   // Atomic exclusive create: concurrent starters must never mint two
   // tokens for one file (the loser reads the winner's).
   const token = randomBytes(24).toString('hex')
-  mkdirSync(join(homedir(), '.keel'), { recursive: true })
+  mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
   try {
     writeFileSync(path, token + '\n', { flag: 'wx', mode: 0o600 })
   } catch { /* a concurrent starter won — use its token */ }
@@ -76,7 +77,7 @@ export function loadDaemonState(): { port: number; pid: number } | null {
   }
 }
 
-function secureEqual(a: string, b: string): boolean {
+export function secureEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a)
   const bb = Buffer.from(b)
   if (ab.length !== bb.length) return false
@@ -86,39 +87,122 @@ function secureEqual(a: string, b: string): boolean {
 // One pipeline per project directory: rules load per cwd, but the shared
 // StateManager keeps escalation and rate state across every project and
 // every platform client.
+//
+// cwd is caller-controlled (any local process can POST a different `cwd` on
+// every /v1/check), so this map is bounded LRU rather than unbounded: a Map
+// preserves insertion order, a hit is re-inserted to mark it most-recently-
+// used, and a fresh entry past PIPELINE_CACHE_MAX evicts the oldest (first)
+// key — the one nobody has touched in the longest time.
+export const PIPELINE_CACHE_MAX = 100
 const pipelineCache = new Map<string, EnforcementPipeline>()
-const sharedState = new StateManager()
-const sharedResearchCache = new ResearchCache()
-const sharedLedger = new ProblemLedger()
+
+export function pipelineCacheSize(): number {
+  return pipelineCache.size
+}
+
+// StateManager/ProblemLedger/ResearchCache each default-construct from an
+// env var read at CALL time (KEEL_STATE_DIR / KEEL_RESEARCH_CACHE_DIR —
+// see the "read per construction, not module load" comment on
+// state-manager.ts's stateDir()). A plain `const shared = new X()` here
+// would defeat that: it runs once, at this module's first import, which
+// for a daemon under test happens before the test's beforeEach has a
+// chance to override HOME/KEEL_STATE_DIR — permanently binding these
+// singletons to whatever env was live at import time (in practice, the
+// developer's real ~/.keel/state). Constructing lazily, on first real
+// use (the first request a running daemon handles), keeps that env read
+// where callers actually control it.
+let _sharedState: StateManager | undefined
+function sharedState(): StateManager {
+  return _sharedState ??= new StateManager()
+}
+let _sharedResearchCache: ResearchCache | undefined
+function sharedResearchCache(): ResearchCache {
+  return _sharedResearchCache ??= new ResearchCache()
+}
+let _sharedLedger: ProblemLedger | undefined
+function sharedLedger(): ProblemLedger {
+  return _sharedLedger ??= new ProblemLedger()
+}
 
 function ruleFingerprint(cwd: string): string {
-  const sources = [
+  const candidates = [
     join(cwd, '.keel', 'rules.yaml'),
     join(cwd, 'AGENTS.md'),
     join(cwd, 'CLAUDE.md'),
     join(cwd, '.keel.local.yaml'),
     join(cwd, 'AGENTS.local.md'),
     join(cwd, 'CLAUDE.local.md'),
-    join(homedir(), '.keel', 'rules.yaml'),
-    join(homedir(), '.config', 'keel', 'rules.yaml'),
+    join(resolveHome(), '.keel', 'rules.yaml'),
+    join(resolveHome(), '.config', 'keel', 'rules.yaml'),
   ]
   const hash = createHash('sha256')
-  for (const source of sources) {
-    hash.update(source)
-    if (existsSync(source)) hash.update(readFileSync(source))
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    // Unconditional, even when the candidate is absent — otherwise a
+    // rules.yaml that didn't exist yet and now does would not change the
+    // fingerprint at all.
+    hash.update(candidate)
+    if (!existsSync(candidate)) continue
+    const raw = readFileSync(candidate)
+    hash.update(raw)
+    seen.add(candidate)
+    // This fingerprint runs on EVERY daemon request — checkRuleVersion()
+    // (pipeline.ts) calls it from every single pipeline.evaluate() call,
+    // not on a timer — so a full YAML parse + extends-resolution of all 8
+    // candidates on every request would be real, ongoing cost on a hot
+    // path, and most rules.yaml files never use `extends:` at all. A raw
+    // substring check on bytes already in hand is enough to know whether a
+    // full parse could possibly be needed — it can never false-negative
+    // (the field name has to literally appear in the text to be used), so
+    // this only ever skips a parse that provably wasn't necessary. Only
+    // when `extends` might be present do we pay for resolving the chain
+    // (parseRulesFile) so an edit to a shared base file is still
+    // detected — see ParsedRules.composedFrom's doc comment
+    // (rule-parser.ts).
+    if (!raw.includes('extends')) continue
+    for (const source of ruleFileSources(parseRulesFile(candidate))) {
+      if (seen.has(source)) continue
+      seen.add(source)
+      hash.update(source)
+      if (existsSync(source)) hash.update(readFileSync(source))
+    }
   }
   return hash.digest('hex')
 }
 
 function pipelineFor(cwd: string): EnforcementPipeline {
   const existing = pipelineCache.get(cwd)
-  if (existing) return existing
+  if (existing) {
+    // Re-insert to mark most-recently-used (Map iteration order is
+    // insertion order, so this pushes `cwd` to the end / away from eviction).
+    pipelineCache.delete(cwd)
+    pipelineCache.set(cwd, existing)
+    return existing
+  }
   let hierarchy = loadRuleHierarchy(cwd)
-  // Same fallback as the plugin: when no rules exist anywhere, enforce the
-  // built-in defaults so a bare project is still protected.
-  const scopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
-  if (!scopes.some((s) => s && s.rules.length > 0)) {
+  // Last known good: an invalid rules file must not silently disable the
+  // guardrails, and it must not silently merge broken rules either. Mirrors
+  // the opencode plugin's fallback (packages/opencode-plugin/src/plugin.ts):
+  // any source with errors is replaced by the built-in defaults and the
+  // error is logged loudly; KEEL_STRICT=1 restores throw-on-invalid, same as
+  // `keel enforce`.
+  const errorScopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+  const ruleErrors = errorScopes.flatMap((source) =>
+    source ? [...(source.errors || []), ...validateRules(source.rules)] : []
+  )
+  if (ruleErrors.length) {
+    if (process.env.KEEL_STRICT === '1') {
+      throw new Error(`[keel daemon] Invalid Keel rules (KEEL_STRICT=1) for ${cwd}: ${ruleErrors.join('; ')}`)
+    }
+    console.error(`[keel daemon] invalid rules for ${cwd}, falling back to defaults: ${ruleErrors.join('; ')}`)
     hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, 'keel:defaults'), user: null, project: null, local: null }
+  } else {
+    // Same fallback as the plugin: when no rules exist anywhere, enforce the
+    // built-in defaults so a bare project is still protected.
+    const scopes = [hierarchy.global, hierarchy.user, hierarchy.project, hierarchy.local]
+    if (!scopes.some((s) => s && s.rules.length > 0)) {
+      hierarchy = { global: parseRulesContent(DEFAULT_RULES_YAML, 'keel:defaults'), user: null, project: null, local: null }
+    }
   }
   const level = (hierarchy.project?.config?.level || hierarchy.global?.config?.level || 'balanced') as ProtectionLevel
   const pipeline = new EnforcementPipeline({
@@ -128,14 +212,15 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
-    researchCache: sharedResearchCache,
+    researchCache: sharedResearchCache(),
     stuckTracker: new StuckTracker(),
-    researchTracker: new ResearchTracker(sharedResearchCache),
-    ledger: sharedLedger,
+    oscillationTracker: new OscillationTracker(),
+    researchTracker: new ResearchTracker(sharedResearchCache()),
+    ledger: sharedLedger(),
     ruleHierarchy: hierarchy,
     ruleVersion: 1,
     allowedFixTransforms: true,
-    stateManager: sharedState,
+    stateManager: sharedState(),
     reloadRules: () => loadRuleHierarchy(cwd),
     ruleFingerprint: () => ruleFingerprint(cwd),
     onRulesError: (errors) => {
@@ -143,11 +228,15 @@ function pipelineFor(cwd: string): EnforcementPipeline {
     },
   })
   pipelineCache.set(cwd, pipeline)
+  if (pipelineCache.size > PIPELINE_CACHE_MAX) {
+    const oldest = pipelineCache.keys().next().value
+    if (oldest !== undefined) pipelineCache.delete(oldest)
+  }
   return pipeline
 }
 
 function requirementsContent(cwd: string): string {
-  for (const file of [join(homedir(), '.keel', 'requirements.md'), join(cwd, '.keel', 'requirements.md')]) {
+  for (const file of [join(resolveHome(), '.keel', 'requirements.md'), join(cwd, '.keel', 'requirements.md')]) {
     if (existsSync(file)) return readFileSync(file, 'utf-8')
   }
   return ''
@@ -181,6 +270,18 @@ export interface DaemonHandle {
   port: number
   token: string
   close: () => Promise<void>
+}
+
+/** Thrown by {@link startDaemon} when the requested port is already bound
+ * (EADDRINUSE) — the common case being a second `keel daemon` invocation
+ * while one is already running. Callers (like `daemonCommand`) catch this
+ * to print a clean message instead of letting the raw Node stack trace
+ * through. */
+export class DaemonPortInUseError extends Error {
+  constructor(public readonly port: number) {
+    super(`Port ${port} is already in use`)
+    this.name = 'DaemonPortInUseError'
+  }
 }
 
 export function startDaemon(options: { port?: number; token?: string; idleTimeoutMs?: number } = {}): Promise<DaemonHandle> {
@@ -260,7 +361,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
           if (parsed.url) {
             fetchPage(parsed.url)
               .then((page) => {
-                const entry = sharedResearchCache.put({
+                const entry = sharedResearchCache().put({
                   topic: parsed.url as string,
                   kind: 'fetch',
                   session_id: sessionId,
@@ -281,7 +382,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
           if (parsed.query) {
             webSearch(parsed.query, searchConfig(), maxResults)
               .then(async (results) => {
-                const entry = sharedResearchCache.put({
+                const entry = sharedResearchCache().put({
                   topic: parsed.query as string,
                   kind: 'search',
                   session_id: sessionId,
@@ -308,7 +409,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
     if (url.pathname === '/v1/research/cache') {
       const sessionId = url.searchParams.get('session_id') || 'daemon'
       const topic = url.searchParams.get('topic') || undefined
-      return send(200, { entries: sharedResearchCache.list(sessionId, topic) })
+      return send(200, { entries: sharedResearchCache().list(sessionId, topic) })
     }
 
     if (url.pathname === '/v1/hypothesis' && req.method === 'POST') {
@@ -321,9 +422,9 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
             return send(400, { error: 'statement is required' })
           }
           let problemKey = parsed.problem_key
-          if (!problemKey) problemKey = sharedLedger.activeProblemKey(parsed.session_id || 'daemon') || ''
+          if (!problemKey) problemKey = sharedLedger().activeProblemKey(parsed.session_id || 'daemon') || ''
           if (!problemKey) return send(400, { error: 'no active problem — provide problem_key' })
-          const hypothesis = sharedLedger.addHypothesis(problemKey, parsed.statement, parsed.evidence || [])
+          const hypothesis = sharedLedger().addHypothesis(problemKey, parsed.statement, parsed.evidence || [])
           return send(200, { hypothesis, problem_key: problemKey })
         } catch (err) {
           return send(400, { error: String(err) })
@@ -341,7 +442,7 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
           const cwd = parsed.cwd || process.cwd()
           const command = commandString({ tool: parsed.tool || 'unknown', args: parsed.args || {}, cwd, session_id: parsed.session_id || 'daemon', turn_number: 1, context_tokens: 0, level: 'balanced', context: 'local', agent: 'unknown', subagent_of: null } as EnforceInput)
           const exit = parsed.exit_code === undefined ? null : Number(parsed.exit_code)
-          sharedLedger.recordOutcome(cwd, command, exit, parsed.session_id || 'daemon')
+          sharedLedger().recordOutcome(cwd, command, exit, parsed.session_id || 'daemon')
           const pipeline = pipelineFor(cwd)
           pipeline.recordAttemptOutcome({ tool: parsed.tool || 'unknown', args: parsed.args || {}, cwd, session_id: parsed.session_id || 'daemon', turn_number: 1, context_tokens: 0, level: 'balanced', context: 'local', agent: 'unknown', subagent_of: null } as EnforceInput, exit)
           return send(200, { recorded: true })
@@ -355,8 +456,23 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
     return send(404, { error: 'not found' })
   })
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let started = false
+    // Without this handler, EADDRINUSE (a second `keel daemon` on the same
+    // port) is an unhandled 'error' event on the server — Node re-throws it,
+    // crashing the process with a raw stack trace. Reject the startup
+    // promise instead so callers (daemonCommand) can print a clean message.
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (started) return
+      started = true
+      if (err.code === 'EADDRINUSE') {
+        reject(new DaemonPortInUseError(options.port || 0))
+      } else {
+        reject(err)
+      }
+    })
     server.listen(options.port || 0, '127.0.0.1', () => {
+      started = true
       const port = (server.address() as { port: number }).port
       // Idle exit: a daemon with no requests for the idle window shuts
       // itself down (clients auto-spawn it again on demand), so abandoned
@@ -382,9 +498,16 @@ export function startDaemon(options: { port?: number; token?: string; idleTimeou
 export async function daemonCommand(options: { port?: number } = {}): Promise<DaemonHandle> {
   const token = loadOrCreateDaemonToken()
   const port = options.port ?? (Number(process.env.KEEL_DAEMON_PORT) || DAEMON_PORT)
-  const handle = await startDaemon({ port, token })
+  const handle = await startDaemon({ port, token }).catch((err) => {
+    if (err instanceof DaemonPortInUseError) {
+      console.error(chalk.red(`\n  A keel daemon appears to already be running on port ${port}.`))
+      console.error(chalk.dim('  Check ~/.keel/daemon.json for its pid, or pass --port (or set KEEL_DAEMON_PORT) to use a different one.'))
+      process.exit(1)
+    }
+    throw err
+  })
 
-  mkdirSync(join(homedir(), '.keel'), { recursive: true })
+  mkdirSync(join(resolveHome(), '.keel'), { recursive: true })
   writeFileSync(daemonStatePath(), JSON.stringify({ port: handle.port, pid: process.pid }, null, 2) + '\n', { mode: 0o600 })
 
   console.log(chalk.bold.cyan('\n  ⚓ keel daemon'))

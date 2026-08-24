@@ -1,8 +1,22 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
+import { isHalted } from './halt.js'
 
-const DISABLE_FILE = join(process.env.HOME || '~', '.keel', 'DISABLED')
+// Bonus fix alongside M1r-3b's named reader sweep: this is the WRITER of
+// the exact DISABLED sentinel that pipeline.ts's kill-switch check (and
+// status.ts/dashboard.ts's display of it) now resolve via resolveHome().
+// The old `process.env.HOME || '~'` here was worse than a bare homedir():
+// with HOME unset it fell back to the literal, never-resolving string '~'
+// (the exact bug rule-parser.ts's loadRuleHierarchy already documents and
+// fixed elsewhere), and it never consulted KEEL_HOME at all — so `keel
+// disable` under a KEEL_HOME install would write the sentinel to the wrong
+// place while the pipeline checked KEEL_HOME's location, leaving
+// enforcement silently still ON.
+function disableFilePath(): string {
+  return join(resolveHome(), '.keel', 'DISABLED')
+}
 
 /**
  * Kill switch — disables all enforcement immediately.
@@ -23,7 +37,7 @@ export async function disableCommand(options: { until?: number | string; reason?
     ? Date.now() + untilSeconds * 1000
     : null
 
-  const disableDir = join(process.env.HOME || '~', '.keel')
+  const disableDir = join(resolveHome(), '.keel')
   if (!existsSync(disableDir)) {
     mkdirSync(disableDir, { recursive: true })
   }
@@ -35,7 +49,7 @@ export async function disableCommand(options: { until?: number | string; reason?
     auto_enable_on_restart: true,
   }
 
-  writeFileSync(DISABLE_FILE, JSON.stringify(state, null, 2))
+  writeFileSync(disableFilePath(), JSON.stringify(state, null, 2))
 
   console.log(chalk.bold.yellow('\n  ⚓ Keel DISABLED'))
   console.log(chalk.yellow('  All enforcement is suspended.'))
@@ -56,16 +70,33 @@ export async function disableCommand(options: { until?: number | string; reason?
 
 /**
  * Re-enable enforcement after a disable.
+ *
+ * A `keel halt` latch is a SEPARATE, stronger control — `keel enable` only
+ * ever clears the DISABLED sentinel this file owns, never HALTED (that
+ * requires `keel resume`, run deliberately, not as a side effect of
+ * clearing a different sentinel). Both branches below check isHalted() so
+ * a user who runs `keel enable` while halted gets an honest answer instead
+ * of a false "enabled" while every call is still being denied.
  */
 export async function enableCommand() {
-  if (!existsSync(DISABLE_FILE)) {
-    console.log(chalk.green('\n  ✓ Keel is already enabled\n'))
+  const halted = isHalted()
+  if (!existsSync(disableFilePath())) {
+    if (halted) {
+      console.log(chalk.yellow('\n  Keel is enabled, but still ') + chalk.bgRed.white.bold(' HALTED ') + chalk.yellow(" — run 'keel resume' to clear the halt.\n"))
+    } else {
+      console.log(chalk.green('\n  ✓ Keel is already enabled\n'))
+    }
     return
   }
 
-  rmSync(DISABLE_FILE)
-  console.log(chalk.green('\n  ✓ Keel re-enabled\n'))
-  console.log(chalk.dim('  All rules are active again.\n'))
+  rmSync(disableFilePath())
+  if (halted) {
+    console.log(chalk.green('\n  ✓ Keel re-enabled') + chalk.yellow(', but still ') + chalk.bgRed.white.bold(' HALTED ') + chalk.yellow("\n"))
+    console.log(chalk.dim("  Every call is still denied. Run 'keel resume' to clear the halt.\n"))
+  } else {
+    console.log(chalk.green('\n  ✓ Keel re-enabled\n'))
+    console.log(chalk.dim('  All rules are active again.\n'))
+  }
 }
 
 /**
@@ -75,12 +106,12 @@ export async function enableCommand() {
  * behavior). A corrupt kill-switch must never silently keep enforcement off.
  */
 export function isDisabled(): boolean {
-  if (!existsSync(DISABLE_FILE)) return false
+  if (!existsSync(disableFilePath())) return false
 
   try {
-    const state = JSON.parse(readFileSync(DISABLE_FILE, 'utf-8'))
+    const state = JSON.parse(readFileSync(disableFilePath(), 'utf-8'))
     if (state.expires_at && new Date(state.expires_at) < new Date()) {
-      rmSync(DISABLE_FILE)
+      rmSync(disableFilePath())
       return false
     }
     return true

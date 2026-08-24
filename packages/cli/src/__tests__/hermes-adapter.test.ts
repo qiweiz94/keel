@@ -18,8 +18,28 @@ const PLUGIN = join(
   '..', '..', 'templates', 'hermes', 'keel_plugin.py',
 )
 
+// PYTHONDONTWRITEBYTECODE keeps normal `import`-driven python3 calls below
+// (the LOAD script, via importlib) from leaving a __pycache__/*.pyc
+// artifact next to the shipped plugin source — which would otherwise leak
+// into the published npm tarball, since npm's `files` field includes that
+// whole directory verbatim and ignore-file filtering does not apply to
+// explicitly-listed directories. Confirmed by reproduction via a real
+// `npm publish --dry-run`; see session/v1/EVIDENCE/m5-release.md. Note
+// this env var does NOT cover the explicit `py_compile` check below —
+// py_compile.compile()'s whole job is to write a .pyc, so it deliberately
+// ignores sys.dont_write_bytecode/this env var; that check redirects its
+// output file explicitly instead (see below).
+const PYTHON_ENV = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }
+
 function python(script: string): string {
-  return execFileSync('python3', ['-c', script], { encoding: 'utf-8', timeout: 30000 }).trim()
+  // Windows' python3 writes CRLF line endings by default (text-mode stdout
+  // translates '\n' to os.linesep). Callers below split output on a bare
+  // '\n', which leaves a trailing '\r' attached to every line's content on
+  // Windows ('block\r' !== 'block') -- normalize here, once, rather than at
+  // every split() call site in this file.
+  return execFileSync('python3', ['-c', script], { encoding: 'utf-8', timeout: 30000, env: PYTHON_ENV })
+    .replace(/\r\n/g, '\n')
+    .trim()
 }
 
 const LOAD = `
@@ -33,7 +53,17 @@ describe('hermes adapter', () => {
     expect(existsSync(PLUGIN)).toBe(true)
     expect(existsSync(join(dirname(PLUGIN), 'plugin.yaml'))).toBe(true)
     // A syntax error here would only surface inside a user's Hermes.
-    execFileSync('python3', ['-m', 'py_compile', PLUGIN], { timeout: 30000 })
+    // Explicit cfile= redirects the compiled output to a throwaway temp
+    // path — `python3 -m py_compile <file>` has no such flag and always
+    // writes __pycache__/*.pyc next to the source, which would otherwise
+    // leak into the published npm tarball (see PYTHON_ENV's comment
+    // above). doraise=True keeps this raising on a real syntax error,
+    // same as the CLI form's non-zero exit did.
+    execFileSync('python3', ['-c', `
+import py_compile, tempfile, os
+cfile = os.path.join(tempfile.mkdtemp(), 'keel_plugin.pyc')
+py_compile.compile(${JSON.stringify(PLUGIN)}, cfile=cfile, doraise=True)
+`], { timeout: 30000, env: PYTHON_ENV })
   })
 
   it('maps every keel action to the right Hermes verdict', () => {
@@ -81,16 +111,42 @@ def verdict(cmd):
         v = kp.pre_tool_call(tool_name='bash', args={'command': cmd}, task_id='t')
     return 'None' if v is None else v['action']
 for c in ['rm -rf /', 'rm -rf ~', 'git push --force origin main', 'DROP TABLE users;',
-          'ls -la', 'npm test', 'rm -rf node_modules', 'git push origin feature/x']:
+          'TRUNCATE TABLE accounts;', ':(){ :|:& };:', 'mkfs.ext4 /dev/sda1',
+          'dd if=/dev/zero of=/dev/sda bs=1M',
+          'ls -la', 'npm test', 'rm -rf node_modules', 'git push origin feature/x',
+          'dd if=file.img of=/dev/null']:
     print(verdict(c))
 `).split('\n')
-    // Catastrophic and irreversible → blocked even with no daemon.
-    expect(out.slice(0, 4)).toEqual(['block', 'block', 'block', 'block'])
+    // Catastrophic and irreversible → blocked even with no daemon. Covers
+    // every OFFLINE_DENY category in keel_plugin.py: rm -rf of a root/home
+    // path, force-push to a protected branch, destructive SQL (DROP and
+    // TRUNCATE), a fork bomb, a filesystem format, and a raw write to a
+    // block device.
+    expect(out.slice(0, 8)).toEqual(['block', 'block', 'block', 'block', 'block', 'block', 'block', 'block'])
     // Ordinary work must still run. "Blocks everything when the daemon is
-    // down" is the failure mode that gets a guardrail uninstalled, and
-    // node_modules cleanup / feature-branch pushes are the classic
+    // down" is the failure mode that gets a guardrail uninstalled:
+    // node_modules cleanup, feature-branch pushes, and a `dd` writing TO a
+    // regular file (only device targets are catastrophic) are the classic
     // false positives of a naive deny list.
-    expect(out.slice(4)).toEqual(['None', 'None', 'None', 'None'])
+    expect(out.slice(8)).toEqual(['None', 'None', 'None', 'None', 'None'])
+  })
+
+  it('documents a known false positive of the offline regex backstop: SQL keywords inside an unrelated string', () => {
+    // OFFLINE_DENY is a regex backstop, not a second rule engine (see its
+    // module comment) — it has no command-vs-string-literal distinction,
+    // same class of imprecision as the real rule engine's own command-type
+    // rules. This is not a bug to fix here; it is the accepted cost of
+    // "block only what is catastrophic" being implemented as substring
+    // matching. Recorded explicitly so a future tightening of the regex
+    // doesn't silently change this without a test noticing either way.
+    const out = python(`${LOAD}
+kp.TOKEN_PATH = '/nonexistent/no-token'
+import io, contextlib
+with contextlib.redirect_stdout(io.StringIO()):
+    v = kp.pre_tool_call(tool_name='bash', args={'command': 'echo "please DROP TABLE from your vocabulary"'}, task_id='t')
+print('None' if v is None else v['action'])
+`)
+    expect(out).toBe('block')
   })
 
   it('says loudly that enforcement is degraded when the daemon is down', () => {

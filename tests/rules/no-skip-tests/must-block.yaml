@@ -1,0 +1,5 @@
+cases:
+  - note: "--passWithNoTests fakes a green run"
+    tool: Bash
+    args:
+      command: "npm test -- --passWithNoTests"

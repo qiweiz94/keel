@@ -1,0 +1,11 @@
+cases:
+  - note: "a source file that merely mentions workflows, not inside .github/workflows/"
+    tool: Write
+    args:
+      path: "src/workflow-helper.ts"
+      content: "export function runWorkflow() {}"
+  - note: "docs about CI, not an actual CI config file"
+    tool: Write
+    args:
+      path: "docs/circleci-notes.md"
+      content: "notes about our CircleCI setup"

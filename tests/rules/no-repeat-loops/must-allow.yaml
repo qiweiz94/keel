@@ -1,0 +1,20 @@
+cases:
+  - note: "a single failing command — one attempt does not trip the ladder"
+    tool: Bash
+    args:
+      command: "npm test"
+  - note: "a failing command followed by a passing run of the same command resets the counter (reset_on_success)"
+    steps:
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm test" }
+        exit_code: 0
+  - note: "a command that does not match the watched pattern at all"
+    tool: Bash
+    args:
+      command: "echo hello"

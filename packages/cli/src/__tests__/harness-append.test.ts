@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { appendHarnessRules } from '../commands/rules.js'
 import { HARNESS_RULE_IDS } from '../commands/harness-rules.js'
 import { parseRulesContent, validateRules } from '../core/enforce/rule-parser.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel rules harness` printed YAML for the user to copy by hand, and
@@ -41,7 +42,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true })
+  rmSafe(home)
 })
 
 describe('keel rules harness --append', () => {

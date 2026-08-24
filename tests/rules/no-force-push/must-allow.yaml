@@ -1,0 +1,5 @@
+cases:
+  - note: "--force-with-lease is the sanctioned alternative (negative lookahead)"
+    tool: Bash
+    args:
+      command: "git push --force-with-lease"

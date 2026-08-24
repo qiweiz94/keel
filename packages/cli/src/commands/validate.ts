@@ -2,13 +2,14 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import chalk from 'chalk'
 import { loadRuleHierarchy, mergeRules, detectConflicts, hashRulesFile, parseRulesFile, validateRules } from '../core/enforce/rule-parser.js'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel validate` — check rules for conflicts, syntax errors, and version drift.
  */
 export async function validateCommand() {
   const dir = process.cwd()
-  const home = process.env.HOME || '~'
+  const home = resolveHome()
 
   // Find project rules: .keel/rules.yaml > AGENTS.md > CLAUDE.md
   const projectPaths = [
@@ -29,8 +30,8 @@ export async function validateCommand() {
 
   // Check for rules files
   const files = [
-    { path: `${home}/.keel/rules.yaml`, name: 'Global rules', ok: false },
-    { path: `${home}/.config/keel/rules.yaml`, name: 'Legacy global rules', ok: false },
+    { path: join(home, '.keel', 'rules.yaml'), name: 'Global rules', ok: false },
+    { path: join(home, '.config', 'keel', 'rules.yaml'), name: 'Legacy global rules', ok: false },
     { path: projectFile.path, name: 'Project rules', ok: false },
     { path: localFile.path, name: 'Local rules', ok: false },
   ]
@@ -65,6 +66,9 @@ export async function validateCommand() {
 
   // Check for conflicts
   const hierarchy = loadRuleHierarchy(dir)
+  // No `agent` arg — `keel validate` checks the whole ruleset, not one
+  // host's view; detectConflicts() has its own disjoint-agents guard so
+  // two rules legitimately scoped to different hosts don't false-positive.
   const merged = mergeRules(hierarchy, 'balanced', 'local')
   const conflicts = detectConflicts(merged)
 
@@ -82,6 +86,26 @@ export async function validateCommand() {
   const cachePath = join(home, '.keel', 'cache', 'known-good.json')
   if (existsSync(cachePath)) {
     console.log(chalk.dim(`  Cache: ${cachePath} (exists, will be invalidated on rule change)`))
+  }
+
+  // `type: session` rules (a composite runaway-loop trip) are scoped by
+  // `session_id` — but core only ever sees whatever opaque string the host
+  // sent, and hook.ts's parsePayload has a 3-tier confidence ladder for
+  // that id across hosts: confirmed (claude-code/codex/gemini via
+  // `session_id`, cursor via `conversation_id`), best-effort (cline, 4
+  // spellings tried), and possibly ABSENT ENTIRELY (`generic`). When no
+  // real session id reaches `keel hook`, it falls back to a fresh
+  // per-process id (enforce.ts's `currentSessionId`) — every "session"
+  // then looks like exactly one call, and the composite trip silently
+  // never advances. Core cannot detect which case it's in; this caveat is
+  // unconditional whenever a `type: session` rule is active, rather than
+  // pretending the CLI can tell.
+  if (merged.some(r => r.type === 'session')) {
+    console.log(chalk.yellow('  ⚠ type: session rule active, but not every host can reliably scope sessions:'))
+    console.log(chalk.dim('    duration/call-volume/consecutive-failure tracking is best-effort or unavailable'))
+    console.log(chalk.dim('    on hosts that send no stable session id (the `generic` hook contract, and cline'))
+    console.log(chalk.dim('    when none of its 4 known field spellings match) — each call then looks like a'))
+    console.log(chalk.dim('    brand-new session and the composite trip never advances. See docs/tiers.md.'))
   }
 
   // Protection level — the ACTUAL merged dial, not a hardcoded value.

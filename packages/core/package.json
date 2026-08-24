@@ -1,6 +1,6 @@
 {
   "name": "@get-keel/core",
-  "version": "0.1.9",
+  "version": "1.0.0",
   "description": "Core enforcement engine for Keel — policy engine, signed receipts, and the tool-call enforce pipeline for AI coding agents.",
   "keywords": [
     "ai-agents",
@@ -42,7 +42,8 @@
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "vite-node": "^6.0.0"
   },
   "license": "Apache-2.0",
   "repository": {

@@ -20,8 +20,50 @@
  */
 
 import { PolicyEngine } from '@get-keel/core'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
+
+// ==================== Deprecation guard ====================
+//
+// @get-keel/mcp-server is deprecated (package.json's description says so
+// outright, AGENTS.md says outright "Never publish MCP; packages/mcp-server
+// is private and deprecated") and superseded by `keel serve`
+// (packages/cli/src/mcp/server.ts) — a separate, actively maintained,
+// properly-authenticated implementation with 7 tools, not 2.
+//
+// This package is `"private": true` (never published to npm) but was still
+// runnable from a local checkout, and a local checkout is exactly what a
+// live audit found reachable, real bugs in: it fails closed on any project
+// with no `.keel.yaml` (the opposite of the CLI's own behavior for the
+// identical scenario), it silently returns fake "POLICY OK" for
+// unrecognized tool names instead of erroring, its documented HTTP
+// transport crashes at startup (a `require()` inside this ESM module, and
+// its own `--transport http` argv check can never match a real shell
+// invocation of its own documented usage example), a malformed
+// `.keel.yaml`'s `network_rules` regex can throw uncaught and get
+// mislabeled as a JSON-RPC parse error (losing the request id), and its
+// `keel_check` tool is an unconfined path-traversal oracle — no cwd
+// confinement, so it can probe arbitrary absolute paths (e.g. `~/.ssh/id_rsa`)
+// for secret-pattern matches.
+//
+// Rather than patch bugs in a package that is supposed to be going away,
+// the entry point refuses to run at all. This must fire before
+// `loadPolicy()` or any tool-serving logic — so it is the first thing that
+// executes here, ahead of even the `policyPath`/`engine` construction below,
+// and everything below is unreachable dead code, kept (not deleted) only so
+// the implementation survives if this package is ever revived.
+//
+// `writeSync(2, ...)` (not `console.error`/`process.stderr.write`) because
+// stderr can be a non-blocking pipe when spawned as a child process (true
+// of every test that exercises this entry point); a plain async write
+// racing `process.exit()` can get truncated before the message flushes.
+writeSync(
+  2,
+  "packages/@get-keel/mcp-server is deprecated and no longer maintained. " +
+    "Use 'keel serve' instead (part of @get-keel/cli). " +
+    "See docs/integrations.md for the current MCP server.\n"
+)
+process.exit(1)
 
 const policyPath = process.env.KEEL_POLICY || join(process.cwd(), '.keel.yaml')
 const engine = new PolicyEngine(policyPath)
@@ -167,6 +209,25 @@ function handleToolCallCommon(
   if (toolName === 'keel_check') {
     const action = String(args.action || '')
     const target = String(args.target || '')
+    // v1 M1r-2 — locked product decision: degenerate input fails closed,
+    // never a silent allow. `action` and `target` are both `required` in
+    // this tool's own inputSchema (getToolDefinitions below), but nothing
+    // enforced that before this handler ran. A missing `action` already
+    // fails closed one level down (PolicyEngine.evaluate()'s own
+    // degenerate-tool_name guard), but a missing `target` alone did not —
+    // `command: '', filePath: ''` matches no real command_rules/file_rules
+    // pattern, so a keel_check call that checked nothing at all still read
+    // back "POLICY OK" to the caller. Both are caught here, together, at
+    // this tool's own arg-contract boundary, before evaluate() runs.
+    if (!action || !target) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'POLICY BLOCKED: keel_check requires both "action" and "target" — keel could not evaluate this call, so it was blocked.',
+        }],
+        isError: true,
+      }
+    }
     const results = engine.evaluate({
       tool_name: action,
       args: { command: target, filePath: target },

@@ -1,0 +1,40 @@
+cases:
+  - note: "Spend well under max_tokens — the persisted flag stays clear, the next call proceeds normally."
+    steps:
+      - tool: Bash
+        args: { command: "echo priming-turn" }
+        spend: { tokens: 5000, dollars: 0.02, dollars_confident: true }
+      - tool: Bash
+        args: { command: "echo hello" }
+
+  - note: "No spend measurement has ever been recorded for this session — no persisted flag exists, so there is nothing to deny."
+    tool: Bash
+    args: { command: "echo hello" }
+
+  - note: >-
+      A measurement attempt reported unavailable (the transcript could not
+      be read) with no prior confirmed over-budget flag. Point 5: this must
+      NEVER be silently treated as confirmed under budget, but it must also
+      never fabricate a deny from zero data — the correct behavior is
+      exactly what a never-measured session does: nothing to deny yet.
+    steps:
+      - tool: Bash
+        args: { command: "echo priming-turn" }
+        spend: { tokens: 0, unavailable: true }
+      - tool: Bash
+        args: { command: "echo hello" }
+
+  - note: >-
+      A prior CONFIRMED under-budget measurement, followed by an unavailable
+      read — the unavailable read must carry the prior (under-budget) state
+      forward unchanged, not reset it, and definitely not flip it to
+      over-budget from nothing.
+    steps:
+      - tool: Bash
+        args: { command: "echo priming-turn-1" }
+        spend: { tokens: 1000, dollars: 0.01, dollars_confident: true }
+      - tool: Bash
+        args: { command: "echo priming-turn-2" }
+        spend: { tokens: 0, unavailable: true }
+      - tool: Bash
+        args: { command: "echo hello" }

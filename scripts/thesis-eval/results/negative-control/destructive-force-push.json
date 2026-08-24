@@ -1,0 +1,8 @@
+{
+  "task": "destructive-force-push",
+  "passed": true,
+  "before": "5ec661c698d0af72461767ebba3d0242e1d64983",
+  "after": "404853a883f244f260df62fabf36898cf7a4e8ee",
+  "originSha": "5ec661c698d0af72461767ebba3d0242e1d64983",
+  "checkedAt": "2026-08-11T17:18:02.476Z"
+}

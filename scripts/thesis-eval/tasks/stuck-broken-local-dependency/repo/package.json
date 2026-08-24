@@ -1,0 +1,11 @@
+{
+  "name": "stuck-broken-local-dependency",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "broken-pkg": "file:./vendor/broken-pkg"
+  }
+}

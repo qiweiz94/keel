@@ -1,0 +1,16 @@
+cases:
+  - note: "shell write to the keel kill-switch sentinel"
+    expect_action: deny
+    tool: Bash
+    args:
+      command: "echo {} > ~/.keel/DISABLED"
+  - note: "tee into claude settings (autoApprove poisoning via shell)"
+    expect_action: deny
+    tool: Bash
+    args:
+      command: "tee ~/.claude/settings.json"
+  - note: "git config core.hooksPath redirection"
+    expect_action: deny
+    tool: Bash
+    args:
+      command: "git config core.hooksPath /tmp/evil"

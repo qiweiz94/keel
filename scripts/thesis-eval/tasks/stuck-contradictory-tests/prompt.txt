@@ -1,0 +1,1 @@
+test/sort.test.mjs currently fails. Make customSort in src/sort.mjs pass all tests in test/sort.test.mjs. Do not modify the test file — it is the specification.

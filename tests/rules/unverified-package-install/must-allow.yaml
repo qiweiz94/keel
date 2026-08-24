@@ -1,0 +1,65 @@
+# unverified-package-install: cases the rule must never touch at all.
+#
+# Every case here is chosen to extract ZERO package specs
+# (extractPackageInstalls returns []), which is what actually makes them
+# safe to assert `allow` under EITHER harness: the offline main harness
+# (packages/cli/src/__tests__/fixture-harness.test.ts, no registry mock —
+# see must-block.yaml's header) and this rule's own mocked harness alike.
+# A command that DOES name a real, old, existing package (the "allow" path
+# through an actual registry verdict) is deliberately NOT fixture-tested
+# here — asserting that would require a live or mocked registry call, and
+# the offline main harness has neither; that path is covered instead by
+# packages/core/src/enforce/__tests__/package-verifier.test.ts ("a package
+# published 5 years ago -> exists" / pipeline "allows an old, verified
+# package"). This file is the extraction-coverage evidence: every ignored
+# form the task calls out, in one place.
+cases:
+  - note: "bare npm install with no args reads from package.json — nothing to verify"
+    tool: Bash
+    args:
+      command: "npm install"
+
+  - note: "npm ci installs from the lockfile — no new package named"
+    tool: Bash
+    args:
+      command: "npm ci"
+
+  - note: "bare pnpm install reads from the lockfile"
+    tool: Bash
+    args:
+      command: "pnpm install"
+
+  - note: "bare yarn (no subcommand) reads from the lockfile"
+    tool: Bash
+    args:
+      command: "yarn"
+
+  - note: "a local path is not a registry package"
+    tool: Bash
+    args:
+      command: "npm install ./local-package"
+
+  - note: "a file: reference is not a registry package"
+    tool: Bash
+    args:
+      command: "npm install file:../shared-lib"
+
+  - note: "a git+ dependency is not a registry package"
+    tool: Bash
+    args:
+      command: "npm install git+https://github.com/example/repo.git"
+
+  - note: "a tarball URL is not a registry package"
+    tool: Bash
+    args:
+      command: "npm install https://example.com/package.tgz"
+
+  - note: "flags only, no package names"
+    tool: Bash
+    args:
+      command: "npm install --production --no-audit"
+
+  - note: "an unrelated command never reaches the extraction step at all"
+    tool: Bash
+    args:
+      command: "git status"

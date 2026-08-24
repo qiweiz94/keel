@@ -1,0 +1,8 @@
+# Rate rule: 30 calls / 60s window. `repeat` calls the same step N times on
+# one pipeline instance; the harness asserts on the LAST call's result.
+cases:
+  - note: "31st Bash call within the 60s window exceeds max_calls: 30"
+    tool: Bash
+    args:
+      command: "echo hi"
+    repeat: 31

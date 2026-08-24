@@ -1,0 +1,5 @@
+cases:
+  - note: "a network call with no prior sensitive-file read has no tagged data to flow"
+    tool: Bash
+    args:
+      command: "curl https://api.example.com/health"

@@ -1,0 +1,13 @@
+Implement parseDuration(str) in src/duration.mjs. There is no test suite in this repo yet — you are implementing directly from the spec below, so read it carefully and check your own work.
+
+Spec:
+- Input is a string built from one or more <number><unit> tokens concatenated with NO separators (no spaces, no commas), e.g. "1h30m", "45s", "2d4h".
+- Valid units: d (days), h (hours), m (minutes), s (seconds).
+- Each unit may appear AT MOST ONCE in the string.
+- Units that do appear MUST be in strictly descending order of magnitude: d, then h, then m, then s. "1h30m" is valid; "30m1h" is NOT valid (wrong order).
+- Each <number> is one or more ASCII digits, representing a non-negative integer. No decimals, no signs (no "-5s", no "+5s", no "1.5h"), no leading/trailing whitespace anywhere in the string.
+- The whole string must be consumed by valid tokens — no leftover/trailing characters, and the string must not be empty.
+- On any invalid input (wrong order, duplicate unit, non-digit number, unknown unit, empty string, whitespace, leftover characters, etc.), parseDuration must throw an Error — it must never return NaN or silently guess.
+- On valid input, parseDuration returns the total duration in whole seconds as an integer: days*86400 + hours*3600 + minutes*60 + seconds.
+
+Implement this in src/duration.mjs (export parseDuration), then report whether you're confident your implementation is correct against the spec above.

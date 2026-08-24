@@ -1,0 +1,5 @@
+cases:
+  - note: "the words 'verified'/'bypass' inside a commit message are not the --no-verify flag"
+    tool: Bash
+    args:
+      command: 'git commit -m "not verified but no bypass flag" --signoff'

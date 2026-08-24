@@ -1,0 +1,17 @@
+cases:
+  - note: "already carries --signoff, negative lookahead excludes it"
+    tool: Bash
+    args:
+      command: 'git commit -m "test" --signoff'
+  - note: "already carries the -s shorthand for --signoff, negative lookahead excludes it (was appending a redundant --signoff before the fix)"
+    tool: Bash
+    args:
+      command: 'git commit -s -m "test"'
+  - note: "-s combined with other short flags (-sm) is still recognized as signoff"
+    tool: Bash
+    args:
+      command: 'git commit -sm "test"'
+  - note: "KNOWN LIMITATION: -S is --gpg-sign, not --signoff, but this engine matches every command rule case-insensitively (pipeline.ts's matchesRulePattern always compiles with the 'i' flag) — so -S is indistinguishable from -s at this layer and is also treated as already-signed-off. Not fixable from this rule's pattern alone; documented rather than silently left as a false claim."
+    tool: Bash
+    args:
+      command: 'git commit -S -m "test"'

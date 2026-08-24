@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolveHome } from '../home.js'
 import type { AuditEntry, EnforceResult, ProtectionLevel, RuleContext } from '../types.js'
 import { projectAuditArgs, sanitizeReasoning } from './audit-redaction.js'
 
@@ -11,7 +11,16 @@ export class AuditLog {
   private entries: AuditEntry[] = []
 
   constructor(logDir?: string) {
-    this.logDir = logDir || join(homedir(), '.keel', 'traces')
+    // KEEL_TRACES_DIR mirrors state-manager.ts:21's KEEL_STATE_DIR — same
+    // env-override-else-real-home shape — but is read HERE, inside the
+    // constructor, rather than as a module-level const. A module-level
+    // const is fixed at first import of this file (whichever test happens
+    // to import it first, process-wide), which defeats a test that sets
+    // the env var in its own beforeAll/it after some other file already
+    // triggered the import (verified empirically this wave — see
+    // session/EVIDENCE/wave2-claim.md). Reading it per-construction makes
+    // the override correct regardless of import order.
+    this.logDir = logDir || process.env.KEEL_TRACES_DIR || join(resolveHome(), '.keel', 'traces')
     if (!existsSync(this.logDir)) {
       mkdirSync(this.logDir, { recursive: true })
     }
@@ -52,6 +61,11 @@ export class AuditLog {
       context_tokens: extra.context_tokens,
       reasoning: sanitizeReasoning(extra.reasoning),
       fix_applied: result.action === 'fix',
+      // Present only for `mode: observe` rules (action stays "allow" while
+      // this carries what would have been enforced). Written unconditionally
+      // — JSON.stringify drops an undefined property, so a non-observe entry
+      // serializes byte-identical to before this field existed.
+      observed_action: result.observed_action,
     }
 
     this.entries.push(entry)

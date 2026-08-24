@@ -1,0 +1,11 @@
+cases:
+  - note: "ordinary source file write, unrelated to keel's own state"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/src/index.ts"
+      content: "export const x = 1"
+  - note: "an ordinary VS Code workspace setting, not .vscode/settings.json specifically at this path shape (still same filename — kept as a documented FP; see rationale)"
+    tool: Write
+    args:
+      path: "/tmp/keel-fixture-project/src/.vscode-notes.md"
+      content: "notes about editor config, not the real settings file"

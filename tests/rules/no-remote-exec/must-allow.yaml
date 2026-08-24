@@ -1,0 +1,13 @@
+cases:
+  - note: "a regular install (not an on-the-fly exec) is fine"
+    tool: Bash
+    args:
+      command: "npm install create-react-app"
+  - note: "a real binary named my-npx is not the npx tool — missing left-word-boundary false positive"
+    tool: Bash
+    args:
+      command: "my-npx --version"
+  - note: "installing a package whose name happens to end in -npx is not invoking npx"
+    tool: Bash
+    args:
+      command: "npm install eslint-plugin-npx"

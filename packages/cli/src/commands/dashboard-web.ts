@@ -1,8 +1,10 @@
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import chalk from 'chalk'
 import { collectState, switchLevel } from './dashboard.js'
+import { isInteractive } from './interactive.js'
+import { resolveHome } from '../core/home.js'
+import { secureEqual } from './daemon.js'
 import type { ProtectionLevel } from '../core/types.js'
 
 /**
@@ -113,6 +115,9 @@ function pageHtml(): string {
 
   <div class="card">
     <h2>Status</h2>
+    <div class="row" id="halt-row" style="display:none">
+      <span class="kv">Enforcement: <b id="st-halt">—</b></span>
+    </div>
     <div class="row">
       <span class="kv">Speed dial: <b id="st-dial">—</b></span>
       <span class="kv">Kill switch: <b id="st-kill">—</b></span>
@@ -202,6 +207,13 @@ async function refresh() {
   if (!s) return
   dial = s.dial
   document.getElementById('st-dial').textContent = (s.dial || 'balanced').toUpperCase()
+  const halted = s.halted || { active: false }
+  const haltRow = document.getElementById('halt-row')
+  haltRow.style.display = halted.active ? '' : 'none'
+  if (halted.active) {
+    document.getElementById('st-halt').textContent = 'HALTED — every call denied (' + (halted.reason || 'Manual halt') + ')'
+    document.getElementById('st-halt').style.color = '#f85149'
+  }
   const ks = s.killSwitch
   document.getElementById('st-kill').textContent = ks.state === 'enabled' ? 'active' : ks.state === 'corrupt' ? 'CORRUPT — stays ON' : 'DISABLED'
   document.getElementById('st-kill').style.color = ks.state === 'enabled' ? '#3fb950' : ks.state === 'corrupt' ? '#f85149' : '#d29922'
@@ -237,14 +249,14 @@ setInterval(refresh, 2000)
 }
 
 export async function dashboardWebCommand(options: { port?: number } = {}) {
-  const home = homedir()
+  const home = resolveHome()
   const dir = process.cwd()
 
   // Human-only by construction: starting the web server requires a TTY (an
   // agent's shell has none). The auth token is printed on the terminal
   // screen and never written to disk, so nothing on the filesystem can be
   // curled by an agent — the control surface stays human-owned.
-  if (!process.stdin.isTTY && process.env.KEEL_DASHBOARD_ALLOW_NON_TTY !== '1') {
+  if (!isInteractive() && process.env.KEEL_DASHBOARD_ALLOW_NON_TTY !== '1') {
     console.error(chalk.red('  The web dashboard must be started from your own terminal (a TTY).'))
     console.error(chalk.dim('  Run `keel dashboard` in your terminal for the keyboard panel instead.'))
     process.exit(1)
@@ -253,7 +265,7 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
   const token = randomBytes(16).toString('hex')
   const server = createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
-    const authed = req.headers.authorization === `Bearer ${token}` || url.searchParams.get('token') === token
+    const authed = secureEqual(req.headers.authorization || '', `Bearer ${token}`) || secureEqual(url.searchParams.get('token') || '', token)
     const send = (code: number, body: string, type = 'application/json') => {
       res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
       res.end(body)
@@ -301,12 +313,31 @@ export async function dashboardWebCommand(options: { port?: number } = {}) {
   console.log(chalk.dim('  Press Ctrl+C to stop the server.'))
   console.log()
 
-  // Convenience: open the browser automatically (macOS). The token is in the
-  // hash fragment, so it is not sent anywhere by the browser.
-  if (process.platform === 'darwin') {
+  // Convenience: open the browser automatically (macOS) — but ONLY for a real
+  // interactive user at a TTY. See shouldAutoOpenBrowser() for the gate and the
+  // regression test that pins it: the dashboard-web TEST sets
+  // KEEL_DASHBOARD_ALLOW_NON_TTY=1 to exercise the server, so an ungated open
+  // would spawn a browser tab on every `npm test` run and flood the developer.
+  if (shouldAutoOpenBrowser()) {
     try {
       const { spawn } = await import('node:child_process')
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
     } catch {}
   }
+}
+
+/**
+ * Whether `keel dashboard --web` may auto-open a browser. Off in every
+ * non-interactive context — isInteractive() requires a real TTY and no CI,
+ * and KEEL_NO_OPEN forces it off regardless. This is the ONLY gate on the
+ * `spawn('open')` above; pinned by a regression test (dashboard-web.test.ts
+ * and no-side-effects.test.ts) so it can never be silently removed. A side
+ * effect that fires in automation is a trust bug, not a convenience.
+ */
+export function shouldAutoOpenBrowser(): boolean {
+  return (
+    process.platform === 'darwin'
+    && isInteractive()
+    && process.env.KEEL_NO_OPEN !== '1'
+  )
 }

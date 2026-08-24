@@ -13,12 +13,36 @@ import type {
   CommandRule, FileRule, ContentRule, EnforcementAction, PatternDef,
 } from './types.js'
 import { createSignedEntry, initSigning } from './signing.js'
+import { normalizeForMatch } from './enforce/path-normalize.js'
 import { createReceipt } from './receipts.js'
 import { verifyFileSyntax } from './file-verify.js'
 
 export const SECRET_ENV_PATTERNS = [
   /\b(?:OPENAI|ANTHROPIC|DEEPSEEK|AWS|GITLAB|OPENCODE)_(?:API_KEY|SECRET|TOKEN)(?![a-zA-Z0-9])/,
   /\b(?:DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_ACCESS_KEY|AWS_SECRET_ACCESS)(?![a-zA-Z0-9])/,
+]
+
+/**
+ * Provider-documented credential SHAPES only — each pattern's match span is
+ * the secret bytes themselves (AWS access key IDs, `sk-`/`ghp_`-style
+ * tokens, a PEM private-key header). Deliberately excludes checkSecret()'s
+ * other patterns, which match a variable NAME string (`OPENAI_API_KEY`,
+ * `AWS_SECRET_ACCESS_KEY`) rather than a secret value — a name pattern
+ * tested against a credential VALUE (not the surrounding "NAME=value" text)
+ * would score the literal string "OPENAI_API_KEY" as secret-shaped and
+ * flag configs that contain no actual secret. Exported so other detectors
+ * that scan already-isolated candidate VALUES (not free-form text/command
+ * strings) — e.g. `keel scan`'s MCP env/header check — reuse the exact
+ * shapes checkSecret() blocks on, instead of a second, driftable regex list.
+ */
+export const SECRET_VALUE_SHAPE_PATTERNS = [
+  /(?<![A-Z0-9])(AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])/,
+  /(?:sk-[a-zA-Z0-9]{32,})/,
+  /(?:ghp_[a-zA-Z0-9]{36})/,
+  /(?:gho_[a-zA-Z0-9]{36})/,
+  /(?:ghu_[a-zA-Z0-9]{36})/,
+  /(?:ghs_[a-zA-Z0-9]{36})/,
+  /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
 ]
 
 export class PolicyEngine {
@@ -108,6 +132,28 @@ export class PolicyEngine {
         message: 'No policy loaded. Set up .keel.yaml to enable enforcement.',
         timestamp: new Date().toISOString(),
       })
+      return results
+    }
+
+    // Fail-closed on a degenerate tool identity (v1 M1r-2 — locked product
+    // decision: degenerate input never silently allows). `ToolCallEvent`
+    // declares `tool_name: string` as required, but nothing enforces that
+    // at a caller's JSON/RPC boundary — an empty/missing/non-string
+    // tool_name matches NONE of the `event.tool_name === '...'` branches
+    // below, so `results` stayed `[]` and every caller reads an empty array
+    // as "allowed" (confirmed live: packages/mcp-server/src/index.ts's
+    // `blocks.length > 0` check returns "POLICY OK" for exactly this case).
+    // This is not the same class as "a real tool name that matches no
+    // rule" — that must keep allowing, or this becomes a default-deny
+    // firewall no project would install. It is specifically "there is no
+    // tool identity to evaluate a rule against at all."
+    if (typeof event.tool_name !== 'string' || event.tool_name.length === 0) {
+      results.push({
+        action: 'block', rule_name: 'fail-closed-degenerate-input',
+        message: 'No tool identity on this call — keel could not evaluate it, so it was blocked.',
+        timestamp: new Date().toISOString(),
+      })
+      if (this.policy.settings?.audit_log !== false) this.audit(results[0], event)
       return results
     }
 
@@ -519,22 +565,23 @@ export class PolicyEngine {
   }
 
   private matchGlob(filePath: string, pattern: string): boolean {
+    // Canonicalize separators/case (Windows: `\` -> `/`, drive letter
+    // upper-cased, NTFS case-insensitivity applied) before the glob-to-
+    // regex conversion, so a rule authored as "**/.keel.yaml" (every
+    // pattern in DEFAULT_POLICY's file_rules is `/`-authored) still
+    // matches a real Windows argument path like `C:\proj\.keel.yaml`.
+    const normalizedPath = normalizeForMatch(filePath)
+    const normalizedPattern = normalizeForMatch(pattern)
     // A leading **/ must also match the bare name: **/.env matches .env.
-    const escaped = pattern.startsWith('**/')
-      ? `(^|.*/)${this.globToRegexBody(pattern.slice(3))}$`
-      : `^${this.globToRegexBody(pattern)}$`
-    return new RegExp(escaped).test(filePath)
+    const escaped = normalizedPattern.startsWith('**/')
+      ? `(^|.*/)${this.globToRegexBody(normalizedPattern.slice(3))}$`
+      : `^${this.globToRegexBody(normalizedPattern)}$`
+    return new RegExp(escaped).test(normalizedPath)
   }
 
   checkSecret(content: string): EnforcementResult | null {
     const patterns = [
-      /(?<![A-Z0-9])(AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])/,
-      /(?:sk-[a-zA-Z0-9]{32,})/,
-      /(?:ghp_[a-zA-Z0-9]{36})/,
-      /(?:gho_[a-zA-Z0-9]{36})/,
-      /(?:ghu_[a-zA-Z0-9]{36})/,
-      /(?:ghs_[a-zA-Z0-9]{36})/,
-      /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
+      ...SECRET_VALUE_SHAPE_PATTERNS,
       /\b(?:OPENAI|ANTHROPIC|DEEPSEEK|GITLAB)_(?:API_KEY|SECRET|TOKEN)(?![a-zA-Z0-9_])/,
       /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)(?![a-zA-Z0-9_])/,
       /\b(?:DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_ACCESS_KEY)(?![a-zA-Z0-9_])/,

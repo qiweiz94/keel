@@ -1,0 +1,5 @@
+cases:
+  - note: "a real test run"
+    tool: Bash
+    args:
+      command: "npm test"

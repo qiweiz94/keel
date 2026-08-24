@@ -1,0 +1,53 @@
+cases:
+  - note: "M1 ruleset-followups Task 1 required benign check: a plain python one-liner must still allow"
+    tool: Bash
+    args:
+      command: 'python3 -c "print(1)"'
+  - note: "M1 ruleset-followups Task 1 required benign check: a plain node one-liner must still allow"
+    tool: Bash
+    args:
+      command: "node -e \"console.log(1)\""
+  - note: "shutil.rmtree of a project-relative build directory is routine cleanup, not a root/home wipe"
+    tool: Bash
+    args:
+      command: "python3 -c \"import shutil; shutil.rmtree('./build')\""
+  - note: "shutil.rmtree of an absolute but non-root path is not caught by the literal root-only target check"
+    tool: Bash
+    args:
+      command: "python3 -c \"import shutil; shutil.rmtree('/home/user/build')\""
+  - note: "shutil.rmtree of a variable (not a literal path at all) — the pattern only fires on a literal quoted root/home argument"
+    tool: Bash
+    args:
+      command: 'python3 -c "import shutil; shutil.rmtree(tmp_dir)"'
+  - note: "os.remove of a specific temp file, not the root"
+    tool: Bash
+    args:
+      command: "python3 -c \"import os; os.remove('/tmp/tempfile.txt')\""
+  - note: "os.system running a harmless command"
+    tool: Bash
+    args:
+      command: "python3 -c \"import os; os.system('echo hello')\""
+  - note: "os.system running a git commit whose MESSAGE contains the string 'rm -rf /' behind a nested quote — the pattern cannot see past the inner quote boundary, mirroring the G2 discriminator for the shell-level rule"
+    tool: Bash
+    args:
+      command: 'python3 -c "import os; os.system(''git commit -m \"rm -rf /\"'')"'
+  - note: "subprocess.run listing files, no destructive verb present"
+    tool: Bash
+    args:
+      command: "python3 -c \"import subprocess; subprocess.run(['ls', '-la'])\""
+  - note: "subprocess.run adversarial near-miss: 'terraform' contains the substring 'rm', a flag has both r and f (-refresh), and a path argument has a leading slash — but none of those pieces are the rm verb itself, so this must not fire"
+    tool: Bash
+    args:
+      command: "python3 -c \"import subprocess; subprocess.run(['terraform', 'apply', '-refresh=true', '-target=/infra'])\""
+  - note: "subprocess.run adversarial near-miss: docker compose with -f flag and an absolute path — same discriminator, no rm verb present"
+    tool: Bash
+    args:
+      command: "python3 -c \"import subprocess; subprocess.run(['docker', 'compose', '-f', '/app/docker-compose.yml', 'up'])\""
+  - note: "subprocess.run adversarial near-miss: a commit message that talks about rm -rf as plain text inside one quoted list element"
+    tool: Bash
+    args:
+      command: "python3 -c \"import subprocess; subprocess.run(['git', 'commit', '-m', 'confirm the rm -rf message is just a string'])\""
+  - note: "fs.rmSync of a project-relative dist directory is routine cleanup, not a root/home wipe"
+    tool: Bash
+    args:
+      command: "node -e \"require('fs').rmSync('./dist', {recursive:true})\""

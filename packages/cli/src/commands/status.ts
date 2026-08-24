@@ -1,12 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import chalk from 'chalk'
-import { loadRuleHierarchy, mergeRules, validateRules } from '../core/enforce/rule-parser.js'
+import { loadRuleHierarchy, mergeRules, validateRules, winningLevelConfig, resolvedLevel, sprintExpiryStatus } from '../core/enforce/rule-parser.js'
 import { FileRuleOverrideStore } from '../core/enforce/overrides.js'
+import { detectSandbox, sandboxSuggestion } from '../core/enforce/sandbox-detector.js'
 import { loadTraceEntries, TRACKED_AGENTS } from './retrospective.js'
 import { telemetryHealth, type HealthState } from './health.js'
 import { findTemplateSource } from './install.js'
+import { resolveHome } from '../core/home.js'
 
 const STATE_MARK: Record<HealthState, string> = {
   green: '✓', amber: '!', red: '✗', unknown: '?',
@@ -59,7 +60,7 @@ function paintState(state: HealthState, text: string): string {
  * because the loaded plugin wrote no exit codes, and nothing said so.
  */
 export async function statusCommand() {
-  const home = homedir()
+  const home = resolveHome()
   const dir = process.cwd()
   const today = new Date().toISOString().slice(0, 10)
 
@@ -68,10 +69,57 @@ export async function statusCommand() {
 
   // ── Speed dial ──
   const hierarchy = loadRuleHierarchy(dir)
-  const dial = hierarchy.project?.config?.level || hierarchy.global?.config?.level || 'balanced'
+  const rawConfig = winningLevelConfig(hierarchy)
+  const dial = resolvedLevel(rawConfig, 'balanced')
   const dialColor = dial === 'sprint' ? chalk.yellow : dial === 'protect' ? chalk.red : chalk.green
   console.log(chalk.dim('  Speed dial:') + ` ${dialColor(dial.toUpperCase())}${chalk.dim(' (sprint=warn-only · balanced=default · protect=block-first)')}`)
   console.log(chalk.dim('    Change: keel level sprint|balanced|protect [--project]'))
+  // Sprint is timeout-only (no session-end detection, by design): it
+  // reverts to balanced once sprint_started_at is older than
+  // sprint_expiry_hours. rawConfig.level can still say "sprint" here while
+  // `dial` (the resolved, enforced level) already reads "balanced" — that
+  // gap is exactly what this line exists to surface.
+  const expiry = sprintExpiryStatus(rawConfig)
+  if (expiry?.expired) {
+    const hoursAgo = Math.round(expiry.hoursElapsed - expiry.expiryHours)
+    console.log(chalk.yellow(`    sprint expired → balanced (set ${Math.round(expiry.hoursElapsed)} hours ago, ${expiry.expiryHours}h limit — ${hoursAgo}h past expiry)`))
+    console.log(chalk.dim('    Re-arm with: keel level sprint [--project]'))
+  } else if (expiry) {
+    const remaining = Math.max(0, expiry.expiryHours - expiry.hoursElapsed)
+    console.log(chalk.dim(`    sprint auto-reverts to balanced in ~${remaining.toFixed(1)}h`))
+  }
+
+  // ── Sandbox suggestion (print-only — never written to rules.yaml) ──
+  // When an OS-level sandbox already contains the blast radius of a
+  // command, keel's prompt-heavy Tier-2 rules are redundant friction on
+  // top of it. This never changes anything by itself; it just tells the
+  // user the relaxation options exist. Silent when nothing is detected —
+  // this screen has enough lines already.
+  const sandbox = detectSandbox()
+  const suggestion = sandboxSuggestion(sandbox)
+  if (suggestion) {
+    console.log(chalk.dim('  ') + chalk.yellow(suggestion))
+  }
+
+  // ── Halt (lockdown) — checked and printed FIRST and most severely: it
+  // wins over the kill switch below, so a user must see it before anything
+  // that might read as "enforcement is on and normal." Inlined against
+  // `home` directly, the same way the DISABLED read just below is, rather
+  // than calling halt.ts's isHalted()/haltReason() (which resolve their
+  // own resolveHome() independently) — keeps every sentinel this function
+  // reads governed by the one `home` value it already resolved above. ──
+  const haltFile = join(home, '.keel', 'HALTED')
+  if (existsSync(haltFile)) {
+    let reason = 'unknown (corrupt sentinel)'
+    try {
+      const state = JSON.parse(readFileSync(haltFile, 'utf8'))
+      if (state && typeof state.reason === 'string' && state.reason) reason = state.reason
+      else reason = 'Manual halt'
+    } catch { /* keep the corrupt-sentinel default above */ }
+    console.log(`  Enforcement: ${chalk.bgRed.white.bold(' HALTED ')} ${chalk.red.bold('— every call is being denied')}`)
+    console.log(chalk.dim(`    Reason: ${reason}`))
+    console.log(chalk.dim('    Clear with: keel resume (your own terminal only)'))
+  }
 
   // ── Kill switch ──
   const disableFile = join(home, '.keel', 'DISABLED')
@@ -87,6 +135,37 @@ export async function statusCommand() {
     }
   } else {
     console.log(`  Kill switch: ${chalk.green('enabled (enforcement active)')}`)
+  }
+
+  // ── keel run supervision — inlined against `home` the same way HALTED/
+  // DISABLED are just above, for the same reason (one `home` value governs
+  // every sentinel this function reads, rather than each reader re-resolving
+  // resolveHome() independently). Not read via run-state.ts's exported
+  // readers on purpose, matching this file's existing convention. ──
+  const runStateFile = join(home, '.keel', 'RUN_STATE')
+  if (existsSync(runStateFile)) {
+    try {
+      const data = JSON.parse(readFileSync(runStateFile, 'utf8'))
+      const entries = data && typeof data === 'object' ? Object.values(data) as Array<Record<string, unknown>> : []
+      if (entries.length) {
+        console.log(chalk.dim('  Supervised run(s):'))
+        for (const e of entries) {
+          const pid = typeof e.pid === 'number' ? e.pid : null
+          const cmd = Array.isArray(e.command) ? e.command.join(' ') : '?'
+          let alive = false
+          if (pid !== null) {
+            try { process.kill(pid, 0); alive = true } catch { alive = false }
+          }
+          const startedAt = typeof e.started_at === 'string' ? Date.parse(e.started_at) : NaN
+          const uptime = Number.isFinite(startedAt) ? `${Math.round((Date.now() - startedAt) / 1000)}s` : '?'
+          const state = e.unverified ? chalk.yellow('unverified') : alive ? chalk.green('alive') : chalk.dim('dead')
+          const stale = e.stale ? chalk.yellow(' (marked stale — pid likely reused)') : ''
+          console.log(chalk.dim(`    • pid ${pid ?? '?'} — ${state} — up ${uptime} — ${cmd}${stale}`))
+        }
+      }
+    } catch {
+      console.log(chalk.dim('  Supervised run(s): unreadable RUN_STATE file'))
+    }
   }
 
   // ── Armed overrides ──
@@ -136,8 +215,20 @@ export async function statusCommand() {
     const note = isRepeat && duplicatePaths.has(scope.sourcePath) ? chalk.dim(' (same file as above)') : ''
     console.log(chalk.dim(`  Rules (${name}):`) + ` ${badge}${chalk.dim(` — ${scope.sourcePath}`)}${note}`)
   }
-  const active = mergeRules(hierarchy, dial, 'local').length
+  // No `agent` arg — this is an audit of the whole ruleset, not one host's
+  // live call, so agent-scoped rules count as active regardless of which
+  // host they're scoped to. See mergeRules' doc comment (rule-parser.ts).
+  const activeRules = mergeRules(hierarchy, dial, 'local')
+  const active = activeRules.length
   console.log(chalk.dim(`  Active at current dial:`) + ` ${chalk.white(active.toString())} of ${distinct}${invalid ? chalk.red(` (${invalid} rule issue(s) — run keel validate)`) : ''}`)
+  // See validate.ts's identical caveat for the full explanation: a
+  // `type: session` composite trip is scoped by session_id, and core has
+  // no way to tell a host's real session id apart from `keel hook`'s
+  // per-process fallback — so this is unconditional whenever the rule is
+  // active, not a claim this screen can actually verify per-host.
+  if (activeRules.some(r => r.type === 'session')) {
+    console.log(chalk.yellow('  ⚠ type: session rule active — not every host can reliably scope sessions (keel validate for detail)'))
+  }
 
   // ── Recent blocks ──
   const traceFile = join(home, '.keel', 'traces', `${today}.jsonl`)

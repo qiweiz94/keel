@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import chalk from 'chalk'
+import { resolveHome } from '../core/home.js'
 
 /**
  * `keel schedule` — automated self-improvement.
@@ -24,10 +25,27 @@ function keelBinary(): string {
   return 'keel'
 }
 
+function logDir(): string {
+  // keel-owned (.keel/logs), so this honors KEEL_HOME like every other
+  // reader — unlike plistPath() below, which MUST stay pinned to the real
+  // homedir(): launchd only ever reads the real ~/Library/LaunchAgents, so
+  // redirecting it under KEEL_HOME would silently break `keel schedule`
+  // (launchd would never see the installed plist).
+  return join(resolveHome(), '.keel', 'logs')
+}
+
+// A pure path computation — no filesystem write. `keel schedule` with no
+// args (status display, read-only) calls this through cronJobExists() /
+// launchdExists() and the console.log lines below; it must not create
+// ~/.keel/logs just to print where the log WOULD go. Only the install
+// paths (installLaunchd, installCron via cronLine) actually need the
+// directory to exist, and they call ensureLogDir() explicitly for that.
 function logPath(): string {
-  const dir = join(homedir(), '.keel', 'logs')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, 'schedule.log')
+  return join(logDir(), 'schedule.log')
+}
+
+function ensureLogDir(): void {
+  mkdirSync(logDir(), { recursive: true })
 }
 
 function plistPath(): string {
@@ -39,6 +57,7 @@ function launchdExists(): boolean {
 }
 
 function cronLine(): string {
+  ensureLogDir()
   return `0 9 * * * ${keelBinary()} gather --since 7 >> ${logPath()} 2>&1`
 }
 
@@ -52,6 +71,7 @@ function cronJobExists(): boolean {
 }
 
 function installLaunchd(frequency: string) {
+  ensureLogDir()
   const weekday = frequency === 'weekly' ? '0' : undefined
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

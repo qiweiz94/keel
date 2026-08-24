@@ -1,0 +1,11 @@
+cases:
+  - note: "ordinary source content, no credential shape"
+    tool: Write
+    args:
+      path: "src/config.ts"
+      content: 'const greeting = "hello world"'
+  - note: "an ordinary kebab-case identifier that happens to start with sk- is not a credential — the un-tightened regex's hyphen-inclusive char class over-matched this"
+    tool: Write
+    args:
+      path: "src/config.ts"
+      content: 'const subnet = "sk-vpc-subnet-us-east-1a-01234567890"'

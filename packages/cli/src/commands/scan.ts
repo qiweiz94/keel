@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import chalk from 'chalk'
-import { assessRisk, assessProtection, worstSeverity, type Severity } from './scan-risk.js'
+import { assessRisk, assessProtection, worstSeverity, type Severity, type McpServer } from './scan-risk.js'
 
 /**
  * keel scan command
@@ -14,13 +14,7 @@ interface DetectedTool {
   name: string
   installed: boolean
   configPaths: string[]
-  mcpServers: Array<{
-    name: string
-    command?: string
-    args?: string[]
-    url?: string
-    type: 'stdio' | 'http' | 'sse'
-  }>
+  mcpServers: McpServer[]
   skillsDirs: string[]
 }
 
@@ -169,18 +163,28 @@ const AGENT_PATHS: Record<string, {
   },
 }
 
-function parseMCPConfig(filePath: string): Array<{ name: string; command?: string; args?: string[]; url?: string; type: 'stdio' | 'http' | 'sse' }> {
+function parseMCPConfig(filePath: string): McpServer[] {
   try {
     if (!existsSync(filePath)) return []
     const raw = readFileSync(filePath, 'utf-8')
     const config = JSON.parse(raw)
 
-    const toEntry = ([name, cfg]: [string, any]) => ({
+    // `env` (stdio servers: launch-time environment) and `headers` (http/sse
+    // servers: request headers, e.g. Authorization) used to be dropped here
+    // entirely — parseMCPConfig extracted only {name, command, args, url,
+    // type}. That silently discarded the ONE place a plaintext credential
+    // shows up in an MCP client config, so `keel scan` had no way to ever
+    // flag one. Both are plain string->string maps in every config format
+    // this function reads (Claude/Cursor/VS Code/Windsurf all agree on this
+    // shape for mcpServers.<name>.env / .headers).
+    const toEntry = ([name, cfg]: [string, any]): McpServer => ({
       name,
       command: cfg.command,
       args: cfg.args,
       url: cfg.url,
       type: (cfg.command ? 'stdio' : cfg.url ? 'http' : 'stdio') as 'stdio' | 'http' | 'sse',
+      env: cfg.env && typeof cfg.env === 'object' ? cfg.env : undefined,
+      headers: cfg.headers && typeof cfg.headers === 'object' ? cfg.headers : undefined,
     })
 
     // Format 1: {"mcpServers": {"name": {"command": "...", ...}}}
@@ -299,7 +303,13 @@ export async function scanCommand(options: { json?: boolean; dir?: string; ci?: 
         name: t.name,
         installed: t.installed,
         configPaths: t.configPaths.filter(p => existsSync(p)),
-        mcpServers: t.mcpServers,
+        // `env`/`headers` are dropped here, not just the literal secret
+        // values inside them: `--json` is meant to be piped into CI logs,
+        // dashboards, bug reports — anywhere is exactly where a raw
+        // credential must never land. The mcp-plaintext-credential finding
+        // already carries a redacted evidence string for anyone who needs
+        // to know WHICH field tripped it; the full config is not that place.
+        mcpServers: t.mcpServers.map(({ env: _env, headers: _headers, ...rest }) => rest),
         skillsDirs: t.skillsDirs.filter(p => existsSync(p)),
         configCount: t.configPaths.filter(p => existsSync(p)).length,
         mcpCount: t.mcpServers.length,
@@ -383,6 +393,14 @@ export async function scanCommand(options: { json?: boolean; dir?: string; ci?: 
 
   if (withMCP.length > 0) {
     console.log(chalk.dim('  MCP servers execute commands on your machine with your privileges.\n'))
+  }
+
+  // Close the loop for anyone already protected: scan found something,
+  // install fixed it — `keel report` is where the payoff shows up. Only
+  // surfaced once a host is actually enforced, so this never points at an
+  // empty report.
+  if (actionable.some(p => p.enforced)) {
+    console.log(chalk.dim('  Run `keel report` to see what keel has caught so far.\n'))
   }
 
   if (options.ci && findings.length > 0) process.exit(1)

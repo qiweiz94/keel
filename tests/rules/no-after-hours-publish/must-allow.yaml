@@ -1,0 +1,8 @@
+cases:
+  - note: "pushing at noon, inside the window"
+    tool: Bash
+    args:
+      command: "git push origin main"
+    fake_time:
+      hour: 12
+      minute: 0

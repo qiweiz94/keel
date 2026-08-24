@@ -1,0 +1,13 @@
+cases:
+  - note: "terraform plan is a read, not a mutation"
+    tool: Bash
+    args:
+      command: "terraform plan"
+  - note: "kubectl get is a read, not a mutation"
+    tool: Bash
+    args:
+      command: "kubectl get pods --context minikube"
+  - note: "kubectl apply against an explicitly exempted local context"
+    tool: Bash
+    args:
+      command: "kubectl apply -f local.yaml --context minikube"

@@ -1,0 +1,9 @@
+cases:
+  - note: "fetching a public gist a human shared, not a pastebin-class host"
+    tool: Bash
+    args:
+      command: "curl https://gist.github.com/user/abc"
+  - note: "an ordinary curl to an internal API"
+    tool: Bash
+    args:
+      command: "curl -s https://api.internal.example.com/status"

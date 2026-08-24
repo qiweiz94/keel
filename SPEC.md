@@ -110,6 +110,8 @@ Status: ✅ = built, 🚧 = planned (spec'd but not implemented)
 | `keel validate` | ✅ | Check rules for conflicts, syntax, drift |
 | `keel disable` | ✅ | Kill switch — suspend all enforcement |
 | `keel enable` | ✅ | Re-enable after disable |
+| `keel halt` | ✅ | Lockdown latch — deny every subsequent call until a human clears it |
+| `keel resume` | ✅ | Clear a halt set by `keel halt` |
 | `keel suggest` | ✅ | Analyze audit trail, suggest rule improvements |
 | `keel allow <rule-id> --once` | ✅ | One-time override for a blocked action |
 | `keel evaluate --tool <name> --args <json>` | ✅ | JSON-in/JSON-out for programmatic use |
@@ -136,13 +138,16 @@ runtime without requiring a separate process.
 | Capability | Public v1 status |
 |------------|------------------|
 | `command`, `filesystem`, `content`, `network`, `rate`, `time`, `sequence`, `verification`, `flow` rules | Supported |
-| Rule metadata: `level`, `scope`, `context`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
+| `session` rules | Supported — a composite runaway-loop trip across five session-scoped dimensions (wall-clock duration, cumulative tool-call count, cumulative Bash-call count, distinct-file-write churn, consecutive-failure count), escalating `warn → prompt → halt`. Volume-only dimensions cap at `prompt` by construction; only `consecutive_failures` may reach `halt`. Ships as the default `session-runaway-trip` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Session-scoping depends on the calling host sending a real session id; a host that cannot is surfaced at `keel validate`/`keel status`, not silently degraded. |
+| `oscillation` rules | Supported — a short repeating cycle of >= 2 distinct command fingerprints (A→B→A→B) within a session's small rolling window, complementary to (never redundant with) `stuck`'s exact-repeat detection. Ships as the default `command-oscillation` rule in `mode: observe` pending real hit-rate data — see `docs/tiers.md`. Same session-id dependency as `session` rules above. |
+| `injection` rules | Supported — tool-result prompt-injection marker scanning (`EnforcementPipeline.evaluateInjection()`/`evaluateToolResult()`), two forms: a detector (`patterns`, matching literal marker shapes — chat-template control tokens, "ignore previous instructions", role-marker impersonation, Unicode tag-character smuggling) and a gate (`next_call_scrutiny`, arming a persisted next-call scrutiny warning on the session's next write/shell call; `taint_correlation: true` narrows that gate to fire only when the later call's own arguments or content reference a URL, host, file path, or email found within 400 characters of an enforcing marker in an earlier flagged result — single-hop, exact-match). `action` is restricted to `warn` for every rule of this type — see `rule-parser.ts`'s `validActions` comment. Only OpenCode can rewrite a flagged result before the model reads it; every other host is detection-only, post-hoc — see `docs/injection.md`'s per-host table for the full honesty accounting. Ships as four default rules (`injected-instructions-in-tool-output`, `warn`; `untrusted-content-role-markers`, `mode: observe`; `untrusted-content-next-call`, the broad payload-blind gate; `untrusted-content-derived-call`, the artifact-correlated gate). |
+| Rule metadata: `level`, `scope`, `context`, `agents`, `priority`, `unless`, `unless_reasoning`, `action`, `fix` | Supported |
 | `.keel/rules.yaml` project rules | Supported and recommended |
 | `AGENTS.md` OpenCode rule frontmatter | Supported |
 | `CLAUDE.md` rule frontmatter | Supported as Claude Code compatibility fallback |
 | OpenCode before/after, system-transform, and compaction hooks | Supported |
 | Claude Code, Cline, Cursor, and Codex installation | Supported at documented integration level |
-| `mcp`, `session`, `inheritance`, and advanced context rules | Not implemented — rejected at `keel validate` (never silently accepted) |
+| `mcp`, `inheritance`, and advanced context rules | Not implemented — rejected at `keel validate` (never silently accepted) |
 | `keel test --from-audit` historical replay | Planned after v1 |
 
 Anything marked planned is not presented as available behavior in public v1
@@ -257,6 +262,9 @@ work or stalling the workflow.
 - `keel level` — set the dial directly (global or --project).
 - `keel allow <id> [--once]` — approvals; unknown ids are refused.
 - `keel disable/enable` — kill switch; corrupt sentinel fails CLOSED.
+- `keel halt/resume` — lockdown latch; corrupt sentinel fails CLOSED toward
+  HALTED (the opposite polarity of disable's corrupt-sentinel fallback —
+  see the Kill Switch section below). No TTL; only `keel resume` clears it.
 - `keel receipts rotate` — key rotation; old keys still verify.
 - The control gate (keel-control-gate) denies the AGENT from running any
   of these — keel controls are user-owned.
@@ -332,13 +340,16 @@ rules:
 | `content` | Scan file contents | `patterns: [{regex: "GH_TOKEN"}]` |
 | `env` | Protect environment variables | `vars: ["OPENAI_API_KEY"]` |
 | `network` | Control egress | `match: "."` with `except: [github.com]` |
-| `rate` | Rate limit tool calls | `window_seconds: 60`, `max_calls: 5` |
+| `rate` | Rate limit tool calls (call VOLUME only) | `window_seconds: 60`, `max_calls: 5` |
+| `budget` | Real LLM token/dollar spend, read from a host's own local transcript/session record (Claude Code JSONL usage fields, OpenCode's `session` table) — distinct from `rate`'s call-volume counting. Two-phase: a Stop/PostToolUse-equivalent hook measures spend and persists an over-budget flag; only the next PreToolUse call can deny, since Claude Code's Stop hook cannot block | `max_tokens: 2000000` |
 | `time` | Time-based restrictions | `schedule: {start: "09:00", end: "17:00"}` |
 | `sequence` | Forbidden multi-step action patterns | `steps: [{tool: ReadFile}, {tool: HttpRequest}]` |
 | `verification` | A source-change obligation satisfied by a successful test before a concrete boundary | `trigger`, `satisfy`, `boundaries` |
 | `flow` | Information flow control | `sources: [".env"]`, `sinks: ["network"]` |
 | `mcp` | MCP-specific threats | `mcp_check: tool_descriptions` — **not implemented**: rejected at `keel validate` |
-| `session` | Session-level rules | `max_duration_minutes: 120` |
+| `session` | Composite runaway-loop trip: wall-clock duration, cumulative tool-call/Bash-call counts, distinct-file-write churn, and consecutive-failure count, escalating `warn → prompt → halt`. Volume-only dimensions are structurally barred (`validateRules`) from escalating past `prompt`; only `consecutive_failures` may reach `halt` (trips `keel halt`'s lockdown latch — no auto-expiry). See `session-tracker.ts`/`session-store.ts`. | `session_escalation: [{dimension: consecutive_failures, at: 8, action: deny, halt: true}, ...]` |
+| `oscillation` | A→B→A→B cycle detector: a short repeating SEQUENCE of >= 2 DISTINCT recent command fingerprints within a session's small rolling window (default: last 8 calls), escalating on an author-declared ladder. Sibling of `stuck`'s exact-repeat detection (same fingerprinting, same `require_failure`/`escalation` shape), not a replacement — the two never double-count the same evidence. Ships as the default `command-oscillation` rule, `mode: observe`. See `oscillation-tracker.ts`/`oscillation-store.ts`. | `min_cycle_length: 2`, `max_cycle_length: 4`, `min_cycle_repeats: 2` |
+| `injection` | Tool-result prompt-injection marker scanning, two forms: a DETECTOR (`patterns`, matched against a completed tool call's own output text via `evaluateInjection()`/`evaluateToolResult()`, never through the normal pre-call dispatch) or a GATE (`next_call_scrutiny: true`, armed by an enforcing detector match this session, fires once as a warn on the session's next write/shell call). Adding `taint_correlation: true` to a gate rule narrows it: it fires only when the later call's OWN arguments or content reference an artifact — URL, hostname, file path, or email — found within 400 characters of the enforcing marker in the earlier flagged result. Single-hop and exact-match only. Both gate forms share one persisted store via per-rule mark-not-delete consumption, so neither blinds the other. `action` is restricted to `warn` for every form — never rule-authorable as a harder verdict, since a rewrite of the flagged result only actually reaches the model on one host (OpenCode). See `injection-scan.ts`, `injection-store.ts`, `injection-taint.ts`, and `docs/injection.md`'s per-host table. | `patterns: [{regex: "<\|im_start\|>"}]`, or `next_call_scrutiny: true`, or `next_call_scrutiny: true` + `taint_correlation: true` |
 | `inheritance` | Subagent rule propagation | `propagate_rules: all` — **not implemented**: rejected at `keel validate` |
 | `context` | Context management | Re-injection thresholds |
 
@@ -351,11 +362,23 @@ rules:
 | `level` | No | `sprint` \| `balanced` \| `protect` (default: `balanced`) |
 | `scope` | No | `global` \| `user` \| `project` \| `folder` \| `session` |
 | `context` | No | `[local]` \| `[ci]` \| `[local, ci]` (default: both) |
-| `action` | Yes for enforcing rules; optional for context/meta/session marker rules | `report` \| `warn` \| `deny` \| `prompt` \| `fix` |
+| `agents` | No | Array of host-identity strings, e.g. `[claude-code]` (default: applies to every host). See "Per-Agent Integration" below — `agent` is HOST identity (`opencode`/`claude-code`/`cline`/etc, the string a host's own integration declares itself as), not a true multi-agent-fleet identity concept; no host today emits a distinct identity per agent INSTANCE. |
+| `action` | Yes for enforcing rules; optional for context/meta marker rules | `report` \| `warn` \| `deny` \| `prompt` \| `fix` |
 | `message` | Yes | Human-readable description |
 | `priority` | No | Higher = evaluated first (default: 0) |
 | `unless_reasoning` | No | Regex — allow if agent's reasoning matches |
 | `unless` | No | Array of `{regex}` patterns to exclude |
+
+### Rule Composition (`extends:`)
+
+A rules file may also declare a top-level `extends:` key — a path or list of paths,
+resolved relative to the declaring file's own directory and merged in before that
+file's own rules. `extends` is a within-tier composition axis, resolved entirely
+before `loadRuleHierarchy`'s four-tier merge below. Same-id overrides across an extends
+chain use the same tightening-only floor logic as scope-based dedup; an override
+that would weaken an inherited `level: protect` floor is refused at load time with
+an error naming the rule id, rather than silently keeping the stronger floor the way
+cross-scope overrides do.
 
 ### Rule Hierarchy
 
@@ -449,7 +472,7 @@ Tiers 6-7 only run in `deep` mode (protect level) or for ambiguous cases.
 
 ### Caching
 
-**Session cache**: `SHA-256(tool + recursively canonicalized args + cwd + level + context + depth + action + rule_fingerprint)` → verdict. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
+**Session cache**: `SHA-256(tool + recursively canonicalized args + cwd + level + context + agent + depth + action + rule_fingerprint)` → verdict. `agent` (host identity) is part of the key so an `agents`-scoped rule can't leak one host's cached verdict to a different host's otherwise-identical call. After ~50 calls, 80-95% hit rate. LRU eviction at 10,000 entries. ~200 bytes per entry = ~2MB.
 
 **No persistent cache**: verdicts are session-scoped (LRU, in-memory). Rules are re-validated and re-hashed on every evaluation via the rule fingerprint (hashes of rules.yaml, AGENTS.md, CLAUDE.md, and .keel.local.yaml), so changes take effect without a watcher.
 
@@ -561,9 +584,22 @@ Instead of blocking, modify tool arguments to make them safe:
 
 Returns the mutated command to the agent. Agent executes the safe version.
 
-### Rego/OPA Backend (Optional)
+### Rego/OPA Backend — EXPERIMENTAL, unsupported, NOT wired into enforcement
 
-For complex rules beyond YAML frontmatter capabilities. The codebase already has `packages/cli/src/rego-engine.ts`.
+`packages/cli/src/rego-engine.ts` exists, and the standalone `keel policy
+init|build|eval` commands work if you separately install the `opa` CLI and
+`@open-policy-agent/opa-wasm` yourself (neither ships with keel — the
+latter is a monorepo-root devDependency only, not a `packages/cli`
+dependency). But **no `.rego`/`.wasm` policy is ever consulted by real-time
+enforcement** — `keel hook`, the OpenCode plugin, and `keel daemon` all
+evaluate only YAML `rules.yaml` through `packages/core/src/enforce/pipeline.ts`,
+which has no reference to `RegoEngine` anywhere. This table's own P2 item
+17 below ("wire existing rego-engine.ts") says the same thing this section
+used to contradict: the wiring is a TODO, not shipped. Decided and dated in
+`docs/exfil.md`'s sibling investigation, `session/v1/EVIDENCE/m5-security.md`
+(M5-security lane, 2026-08-12) — kept as a documented experimental side
+path rather than removed or silently promoted to a supported policy
+language.
 
 ```rego
 package keel
@@ -575,7 +611,10 @@ allow := false if {
 }
 ```
 
-Compiled to WASM via `keel policy build`. Evaluated in sandboxed WASM runtime (~0.01ms overhead).
+`keel policy build` compiles this to WASM (requires the external `opa`
+CLI); `keel policy eval` evaluates it against a JSON input file, standalone
+— useful for experimenting with Rego syntax, not for protecting anything a
+real agent does today.
 
 ---
 
@@ -834,6 +873,36 @@ sentinel is consumed only after a long-lived integration successfully starts;
 direct CLI subprocesses do not treat every invocation as an agent restart.
 Corrupt sentinel state fails closed and requires `keel enable` for recovery.
 
+### Halt (Lockdown Latch)
+
+The inverse of the kill switch above, not a second name for it: `keel disable`
+ALLOWS every call while its sentinel exists; `keel halt` DENIES every call
+while its sentinel exists. They are separate controls with separate sentinel
+files, and a halt wins if both happen to be set at once.
+
+```
+$ keel halt --reason "investigating a runaway loop"
+  → Keel HALTED. Every tool call is now DENIED until a human clears this.
+
+$ keel resume                     # Only way to clear a halt
+  → Keel resumed. Enforcement continues normally.
+```
+
+Sentinel file at `~/.keel/HALTED`. Unlike `keel disable`, it has no `--until`
+flag and no expiry field of any kind — an industrial e-stop requires a
+manual reset, and a halt that could silently lapse on a timer would defeat
+the one property that makes it different from an ordinary rule: nothing
+gets past it, and nothing — not a retry, not a rephrase, not even `keel
+disable` — can quietly clear it. `keel enable` does not touch a halt either;
+only `keel resume` does. `keel-control-gate` denies an agent that tries to
+run `keel halt` OR `keel resume` itself, the same as it already denies
+`keel disable` — clearing a halt is a human-in-their-own-terminal action.
+
+Corrupt sentinel state fails closed toward HALTED (denying, not allowing) —
+the opposite polarity of the kill switch's corrupt-state fallback above,
+because "closed" for a control that denies everything means the denial
+stays in force, not that it lifts.
+
 ### Lockup Escape
 
 When the same rule denies the same tool 3+ times in 60 seconds:
@@ -908,7 +977,7 @@ $ keel validate
 | `packages/core/src/policy-engine.ts` | 835 | Core policy evaluation (extend for agent-aware pipeline) |
 | `packages/core/src/signing.ts` | 284 | Ed25519 signing (exported audit reports) |
 | `packages/core/src/receipts.ts` | 216 | Action receipts (compliance exports) |
-| `packages/cli/src/rego-engine.ts` | 231 | Rego/WASM policy evaluation (backdoor for complex rules) |
+| `packages/cli/src/rego-engine.ts` | 231 | Rego/WASM policy evaluation — EXPERIMENTAL, not wired into the enforcement pipeline (see the "Rego/OPA Backend" section above) |
 | `packages/cli/src/anomaly.ts` | — | Anomaly detection patterns (adapt for behavior) |
 | `packages/cli/src/reasoning.ts` | — | Reasoning trace analysis (adapt for reasoning tier) |
 | `packages/cli/src/commands/check.ts` | 199 | Existing check command (adapt for enforce) |

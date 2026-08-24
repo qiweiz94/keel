@@ -1,0 +1,11 @@
+cases:
+  - note: "an AWS access key literal written into source"
+    tool: Write
+    args:
+      path: "src/config.ts"
+      content: 'const key = "AKIAABCDEFGHIJKLMNOP"'
+  - note: "a real sk-shaped API key literal (no hyphens after the prefix) still denies after the regex was tightened"
+    tool: Write
+    args:
+      path: "src/config.ts"
+      content: 'const key = "sk-abcdefghijklmnopqrstuvwxyz012345"'

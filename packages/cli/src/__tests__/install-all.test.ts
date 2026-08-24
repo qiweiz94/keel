@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { parseRulesContent } from '@get-keel/core'
+import { rmSafe } from './helpers/fs-safe.js'
 
 /**
  * `keel install --all` must install ALL of them.
@@ -34,8 +36,8 @@ describe('keel install --all', () => {
     })
   })
   afterAll(() => {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(project, { recursive: true, force: true })
+    rmSafe(home)
+    rmSafe(project)
   })
 
   const homeFile = (...p: string[]) => join(home, ...p)
@@ -69,6 +71,14 @@ describe('keel install --all', () => {
     expect(existsSync(homeFile('.cline', 'hooks', 'PreToolUse'))).toBe(true)
   })
 
+  // v1 M2-C1: claim-to-evidence real reach for Cline — PostToolUse
+  // (discharge + output scan) and TaskComplete (the claim-channel text)
+  // installed alongside the pre-existing PreToolUse block hook.
+  it('installs the Cline claim-to-evidence hooks (v1 M2-C1)', () => {
+    expect(existsSync(homeFile('.cline', 'hooks', 'PostToolUse'))).toBe(true)
+    expect(existsSync(homeFile('.cline', 'hooks', 'TaskComplete'))).toBe(true)
+  })
+
   it('installs the Codex hook', () => {
     expect(existsSync(homeFile('.codex', 'hooks', 'keel-enforce.sh'))).toBe(true)
   })
@@ -76,5 +86,44 @@ describe('keel install --all', () => {
   it('installs the Claude Code and Cursor hooks in the project', () => {
     expect(existsSync(projFile('.claude', 'hooks', 'PreToolUse', 'keel-enforce'))).toBe(true)
     expect(existsSync(projFile('.cursor', 'hooks', 'keel-enforce.sh'))).toBe(true)
+  })
+
+  // v1 M2-C1: claim-to-evidence real reach for Cursor — postToolUse,
+  // postToolUseFailure, and afterAgentResponse all wired into
+  // .cursor/hooks.json, pointing at the SAME script as the pre-existing
+  // beforeShellExecution/beforeMCPExecution block hooks.
+  it('wires the Cursor claim-to-evidence hooks into .cursor/hooks.json (v1 M2-C1)', () => {
+    const hooksJson = JSON.parse(readFileSync(projFile('.cursor', 'hooks.json'), 'utf-8'))
+    for (const event of ['beforeShellExecution', 'beforeMCPExecution', 'postToolUse', 'postToolUseFailure', 'afterAgentResponse']) {
+      expect(hooksJson.hooks[event], `expected hooks.${event} to be wired`).toBeDefined()
+      expect(hooksJson.hooks[event][0].command).toBe('./.cursor/hooks/keel-enforce.sh')
+    }
+  })
+
+  // Regression: the project rules.yaml stub used to write `rules:` with no
+  // list items, which YAML-parses to `rules: null` — parseRulesContent
+  // rejects that as "Rules must be an array", and initEnforce throws on any
+  // rule-source error. That broke `keel evaluate` and `keel hook <host>` on
+  // EVERY tool call after a fresh `install --project` (only OpenCode's own
+  // fallback masked it). Since fixed to write the real DEFAULT_RULES_YAML
+  // (a non-empty, always-valid array) — see install-project-rules.test.ts
+  // for the fuller regression coverage of THAT fix (A3: an empty `rules: []`
+  // stub parsed fine but enforced nothing on its own).
+  it('writes a project rules.yaml that actually parses (not `rules: null`)', () => {
+    const content = readFileSync(projFile('.keel', 'rules.yaml'), 'utf-8')
+    const parsed = parseRulesContent(content, projFile('.keel', 'rules.yaml'))
+    expect(parsed.errors, `project rules.yaml failed to parse: ${parsed.errors}`).toBeUndefined()
+    expect(Array.isArray(parsed.rules)).toBe(true)
+  })
+
+  it('keel evaluate runs cleanly against a fresh --project install (no init-time throw)', () => {
+    const result = spawnSync(process.execPath, [
+      CLI, 'evaluate', '--tool', 'Bash',
+      '--args', JSON.stringify({ command: 'ls -la' }),
+      '--cwd', project,
+    ], { cwd: project, encoding: 'utf-8', env: { ...process.env, HOME: home }, timeout: 30000 })
+    const out = JSON.parse(result.stdout)
+    expect(out.action, `evaluate returned an error: ${JSON.stringify(out)}`).not.toBe('error')
+    expect(result.status).toBe(0)
   })
 })

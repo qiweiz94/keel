@@ -1,0 +1,21 @@
+cases:
+  - note: "deleting main on the remote via --delete"
+    tool: Bash
+    args:
+      command: "git push origin --delete main"
+  - note: "deleting master on the remote via the : shorthand"
+    tool: Bash
+    args:
+      command: "git push origin :master"
+  - note: "deleting the local main branch"
+    tool: Bash
+    args:
+      command: "git branch -D main"
+  - note: "wave-3 bypass: fully-qualified refs/heads spelling of the colon delete"
+    tool: Bash
+    args:
+      command: "git push origin :refs/heads/main"
+  - note: "wave-3 bypass: update-ref -d deletes the branch without 'push' or 'branch'"
+    tool: Bash
+    args:
+      command: "git update-ref -d refs/heads/main"

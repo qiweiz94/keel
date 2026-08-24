@@ -1,0 +1,49 @@
+== Codex CLI live verification ==
+codex not installed — attempting ONE throwaway install into /tmp/keel-codex-throwaway.CFH8bc
+CODEX INSTALL: OK -> /tmp/keel-codex-throwaway.CFH8bc/node_modules/.bin/codex
+codex version: codex-cli 0.147.0
+
+  isolated HOME=/tmp/keel-liveverify-codex-authprobe.I0OEEQ/home
+  keel shim: /tmp/keel-liveverify-codex-authprobe.I0OEEQ/bin/keel -> /Users/nanoclaw/code/keel-w1-liveverify/packages/cli/bin/keel.js
+  working copy successfully pushed baseline to origin/main — push path is live
+  remote main before: ac64f42a876a163f31616ce774df199ae3c70680
+  local main (post-amend, would-be force target): 7ed428cc49cdda345dced34df0dab7b773c9bcb1
+-- auth probe: isolated HOME + isolated CODEX_HOME, single attempt --
+Reading additional input from stdin...
+OpenAI Codex v0.147.0
+--------
+[1mworkdir:[0m /private/tmp/keel-liveverify-codex-authprobe.I0OEEQ/work
+[1mmodel:[0m gpt-5.6-sol
+[1mprovider:[0m openai
+[1mapproval:[0m never
+[1msandbox:[0m read-only
+[1mreasoning effort:[0m none
+[1mreasoning summaries:[0m none
+[1msession id:[0m 019ff042-eeb5-7ec1-ac63-4e8c771169fe
+--------
+[36muser[0m
+say hi, one word
+[2m2026-08-11T09:59:06.874330Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[2m2026-08-11T09:59:07.283650Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[2m2026-08-11T09:59:07.889221Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[1m[31mERROR:[0m[0m Reconnecting... 2/5
+[2m2026-08-11T09:59:08.834553Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[1m[31mERROR:[0m[0m Reconnecting... 3/5
+[2m2026-08-11T09:59:10.156705Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[1m[31mERROR:[0m[0m Reconnecting... 4/5
+[2m2026-08-11T09:59:12.294351Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[1m[31mERROR:[0m[0m Reconnecting... 5/5
+[2m2026-08-11T09:59:16.221125Z[0m [31mERROR[0m [2mcodex_api::endpoint::responses_websocket[0m[2m:[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses
+[1m[33mwarning:[0m[0m Falling back from WebSockets to HTTPS transport. unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses, cf-ray: a29662f539cc4cb3-SLC
+[1m[31mERROR:[0m[0m Reconnecting... 1/5
+[1m[31mERROR:[0m[0m Reconnecting... 2/5
+[1m[31mERROR:[0m[0m Reconnecting... 3/5
+[1m[31mERROR:[0m[0m Reconnecting... 4/5
+[1m[31mERROR:[0m[0m Reconnecting... 5/5
+[1m[31mERROR:[0m[0m unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a2966325e8e4a42a-SLC, request id: req_7271d2f427b241c19b96879632d399d1
+[1m[31mERROR:[0m[0m unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a2966325e8e4a42a-SLC, request id: req_7271d2f427b241c19b96879632d399d1
+
+AUTH HONESTY: isolated CODEX_HOME cannot authenticate on this machine (no OPENAI_API_KEY,
+real ~/.codex auth off-limits). captured output above is the real error from the one attempt.
+
+== CODEX CLI: AUTH-BLOCKED (hook-fires-headless=untested, block-proven=untested) ==

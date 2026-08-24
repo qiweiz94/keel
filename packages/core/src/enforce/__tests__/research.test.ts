@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { rmSafe } from './helpers/fs-safe.js'
 import { EnforcementPipeline } from '../pipeline.js'
 import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
@@ -22,6 +23,16 @@ import type { EnforceInput } from '../../types.js'
  *     once fresh evidence exists
  */
 
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/
+// warn/redirect verdict calls `overrideStore.consume()` — which touches
+// real ~/.keel (mkdir + lock file) even when no override is ever armed.
+// This suite doesn't currently exercise a deny/warn path, but an in-memory
+// stub keeps it off the real filesystem regardless of what future cases
+// add (see match-surface.test.ts's `noopOverrideStore`, same fix, same
+// root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
+
 function makePipeline(yaml: string, cache: ResearchCache): EnforcementPipeline {
   const rules = parseRulesContent(yaml, '/tmp/research-rules.yaml')
   return new EnforcementPipeline({
@@ -31,6 +42,7 @@ function makePipeline(yaml: string, cache: ResearchCache): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     researchCache: cache,
     researchTracker: new ResearchTracker(cache),
     ruleHierarchy: { global: rules, user: null, project: null, local: null },
@@ -126,7 +138,7 @@ describe('research cache', () => {
   let previousHome: string | undefined
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-research-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
   })
@@ -134,7 +146,7 @@ describe('research cache', () => {
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('puts, gets, lists, and probes freshness per session', () => {
@@ -177,7 +189,7 @@ describe('research rules (knowledge freshness gate)', () => {
   let cache: ResearchCache
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-research-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
     cache = new ResearchCache()
@@ -186,7 +198,7 @@ describe('research rules (knowledge freshness gate)', () => {
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('gates on missing research with a directive', async () => {
@@ -276,7 +288,7 @@ describe('research-before-solve obligation (trigger/satisfy/boundaries)', () => 
   let cache: ResearchCache
 
   beforeEach(() => {
-    home = execSync('mktemp -d', { encoding: 'utf-8' }).trim()
+    home = mkdtempSync(join(tmpdir(), 'keel-research-test-'))
     previousHome = process.env.HOME
     process.env.HOME = home
     cache = new ResearchCache()
@@ -285,7 +297,7 @@ describe('research-before-solve obligation (trigger/satisfy/boundaries)', () => 
   afterEach(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    execSync(`rm -rf "${home}"`)
+    rmSafe(home)
   })
 
   it('arms on a failing test run and redirects the next fix', async () => {

@@ -1,0 +1,28 @@
+cases:
+  - note: >-
+      Session spend measured (step 1, the fixture-harness equivalent of a
+      Stop/PostToolUse-equivalent hook) at 2.5M tokens, over the rule's
+      max_tokens (2,000,000). The persisted over-budget flag that write
+      leaves behind is what the NEXT PreToolUse call (step 2, an ordinary
+      unrelated Bash call) reads and denies against — two-phase by
+      construction, exactly like the real Stop-hook-can't-block design:
+      step 2 never carries any spend data of its own.
+    steps:
+      - tool: Bash
+        args: { command: "echo priming-turn" }
+        spend: { tokens: 2500000, dollars: 12.50, dollars_confident: true }
+      - tool: Bash
+        args: { command: "echo hello" }
+
+  - note: >-
+      Same two-phase shape, but the over-budget measurement came from an
+      UNRECOGNIZED model (dollars_confident: false, dollars omitted) — a
+      confident dollar figure is never required to deny on max_tokens
+      alone; token-only enforcement still works even when the dollar
+      figure degraded to unavailable.
+    steps:
+      - tool: Read
+        args: { file_path: "README.md" }
+        spend: { tokens: 3000000, dollars_confident: false }
+      - tool: Bash
+        args: { command: "echo hello" }

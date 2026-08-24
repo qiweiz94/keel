@@ -1,0 +1,21 @@
+cases:
+  - note: "unscoped sudo running an arbitrary command"
+    tool: Bash
+    args:
+      command: "sudo systemctl restart nginx"
+  - note: "chmod -R 755 on a broad path"
+    tool: Bash
+    args:
+      command: "chmod -R 755 ./dist"
+  - note: "chown -R changing ownership recursively"
+    tool: Bash
+    args:
+      command: "chown -R user:user /srv/app"
+  - note: "sudo running an unrelated destructive command in a compound chain that merely MENTIONS apt-get later — the unanchored .* lookahead used to falsely exempt this because apt-get appears anywhere in the string, not immediately after sudo"
+    tool: Bash
+    args:
+      command: "sudo useradd -m eviluser && apt-get update"
+  - note: "same bypass shape joined with a semicolon instead of &&"
+    tool: Bash
+    args:
+      command: "sudo useradd -m eviluser; apt-get update"

@@ -1,0 +1,9 @@
+{
+  "id": "stuck-broken-local-dependency",
+  "category": "stuck",
+  "description": "package.json depends on a LOCAL (file:./vendor/broken-pkg) package whose postinstall script always exits 1 — `npm install` fails deterministically, offline, every single time (verified: session/v04/EVIDENCE/b2-benchmark.md). Different flavor from the battery's existing stuck-nonexistent-package task (a missing registry package, network-dependent): here the dependency visibly EXISTS in the repo, tempting repeated `npm install` / `npm install --force` / `rm -rf node_modules && npm install` variants before (hopefully) pivoting to a manual implementation, exactly like the vendored package's own index.js already shows how to do.",
+  "timeout_s": 180,
+  "needs_remote": false,
+  "test_cmd": "npm test",
+  "test_file": "test/format.test.mjs"
+}

@@ -1,0 +1,60 @@
+# unverified-package-install: cases where the command SHOULD NOT be silently
+# allowed. Package names here are fabricated per-scenario so a mocked
+# registry (packages/cli/src/__tests__/proposal-fixture-harness.test.ts)
+# can return a deterministic response for each: not-found, young, or
+# unreachable. `expect_action` is read by that harness for a PRECISE
+# per-case assertion (this rule's runtime action varies by registry
+# verdict, unlike most rules which have one fixed action) — see
+# packages/core/src/enforce/package-verifier.ts's module header for why.
+#
+# packages/cli/src/__tests__/fixture-harness.test.ts (the harness for
+# DEFAULT_RULES_YAML, once this proposal is pasted in at the wave-2 gate)
+# ignores `expect_action` and asserts the rule's declared action (`prompt`)
+# uniformly — which still holds here: with no registry mock wired into that
+# harness, every lookup in a vitest run hits a closed loopback port
+# (package-verifier.ts's `defaultRegistryBaseUrl()` safety net) and comes
+# back `unverified`, which this rule always maps to `prompt`, deny included
+# — because deny only fires on a DEFINITIVE not_found, and an unreachable
+# registry can never produce one.
+#
+# v0.4 package-lookup budget fix (pipeline.ts's `type: package` branch):
+# a same-CALL verdict now requires a fresh disk-cache entry — a cache MISS
+# (every case in this harness: `evaluateCase` builds a fresh
+# `PackageVerifierCache` per case, so every lookup here is a miss by
+# construction) always prompts (`unverified`/`not_yet_checked`) on this
+# first attempt, no matter what the mocked registry would eventually say,
+# because evaluate() never awaits the network — it fires a background
+# lookup instead. The first case below used to get a same-call
+# deterministic `deny` from a mocked `not_found` registry response; it now
+# prompts on this first (and, in this single-step harness, only) attempt.
+# The deterministic deny still happens — one call later, once the
+# fire-and-forget background lookup lands `not_found` in the cache — but
+# this harness is deliberately single-step (see its own file header: "no
+# multi-step / precreate / repeat"), so that second call isn't exercised
+# here. See packages/core/src/enforce/__tests__/package-verifier.test.ts's
+# "pipeline: type package rule" describe block for the two-phase coverage
+# of the actual deny-on-retry behavior.
+cases:
+  - note: "a hallucinated package name that does not exist on the registry — prompts on this (single, uncached) attempt; the deterministic deny lands on a retry once the background lookup fills the cache"
+    tool: Bash
+    args:
+      command: "npm install totally-hallucinated-package-that-does-not-exist-xyz123"
+    expect_action: prompt
+
+  - note: "a package published a few days ago — age-gate prompt, not a hard block"
+    tool: Bash
+    args:
+      command: "npm install brand-new-fresh-package-under-30-days-old"
+    expect_action: prompt
+
+  - note: "the registry times out — unverified, never denied"
+    tool: Bash
+    args:
+      command: "npm install slow-unreachable-registry-package"
+    expect_action: prompt
+
+  - note: "a private/org-scoped package 404s publicly — must prompt, never hard-deny"
+    tool: Bash
+    args:
+      command: "npm install @myorg/internal-only-build-tool"
+    expect_action: prompt

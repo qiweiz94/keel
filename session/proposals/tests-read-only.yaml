@@ -1,0 +1,99 @@
+# tests-read-only — OPT-IN ONLY. Do NOT paste into DEFAULT_RULES_YAML.
+#
+# This is the blunt sibling of test-oracle-tampering.yaml. Where that rule
+# tries to distinguish a weakening edit from a legitimate refactor (and
+# ships 'mode: observe' because it will sometimes get that wrong),
+# tests-read-only makes no such attempt: it gates EVERY write to a file
+# matching the test-file globs behind an explicit human approval
+# ('keel allow tests-read-only --once'), refactor or not, tampering or not.
+#
+# ImpossibleBench (the reward-hacking benchmark cited in
+# test-oracle-tampering.yaml's rationale) found read-only visible tests the
+# best safety/performance balance point among the test-oracle protections it
+# evaluated — stronger than heuristic tampering detection, at the cost of
+# also gating legitimate test maintenance. That tradeoff is exactly why this
+# rule is NOT a default: this build's do-not-ship list forbids shipping a
+# default that hard-blocks (or, as here, hard-prompts) ordinary test edits,
+# because legitimate refactors touch tests constantly and a default that
+# gates all of them makes Keel an obstacle to normal engineering, not just
+# to tampering.
+#
+# It is exactly right, though, for a team that has deliberately decided test
+# files ARE a protected boundary for a given project or session — e.g. an
+# eval harness where the tests are the spec being graded against, or a
+# red-team exercise probing whether an agent will route around a control it
+# cannot edit around. For that case, copy this snippet into the project's
+# own CLAUDE.md / .keel/rules.yaml (or .keel.local.yaml for a single
+# session) yourself. 'keel init' and every default install path leave it
+# out; nothing in this build pastes it anywhere automatically.
+#
+# 'action: prompt' (not 'deny'): the point is a human sees and approves the
+# edit, not that test files can never change. 'keel allow tests-read-only
+# --once' clears a single approved edit; see docs/integrations.md for the
+# approval-gate flow this shares with every other 'action: prompt' rule.
+#
+# 'version: 1' header is this file's own self-parse header, for the same
+# reason test-oracle-tampering.yaml has one (see its comment) — copy just
+# the 'rules:' list contents into your own CLAUDE.md / .keel/rules.yaml.
+version: 1
+rules:
+  - id: tests-read-only
+    type: filesystem
+    level: balanced
+    action: prompt
+    category: verification
+    severity: medium
+    confidence: high
+    maturity: stable
+    message: >-
+      This project has opted in to tests-read-only: edits to test files
+      require explicit approval ('keel allow tests-read-only --once').
+    rationale: >-
+      ImpossibleBench (reward-hacking benchmark) found read-only visible
+      tests the best safety/performance balance among test-oracle
+      protections it evaluated. This rule is that control, offered as an
+      explicit per-project opt-in rather than a default — see the header
+      comment above for why it cannot ship as a default without violating
+      this build's do-not-ship-hard-blocking-test-edits constraint.
+    false_positives:
+      - "Every legitimate test refactor, rename, new-test addition, or obsolete-test removal also prompts — this is a deliberate blunt instrument (gates ALL test-file writes, tampering or not), not a tampering-specific detector. Use test-oracle-tampering.yaml instead if you want detection that tries to tell the difference."
+      - "A bare 'test_foo.py' OUTSIDE a tests/ directory is not covered — see the 'paths' comment below for why, and add your own project-specific pattern if you rely on that layout."
+    # This is a 'filesystem'-type rule, so its 'paths' globs are matched by
+    # the pipeline's SHARED 'pathMatches' (pipeline.ts), not the corrected
+    # matcher test-oracle-tampering.yaml's engine code ships
+    # (oracle-glob.ts). That shared matcher has a pre-existing bug (see
+    # oracle-glob.ts's header comment, found and verified while building
+    # this lane): a bare '*' that is not immediately adjacent to '**' is
+    # effectively broken — it becomes "repeat the PRECEDING character",
+    # which almost never matches what a glob author intended. Concretely,
+    # "**/*.test.*" and "**/test_*.py" do NOT match real test files under
+    # the shared matcher (verified empirically) even though they read as
+    # if they should. The list below is deliberately concrete extensions
+    # instead of a wildcard suffix, plus directory-only globs (no bare
+    # star), because those ARE the shapes the shared matcher gets right.
+    # Fixing the shared matcher itself is out of this lane's scope — see
+    # oracle-glob.ts for the full explanation and why a global fix needs
+    # its own dedicated verification, not a byproduct of an opt-in
+    # proposal file most projects will never enable.
+    paths:
+      - "**/*.test.ts"
+      - "**/*.test.tsx"
+      - "**/*.test.js"
+      - "**/*.test.jsx"
+      - "**/*.test.mjs"
+      - "**/*.test.cjs"
+      - "**/*.spec.ts"
+      - "**/*.spec.tsx"
+      - "**/*.spec.js"
+      - "**/*.spec.jsx"
+      - "**/tests/**"
+      - "**/conftest.py"
+    # No 'operations:' filter — deliberately, not an oversight. None of the
+    # real host integrations (cli/enforce.ts, daemon.ts, opencode-plugin)
+    # ever populate 'args.operation', so an 'operations:' list here would
+    # silently never match anything (verified empirically while building
+    # this lane; no-secret-files, the shipped precedent for a
+    # 'filesystem'-type rule, omits it for the same reason). Reads are
+    # already excluded at the tool-name level by the pipeline's own
+    # filesystem-rule branch (any tool starting with "read" is skipped),
+    # which is the real read/write discrimination this engine has.

@@ -21,6 +21,18 @@ const TEMPLATE = join(HERE, '..', '..', 'cli', 'templates', 'keel-enforce.js')
 const tmpHome = fs.mkdtempSync(join(os.tmpdir(), 'keel-pkg-test-'))
 process.env.HOME = tmpHome
 
+// This script runs under plain `node`, not vitest — package-verifier.ts's
+// VITEST-only registry safety net does not apply here. Nothing in this
+// file currently exercises the real self-bootstrap DEFAULT_RULES_YAML path
+// (every rules.yaml used below is pre-written before plugin.server() is
+// called, so the write-when-missing bootstrap in plugin.ts never fires —
+// see session/EVIDENCE/wave2-slop.md for the trace), but a `type: package`
+// rule will land in that constant once the unverified-package-install
+// proposal is pasted in, and a future edit to this script could easily
+// start relying on real bootstrap. Set this defensively now rather than
+// depend on that absence staying true.
+process.env.KEEL_NPM_REGISTRY = 'http://127.0.0.1:1'
+
 let failures = 0
 function check(name, ok) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`)
@@ -69,6 +81,19 @@ rules:
     verification_window_seconds: 300
     action: deny
     message: "Test required before commit or push."
+  - id: claim-without-evidence
+    type: claim
+    mode: observe
+    trigger:
+      tools: [write, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    verification_window_seconds: 300
+    action: warn
+    message: "Claimed done/fixed/tested/passing/verified/complete without a passing verification run since the last edit."
   - id: filesystem-protection
     type: filesystem
     paths: ["secrets"]
@@ -81,9 +106,16 @@ rules:
       - regex: "PRIVATE_KEY"
     action: deny
     message: "Private key content"
+  - id: no-full-secret-value
+    type: content
+    patterns:
+      - regex: "SECRETVAL_[A-Za-z0-9]{10}"
+        redact_span: true
+    action: deny
+    message: "Full-value secret pattern (redact_span: true — the match IS the whole secret, unlike content-protection's label-only PRIVATE_KEY above, which output redaction deliberately does NOT mutate — see types.ts's redact_span doc comment)."
   - id: keel-control-gate
     type: command
-    match: "keel (disable|allow|level|enforce|install|uninstall)( |$)"
+    match: "keel (disable|allow|level|enforce|install|uninstall|halt|resume)( |$)"
     action: deny
     level: protect
     message: "keel controls are user-owned"
@@ -97,7 +129,7 @@ rules:
     message: "tampering blocked"
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED)"
+    match: "rm[^|;&]*[.]opencode.plugins.|rm[^|;&]*[.]keel.(rules[.]yaml|plugins|DISABLED|HALTED)"
     action: deny
     level: protect
     message: "enforcer removal blocked"
@@ -174,7 +206,7 @@ rules:
 `)
 const hooks = await plugin.server({ directory: join(tmpHome, 'proj') })
 
-const expected = ['tool.execute.before', 'tool.execute.after', 'experimental.chat.system.transform', 'experimental.session.compacting']
+const expected = ['tool.execute.before', 'tool.execute.after', 'experimental.text.complete', 'experimental.chat.system.transform', 'experimental.session.compacting']
 check('all plugin hooks', expected.every(h => typeof hooks?.[h] === 'function'))
 
 // Self-bootstrap writes default rules.
@@ -212,6 +244,40 @@ try {
   runtimeFailureClosed = error.message.includes('Enforcement failed closed')
 }
 check('runtime hook failures fail closed', runtimeFailureClosed)
+
+// v1 M1r-2 — locked product decision: degenerate input fails closed, never
+// a silent allow. opencode types `input` as `any`; a missing/blank
+// `input.tool` used to fall back to the literal string 'unknown' and
+// evaluate anyway (toEnforceInput(input?.tool || 'unknown', ...)) — a call
+// that matches no real rule pattern in pipeline.ts (which has no
+// `tool === 'unknown'` special case) and passes through silently. This is
+// the same class of gap `keel hook <host>` had for the out-of-process
+// hosts (ParsedCall.degenerate, packages/cli/src/commands/hook.ts).
+let missingToolBlocked = false
+try {
+  await hooks['tool.execute.before']({ sessionID: 'degenerate-1' }, { args: { command: 'rm -rf /' } })
+} catch (e) {
+  missingToolBlocked = e.message.startsWith('[Keel] fail-closed-degenerate-input')
+}
+check('missing input.tool fails closed rather than evaluating as tool: unknown', missingToolBlocked)
+
+let blankToolBlocked = false
+try {
+  await hooks['tool.execute.before']({ tool: '', sessionID: 'degenerate-2' }, { args: { command: 'rm -rf /' } })
+} catch (e) {
+  blankToolBlocked = e.message.startsWith('[Keel] fail-closed-degenerate-input')
+}
+check('blank input.tool ("") fails closed the same way as missing', blankToolBlocked)
+
+// A real tool name that matches no rule must still allow — this is a
+// degenerate-input guard, not a new default-deny firewall.
+let realToolStillAllows = true
+try {
+  await hooks['tool.execute.before']({ tool: 'some_tool_no_rule_covers', sessionID: 'degenerate-3' }, { args: { anything: 1 } })
+} catch {
+  realToolStillAllows = false
+}
+check('a real (if unmatched) input.tool still allows', realToolStillAllows)
 
 await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'privacy' }, { args: { token: 'plugin-secret-value' } })
 const traceText = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
@@ -275,15 +341,27 @@ const controlGated = async (sessionId, command) => {
   // First violation warns, repeat denies — but the rule may already be
   // escalated by an earlier check in this session, so accept either a warn
   // on the first call or an immediate deny; the SECOND call must deny.
+  //
+  // On any unexpected outcome, print the actual command and both attempts'
+  // results before returning — a plain boolean here gave no way to tell "the
+  // rule genuinely didn't match" from "something else threw and got silently
+  // swallowed by the message-prefix check," which cost real time diagnosing
+  // a Windows CI failure this couldn't distinguish (see git blame).
+  let firstOutcome = 'no error'
   try {
     await hooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
   } catch (e) {
+    firstOutcome = e.message
     if (e.message.startsWith('[Keel]')) return true
   }
   try {
     await hooks['tool.execute.before']({ tool: 'bash', sessionID: sessionId }, { args: { command } })
+    console.error(`controlGated DEBUG: neither call denied. command=${JSON.stringify(command)} firstOutcome=${JSON.stringify(firstOutcome)} secondOutcome=no error`)
     return false
   } catch (e) {
+    if (!e.message.startsWith('[Keel]')) {
+      console.error(`controlGated DEBUG: second call threw a NON-Keel error. command=${JSON.stringify(command)} firstOutcome=${JSON.stringify(firstOutcome)} secondOutcome=${JSON.stringify(e.message)}`)
+    }
     return e.message.startsWith('[Keel]')
   }
 }
@@ -291,14 +369,85 @@ check('keel disable is blocked for agents', await controlGated('control-1', 'kee
 check('keel allow self-approval is blocked', await controlGated('control-2', 'keel allow no-force-push --once'))
 check('keel level dial-down is blocked', await controlGated('control-3', 'keel level sprint --project'))
 check('rm of the plugin file is blocked', await controlGated('control-4', `rm ${join(tmpHome, '.opencode', 'plugins', 'keel-enforce.js')}`))
+// no-rules-tampering is `level: protect` — it now denies on the FIRST hit
+// (a floor with a warn-once grace is not un-bypassable), so accept either
+// an immediate deny on the first call or the classic warn-then-deny on the
+// second, the same tolerant shape as controlGated above.
 let rulesWriteBlocked = false
-await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
 try {
   await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
 } catch (e) {
   rulesWriteBlocked = e.message.startsWith('[Keel]')
 }
+if (!rulesWriteBlocked) {
+  try {
+    await hooks['tool.execute.before']({ tool: 'write', sessionID: 'control-5' }, { args: { filePath: join(tmpHome, '.keel', 'rules.yaml'), content: 'x' } })
+  } catch (e) {
+    rulesWriteBlocked = e.message.startsWith('[Keel]')
+  }
+}
 check('rules.yaml writes are blocked', rulesWriteBlocked)
+check('keel halt is blocked for agents', await controlGated('control-6', 'keel halt'))
+check('keel resume is blocked for agents', await controlGated('control-7', 'keel resume'))
+
+// `keel halt`'s latch — this plugin has its OWN isHalted()/HALTED_PATH
+// check (bundled separately from packages/core/src/enforce/pipeline.ts,
+// see plugin.ts's header comment on HALTED_PATH), so this is the ONLY
+// place that actually exercises the halt gate on the OpenCode host. Write
+// the real sentinel file directly (mirroring how a real `keel halt` run
+// would leave it) rather than going through the CLI — this script runs
+// under plain `node`, not a shim that can spawn the CLI binary.
+{
+  const haltPath = join(tmpHome, '.keel', 'HALTED')
+  fs.writeFileSync(haltPath, JSON.stringify({ halted_at: new Date().toISOString(), reason: 'load-test halt', auto_clear_on_restart: false }))
+  let halted = false
+  let haltMessage = ''
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-1' }, { args: { command: 'echo perfectly-harmless' } })
+  } catch (e) {
+    halted = e.message.startsWith('[Keel] keel-halted:')
+    haltMessage = e.message
+  }
+  check('a halt sentinel denies an otherwise-harmless call, on the FIRST call (no warn-once grace)', halted)
+  check('the halt deny message names the reason and keel resume', haltMessage.includes('load-test halt') && haltMessage.includes('keel resume'))
+
+  // Halt wins over DISABLED even when both sentinels are present — write
+  // DISABLED too (which alone would ALLOW every call) and confirm the
+  // halt still denies.
+  const disabledPath = join(tmpHome, '.keel', 'DISABLED')
+  fs.writeFileSync(disabledPath, JSON.stringify({ disabled_at: new Date().toISOString(), expires_at: null, reason: 'should not matter' }))
+  let stillHalted = false
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-2' }, { args: { command: 'echo also-harmless' } })
+  } catch (e) {
+    stillHalted = e.message.startsWith('[Keel] keel-halted:')
+  }
+  check('halt wins over DISABLED when both sentinels are present', stillHalted)
+  fs.rmSync(disabledPath, { force: true })
+
+  // Corrupt sentinel fails closed (stays halted), same polarity check as
+  // pipeline.test.ts's core-level assertion — verified here too because
+  // this plugin has its own separate isHalted() implementation.
+  fs.writeFileSync(haltPath, '{not-json')
+  let corruptStillHalted = false
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-3' }, { args: { command: 'echo corrupt-sentinel' } })
+  } catch (e) {
+    corruptStillHalted = e.message.startsWith('[Keel] keel-halted:')
+  }
+  check('a corrupt halt sentinel fails closed (stays halted) rather than throwing an unrelated error', corruptStillHalted)
+
+  // Clean up so the rest of this script runs under normal enforcement.
+  fs.rmSync(haltPath, { force: true })
+  let clearedAfterResume = false
+  try {
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'halt-4' }, { args: { command: 'echo normal-again' } })
+    clearedAfterResume = true
+  } catch (e) {
+    clearedAfterResume = false
+  }
+  check('removing the sentinel resumes normal enforcement', clearedAfterResume)
+}
 
 // Core rule types and metadata are evaluated by the same bundled pipeline.
 const checkRule = async (tool, args, id) => {
@@ -334,11 +483,29 @@ const cleanHooks = await plugin.server({ directory: join(tmpHome, 'clean') })
 let priorityAllowed = true
 try { await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-6' }, { args: { command: 'priority-check' } }) } catch { priorityAllowed = false }
 check('priority metadata selects higher priority rule', priorityAllowed)
+// context and unless metadata exempt these three from enforcement.
+// `level-protected` used to be grouped in this same loop, but that was
+// never a genuine level exemption: mergeRules() has always treated
+// `level: protect` as a floor — "active at EVERY dial" (rule-parser.ts) —
+// so at the balanced dial here it was firing all along; it only *looked*
+// exempt because the old warn-first pass didn't throw. gate-2's
+// block-first change removed that disguise, so it is asserted on its own
+// below with the outcome it actually has.
 let metadataAllowed = true
-for (const command of ['level-protected', 'ci-only', 'dangerous-action safe', 'reasoned-action']) {
+for (const command of ['ci-only', 'dangerous-action safe', 'reasoned-action']) {
   try { await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-7', reasoning: command === 'reasoned-action' ? 'approved' : '' }, { args: { command } }) } catch { metadataAllowed = false }
 }
-check('level context and unless metadata allow exemptions', metadataAllowed)
+check('context and unless metadata allow exemptions', metadataAllowed)
+
+// `level: protect` is a floor: never filtered by dial, and (since gate-2)
+// denies on the first hit. There is no dial at which this rule is inactive.
+let levelProtectedDenied = false
+try {
+  await cleanHooks['tool.execute.before']({ tool: 'bash', sessionID: 'types-7b' }, { args: { command: 'level-protected' } })
+} catch (e) {
+  levelProtectedDenied = e.message.startsWith('[Keel]')
+}
+check('level: protect rule is a floor, not a dial-scoped exemption', levelProtectedDenied)
 
 // Fix rules mutate the command args in place instead of throwing.
 // Runs on a fresh server instance: the main fixture's verification obligation
@@ -399,6 +566,140 @@ try {
 }
 check('worktree changes create verification obligation', externalBoundaryDenied)
 
+// ── real output redaction (sprint/lane-c2) ───────────────────────────
+// Live-verified end to end against a real installed opencode (this file's
+// own "OpenCode auto-load probe" below, plus
+// session/transcripts/opencode-tool-execute-after-mutation-probe.txt) that
+// mutating tool.execute.after's `output` object actually rewrites what the
+// MODEL receives, not just what the terminal renders. These checks exercise
+// the wiring in-process: `no-full-secret-value` (this file's own fixture
+// rules.yaml, top of this file) has `redact_span: true` — its match IS the
+// whole secret — and is action: deny — an enforcing rule, so it must
+// actually redact.
+const redactDir = join(tmpHome, 'redact-project')
+fs.mkdirSync(redactDir, { recursive: true })
+const redactHooks = await plugin.server({ directory: redactDir })
+
+const secretOutput = { title: 'cat secrets.env', output: 'token: SECRETVAL_abc123defg\ndone', metadata: { exit: 0, output: 'token: SECRETVAL_abc123defg\ndone' } }
+await redactHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-1', callID: 'c1', args: { command: 'cat secrets.env' } },
+  secretOutput,
+)
+check('MUST-REDACT: output.output no longer contains the raw secret', !secretOutput.output.includes('SECRETVAL_abc123defg'))
+check('MUST-REDACT: output.output carries an attributed redaction marker', secretOutput.output.includes('[redacted-by-keel:no-full-secret-value]'))
+check('MUST-REDACT: output.metadata\'s duplicate copy is ALSO redacted (closes the metadata hole)', !secretOutput.metadata.output.includes('SECRETVAL_abc123defg') && secretOutput.metadata.output.includes('[redacted-by-keel:no-full-secret-value]'))
+
+const redactTrace = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+  .map(line => { try { return JSON.parse(line) } catch { return null } })
+  .filter(Boolean)
+check('MUST-REDACT: a redact-action trace entry is recorded, distinct from the allow/"Tool completed" entry', redactTrace.some(e => e.session_id === 'redact-1' && e.action === 'redact' && e.rule_id === 'no-full-secret-value' && e.hook === 'tool.execute.after'))
+
+// redact_span correctness (found in review before this shipped, see
+// pipeline.ts's evaluateOutput() and types.ts's redact_span doc comment):
+// `content-protection`'s pattern (`PRIVATE_KEY`, no redact_span) matches
+// only a LABEL, not a value that follows it. It must NEVER mutate — a
+// partial redaction that strips the label and leaves a real value sitting
+// right next to a "[redacted]" marker would be a false-confidence signal
+// worse than no redaction at all.
+const labelOnlyOutput = { title: 'cat labeled.env', output: 'PRIVATE_KEY=realvalue123\ndone', metadata: { exit: 0 } }
+await redactHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-label', callID: 'c-label', args: { command: 'cat labeled.env' } },
+  labelOnlyOutput,
+)
+check('a label-only content match (no redact_span) is left FULLY byte-identical, value included', labelOnlyOutput.output === 'PRIVATE_KEY=realvalue123\ndone')
+
+const cleanOutput = { title: 'echo ok', output: 'build succeeded, 0 errors', metadata: { exit: 0, output: 'build succeeded, 0 errors' } }
+await redactHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-2', callID: 'c2', args: { command: 'echo ok' } },
+  cleanOutput,
+)
+check('MUST-NOT-FIRE: clean output is left byte-identical', cleanOutput.output === 'build succeeded, 0 errors' && cleanOutput.metadata.output === 'build succeeded, 0 errors')
+
+// Regression: the trace must never claim a redaction that was never
+// applied. `field-sep-collision`'s pattern matches the literal text of
+// plugin.ts's own FIELD_SEP batching delimiter — when title+metadata are
+// joined and scanned together, the match consumes the delimiter itself, so
+// splitting the redacted text back apart by that same delimiter produces
+// FEWER parts than fields went in. That mismatch must bail out WITHOUT
+// mutating title/metadata AND without recording a redact trace entry —
+// found in review before this shipped: recordRedaction() used to run
+// inside the scan step, before the caller checked whether the split
+// actually succeeded.
+//
+// This rule is deliberately NOT added to the shared global rules.yaml at
+// the top of this file: doing so once (an earlier version of this test)
+// made EVERY OTHER multi-field batch in this whole suite collide with it
+// too — any title+metadata join contains the literal delimiter text, so a
+// rule matching that text fires on every batched scan process-wide, not
+// just this one case. A dedicated project directory with its own
+// project-scoped rules.yaml keeps the collision contained to this test.
+const sepCollisionDir = join(tmpHome, 'sep-collision-project')
+fs.mkdirSync(join(sepCollisionDir, '.keel'), { recursive: true })
+fs.writeFileSync(join(sepCollisionDir, '.keel', 'rules.yaml'), `version: 1
+rules:
+  - id: field-sep-collision
+    type: content
+    patterns:
+      - regex: "KEEL-FIELD-SEP"
+        redact_span: true
+    action: deny
+    message: "Regression fixture only."
+`)
+const sepCollisionHooks = await plugin.server({ directory: sepCollisionDir })
+const sepOutput = { title: 'a', output: '', metadata: { exit: 0, note: 'b' } }
+await sepCollisionHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'redact-sep-collision', callID: 'c-sep', args: {} },
+  sepOutput,
+)
+check('field/delimiter collision: title is left unmutated on a split-count mismatch', sepOutput.title === 'a')
+check('field/delimiter collision: metadata is left unmutated on a split-count mismatch', sepOutput.metadata.note === 'b')
+const sepTrace = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+  .map(line => { try { return JSON.parse(line) } catch { return null } })
+  .filter(Boolean)
+check('field/delimiter collision: NO redact trace entry is recorded for the unapplied mutation', !sepTrace.some(e => e.session_id === 'redact-sep-collision' && e.action === 'redact'))
+
+// A redaction-scan failure must never turn into a lost verification/outcome
+// record — the try/catch around redactToolOutput() in plugin.ts exists
+// specifically so a malformed `output` object degrades to "left as-is,"
+// not to this hook throwing and the host marking the call failed.
+let malformedOutputSurvived = true
+try {
+  await redactHooks['tool.execute.after'](
+    { tool: 'bash', sessionID: 'redact-3', callID: 'c3', args: { command: 'true' } },
+    null,
+  )
+} catch { malformedOutputSurvived = false }
+check('a null/malformed output object does not crash tool.execute.after', malformedOutputSurvived)
+
+// A redaction scan that actually THROWS (as opposed to a clean "nothing
+// found") must not vanish with zero trace record. redactToolOutput's caller
+// wraps the whole call in try/catch so the hook still degrades to "output
+// left as-is" and never crashes — that fail-open BEHAVIOR is asserted
+// first — but the failure itself must be independently discoverable via a
+// distinct `redaction-scan-failed` trace entry (recordRedactionScanFailure
+// in plugin.ts), not indistinguishable from a clean scan that found
+// nothing to redact.
+const throwingOutput = { title: 'cat scan-fail.env', metadata: { exit: 0 } }
+Object.defineProperty(throwingOutput, 'output', { get() { throw new Error('synthetic redaction-scan failure') } })
+let scanFailureSurvived = true
+try {
+  await redactHooks['tool.execute.after'](
+    { tool: 'bash', sessionID: 'redact-scan-fail', callID: 'c-scan-fail', args: { command: 'cat scan-fail.env' } },
+    throwingOutput,
+  )
+} catch { scanFailureSurvived = false }
+check('a thrown redaction scan degrades to fail-open without crashing the hook', scanFailureSurvived)
+const scanFailureTrace = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+  .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+  .map(line => { try { return JSON.parse(line) } catch { return null } })
+  .filter(Boolean)
+check(
+  'MUST-RECORD: a thrown redaction scan leaves a distinct redaction-scan-failed trace entry, not zero trace',
+  scanFailureTrace.some(e => e.session_id === 'redact-scan-fail' && e.action === 'redaction-scan-failed' && e.rule_id === 'redaction-scan-failed' && e.hook === 'tool.execute.after'),
+)
+
 // Requirements injection with a requirements file present.
 fs.mkdirSync(join(tmpHome, '.keel'), { recursive: true })
 fs.writeFileSync(join(tmpHome, '.keel', 'requirements.md'), '## Test\n- must run tests\n')
@@ -415,7 +716,9 @@ check('session.compacting embedding', comp.context.some(c => c.includes('must ru
 // Floor semantics: every rule is active at every dial; the dial softens
 // enforcement globally (sprint downgrades deny to warn), and rules marked
 // `level: protect` are exempt from the downgrade — never hidden, never
-// softened.
+// softened, AND block on the very first hit at every dial (not just at the
+// protect dial) — a floor that warns once before blocking is not
+// un-bypassable.
 const dialHome = join(tmpHome, 'dial')
 fs.mkdirSync(join(dialHome, '.keel'), { recursive: true })
 const dialRules = (level, ids) => `version: 1
@@ -460,13 +763,13 @@ const b1 = await dialCall('dial-b1', 'dial-balanced-token')
 const b2 = await dialCall('dial-b2', 'dial-balanced-token')
 check('balanced: deny warns then blocks', b1 === 'allowed' && b2 === 'denied')
 check('balanced: sprint-level rule stays active', (await dialCall('dial-b3', 'dial-sprint-token')) === 'allowed')
-check('balanced: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-b4', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-b5', 'dial-protect-token')) === 'denied')
+check('balanced: protect-level rule is a floor (denies on first hit)', (await dialCall('dial-b4', 'dial-protect-token')) === 'denied' && (await dialCall('dial-b5', 'dial-protect-token')) === 'denied')
 check('balanced: balanced-level rule fires (warns)', (await dialCall('dial-b6', 'dial-filtered-token')) === 'allowed')
 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('sprint', ['s-warn', 's-sprint', 's-protect', 's-filter']))
 check('sprint: unleveled deny rule downgraded to warn', (await dialCall('dial-s1', 'dial-balanced-token')) === 'allowed' && (await dialCall('dial-s2', 'dial-balanced-token')) === 'allowed')
 check('sprint: deny downgraded to warn', (await dialCall('dial-s3', 'dial-sprint-token')) === 'allowed' && (await dialCall('dial-s4', 'dial-sprint-token')) === 'allowed')
-check('sprint: protect-level rule is a floor (warns then blocks)', (await dialCall('dial-s5', 'dial-protect-token')) === 'allowed' && (await dialCall('dial-s6', 'dial-protect-token')) === 'denied')
+check('sprint: protect-level rule is a floor (denies on first hit)', (await dialCall('dial-s5', 'dial-protect-token')) === 'denied' && (await dialCall('dial-s6', 'dial-protect-token')) === 'denied')
 check('sprint: balanced-level rule is filtered out', (await dialCall('dial-s7', 'dial-filtered-token')) === 'allowed' && (await dialCall('dial-s8', 'dial-filtered-token')) === 'allowed')
 
 fs.writeFileSync(join(dialHome, '.keel', 'rules.yaml'), dialRules('protect', ['p-warn', 'p-sprint', 'p-protect', 'p-filter']))
@@ -577,6 +880,189 @@ await hooks['tool.execute.after'](
 const afterRead = fs.readdirSync(join(tmpHome, '.keel', 'traces'))
   .map(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8')).join('').split('post-edit-syntax').length
 check('post-edit check only runs on edits', beforeRead === afterRead)
+
+// ── concurrent sessions: pendingSyntaxFindings must not cross-deliver ──────
+// Regression for the unkeyed-shared-queue bug: pendingSyntaxFindings used to
+// be one plain array, so whichever session's before() fired NEXT drained and
+// received the WHOLE queue tagged with its own sessionID — session A's
+// post-edit finding misdelivered to session B's next tool call. Two
+// concurrent sessions in the same project directory, each editing their OWN
+// broken file, must each receive only their own finding.
+const concurSyntaxDir = join(tmpHome, 'concurrent-syntax-project')
+fs.mkdirSync(concurSyntaxDir, { recursive: true })
+const concurSyntaxSurfaced = []
+const concurSyntaxClient = { app: { log: (entry) => concurSyntaxSurfaced.push(entry?.body || {}) } }
+const concurSyntaxHooks = await plugin.server({ directory: concurSyntaxDir, client: concurSyntaxClient })
+
+fs.writeFileSync(join(concurSyntaxDir, 'session-a.ts'), 'const a: number = ;')
+fs.writeFileSync(join(concurSyntaxDir, 'session-b.ts'), 'const b: number = ;')
+// Session A edits first, queuing its finding under key 'concur-syntax-a'.
+await concurSyntaxHooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'concur-syntax-a', args: { filePath: 'session-a.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+// Session B edits second, queuing its OWN finding under key 'concur-syntax-b'.
+await concurSyntaxHooks['tool.execute.after'](
+  { tool: 'write', sessionID: 'concur-syntax-b', args: { filePath: 'session-b.ts' } },
+  { title: '', output: '', metadata: {} },
+)
+// Session B's next tool call fires FIRST (the adversarial ordering the bug
+// depended on) — it must surface only session-b.ts, never session-a.ts.
+await concurSyntaxHooks['tool.execute.before']({ tool: 'read', sessionID: 'concur-syntax-b' }, { args: { filePath: 'session-b.ts' } })
+const bMessages = concurSyntaxSurfaced.filter(e => e?.extra?.session_id === 'concur-syntax-b').map(e => e.message || '')
+check('concurrent sessions: session B receives its own post-edit finding', bMessages.some(m => m.includes('session-b.ts')))
+check('concurrent sessions: session B never receives session A\'s finding', !bMessages.some(m => m.includes('session-a.ts')))
+
+// Session A's next tool call must still deliver ITS OWN finding — proving it
+// was not lost, silently consumed, or misdelivered to B above.
+await concurSyntaxHooks['tool.execute.before']({ tool: 'read', sessionID: 'concur-syntax-a' }, { args: { filePath: 'session-a.ts' } })
+const aMessages = concurSyntaxSurfaced.filter(e => e?.extra?.session_id === 'concur-syntax-a').map(e => e.message || '')
+check('concurrent sessions: session A still receives its own post-edit finding afterward', aMessages.some(m => m.includes('session-a.ts')))
+check('concurrent sessions: session A never receives session B\'s finding', !aMessages.some(m => m.includes('session-b.ts')))
+
+// ── concurrent sessions: verification warn-once escalation must not cross ──
+// Regression for the missing-sessionID escalation key: verificationWarnings
+// used to be keyed `${rule_id}:${directory}` only, so session A's genuinely-
+// first warn "used up" the shared budget and wrongly hard-blocked session
+// B's OWN genuinely-first occurrence of the same rule. The pending
+// obligation itself is keyed by (rule, cwd) — not session — in
+// verification.ts, so one session's edit arms the obligation for the whole
+// project, exactly the shape a real two-agent-in-one-repo session looks
+// like; what must stay session-scoped is the warn-then-deny ESCALATION.
+const concurVerifyDir = join(tmpHome, 'concurrent-verify-project')
+fs.mkdirSync(join(concurVerifyDir, 'src'), { recursive: true })
+fs.mkdirSync(join(concurVerifyDir, '.keel'), { recursive: true })
+// The boundary token deliberately avoids "git commit" — this project also
+// inherits the shared global rules.yaml written at the top of this file
+// (hierarchy is global+project+local, additive), which includes a
+// `must-sign-commits` type:fix rule matching "git commit(?!.*--signoff)".
+// A literal "git commit" command here would race that unrelated fix rule
+// for the same call and make this test's outcome depend on rule-priority
+// ordering instead of on the thing actually under test.
+fs.writeFileSync(join(concurVerifyDir, '.keel', 'rules.yaml'), `version: 1
+rules:
+  - id: concur-verify
+    type: verification
+    trigger:
+      tools: [write, edit]
+      path: "src/"
+      pattern: "src/"
+    satisfy:
+      tools: [Bash]
+      pattern: "(npm test|npm run test|vitest|jest)"
+    boundaries:
+      commit:
+        pattern: "commit-concur-verify-boundary"
+        action: warn
+    verification_window_seconds: 300
+    action: deny
+    message: "Test required before commit."
+`)
+const concurVerifyHooks = await plugin.server({ directory: concurVerifyDir })
+// One edit arms the shared (rule, cwd) obligation for the whole project.
+await concurVerifyHooks['tool.execute.before']({ tool: 'write', sessionID: 'concur-verify-a' }, { args: { filePath: 'src/shared.ts', content: 'x' } })
+
+let aFirstCommitThrew = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-a' }, { args: { command: 'commit-concur-verify-boundary a1' } })
+} catch { aFirstCommitThrew = true }
+check('concurrent verification: session A\'s genuinely-first warn does not throw', !aFirstCommitThrew)
+
+// Session B's FIRST commit against the same shared obligation must ALSO
+// just warn — it is B's own first offense, even though A already warned.
+let bFirstCommitThrew = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-b' }, { args: { command: 'commit-concur-verify-boundary b1' } })
+} catch { bFirstCommitThrew = true }
+check('concurrent verification: session B\'s genuinely-first warn is NOT cross-escalated by session A\'s prior warn', !bFirstCommitThrew)
+
+// Each session's OWN repeat still escalates to a hard block, independently.
+let aSecondCommitDenied = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-a' }, { args: { command: 'commit-concur-verify-boundary a2' } })
+} catch (e) { aSecondCommitDenied = e.message.startsWith('[Keel]') }
+check('concurrent verification: session A\'s own repeat still escalates to a hard block', aSecondCommitDenied)
+
+let bSecondCommitDenied = false
+try {
+  await concurVerifyHooks['tool.execute.before']({ tool: 'bash', sessionID: 'concur-verify-b' }, { args: { command: 'commit-concur-verify-boundary b2' } })
+} catch (e) { bSecondCommitDenied = e.message.startsWith('[Keel]') }
+check('concurrent verification: session B\'s own repeat also escalates to a hard block, independently of A', bSecondCommitDenied)
+
+// ── claim-to-evidence real reach: experimental.text.complete (v0.4 Phase 1) ──
+//
+// The channel a real OpenCode session drives for the agent's own completed
+// output — end-to-end through the ACTUAL plugin hook, not the grammar unit
+// or the bare pipeline method (both covered in packages/core's claim.test.ts).
+// Session ids are unique per case so entries can be found precisely instead
+// of by fragile whole-file substring counting.
+function traceEntries() {
+  return fs.readdirSync(join(tmpHome, '.keel', 'traces'))
+    .flatMap(f => fs.readFileSync(join(tmpHome, '.keel', 'traces', f), 'utf8').split('\n').filter(Boolean))
+    .map(line => { try { return JSON.parse(line) } catch { return null } })
+    .filter(Boolean)
+}
+const claimFired = (sessionId) => traceEntries().some(e =>
+  e.session_id === sessionId && e.hook === 'experimental.text.complete'
+  && e.rule_id === 'claim-without-evidence' && e.observed_action === 'warn')
+
+const claimDir = join(tmpHome, 'claim-project')
+fs.mkdirSync(claimDir, { recursive: true })
+const claimHooks = await plugin.server({ directory: claimDir })
+
+// MUST-FIRE: an edit under src/, then a completed assistant utterance
+// claiming done with no test run since — the exact shape the plan's
+// "give claim-to-evidence real reach" gap describes.
+await claimHooks['tool.execute.before']({ tool: 'write', sessionID: 'claim-fire' }, { args: { filePath: 'src/thing.ts', content: 'x' } })
+await claimHooks['experimental.text.complete'](
+  { sessionID: 'claim-fire', messageID: 'msg-1', partID: 'part-1' },
+  { text: 'Done, all tests pass.' },
+)
+check('claim channel MUST-FIRE: edit then a completed "done" utterance with no test run since', claimFired('claim-fire'))
+
+// MUST-NOT-FIRE: the obligation was discharged by a real passing test run
+// (tool.execute.after, exit 0) before the same claim text arrives.
+await claimHooks['tool.execute.before']({ tool: 'write', sessionID: 'claim-satisfied' }, { args: { filePath: 'src/thing2.ts', content: 'x' } })
+await claimHooks['tool.execute.after'](
+  { tool: 'bash', sessionID: 'claim-satisfied', callID: 'test-ok', args: { command: 'npm test' } },
+  { title: 'npm test', output: 'passed', metadata: { exit: 0 } },
+)
+await claimHooks['experimental.text.complete'](
+  { sessionID: 'claim-satisfied', messageID: 'msg-2', partID: 'part-2' },
+  { text: 'Done, all tests pass.' },
+)
+check('claim channel MUST-NOT-FIRE: obligation discharged by a real passing run before the claim', !claimFired('claim-satisfied'))
+
+// MUST-NOT-FIRE: hedge/WIP text — same grammar suppression as every other channel.
+await claimHooks['tool.execute.before']({ tool: 'write', sessionID: 'claim-hedge' }, { args: { filePath: 'src/thing3.ts', content: 'x' } })
+await claimHooks['experimental.text.complete'](
+  { sessionID: 'claim-hedge', messageID: 'msg-3', partID: 'part-3' },
+  { text: 'Still working on this, tests not run yet.' },
+)
+check('claim channel MUST-NOT-FIRE: hedge/WIP text stays silent', !claimFired('claim-hedge'))
+
+// MUST-NOT-FIRE: no edit happened at all in this project — nothing armed
+// the obligation. Pending state is keyed by (rule, cwd), not by session
+// (the same fact "no test since last edit" is shared across a project's
+// concurrent sessions) — so this needs its OWN fresh directory, not just a
+// fresh session id on claimHooks, which already has an obligation pending
+// from the MUST-FIRE case above.
+const neverArmedHooks = await plugin.server({ directory: join(tmpHome, 'claim-project-never-armed') })
+await neverArmedHooks['experimental.text.complete'](
+  { sessionID: 'claim-no-edit', messageID: 'msg-4', partID: 'part-4' },
+  { text: 'Done.' },
+)
+check('claim channel MUST-NOT-FIRE: no prior edit means no pending obligation', !claimFired('claim-no-edit'))
+
+// The hook must not throw even on a malformed/empty payload — it degrades
+// to a silent no-op, matching every other hook's fail-closed-without-
+// crashing contract.
+let textCompleteThrew = false
+try {
+  await claimHooks['experimental.text.complete']({}, {})
+  await claimHooks['experimental.text.complete'](undefined, undefined)
+} catch { textCompleteThrew = true }
+check('claim channel tolerates a malformed/empty payload without throwing', !textCompleteThrew)
 
 // dist is byte-identical to the canonical template.
 check('dist matches canonical template', readFileSync(DIST, 'utf-8') === readFileSync(TEMPLATE, 'utf-8'))

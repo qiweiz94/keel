@@ -18,18 +18,23 @@ import { evaluateCommand } from './commands/evaluate.js'
 import { testCommand, testFromAudit } from './commands/test.js'
 import { validateCommand } from './commands/validate.js'
 import { disableCommand, enableCommand } from './commands/disable.js'
+import { haltCommand, resumeCommand } from './commands/halt.js'
+import { runCommand } from './commands/run.js'
 import { suggestCommand } from './commands/suggest.js'
 import { allowCommand } from './commands/allow.js'
 import { levelCommand } from './commands/level.js'
+import { promoteCommand } from './commands/promote.js'
 import { statusCommand } from './commands/status.js'
 import { dashboardCommand } from './commands/dashboard.js'
 import { dashboardWebCommand } from './commands/dashboard-web.js'
 import { daemonCommand } from './commands/daemon.js'
 import { retrospectiveCommand } from './commands/retrospective.js'
+import { reportCommand } from './commands/report.js'
 import { receiptsCommand } from './commands/receipts.js'
 import { lessonsCommand } from './commands/lessons.js'
-import { installCommand } from './commands/install.js'
+import { installCommand, DEFAULT_RULES_YAML } from './commands/install.js'
 import { hookCommand } from './commands/hook.js'
+import { conformanceCommand } from './commands/conformance.js'
 import { gatherCommand } from './commands/gather.js'
 import { scheduleCommand } from './commands/schedule.js'
 import { watchCommand } from './commands/watch.js'
@@ -56,7 +61,7 @@ program
 
 program
   .command('check')
-  .description('Check a file or command against the policy')
+  .description("Check a file or command against Keel's enforcement rules (.keel/rules.yaml)")
   .argument('[target]', 'File path or command string to check')
   .option('-f, --file <path>', 'Check a specific file')
   .option('-c, --command <cmd>', 'Check a specific command')
@@ -120,23 +125,23 @@ program
   .option('--port <number>', 'HTTP port for gateway dashboard', '3100')
   .action(gatewayCommand)
 
-const policy = program.command('policy').description('Manage Rego/WASM policies')
+const policy = program.command('policy').description('[EXPERIMENTAL, unsupported] Stand-alone Rego/WASM policy tools — NOT wired into keel enforce/hook/daemon; see docs/comparison.md')
 
 policy
   .command('init')
-  .description('Create a sample .rego policy file')
+  .description('[EXPERIMENTAL] Create a sample .rego policy file')
   .action(policyInitCommand)
 
 policy
   .command('build')
-  .description('Compile a .rego file to .wasm (requires opa CLI)')
+  .description('[EXPERIMENTAL] Compile a .rego file to .wasm (requires the opa CLI, not bundled)')
   .argument('<file>', 'Path to .rego file')
   .option('--output <dir>', 'Output directory')
   .action(policyBuildCommand)
 
 policy
   .command('eval')
-  .description('Evaluate a WASM policy against input')
+  .description('[EXPERIMENTAL] Evaluate a WASM policy against input, standalone — not part of real-time enforcement (requires @open-policy-agent/opa-wasm, not bundled)')
   .argument('<wasm>', 'Path to .wasm file')
   .option('--input <file>', 'JSON input file')
   .action(policyEvalCommand)
@@ -145,8 +150,8 @@ policy
 
 const enforceCmd = program.command('enforce')
   .description('Enforce rules on AI agent behavior')
-  .option('--level <level>', 'Protection level: sprint, balanced, or protect', 'balanced')
-  .option('--persist', 'Persist the --level into the project rules.yaml (the speed dial)')
+  .option('--level <level>', 'Protection level for this run: sprint, balanced, or protect (omit to show the current dial; add --persist to make it the standing dial)')
+  .option('--persist', 'Persist --level into the project rules.yaml (the speed dial) — requires --level')
   .option('--action <action>', 'Override action: report, warn, deny, or fix')
   .option('--depth <depth>', 'Override depth: fast, full, or deep')
   .option('--learn', 'Learning mode: observe only, never block')
@@ -179,6 +184,15 @@ program
   .action(validateCommand)
 
 program
+  .command('conformance')
+  .description('Run the shipped OWASP Agentic Top 10 scenario suite against your own loaded rules (docs/owasp-agentic-top10.md, made runnable)')
+  .option('--level <level>', 'Protection level to evaluate against: sprint, balanced, or protect', 'balanced')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--ci', 'Exit with code 1 if any real gap is found (a "not-covered" scenario never fails)')
+  .option('--dir <path>', 'Project directory to load rules from (default: cwd)')
+  .action((options: { level?: string; json?: boolean; ci?: boolean; dir?: string }) => conformanceCommand(options))
+
+program
   .command('disable')
   .description('Disable all enforcement (kill switch)')
   .option('--until <seconds>', 'Disable for N seconds (positive integer)')
@@ -189,6 +203,28 @@ program
   .command('enable')
   .description('Re-enable enforcement after a disable')
   .action(enableCommand)
+
+program
+  .command('halt')
+  .description('Lockdown: deny every subsequent tool call until a human runs `keel resume` (no auto-expiry)')
+  .option('--reason <text>', 'Reason for halting')
+  .option('--kill', 'Also send SIGTERM/SIGKILL to a `keel run`-supervised process (see safety checks in run-kill.ts)')
+  .option('--kill-pid <pid>', 'With --kill, target one specific tracked pid instead of auto-selecting')
+  .option('--kill-all', 'With --kill, target every tracked run instead of refusing when more than one is tracked')
+  .option('--kill-grace <seconds>', 'With --kill, SIGTERM grace period before SIGKILL (default: 5)')
+  .action(haltCommand)
+
+program
+  .command('resume')
+  .description('Clear a halt set by `keel halt`')
+  .action(resumeCommand)
+
+program
+  .command('run')
+  .description('Run an agent command under keel supervision, so `keel halt --kill` can reach it even mid-flight (POSIX only — see docs)')
+  .argument('<agent-cmd...>', 'Agent command and its own arguments (use `--` before it if it has flags of its own, e.g. `keel run -- claude --dangerously-skip-permissions`)')
+  .allowUnknownOption()
+  .action(runCommand)
 
 program
   .command('evaluate')
@@ -244,6 +280,15 @@ program
   .action((options: { since?: string; project?: string; json?: boolean; write?: boolean }) => retrospectiveCommand(options))
 
 program
+  .command('report')
+  .description('What did keel do for you: blocks, warns, redirects, and observe-mode fires over a session or week')
+  .option('--since <date>', 'Window start (YYYY-MM-DD), default: last 7 days')
+  .option('--project <path>', 'Filter to a project (matches on recorded cwd)')
+  .option('--session <id>', 'Filter to a single agent session')
+  .option('--json', 'Emit machine-readable JSON')
+  .action((options: { since?: string; project?: string; session?: string; json?: boolean }) => reportCommand(options))
+
+program
   .command('schedule')
   .description('Schedule automatic keel gather/suggest runs (launchd/cron)')
   .argument('[frequency]', 'daily | weekly (omit to show status)')
@@ -272,6 +317,7 @@ program
   .description('Override a rule temporarily (user-owned — run this yourself, not through the agent)')
   .argument('<rule-id>', 'Rule ID to override')
   .option('--once', 'Allow the NEXT violation only (5 minutes if unused)')
+  .option('--session [session-id]', 'Allow every violation, but only for one agent session (auto-resolved from the audit trail, or an explicit id — useful with multiple sessions running in parallel; 24h ceiling)')
   .action(allowCommand)
 
 program
@@ -320,70 +366,52 @@ program
   .option('--project', 'Set the project level (.keel/rules.yaml) instead of global')
   .action((levelArg, options) => levelCommand(options, levelArg))
 
+program
+  .command('promote')
+  .description('Advance a mode: observe rule to warn/block (user-owned — run this yourself, not through the agent)')
+  .argument('<rule-id>', 'Rule ID to promote')
+  .option('--to <mode>', 'Target mode: warn or block (default: the next rung — observe→warn, warn→block)')
+  .option('--force', 'Skip the evidence gate (observe rules only — see promotion_fp_threshold) and promote anyway')
+  .action((ruleId: string, options: { to?: string; force?: boolean }) => promoteCommand(ruleId, options))
+
 program.parse(process.argv)
 
 /**
  * Create standalone .keel/rules.yaml with Keel enforce rules.
+ *
+ * This used to carry its own stale, second copy of a default ruleset (a
+ * 6-rule set that had drifted from DEFAULT_RULES_YAML — no-external-network
+ * was a blanket network-deny, exactly the do-not-ship guard install.ts's
+ * ruleset deliberately avoids; no-delete-outside-src had no equivalent in
+ * the tiered ruleset and was dropped rather than carried over uninspected).
+ * It now emits the SAME canonical DEFAULT_RULES_YAML `keel install` writes,
+ * so there is exactly one default ruleset in this codebase, not three —
+ * drift.test.ts asserts this structurally (no third inline `rules:` copy).
  */
 async function createEnforceInit() {
   const { existsSync, mkdirSync, writeFileSync: writeRulesFile } = await import('node:fs')
   const { join } = await import('node:path')
+  const { resolveHome } = await import('./core/home.js')
   const rulesPath = join(process.cwd(), '.keel', 'rules.yaml')
-  const rules = `version: 1
-level: balanced
-rules:
-  - id: never-force-push
-    type: command
-    match: "git push --force(?!-with-lease)"
-    action: deny
-    level: sprint
-    message: "Never force push to git branches"
-  - id: no-delete-outside-src
-    type: filesystem
-    paths: ["!/src/*"]
-    operations: [delete, overwrite]
-    action: deny
-    level: balanced
-    message: "Do not delete or overwrite files outside /src"
-  - id: must-sign-commits
-    type: command
-    match: "git commit"
-    action: fix
-    level: sprint
-    fix:
-      - pattern: "git commit"
-        replace: "git commit --signoff"
-    message: "Auto-adding --signoff to commits"
-  - id: no-external-network
-    type: network
-    match: "."
-    except: [api.github.com, registry.npmjs.org]
-    action: deny
-    level: protect
-    message: "Block external network access except GitHub and npm"
-  - id: git-history-rewrite
-    type: command
-    match: "git filter-branch|git rebase|git reset (--hard|--soft|--keep|--merge|HEAD~)|git commit --amend|git stash (drop|clear)"
-    action: prompt
-    level: sprint
-    priority: 80
-    message: "Git history mutation — this rewrites shared history. Approval required."
-  - id: publish-gate
-    type: command
-    match: "npm publish|npm unpublish|gh release create|gh release delete|gh repo delete|gh repo transfer"
-    action: prompt
-    level: sprint
-    priority: 80
-    message: "Publishing or deleting registry artifacts — approval required."
-`
   if (existsSync(rulesPath)) {
     console.log('.keel/rules.yaml already exists.')
     return
   }
+  // Project rules override global rules by id (see mergeRules), and the
+  // project file's own `level:` line wins over the global dial too. A user
+  // who already ran `keel install` and picked a level there (e.g. protect)
+  // would have that dial silently overridden the moment this writes a full
+  // project ruleset that starts at level: balanced. Warn rather than guess.
+  if (existsSync(join(resolveHome(), '.keel', 'rules.yaml'))) {
+    console.log(
+      'Note: a global ruleset exists at ~/.keel/rules.yaml. This project file will ' +
+        'take priority for any rule id it shares with the global set, including the ' +
+        '`level:` dial — check both files if enforcement behaves differently than expected.'
+    )
+  }
   mkdirSync(join(process.cwd(), '.keel'), { recursive: true })
-  writeRulesFile(rulesPath, rules, 'utf-8')
+  writeRulesFile(rulesPath, DEFAULT_RULES_YAML, 'utf-8')
   console.log('Created .keel/rules.yaml with Keel enforce rules.')
   console.log('Review it, then run `keel enforce` to activate.')
   return
-
 }

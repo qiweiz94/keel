@@ -1,9 +1,42 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execSync, spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { shouldAutoOpenBrowser } from '../commands/dashboard-web.js'
+import { rmSafe } from './helpers/fs-safe.js'
+
+// Regression guard for the browser-flood bug: the ONLY gate on the
+// `spawn('open', url)` convenience is shouldAutoOpenBrowser(). It MUST return
+// false in every non-interactive context — otherwise the dashboard-web test
+// (which sets KEEL_DASHBOARD_ALLOW_NON_TTY=1 to exercise the server) opens a
+// browser tab on every `npm test` run and floods the developer. A prior version
+// gated only on platform==darwin; this pins the correct gate so it can't regress.
+describe('dashboard --web auto-open gate (browser-flood regression guard)', () => {
+  const origTTY = process.stdin.isTTY
+  const origCI = process.env.CI
+  const origNoOpen = process.env.KEEL_NO_OPEN
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: origTTY, configurable: true })
+    if (origCI === undefined) delete process.env.CI; else process.env.CI = origCI
+    if (origNoOpen === undefined) delete process.env.KEEL_NO_OPEN; else process.env.KEEL_NO_OPEN = origNoOpen
+  })
+  const setTTY = (v: unknown) => Object.defineProperty(process.stdin, 'isTTY', { value: v, configurable: true })
+
+  it('does NOT auto-open without a TTY (the automation / test path)', () => {
+    setTTY(undefined); delete process.env.CI; delete process.env.KEEL_NO_OPEN
+    expect(shouldAutoOpenBrowser()).toBe(false)
+  })
+  it('does NOT auto-open under CI even with a TTY', () => {
+    setTTY(true); process.env.CI = '1'; delete process.env.KEEL_NO_OPEN
+    expect(shouldAutoOpenBrowser()).toBe(false)
+  })
+  it('does NOT auto-open when KEEL_NO_OPEN=1 even with a TTY', () => {
+    setTTY(true); delete process.env.CI; process.env.KEEL_NO_OPEN = '1'
+    expect(shouldAutoOpenBrowser()).toBe(false)
+  })
+})
 
 /**
  * `keel dashboard --web` security and function tests:
@@ -42,10 +75,10 @@ rules:
 })
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true })
+  rmSafe(dir); rmSafe(home)
 })
 
-function startServer(): Promise<{ port: number; token: string; kill: () => void }> {
+function startServer(): Promise<{ port: number; token: string; kill: () => Promise<void> }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, 'dashboard', '--web'], {
       cwd: dir,
@@ -56,12 +89,25 @@ function startServer(): Promise<{ port: number; token: string; kill: () => void 
     // first and this descriptive message ("server did not start: <stdout>")
     // is replaced by a bare "Test timed out in 5000ms" that says nothing.
     const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 10000)
+    // kill() waits for the child to actually exit before resolving, not just
+    // for the kill signal to be sent — on Windows, terminating the process
+    // does not synchronously release its handles on files inside dir/home,
+    // and this test's afterEach runs rmSafe() on both right after the test
+    // body returns. Firing kill() and moving on raced that teardown against
+    // the still-exiting child, throwing EBUSY on rmdir (real Windows CI
+    // failure, not reproducible locally where the race window is far
+    // narrower).
+    const kill = () => new Promise<void>(res => {
+      if (child.exitCode !== null || child.signalCode !== null) { res(); return }
+      child.once('exit', () => res())
+      child.kill()
+    })
     child.stdout.on('data', (chunk: Buffer) => {
       out += chunk.toString()
       const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)\/#token=([a-f0-9]+)/)
       if (m) {
         clearTimeout(timer)
-        resolve({ port: Number(m[1]), token: m[2], kill: () => child.kill() })
+        resolve({ port: Number(m[1]), token: m[2], kill })
       }
     })
     child.on('exit', (code) => clearTimeout(timer) && reject(new Error(`server exited ${code}: ${out}`)))
@@ -95,7 +141,7 @@ describe('keel dashboard --web', () => {
       const page = await fetch(`http://127.0.0.1:${server.port}/`)
       expect(page.status).toBe(200)
     } finally {
-      server.kill()
+      await server.kill()
     }
   }, SPAWN_TIMEOUT_MS)
 
@@ -112,7 +158,7 @@ describe('keel dashboard --web', () => {
       expect(body.ok).toBe(true)
       expect(readFileSync(join(home, '.keel', 'rules.yaml'), 'utf-8')).toMatch(/^level: protect$/m)
     } finally {
-      server.kill()
+      await server.kill()
     }
   }, SPAWN_TIMEOUT_MS)
 
@@ -126,7 +172,7 @@ describe('keel dashboard --web', () => {
       })
       expect(res.status).toBe(401)
     } finally {
-      server.kill()
+      await server.kill()
     }
   }, SPAWN_TIMEOUT_MS)
 })

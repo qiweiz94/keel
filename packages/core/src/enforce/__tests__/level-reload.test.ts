@@ -3,12 +3,25 @@ import { ActionCache, ContentTracker } from '../cache.js'
 import { SequenceDetector } from '../sequencer.js'
 import { FlowTracker } from '../flow-tracker.js'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadRuleHierarchy, parseRulesContent } from '../rule-parser.js'
+import { loadRuleHierarchy, parseRulesContent, dialAction } from '../rule-parser.js'
 import { StateManager } from '../state-manager.js'
-import type { ProtectionLevel } from '../../types.js'
+import type { KeelRule, ProtectionLevel } from '../../types.js'
+import { rmSafe } from './helpers/fs-safe.js'
+
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. The describe
+// blocks below that redirect process.env.HOME to a per-block tmp dir in
+// beforeAll are already isolated by that redirect, but the "minimum-dial
+// filter" block's `dialPipeline()` does not touch HOME at all and would
+// otherwise hit the real ambient HOME (see match-surface.test.ts's
+// `noopOverrideStore`, same fix, same root cause) — applied to every
+// construction site here for defense in depth.
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
 
 function hashRulesFile(p: string): string {
   if (!existsSync(p)) return ''
@@ -23,12 +36,23 @@ describe('dial level changes apply on the next call (no one-call lag)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'level-reload-'))
   const rulesPath = join(dir, '.keel', 'rules.yaml')
   const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  // Isolate ~/.keel (state, overrides, sentinel) so the test never touches
-  // the host's real enforcement state.
-  const previousHome = process.env.HOME
-  process.env.HOME = home
+  let previousHome: string | undefined
+  let previousStateDir: string | undefined
   const results: Array<{ label: string; action: string }> = []
   beforeAll(async () => {
+    // Isolate ~/.keel (state, overrides, sentinel) so the test never
+    // touches the host's real enforcement state. Set HERE, inside
+    // beforeAll — not at describe-body (collection-time) scope, where a
+    // sibling describe block's own collection-time set/afterAll-reset can
+    // interleave with this one and leave process.env.HOME (and therefore
+    // StateManager's default state dir, via homedir()) pointed at the
+    // wrong place, including the real host home. KEEL_STATE_DIR is set
+    // explicitly too so state-dir resolution never falls through to
+    // homedir() at all.
+    previousHome = process.env.HOME
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.HOME = home
+    process.env.KEEL_STATE_DIR = join(home, '.keel', 'state')
     mkdirSync(join(dir, '.keel'), { recursive: true })
     const mkRules = (level: string, id: string) => `version: 1
 level: ${level}
@@ -42,7 +66,8 @@ rules:
     const pipeline = new EnforcementPipeline({
       level: 'balanced', context: 'local', cache: new ActionCache({ maxSize: 1000 }),
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
-      flowTracker: new FlowTracker(), ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
+      ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
       allowedFixTransforms: true, stateManager: new StateManager(),
       disableFile: join(home, '.keel', 'DISABLED'),
       reloadRules: () => loadRuleHierarchy(dir),
@@ -87,8 +112,10 @@ rules:
   afterAll(() => {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
-    rmSync(home, { recursive: true, force: true })
-    rmSync(dir, { recursive: true, force: true })
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
+    rmSafe(home)
+    rmSafe(dir)
   })
   it('balanced → sprint → protect transitions evaluate at the new level immediately', () => {
     // The real assertions live in beforeAll (they need the live file
@@ -136,7 +163,7 @@ rules:
     return new EnforcementPipeline({
       level: dial, context: 'local', cache: new ActionCache({ maxSize: 100 }),
       contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
-      flowTracker: new FlowTracker(),
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
       ruleHierarchy: { global: rules, user: null, project: null, local: null },
       ruleVersion: 1, allowedFixTransforms: true,
     })
@@ -154,7 +181,9 @@ rules:
     expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn')
     expect((await dialCall(p, 'sprint', 'tok-sprint')).action).toBe('warn')
     expect((await dialCall(p, 'sprint', 'tok-balanced')).action).toBe('allow')
-    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('warn')
+    // tok-protect is `level: protect` — it denies on the first hit at
+    // every dial, not just warn (floors have no warn-once grace).
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')
   })
 
   it('at balanced, every level fires', async () => {
@@ -162,7 +191,7 @@ rules:
     expect((await dialCall(p, 'balanced', 'tok-unleveled')).action).toBe('warn')
     expect((await dialCall(p, 'balanced', 'tok-sprint')).action).toBe('warn')
     expect((await dialCall(p, 'balanced', 'tok-balanced')).action).toBe('warn')
-    expect((await dialCall(p, 'balanced', 'tok-protect')).action).toBe('warn')
+    expect((await dialCall(p, 'balanced', 'tok-protect')).action).toBe('deny')
   })
 
   it('at protect, every level fires — and deny rules block FIRST (block-first dial)', async () => {
@@ -173,17 +202,128 @@ rules:
     expect((await dialCall(p, 'protect', 'tok-protect')).action).toBe('deny')
   })
 
-  it('protect-level rules deny at every dial on repeat (floors never soften)', async () => {
+  it('protect-level rules deny at every dial, including on the very first hit (floors never soften)', async () => {
     for (const dial of ['sprint', 'balanced', 'protect'] as ProtectionLevel[]) {
       const p = dialPipeline(dial)
-      if (dial === 'protect') {
-        // Block-first: the floor blocks on the FIRST violation at protect.
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
-      } else {
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('warn')
-        expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
-      }
+      // Block-first at every dial: a floor rule with no warn-once grace —
+      // this is the entire point of the change (a warn-once floor let a
+      // real force-push reach the remote on its first attempt).
+      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
+      expect((await dialCall(p, dial, 'tok-protect')).action).toBe('deny')
     }
+  })
+
+  // Explicit floor test: at sprint, a `level: protect` rule's violation
+  // denies on the FIRST hit — contrasted directly against a plain deny
+  // rule, which sprint softens to `warn` and keeps it there permanently.
+  // The floor rule skips the warn-once escalation the plain rule still
+  // goes through; that skip is what this test proves.
+  it('at sprint: a protect-floor violation denies on the first hit; a plain deny rule stays stuck at warn', async () => {
+    const p = dialPipeline('sprint')
+    expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn')
+    expect((await dialCall(p, 'sprint', 'tok-unleveled')).action).toBe('warn') // sprint softened this permanently
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')   // floor: denies immediately, no warn grace
+    expect((await dialCall(p, 'sprint', 'tok-protect')).action).toBe('deny')
+  })
+})
+
+describe('sprint auto-expiry reverts enforcement to balanced (timeout-only, no daemon, no session tracking)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'sprint-expiry-home-'))
+  const dir = mkdtempSync(join(tmpdir(), 'sprint-expiry-'))
+  const rulesPath = join(dir, '.keel', 'rules.yaml')
+  const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  let previousHome: string | undefined
+  let previousStateDir: string | undefined
+  const results: Record<string, string> = {}
+
+  beforeAll(async () => {
+    // See the sibling describe block above for why HOME/KEEL_STATE_DIR are
+    // set here, inside beforeAll, rather than at describe-body scope.
+    previousHome = process.env.HOME
+    previousStateDir = process.env.KEEL_STATE_DIR
+    process.env.HOME = home
+    process.env.KEEL_STATE_DIR = join(home, '.keel', 'state')
+    mkdirSync(join(dir, '.keel'), { recursive: true })
+    const rules = (startedAtIso: string) => `version: 1
+level: sprint
+sprint_started_at: ${startedAtIso}
+rules:
+  - id: expiry-rule
+    type: command
+    match: "expiry-token-${uid}"
+    action: deny
+    message: "m0"
+`
+    const pipeline = new EnforcementPipeline({
+      level: 'sprint', context: 'local', cache: new ActionCache({ maxSize: 1000 }),
+      contentTracker: new ContentTracker(), sequenceDetector: new SequenceDetector(),
+      flowTracker: new FlowTracker(), overrideStore: noopOverrideStore,
+      ruleHierarchy: loadRuleHierarchy(dir), ruleVersion: 1,
+      allowedFixTransforms: true, stateManager: new StateManager(),
+      disableFile: join(home, '.keel', 'DISABLED'),
+      reloadRules: () => loadRuleHierarchy(dir),
+      ruleFingerprint: () => [rulesPath].map(hashRulesFile).join(':'),
+    })
+    const call = async () => pipeline.evaluate({
+      tool: 'Bash', args: { command: `expiry-token-${uid}` }, cwd: dir,
+      session_id: 's1', turn_number: 1, context_tokens: 0,
+      level: 'sprint', context: 'local', agent: 't', subagent_of: null,
+    } as any)
+
+    // Sprint started 1h ago, default 4h expiry: still in effect — a plain
+    // deny rule stays softened to warn no matter how many times it fires.
+    writeFileSync(rulesPath, rules(new Date(Date.now() - 1 * 3_600_000).toISOString()))
+    results.fresh1 = (await call()).action
+    results.fresh2 = (await call()).action
+
+    // Rewrite with an ancient sprint_started_at (5h ago, past the 4h
+    // default): the EFFECTIVE level reverts to balanced on the very next
+    // call — no plugin restart, no daemon, just the reload this process
+    // already does when the rules file's hash changes.
+    writeFileSync(rulesPath, rules(new Date(Date.now() - 5 * 3_600_000).toISOString()))
+    results.expired1 = (await call()).action
+    results.expired2 = (await call()).action
+  })
+  afterAll(() => {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousStateDir === undefined) delete process.env.KEEL_STATE_DIR
+    else process.env.KEEL_STATE_DIR = previousStateDir
+    rmSafe(home)
+    rmSafe(dir)
+  })
+
+  it('a fresh (non-expired) sprint keeps softening deny to warn on repeat', () => {
+    expect(results.fresh1).toBe('warn')
+    expect(results.fresh2).toBe('warn')
+  })
+
+  it('an expired sprint reverts to balanced enforcement — warn once, then deny on repeat', () => {
+    expect(results.expired1).toBe('warn')
+    expect(results.expired2).toBe('deny')
+  })
+})
+
+describe('dialAction() — the pure floor + sprint-downgrade logic pipeline.enforcedAction() and `keel level`\'s dial-diff both delegate to', () => {
+  const denyRule: KeelRule = { id: 'r-deny', type: 'command', action: 'deny', message: 'm' } as KeelRule
+  const blockRule: KeelRule = { id: 'r-block', type: 'command', action: 'block', message: 'm' } as KeelRule
+  const protectFloor: KeelRule = { id: 'r-floor', type: 'command', action: 'deny', level: 'protect', message: 'm' } as KeelRule
+  const warnRule: KeelRule = { id: 'r-warn', type: 'command', action: 'warn', message: 'm' } as KeelRule
+
+  it('sprint softens a plain deny/block rule to warn', () => {
+    expect(dialAction(denyRule, 'sprint')).toBe('warn')
+    expect(dialAction(blockRule, 'sprint')).toBe('warn')
+  })
+
+  it('sprint does NOT touch a `level: protect` rule — it keeps its declared action at every dial', () => {
+    expect(dialAction(protectFloor, 'sprint')).toBe('deny')
+    expect(dialAction(protectFloor, 'balanced')).toBe('deny')
+    expect(dialAction(protectFloor, 'protect')).toBe('deny')
+  })
+
+  it('a rule that is not deny/block is unaffected by the dial regardless of level', () => {
+    expect(dialAction(warnRule, 'sprint')).toBe('warn')
+    expect(dialAction(warnRule, 'balanced')).toBe('warn')
+    expect(dialAction(warnRule, 'protect')).toBe('warn')
   })
 })

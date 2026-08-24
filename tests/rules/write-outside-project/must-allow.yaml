@@ -1,0 +1,16 @@
+cases:
+  - note: "an ordinary in-project source write"
+    tool: Write
+    args:
+      path: "src/index.ts"
+      content: "export const x = 1"
+  - note: "a write to /tmp (not in the blocked prefix list)"
+    tool: Write
+    args:
+      path: "/tmp/scratch.txt"
+      content: "scratch"
+  - note: "a project file whose name merely contains 'bashrc' as a substring, not the dotfile itself"
+    tool: Write
+    args:
+      path: "docs/bashrc-notes.md"
+      content: "notes about .bashrc conventions"

@@ -8,22 +8,105 @@ export type RuleContext = 'local' | 'ci' | 'both'
 
 export type EnforcementDepth = 'fast' | 'full' | 'deep'
 
-export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'mask' | 'fix' | 'report' | 'research' | 'redirect'
+// `mask` (redact matched content, as a rule-authorable `action:` value) is
+// still deliberately absent from rule-parser.ts's `validActions` — see that
+// comment for the current reasoning. CORRECTION (sprint/lane-c2): the
+// earlier version of that comment claimed the underlying capability itself
+// — rewriting a tool's own output after it runs — was a channel keel does
+// not have at all, citing opencode-plugin's `tool.execute.after` "the hook
+// cannot inject tool results" comment. That citation is about a DIFFERENT
+// thing (the before-hook's `redirect` action cannot fabricate a fake tool
+// RESULT to stand in for a call it interrupts) and was never actually
+// tested for the after-hook's own output-mutation capability. It has now
+// been live-tested and confirmed real for OpenCode specifically: mutating
+// `tool.execute.after`'s `output.output`/`output.metadata` fields
+// rewrites what the MODEL receives, not just what the terminal renders —
+// see session/transcripts/opencode-tool-execute-after-mutation-probe.txt
+// and docs/exfil.md's "Output redaction" section. `'redact'` below is that
+// capability's result-side vocabulary: distinct from `'redirect'`, and
+// deliberately still NOT added to rule-parser.ts's validActions — it is
+// never a rule author's `action:` choice, only a verdict
+// `EnforcementPipeline.evaluateOutput()` can itself return, because the
+// mutation only actually reaches the model on one host (OpenCode) today;
+// making it rule-authorable would silently be a no-op everywhere else.
+export type EnforcementAction = 'block' | 'deny' | 'warn' | 'prompt' | 'allow' | 'fix' | 'report' | 'research' | 'redirect' | 'redact'
 
 export type RuleType =
   | 'command' | 'filesystem' | 'content' | 'env' | 'network'
   | 'rate' | 'time' | 'sequence' | 'flow' | 'mcp'
   | 'session' | 'inheritance' | 'context' | 'verification' | 'meta'
-  | 'research' | 'stuck' | 'diagnosis'
+  | 'research' | 'stuck' | 'diagnosis' | 'claim' | 'oracle' | 'package'
+  | 'budget' | 'oscillation' | 'injection'
 
 // ── Keel configuration (YAML frontmatter in CLAUDE.md) ──────────────
 
 export interface KeelConfig {
   version: number
   level?: ProtectionLevel
+  /**
+   * One or more other rules.yaml (or CLAUDE.md/AGENTS.md frontmatter)
+   * files this file builds on — a single path or a list, resolved
+   * relative to THIS file's own directory (not cwd, not the leaf file
+   * ultimately being loaded). Extended files are parsed and merged in
+   * list order BEFORE this file's own `rules:`/`simple_rules:`, so this
+   * file can override a base policy by id. A base file may itself
+   * declare `extends`, forming a chain — resolved recursively by
+   * enforce/rule-parser.ts's resolveExtendsChain(), which also detects
+   * circular chains and enforces a max depth.
+   *
+   * This is a WITHIN-tier composition mechanism, distinct from keel's
+   * existing 4-tier global/user/project/local hierarchy (see
+   * loadRuleHierarchy in enforce/rule-parser.ts): `extends` lets any
+   * single file in any one of those tiers share a base policy with other
+   * files, resolved entirely before that tier's rules enter the 4-tier
+   * merge. A same-id override that would WEAKEN a `level: protect` floor
+   * inherited via `extends` is refused with a load-time error rather than
+   * silently resolved — see resolveExtendsChain's doc comment for why
+   * this deliberately differs from the 4-tier hierarchy's own same-id
+   * dedup (mergeRules), which silently keeps the stronger floor instead.
+   */
+  extends?: string | string[]
   rules?: KeelRule[]
+  /**
+   * Minimal/beginner-friendly rule entries — the "bring your own rule"
+   * on-ramp that replaced an earlier Rego/WASM policy-engine idea (the
+   * team decided a simple YAML shorthand was the better story than asking
+   * users to learn Rego). Each entry is a `SimpleRule`: id + type + one
+   * match-condition field appropriate to `type` + action + message, with
+   * everything else defaulted. Translated into full `KeelRule` objects by
+   * `expandSimpleRule()` (enforce/rule-parser.ts) inside
+   * `parseRulesContent()`, BEFORE `validateRules()` ever runs — by the
+   * time any other code sees a rule, it came from `rules`, whether or not
+   * it was authored there. This field is purely additive: `rules` keeps
+   * working exactly as before, and a rules file needs neither field to be
+   * valid.
+   */
+  simple_rules?: SimpleRule[]
   cache?: CacheConfig
   re_injection?: ReInjectionConfig
+  /**
+   * When `level: sprint` was last set via `keel level sprint` (ISO 8601).
+   * Written by the CLI's comment-preserving level writer; a hand-edited
+   * `level: sprint` with no timestamp never auto-expires. Paired with
+   * `sprint_expiry_hours`.
+   */
+  sprint_started_at?: string
+  /**
+   * Hours a `level: sprint` dial stays in effect before the EFFECTIVE
+   * level (read fresh from this config on every load — no daemon) reverts
+   * to balanced. Default 4; 0 disables auto-expiry. Timeout-only — there
+   * is deliberately no session-end detection.
+   */
+  sprint_expiry_hours?: number
+  /**
+   * False-positive threshold (would-block count ÷ total evaluations) below
+   * which `keel retrospective`'s promotion section recommends a `mode:
+   * observe` rule as eligible for promotion to `warn`. Default 0.001 (1 per
+   * 1000 evaluations) — read fresh from whichever rules.yaml wins
+   * precedence (project over global, mirroring `level`), never hardcoded
+   * per-rule. See enforce/rule-parser.ts's DEFAULT_PROMOTION_FP_THRESHOLD.
+   */
+  promotion_fp_threshold?: number
 }
 
 /**
@@ -36,7 +119,7 @@ export type RuleMode = 'observe' | 'warn' | 'block'
 
 export type RuleCategory =
   | 'destructive' | 'exfil' | 'escalation' | 'injection'
-  | 'resource' | 'bypass' | 'discipline' | 'workflow'
+  | 'resource' | 'bypass' | 'discipline' | 'workflow' | 'verification' | 'supply-chain'
 
 export interface KeelRule {
   id: string
@@ -44,6 +127,23 @@ export interface KeelRule {
   level?: ProtectionLevel           // sprint | balanced | protect — when is this rule active
   scope?: RuleScope                 // where in the hierarchy this rule applies
   context?: RuleContext[]           // local | ci | both
+  /**
+   * Restrict this rule to specific hosts (mergeRules' agent filter,
+   * rule-parser.ts). No `agents` field (the overwhelming majority of
+   * rules) means "applies to every host" — unchanged default behavior.
+   *
+   * IMPORTANT SCOPE NOTE: `agent` (EnforceInput.agent, below) is HOST
+   * identity — 'opencode' | 'claude-code' | 'cline' | etc, the string a
+   * host's own integration declares itself as — not a true multi-agent-
+   * fleet identity concept. No host today emits a distinct identity per
+   * agent INSTANCE (e.g. two claude-code sessions are indistinguishable
+   * by this field); `agents` therefore scopes a rule to a HOST/integration,
+   * not to "which agent" in a fleet-of-agents sense. That is a bigger,
+   * deliberately deferred question — see the project's roadmap discussion.
+   * Building real per-instance agent identity/RBAC is explicitly out of
+   * scope here; this reuses the existing host-identity semantics as-is.
+   */
+  agents?: string[]
   action: EnforcementAction
   message: string
   priority?: number                 // higher = evaluated first
@@ -82,7 +182,66 @@ export interface KeelRule {
   operations?: ('read' | 'write' | 'delete' | 'overwrite' | 'glob')[]
 
   // ── Content rules ──
-  patterns?: ({ regex?: string; prefix?: string })[]
+  /**
+   * `redact_span` (sprint/lane-c2, opt-in, default false/absent): whether
+   * this specific pattern's match span fully covers the secret bytes
+   * themselves, as opposed to merely a nearby label/signature that
+   * indicates a secret is present without bounding it. This distinction
+   * only matters to `EnforcementPipeline.evaluateOutput()` (output
+   * redaction) — Tier 5's ordinary write-side content blocking in
+   * `evaluateTiers()` ignores this field entirely and behaves exactly as
+   * before.
+   *
+   * Found the hard way: `AKIA[0-9A-Z]{16}` matches exactly an AWS access
+   * key — safe to redact in place. `aws_secret_access_key[\t ]*[:=]` and
+   * `BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY` match only a LABEL or HEADER
+   * — the actual secret (the key material, the PEM body) sits AFTER the
+   * match and is not covered by it. Blindly replacing the match span with
+   * a "[redacted]" marker on one of these would strip the label and leave
+   * the real secret sitting right next to it, verbatim — a false-
+   * confidence signal strictly worse than no redaction at all (the trace
+   * would say "redacted" while the secret shipped anyway). See
+   * `evaluateOutput()`'s own comment and docs/exfil.md's "Output
+   * redaction" section for the full reasoning and the shipped rule's
+   * per-pattern marking (`no-secrets-in-code`, install.ts).
+   *
+   * A pattern without `redact_span: true` can still MATCH and be detected
+   * (contributes to `EnforceResult.redacted_rule_ids` and the message) —
+   * it just never contributes to `redacted_output`, the same restraint
+   * `mode: observe` gets for a different reason — UNLESS `redact_widen`
+   * (below) is also set on it.
+   *
+   * `redact_widen` (opt-in, default absent — output-path-only, exactly like
+   * `redact_span` above, and with the same "Tier 5's write-side content
+   * blocking ignores this field entirely" scoping): for a pattern whose
+   * match span is a LABEL/HEADER rather than the secret itself, this tells
+   * `EnforcementPipeline.evaluateOutput()` how to extend that match forward
+   * to cover the secret bytes that follow it, so the WHOLE span (label +
+   * value/body) gets redacted instead of leaving the label stripped and the
+   * real secret sitting next to it untouched. Ignored (has no effect) on a
+   * pattern that already has `redact_span: true` — that pattern's match
+   * already IS the whole secret, nothing to widen.
+   *
+   *   - `'line'`: the label is immediately followed by its value on the
+   *     SAME line (e.g. `aws_secret_access_key[:=]<value>`) — widen to the
+   *     next newline, or a bounded character cap if no newline is found
+   *     within that bound (a single-line runaway/adversarial blob must not
+   *     turn this into an unbounded scan).
+   *   - `'pem'`: the label is a PEM `BEGIN` header whose body is MULTI-LINE,
+   *     ending at a matching `END ... PRIVATE KEY` footer — widen forward to
+   *     that footer (inclusive), or up to a bounded character cap if no
+   *     footer is found within it. A capped, footer-less widen still
+   *     redacts everything up to the cap (never leaves the match fully
+   *     unredacted just because the footer wasn't found) and is flagged as
+   *     possibly incomplete — see `EnforceResult.redaction_incomplete_rule_ids`.
+   *
+   * Both widen strategies search a BOUNDED window forward of the label
+   * match, never an unbounded regex — see pipeline.ts's
+   * `WIDEN_LINE_MAX_CHARS`/`WIDEN_PEM_MAX_CHARS` and evaluateOutput()'s own
+   * comment for the DoS-safety reasoning. See docs/exfil.md's "Output
+   * redaction" section for the full design writeup.
+   */
+  patterns?: ({ regex?: string; prefix?: string; redact_span?: boolean; redact_widen?: 'line' | 'pem' })[]
 
   // ── Network rules ──
   except?: string[]                 // domains to allow
@@ -100,6 +259,25 @@ export interface KeelRule {
   require_failure?: boolean         // only count attempts with a nonzero exit (default true)
   escalation?: Array<{ at: number; action: EnforcementAction; message: string }>  // custom ladder
 
+  // ── Oscillation rules (A→B→A→B cycle detector — sibling of `type: stuck`'s
+  // exact-repeat detector, not a replacement: `no-repeat-loops` catches the
+  // SAME failing command retried; this catches a short repeating SEQUENCE of
+  // DIFFERENT commands/fingerprints, e.g. edit file A, edit file B undoing
+  // A's change, edit A again. See oscillation-tracker.ts's header for the
+  // full detection algorithm and oscillation-store.ts for the persisted
+  // rolling-window shape. Reuses `fingerprint`, `require_failure`,
+  // `escalation`, `window_seconds` (TTL), and `match` (optional extra
+  // command-text filter on top of the tool-scope gate) from the stuck-rule
+  // fields above — only the fields below are new to this type.)
+  /** Max recent fingerprints kept per session's rolling window (default 8). Oscillation is a LOCAL pattern — this is deliberately small, not the whole session history. */
+  oscillation_window_size?: number
+  /** Smallest repeating-unit length to detect, clamped to >= 2 (default 2). A length-1 "cycle" is exact repetition — `type: stuck`'s territory — and is never matched here regardless of this value (see oscillation-tracker.ts's distinct-fingerprint guard). */
+  min_cycle_length?: number
+  /** Largest repeating-unit length to detect (default 4). */
+  max_cycle_length?: number
+  /** How many consecutive repeats of a candidate unit are required before it counts as oscillation at all, clamped to >= 2 (default 2 — A→B→A→B is the minimum evidence of a cycle, A→B alone is just two calls). */
+  min_cycle_repeats?: number
+
   // ── Diagnosis rules (root-cause marker) ──
   require_hypothesis?: boolean      // gate the action on a fresh ledger hypothesis (default true)
   hypothesis_window_seconds?: number  // hypothesis freshness window (default 900)
@@ -107,12 +285,98 @@ export interface KeelRule {
   fallback_tools?: string[]         // diagnosis EVIDENCE tools that also discharge (e.g. Bash)
   fallback_pattern?: string         // regex for fallback evidence commands (git log|blame|bisect)
 
+  // ── Oracle rules (test-tampering detector) ── deliberately reuses fields
+  // from other rule shapes rather than adding new ones:
+  //   `paths`          — test-file globs to watch for weakening EDITS
+  //                       (content-diff surface — see oracle-signatures.ts)
+  //   `match`          — a command-surface pattern, for tampering that
+  //                       happens via CLI flag rather than a file edit
+  //                       (e.g. `jest -u` / `vitest --update-snapshot`)
+  //   `trigger`        — the FAILING test-run matcher (VerificationMatcher
+  //                       with `exit: 'nonzero'`) that arms the recency
+  //                       window; reuses the exact shape research rules use
+  //                       for their research-before-solve obligation
+  //   `window_seconds` — the recency window itself (default 900s / 15min);
+  //                       a weakening edit/command outside this window of
+  //                       the last failing test run does not fire at all in
+  //                       the shipped default — see
+  //                       session/proposals/test-oracle-tampering.yaml for
+  //                       why that threshold is a hard gate, not a dial.
+
   // ── Environment rules ──
   vars?: string[]
+
+  // ── Package verification rules (slopsquatting install gate) ──
+  // No `match` needed: candidate installs are detected automatically from
+  // the command across four ecosystems — npm (npm install/i, pnpm add,
+  // yarn add, bun add), PyPI (pip install, pip3 install, uv add, uv pip
+  // install, poetry add), crates.io (cargo add), and the Go module proxy
+  // (go get, go install). See enforce/package-verifier.ts for the full
+  // not_found/unverified/age-gate semantics (each ecosystem has its own
+  // registry, name grammar, and existence-check nuances — see that
+  // module's header); `age_days` is the one configurable knob shared
+  // across all four (deny-vs-prompt mapping for existence/reachability is
+  // fixed, per that module's header).
+  age_days?: number                 // freshness threshold in days (default 30)
 
   // ── Rate limit rules ──
   window_seconds?: number
   max_calls?: number
+
+  // ── Budget rules (real token/dollar spend, distinct from the `type:
+  // rate` call-VOLUME counters shipped as `runaway-budget-tool-calls`/
+  // `runaway-budget-bash-calls` — those count tool calls in a window, this
+  // measures actual LLM API token/dollar usage read from a host's own
+  // local transcript/session record) ──
+  //
+  // Two-phase, race-free by construction (see budget-tracker.ts): a spend
+  // MEASUREMENT (from a Claude Code transcript line or an OpenCode session
+  // row) is recorded OUTSIDE evaluate() — at Stop/PostToolUse-equivalent,
+  // where the turn/tool-call has already settled — via
+  // `EnforcementPipeline.recordBudgetSnapshot()`. That measurement updates
+  // a PERSISTED over-budget flag (`~/.keel/state/budget-tracker.json`,
+  // PersistentBudgetStore) keyed by rule + session + cwd. `evaluate()`'s
+  // own `type: budget` branch (PreToolUse) only ever reads that persisted
+  // flag — it never re-reads a transcript on the blocking path — because
+  // Claude Code's Stop hook is architecturally observe-only (it cannot
+  // block; the turn already completed) and the only correct enforcement
+  // point for a budget breach is the NEXT tool call, exactly the same
+  // "warn on first violation, persisted state blocks on repeat" shape
+  // every other deny rule already uses (docs/integration-guides/
+  // claude-code.md).
+  /** Token ceiling (sum of input+output+cache-creation+cache-read+thinking tokens) for the session. Always enforceable — token counts need no per-model pricing table. */
+  max_tokens?: number
+  /**
+   * Dollar ceiling for the session. Only ever enforced when the spend
+   * measurement's dollar figure is FULLY CONFIDENT — every contributing
+   * transcript line's model string matched a known pricing entry. A
+   * SINGLE unrecognized model string anywhere in the session (a short
+   * alias like `claude-sonnet-5` rather than an official dated model ID —
+   * confirmed live on real Claude Code sessions on this machine) degrades
+   * the WHOLE session's dollar figure to unavailable (null), never a
+   * partial/undercounted total presented as the true one — see
+   * budget/claude-transcript.ts's own header comment. A rule that sets
+   * `max_dollars` without `max_tokens` risks being a control that can
+   * never fire on a session using only aliased model strings; shipping a
+   * default with `max_tokens` alone sidesteps that.
+   */
+  max_dollars?: number
+  /**
+   * Escalation terminal step (mirrors `type: stuck`'s `escalation` ladder,
+   * scaled to a continuous spend measure instead of a discrete attempt
+   * count): when the measured spend exceeds `max_tokens` (or
+   * `max_dollars`, if confident) by this multiple, the pipeline calls
+   * `halt-writer.ts`'s `writeHaltSentinel()` — the SAME sentinel shape
+   * `keel halt` writes — in addition to the ordinary per-rule deny.
+   * Undefined (the default) disables this entirely. NEVER fires for a
+   * `mode: observe` rule regardless of this value — see
+   * budget-tracker.ts's own comment: a false positive on an unproven
+   * measurement latching deny-everything until a human runs `keel resume`
+   * is exactly the hazard `cli/halt.ts`'s own header comment warns
+   * against, so this is gated on the rule actually enforcing, not merely
+   * observing.
+   */
+  hard_stop_multiplier?: number
 
   // ── Time rules ──
   timezone?: string
@@ -124,6 +388,16 @@ export interface KeelRule {
   sequence_window_seconds?: number
 
   // ── Verification obligations ──
+  //
+  // `type: claim` reuses this exact trigger/satisfy/window shape (see
+  // enforce/verification.ts and enforce/claim.ts) — an edit arms the
+  // obligation, a passing test/build command discharges it, and
+  // `verification_window_seconds` bounds how long it stays armed. The
+  // difference is only what happens while it is still pending: a
+  // `verification` rule gates a BOUNDARY tool call (commit/push) via
+  // `boundaries`; a `claim` rule gates the agent's own TEXT asserting the
+  // obligation is already met (see claim.ts's grammar). `boundaries` is
+  // meaningless for `claim` rules and is ignored if present.
   trigger?: VerificationMatcher
   satisfy?: VerificationMatcher
   boundaries?: Record<string, VerificationBoundary>
@@ -132,12 +406,118 @@ export interface KeelRule {
   // ── Flow / IFC rules ──
   sources?: string[]
   sinks?: string[]
+  /**
+   * When true, a `type: flow` rule is checked against FlowTracker's
+   * PERSISTED, session-scoped, TTL'd store (flow-store.ts) instead of its
+   * in-memory taggedValues Map — see flow-tracker.ts's checkPersisted().
+   * This is what lets `sources`/`sinks` correlate across SEPARATE
+   * `keel hook <host>` processes within one session (docs/exfil.md's
+   * "Coverage depends on which host integration you use"), not just within
+   * one live process the way the default (unset/false) in-memory check()
+   * does. Deliberately a distinct rule (see install.ts's
+   * no-exfil-flow-cross-call) rather than a flag flipped on the existing
+   * no-exfil-flow floor: cross-process correlation has a materially wider
+   * false-positive window (the TTL, not one command) and ships at
+   * warn/observe, never as a `level: protect` deny. A `cross_call` rule
+   * still calls FlowTracker.record() itself (pipeline.ts's flow branch),
+   * so it is self-sufficient even in a custom ruleset that ships it
+   * without its non-cross_call sibling.
+   */
+  cross_call?: boolean
 
   // ── MCP rules ──
   mcp_check?: 'tool_descriptions' | 'tool_results' | 'server_changes'
 
-  // ── Session rules ──
-  max_duration_minutes?: number
+  // ── Injection rules (`type: injection` — tool-result prompt-injection
+  // scanning, Lane F) ──
+  //
+  // An injection rule reuses `patterns[]` (above) but only the `regex` key —
+  // `prefix`, `redact_span`, and `redact_widen` are all output-redaction-
+  // specific vocabulary (see `patterns`' own doc comment) that rule-parser.ts
+  // ERRORS on for a `type: injection` rule's patterns, because injection
+  // neutralization asserts something weaker than redaction's span-safety
+  // claim: "markers were found and defanged, treat this whole result as
+  // data" needs no opt-in span proof the way "this exact span IS the secret"
+  // does. See `EnforcementPipeline.evaluateInjection()` (pipeline.ts) and
+  // enforce/injection-scan.ts for the detector form this field powers.
+  //
+  // `next_call_scrutiny` is the OTHER, gate form of an injection rule — no
+  // `patterns` of its own, `action` fixed to `warn` like every injection
+  // rule (see rule-parser.ts's validateRules and its extended validActions
+  // comment for why this action can never be rule-authorable beyond that).
+  // When true, this rule arms a persisted, session-scoped, TTL'd flag
+  // (enforce/injection-store.ts's PersistentInjectionStore) whenever ANY
+  // enforcing `patterns`-form injection rule detects a marker in a tool
+  // result this session, and fires once — as a warn — on that session's
+  // next CONSEQUENTIAL tool call (a write or a shell invocation; see
+  // WRITE_TOOL_NAMES in verification.ts and pipeline.ts's runTieredRules()
+  // for the exact predicate). This is the one place keel can still
+  // genuinely intervene on every host except OpenCode: by the time a
+  // detector rule sees a tool result, that result has already reached the
+  // model on every other host (docs/injection.md's per-host table), so the
+  // only remaining leverage is the agent's NEXT action, which still goes
+  // through the ordinary pre-call gate. A rule needs EITHER `patterns` OR
+  // `next_call_scrutiny: true` — rule-parser.ts's validateRules rejects an
+  // injection rule with neither, since it could never fire.
+  next_call_scrutiny?: boolean
+
+  // `taint_correlation` narrows a `next_call_scrutiny: true` gate rule from
+  // "fires on ANY consequential call" (the broad Lane F behavior above) to
+  // "fires only on a consequential call whose OWN arguments or content
+  // reference a correlated artifact" — a URL, hostname, file path, or email
+  // address that appeared within `ARTIFACT_WINDOW_CHARS` of an enforcing
+  // marker in an earlier flagged tool result this session (enforce/
+  // injection-taint.ts's extraction + `correlateTags()`). REQUIRES
+  // `next_call_scrutiny: true` on the same rule — inert alone, since there
+  // is nothing to narrow without the gate it modifies; rule-parser.ts's
+  // validateRules rejects `taint_correlation: true` with no
+  // `next_call_scrutiny`, and rejects this field on any non-`injection`
+  // rule. Still `action: warn` only, like every injection rule — rule-
+  // parser.ts's validActions comment covers why nothing stronger is
+  // rule-authorable on this type, correlated evidence or not. Promoting a
+  // CORRELATED hit specifically to `action: prompt` is a separate,
+  // explicit future decision requiring a parser change plus real hit-rate
+  // data — not shipped here. See install.ts's `untrusted-content-
+  // derived-call` and docs/injection.md.
+  taint_correlation?: boolean
+
+  // ── Session composite-trip rules (`type: session`) ──
+  //
+  // A composite runaway-loop trip across five session-scoped dimensions:
+  // wall-clock duration, cumulative tool-call count, cumulative Bash-call
+  // count, distinct-file-write churn, and consecutive-failure count. Each
+  // entry in the ladder targets exactly one dimension and fires once that
+  // dimension's live value reaches `at`; the WORST met step across all five
+  // wins on any given call (session-tracker.ts's `check()`).
+  //
+  // New field name is deliberately `session_`-prefixed rather than reusing
+  // `type: rate`'s `window_seconds`/`max_calls`: those mean a SLIDING-WINDOW
+  // ceiling per matched pattern, a different semantic from a
+  // session-cumulative total that never resets on its own — see
+  // `runaway-budget-tool-calls`/`-bash-calls` (install.ts) for the sliding-
+  // window shape this deliberately does NOT reuse. The shape itself
+  // (`{ at, action, message }`) mirrors `type: stuck`'s `escalation` field
+  // (see `max_attempts`/`block_attempts`/`escalation` above), extended with
+  // one new `dimension` selector so a single rule can carry independent
+  // thresholds per dimension instead of one flat count.
+  //
+  // SAFETY-CRITICAL, enforced structurally by rule-parser.ts's
+  // validateRules (not merely by convention): `halt: true` and
+  // `action: 'deny' | 'block'` may ONLY appear on a `consecutive_failures`
+  // step. `duration_minutes`, `tool_calls`, `bash_calls`, and
+  // `file_write_churn` are pure volume counters — they climb whether the
+  // session is thriving or stuck, so they may escalate at most to `prompt`;
+  // only a repeated-FAILURE streak (reset on any success, exactly like
+  // `no-repeat-loops`'s `require_failure`) may ever escalate all the way to
+  // a `keel halt` lockdown latch (no auto-expiry — see halt-writer.ts).
+  session_escalation?: Array<{
+    dimension: 'duration_minutes' | 'tool_calls' | 'bash_calls' | 'file_write_churn' | 'consecutive_failures'
+    at: number
+    action: EnforcementAction
+    message?: string
+    /** Trips `keel halt`'s lockdown latch when this step fires. Rejected by validateRules on any dimension other than `consecutive_failures`. */
+    halt?: boolean
+  }>
 
   // ── Inheritance rules ──
   propagate_rules?: 'all' | 'global' | 'none'
@@ -154,6 +534,35 @@ export interface KeelRule {
 
   // ── Meta rules ──
   condition?: string                // e.g. "3 denials in 60 seconds"
+}
+
+// ── Minimal / beginner-friendly rule format ──────────────────────────
+//
+// `KeelRule` mirrors keel's own shipped catalog — id, type, level, scope,
+// context, action, message, priority, plus ~20 type-specific optional
+// fields depending on `type`. That is the right shape for the rules keel
+// ships, but it is not a reasonable first thing to hand a user who just
+// wants to block one footgun command. `SimpleRule` is that on-ramp: the
+// five fields below, with one match-condition field chosen by `type`, and
+// nothing else. `expandSimpleRule()` (enforce/rule-parser.ts) is the only
+// place a SimpleRule is ever interpreted — it translates each one into a
+// full KeelRule before validateRules() or the enforcement pipeline ever
+// see it, so there is exactly one rule shape at evaluation time, not two
+// parallel formats to keep in sync.
+export type SimpleRuleType = 'command' | 'filesystem' | 'content' | 'env' | 'network'
+
+export interface SimpleRule {
+  id: string
+  type: SimpleRuleType
+  action: EnforcementAction
+  message: string
+
+  // ── exactly one of these is required, chosen by `type` ──
+  match?: string          // type: command | network — regex or literal
+  match_regex?: string    // type: command — alternative to `match`
+  paths?: string[]        // type: filesystem — glob(s) to watch
+  patterns?: string[]     // type: content — plain regex strings (no {regex,prefix} wrapper)
+  vars?: string[]         // type: env — environment variable names
 }
 
 export interface SequenceStep {
@@ -206,11 +615,31 @@ export interface EnforceInput {
   context_tokens: number
   level: ProtectionLevel
   context: RuleContext
-  agent: string                     // 'opencode' | 'claude-code' | 'cline' | etc.
+  agent: string                     // 'opencode' | 'claude-code' | 'cline' | etc. — HOST identity, not a true per-agent-instance identity. See KeelRule.agents' doc comment.
   subagent_of: string | null
   reasoning?: string                // agent's chain-of-thought, if available
   depth?: EnforcementDepth          // fast | full | deep evaluation depth
   action_override?: EnforcementAction // integration-level action override
+  /**
+   * A completed tool call's OWN output text (stdout, file content read back,
+   * an API response body, ...) — populated ONLY for a call into
+   * `EnforcementPipeline.evaluateOutput()` (sprint/lane-c2's real-output-
+   * capture path, called from a host's PostToolUse-equivalent hook, never
+   * from `evaluate()`/`evaluateClaim()`). Every other consumer of
+   * `EnforceInput` in this codebase leaves this undefined; it exists so the
+   * secret-detection content-rule patterns (`no-secrets-in-code`, `type:
+   * content`) can be reused against output text instead of only input text,
+   * without overloading `args` (which is the CALL's arguments, not its
+   * result) or adding a parallel input shape.
+   *
+   * Lane F adds two more consumers of this exact same field:
+   * `EnforcementPipeline.evaluateInjection()` (the `type: injection`
+   * detector-rule scan) and `evaluateToolResult()` (the orchestrator that
+   * runs both the secret scan and the injection scan against one shared
+   * `tool_output` and merges their verdicts) — see pipeline.ts and
+   * enforce/injection-scan.ts.
+   */
+  tool_output?: string
 }
 
 export interface EnforceResult {
@@ -231,12 +660,169 @@ export interface EnforceResult {
    * enforced. The verdict itself is `allow`, so nothing is interrupted —
    * this is what lets the dashboard report "would have blocked N times"
    * and measure a rule's false-positive rate before promoting it.
+   *
+   * When exactly one `mode: observe` rule matched during this evaluate()
+   * call, this mirrors `observed_matches[0]` (kept for every pre-existing
+   * single-match consumer). When MULTIPLE observe rules matched — now
+   * possible since a matched observe rule records and evaluation
+   * CONTINUES instead of short-circuiting — this single slot cannot hold
+   * all of them; `observed_matches` is the complete picture.
    */
   observed_action?: EnforcementAction
+  /**
+   * Every `mode: observe` rule that matched during this evaluate() call,
+   * in evaluation order. A matched observe rule no longer blinds
+   * lower-priority rules on the same call (see pipeline.ts's evaluate()/
+   * violation() — the OPA Gatekeeper dryrun / Cloudflare WAF log-mode
+   * shape: shadow policies record and evaluation continues), so a single
+   * call can carry more than one observation before the real verdict (a
+   * later non-observe match, or `allow` if none) is decided. Present only
+   * when at least one observe rule matched; absent (not an empty array)
+   * otherwise, so JSON.stringify drops it and old trace lines stay
+   * byte-identical.
+   */
+  observed_matches?: Array<{ rule_id: string; observed_action: EnforcementAction; message: string }>
+  /**
+   * Set only when `action === 'redact'` (`EnforcementPipeline.
+   * evaluateOutput()` — see EnforceInput.tool_output's comment): the
+   * caller's `tool_output` text with every matched secret-shaped span
+   * replaced by an attributed `[redacted-by-keel:<rule_id>]` marker — or
+   * `[redacted-by-keel:<rule_id_a>+<rule_id_b>]` when two or more
+   * redact_span:true patterns from different rules matched OVERLAPPING (or
+   * byte-adjacent) spans: those are merged into a single placeholder
+   * covering their union rather than left to corrupt each other via
+   * sequential mutation, and every contributing rule id is named, joined
+   * by `+`, in match order. A consumer that expects exactly one id after
+   * the colon should split on `+` rather than assume a single token.
+   * `redacted_rule_ids` (below) is always the flat, individually-listed
+   * form regardless of how many placeholders merged which ids — parse that
+   * field, not this marker's text, if you need a clean id list. The
+   * caller (a host integration) is responsible for actually applying this
+   * back onto whatever channel it came from — evaluateOutput() itself never
+   * mutates anything; it is a pure function from text to a verdict + a
+   * candidate replacement text.
+   */
+  redacted_output?: string
+  /** Every `type: content` rule id whose pattern matched during a `redact` verdict, in match order. Absent when nothing matched. */
+  redacted_rule_ids?: string[]
+  /**
+   * Set only by `EnforcementPipeline.evaluateOutput()`, and only `true`
+   * when the scanned text was longer than `MAX_OUTPUT_SCAN_CHARS`
+   * (pipeline.ts): content past that bound was never run through the
+   * `type: content` patterns at all, so a clean/`allow` verdict on a
+   * truncated scan is not a claim that the UNSCANNED tail is clean too —
+   * it is silent about it. Before this field existed, that silence was
+   * only ever visible in the human-readable `message` string (a "(only the
+   * first N chars were scanned)" suffix) — readable by a person, invisible
+   * to any caller that branches on the verdict programmatically (a
+   * dashboard, an alerting rule, a test asserting "no secret leaked").
+   * Absent (not `false`) on every other result shape, so old trace lines
+   * and JSON.stringify output stay byte-identical for anyone not reading
+   * this field yet.
+   */
+  scan_truncated?: boolean
+  /**
+   * Every `type: content` rule id whose `redact_widen: 'pem'` (or `'line'`)
+   * pattern matched but hit its bounded search cap before finding a natural
+   * closing boundary (a matching PEM `END` footer, or a newline) —
+   * `types.ts`'s `redact_widen` doc comment on `KeelRule.patterns[]`. The
+   * span up to the cap was still redacted (never left fully exposed just
+   * because the boundary wasn't found), but the caller should treat the
+   * redaction as possibly incomplete: more secret bytes may sit past the
+   * cap, unscanned. Same "a human-readable message note is not enough for a
+   * caller that branches on the verdict programmatically" reasoning as
+   * `scan_truncated` above. Absent (not an empty array) when nothing hit
+   * the cap, so old trace lines and JSON.stringify output stay
+   * byte-identical for anyone not reading this field yet.
+   */
+  redaction_incomplete_rule_ids?: string[]
+
+  // ── Injection-scan fields (Lane F — `type: injection`, `EnforcementPipeline.
+  // evaluateInjection()` / `evaluateToolResult()`, pipeline.ts and
+  // enforce/injection-scan.ts; `injection_artifacts` is Lane G's addition
+  // to this same family) ──
+  //
+  // All five are absent (never present-but-empty) when the injection pass
+  // found nothing, mirroring `scan_truncated`/`redacted_rule_ids` above —
+  // old trace lines and JSON.stringify output stay byte-identical for any
+  // reader not yet aware of this field.
+  /**
+   * Every `type: injection` rule id that matched during the injection scan
+   * — both enforcing (non-`mode: observe`) and observe-mode matches, in
+   * match order. Because this includes observe-mode ids, it is NOT the
+   * right field to gate "should the next-call scrutiny tag be armed?" or
+   * "was anything actually neutralized?" on — use `injection_markers`
+   * (below) for that: it only ever contains ENFORCING matches, the spans
+   * that were actually replaced in `sanitized_output`.
+   */
+  injection_rule_ids?: string[]
+  /**
+   * Every marker span an ENFORCING (non-`mode: observe`) injection rule
+   * matched — never observe-mode matches, which are recorded only in
+   * `injection_rule_ids` and never neutralized. This is the field a caller
+   * should check to decide whether to arm the next-call scrutiny gate
+   * (`injection_markers?.length` — see docs on `KeelRule.next_call_scrutiny`)
+   * or whether anything was actually written back via `sanitized_output`.
+   *
+   * `excerpt` is DEFANGED before being placed here — collapsed whitespace,
+   * truncated to 60 chars, with `<`, `>`, `|`, `[`, `]`, and any Unicode
+   * tag/zero-width character replaced by `·` — because this field is
+   * written into audit logs that `keel report`/`keel audit` read back
+   * verbatim; an undefanged excerpt would re-deliver a working injection
+   * payload through keel's own tooling. See injection-scan.ts's
+   * `defangExcerpt()`.
+   */
+  injection_markers?: Array<{ rule_id: string; offset: number; excerpt: string }>
+  /**
+   * The candidate replacement text a caller should write back onto
+   * whatever channel `tool_output` came from — set whenever EITHER the
+   * secret scan (`redacted_output`) OR the injection scan neutralized
+   * something, and always the FULLY COMPOSED result of both: when both a
+   * redaction and an injection neutralization fire on the same tool
+   * result, `sanitized_output` already includes the redaction (the
+   * injection pass runs as a FRESH scan against the post-redaction text,
+   * never applying spans located in one string to a different string —
+   * see `evaluateToolResult()`'s own comment). `redacted_output` is
+   * retained UNCHANGED alongside it for existing consumers that only ever
+   * looked at the secret-scan output. Like `redacted_output`, this field
+   * is a pure candidate — evaluateInjection()/evaluateToolResult() never
+   * mutate anything themselves; applying this back is the caller's job.
+   */
+  sanitized_output?: string
+  /**
+   * Sibling of `scan_truncated`, for the injection pass specifically: set
+   * only `true` when the text handed to the injection scan (which may
+   * already be the post-redaction text inside `evaluateToolResult()`, not
+   * always the original `tool_output`) was longer than
+   * `MAX_OUTPUT_SCAN_CHARS` — content past that bound was never run
+   * through the `type: injection` patterns at all. Independent of
+   * `scan_truncated`: the two passes can truncate at different points
+   * when `evaluateToolResult()` composes them, since the injection pass
+   * scans text that may already differ in length from the original after
+   * redaction.
+   */
+  injection_scan_truncated?: boolean
+  /**
+   * Correlatable artifacts (URLs, hostnames, file paths, email addresses)
+   * found within `ARTIFACT_WINDOW_CHARS` of an ENFORCING injection marker
+   * — the same restriction `injection_markers` has, and absent whenever
+   * `injection_markers` is (never present-but-empty, same convention as
+   * every other field in this section). Already DEFANGED, same reasoning
+   * as `injection_markers.excerpt`: this field is written into audit logs
+   * and can be surfaced back to the model via a warning message on its
+   * next turn, so an undefanged value would re-deliver a working URL/path
+   * through keel's own tooling. This is Lane G's raw extraction output —
+   * callers persist it onto `PersistedInjectionTag.artifacts`
+   * (injection-store.ts) to arm the correlated gate rule
+   * (`taint_correlation`, above); the pipeline itself never reads this
+   * field back for its own gate decisions on the SAME call, only a later
+   * one. See enforce/injection-taint.ts.
+   */
+  injection_artifacts?: Array<{ kind: 'url' | 'host' | 'path' | 'email'; value: string }>
 }
 
 export interface RedirectDirective {
-  kind: 'stuck' | 'research' | 'diagnosis' | 'plan'
+  kind: 'stuck' | 'oscillation' | 'research' | 'diagnosis' | 'plan'
   required_tools: string[]
   target: string
   rationale: string
@@ -279,6 +865,15 @@ export interface AuditEntry {
 
   reasoning?: string
   fix_applied?: boolean
+
+  /**
+   * Mirrors EnforceResult.observed_action: set only for rules in
+   * `mode: observe`, carrying the action that WOULD have been enforced while
+   * `action` itself stays "allow". Optional so entries written before this
+   * field existed still parse — every reader here does a plain `JSON.parse`
+   * with no schema check, so an absent key is just `undefined`, not an error.
+   */
+  observed_action?: EnforcementAction
 }
 
 // ── Cache ───────────────────────────────────────────────────────────

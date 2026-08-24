@@ -1,0 +1,25 @@
+cases:
+  - note: "terraform apply"
+    tool: Bash
+    args:
+      command: "terraform apply"
+  - note: "terraform destroy"
+    tool: Bash
+    args:
+      command: "terraform destroy -auto-approve"
+  - note: "kubectl delete against a non-local, non-exempted context"
+    tool: Bash
+    args:
+      command: "kubectl delete deployment payments --context prod-cluster"
+  - note: "kubectl apply with no --context (defaults to whatever the current context is)"
+    tool: Bash
+    args:
+      command: "kubectl apply -f prod.yaml"
+  - note: "kubectl delete against a context whose NAME merely starts with an exempted literal (minikube-prod-shared is not minikube) — must not be falsely exempted"
+    tool: Bash
+    args:
+      command: "kubectl delete deployment payments --context minikube-prod-shared"
+  - note: "kubectl delete against a context starting with the 'local' literal but naming a real remote cluster — must not be falsely exempted"
+    tool: Bash
+    args:
+      command: "kubectl delete deployment payments --context local-prod-shared"

@@ -15,7 +15,7 @@ import {
 } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolveHome } from './home.js'
 
 export interface SigningKey {
   kid: string
@@ -125,7 +125,7 @@ export function initSigning(): SigningKey {
 
   // Persist to disk so signatures can be verified across sessions
   try {
-    const dir = join(homedir(), '.keel')
+    const dir = join(resolveHome(), '.keel')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     // 0600: this is a PRIVATE key. Default permissions (0644 under a typical
     // umask) let any local user read it and forge entries that verify
@@ -137,7 +137,7 @@ export function initSigning(): SigningKey {
 }
 
 function keyPath(): string {
-  return join(homedir(), '.keel', 'signing-key.json')
+  return join(resolveHome(), '.keel', 'signing-key.json')
 }
 
 function legacyKeyPath(): string {
@@ -145,7 +145,7 @@ function legacyKeyPath(): string {
 }
 
 function archiveDir(): string {
-  return join(homedir(), '.keel', 'receipts-archive')
+  return join(resolveHome(), '.keel', 'receipts-archive')
 }
 
 function parseKeyFile(filePath: string): SigningKey | null {
@@ -171,7 +171,7 @@ export function loadPublicKeyJwk(): object | null {
   const current = parseKeyFile(keyPath())
   if (current) return current.publicKeyJwk
   try {
-    const archive = join(homedir(), '.keel', 'receipts-archive')
+    const archive = join(resolveHome(), '.keel', 'receipts-archive')
     if (existsSync(archive)) {
       for (const file of readdirSync(archive).sort()) {
         const rotated = parseKeyFile(join(archive, file))

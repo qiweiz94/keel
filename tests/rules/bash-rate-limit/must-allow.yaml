@@ -1,0 +1,11 @@
+cases:
+  - note: "5 calls is well under the limit"
+    tool: Bash
+    args:
+      command: "echo hi"
+    repeat: 5
+  - note: "the 30th call is still within max_calls: 30 (boundary)"
+    tool: Bash
+    args:
+      command: "echo hi"
+    repeat: 30

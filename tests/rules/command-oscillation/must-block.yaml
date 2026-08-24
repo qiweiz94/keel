@@ -1,0 +1,94 @@
+# command-oscillation is `mode: observe` — every case here asserts
+# `observed_action` (what the rule WOULD have done), never a real interrupt.
+# See pipeline.ts's oscillation branch and oscillation-tracker.ts.
+#
+# Escalation is fed by the AFTER-hook (recordAttemptOutcome), same as
+# no-repeat-loops (type: stuck) — a given cycle is only observable on the
+# NEXT evaluate() call. Each case below has N steps that build the rolling
+# window (one `exit_code` each, so the after-hook records them) plus one
+# trailing step with NO exit_code, whose evaluate() call is the one that
+# observes the cycle.
+cases:
+  - note: "A→B→A→B cycle of two failing commands — redirect tier (2 repeats)"
+    observed_action: redirect
+    steps:
+      - tool: Bash
+        args: { command: "npm run lint" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run build" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run lint" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run build" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run lint" }
+
+  - note: "A→B→A→B→A→B cycle of two failing commands — deny tier (3 repeats)"
+    observed_action: deny
+    steps:
+      - tool: Bash
+        args: { command: "npm run lint" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run build" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run lint" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run build" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run lint" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run build" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run lint" }
+
+  - note: "a length-3 cycle (A→B→C→A→B→C) of failing commands is also detected — redirect tier"
+    observed_action: redirect
+    steps:
+      - tool: Bash
+        args: { command: "npm run task-a" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run task-b" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run task-c" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run task-a" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run task-b" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run task-c" }
+        exit_code: 1
+      - tool: Bash
+        args: { command: "npm run task-a" }
+
+  - note: "the cycle also fires when the alternating steps are file edits (write tool), not just Bash — the window scope includes WRITE_TOOL_NAMES"
+    observed_action: redirect
+    steps:
+      - tool: write
+        args: { path: "src/config-a.json", command: "edit config-a" }
+        exit_code: 1
+      - tool: write
+        args: { path: "src/config-b.json", command: "edit config-b" }
+        exit_code: 1
+      - tool: write
+        args: { path: "src/config-a.json", command: "edit config-a" }
+        exit_code: 1
+      - tool: write
+        args: { path: "src/config-b.json", command: "edit config-b" }
+        exit_code: 1
+      - tool: write
+        args: { path: "src/config-a.json", command: "edit config-a" }

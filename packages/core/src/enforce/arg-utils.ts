@@ -1,4 +1,5 @@
 import type { EnforceInput } from '../types.js'
+import { normalizeCommand } from './command-normalizer.js'
 
 /**
  * Command rules must match COMMAND-ish arguments only, never arbitrary file
@@ -38,7 +39,16 @@ export function pathFromPatch(patchText: unknown): string {
  * markers (apply_patch carries no filePath argument — paths live in the body).
  */
 export function argPath(args: Record<string, unknown>): string {
-  return String(args.path || args.filePath || args.file || args.dest || pathFromPatch(args.patchText) || '')
+  // Claude Code and Gemini send `file_path` (snake_case); Cursor sends
+  // `file`; apply_patch carries the path in its body. A filesystem floor
+  // rule (no-rules-tampering, no-secret-files) is INERT on a host whose
+  // key isn't listed here — verified live: `file_path` slipped a write to
+  // .claude/settings.json past the protect floor on claude-code.
+  return String(
+    args.path || args.file_path || args.filePath || args.file
+    || args.dest || args.destination || args.target_file || args.notebook_path
+    || pathFromPatch(args.patchText) || '',
+  )
 }
 
 export function stripContentArgs(args: Record<string, unknown>): Record<string, unknown> {
@@ -101,5 +111,38 @@ export function commandString(input: EnforceInput): string {
   // anchors like `( |$)` on `rm -rf .` must not be broken by a trailing
   // quote. Non-command args (e.g. WebFetch url) fall back to JSON.
   const direct = commandArrayString(args.command ?? args.cmd)
-  return direct || JSON.stringify(stripContentArgs(args))
+  if (direct) return direct
+  // Some non-MCP integrations wrap the real invocation one level down
+  // (`{ args: { command: '...' } }`) — the same shape the MCP path already
+  // unwraps, just without the `mcp__` tool-name convention that gates it.
+  // Only a single level is unwrapped; deeper nesting still falls to JSON.
+  if (args.args && typeof args.args === 'object' && !Array.isArray(args.args)) {
+    const nestedArgs = args.args as Record<string, unknown>
+    const nested = commandArrayString(nestedArgs.command ?? nestedArgs.cmd)
+    if (nested) return nested
+  }
+  return JSON.stringify(stripContentArgs(args))
+}
+
+/**
+ * Every string a `type: command` rule's pattern should be tested against:
+ * the raw command text (`commandString()`, unchanged — callers that need
+ * the literal command for fingerprinting, fix-mutation, or reporting must
+ * keep using `commandString()` directly, never this) PLUS the bounded
+ * shell-normalization surfaces from command-normalizer.ts (quote-
+ * obfuscation stripped, compound commands split, inline variable
+ * assignments expanded, interpreter one-liner bodies exposed — see that
+ * module's doc for the exact mechanism and honest limits).
+ *
+ * Strictly additive: `surfaces[0]` is always the raw string a caller that
+ * only checked `commandString()` before would have matched against, so
+ * nothing that matched before this function existed can stop matching.
+ * Never throws — `normalizeCommand` degrades to `[raw]` on any cap trip or
+ * unexpected shape rather than raising.
+ */
+export function commandSurfaces(input: EnforceInput): string[] {
+  const raw = commandString(input)
+  if (!raw) return ['']
+  const normalized = normalizeCommand(raw)
+  return normalized.surfaces.length ? normalized.surfaces : [raw]
 }

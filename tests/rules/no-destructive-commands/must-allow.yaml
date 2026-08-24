@@ -1,0 +1,53 @@
+cases:
+  - note: "removing a dependency directory is routine, not destructive"
+    tool: Bash
+    args:
+      command: "rm -rf node_modules"
+  - note: "wave-3 regression guard: a cache path under $HOME, not $HOME itself"
+    tool: Bash
+    args:
+      command: "rm -rf $HOME/.cache/mypkg"
+  - note: "wave-3 regression guard: reversed flags against a build directory"
+    tool: Bash
+    args:
+      command: "rm -fr coverage"
+  - note: "wave-3 regression guard: a FILE whose name starts with newfs"
+    tool: Bash
+    args:
+      command: "newfs.txt"
+  - note: "wave-3 regression guard: dd writing to /dev/null is a throughput test"
+    tool: Bash
+    args:
+      command: "dd if=/dev/zero of=/dev/null bs=1m count=10"
+  - note: "v0.4 red-team guard: the --no-preserve-root clause requires the rm verb, so a bare mention without rm does not fire"
+    tool: Bash
+    args:
+      command: "echo checking the --no-preserve-root docs"
+  - note: "M1 ruleset-followups (G2 FP fix): echoing a destructive string is not running it — double-quoted. A2's quote-preservation keeps the whitespace-bearing quoted argument verbatim (quotes included), so rm is no longer at the start of that surface once the match pattern is anchored to command position."
+    tool: Bash
+    args:
+      command: 'echo "rm -rf /"'
+  - note: "M1 ruleset-followups (G2 FP fix): same case, single-quoted"
+    tool: Bash
+    args:
+      command: "echo 'rm -rf /'"
+  - note: "M1 ruleset-followups (G2 FP fix): a commit message is data, not a command — signoff included to isolate this from must-sign-commits"
+    tool: Bash
+    args:
+      command: 'git commit --signoff -m "rm -rf /"'
+  - note: "M1 ruleset-followups (G2 FP fix): printf is the same data-argument shape as echo"
+    tool: Bash
+    args:
+      command: 'printf "rm -rf /"'
+  - note: "the new generic redirect-to-block-device guard must not fire on the same safe /dev targets the dd branch already exempts"
+    tool: Bash
+    args:
+      command: "cat /dev/zero > /dev/null"
+  - note: "redirecting to the current terminal is not a disk wipe"
+    tool: Bash
+    args:
+      command: "echo hi > /dev/tty"
+  - note: "a scoped, non-broadening chmod -R (750) is not matched by the widened 777/000/a+rwx guard"
+    tool: Bash
+    args:
+      command: "chmod -R 750 ./dist"

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { homedir } from 'node:os'
+import { resolveHome } from '../../home.js'
 
 /**
  * Session-scoped research cache.
@@ -28,7 +28,7 @@ export interface ResearchEntry {
 }
 
 export function researchCacheDir(): string {
-  return process.env.KEEL_RESEARCH_CACHE_DIR || join(homedir(), '.keel', 'cache', 'research')
+  return process.env.KEEL_RESEARCH_CACHE_DIR || join(resolveHome(), '.keel', 'cache', 'research')
 }
 
 export function researchKey(sessionId: string, topic: string): string {

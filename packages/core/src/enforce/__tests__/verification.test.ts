@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { writeFileSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { EnforcementPipeline } from '../pipeline.js'
@@ -9,11 +9,20 @@ import { FlowTracker } from '../flow-tracker.js'
 import { parseRulesContent } from '../rule-parser.js'
 import { pathFromPatch, argPath } from '../arg-utils.js'
 import type { RuleContext } from '../../types.js'
+import { rmSafe } from './helpers/fs-safe.js'
 
 // Agentic tool-name coverage: opencode's real file tools are lowercase
 // `write`/`edit`/`apply_patch` and its shell tool is `bash`. The verification
 // trigger must fire on them (F1), satisfy through `bash` (F1), and derive the
 // target path from apply_patch body markers (F3).
+
+// EnforcementPipeline defaults `overrideStore` to a FileRuleOverrideStore
+// rooted at the real `homedir()` when none is supplied, and every deny/block
+// verdict calls `overrideStore.consume()` — which touches real ~/.keel
+// (mkdir + lock file) even when no override is ever armed. An in-memory
+// stub keeps this suite's deny scenarios off the real filesystem (see
+// match-surface.test.ts's `noopOverrideStore`, same fix, same root cause).
+const noopOverrideStore = { consume: () => false, peek: () => null, list: () => ({}) }
 
 const VERIFY_RULES = `version: 1
 rules:
@@ -47,6 +56,7 @@ function makeVerifyPipeline(id: string): EnforcementPipeline {
     contentTracker: new ContentTracker(),
     sequenceDetector: new SequenceDetector(),
     flowTracker: new FlowTracker(),
+    overrideStore: noopOverrideStore,
     ruleHierarchy: { global: null, user: null, project: rules, local: null },
     ruleVersion: 1,
     allowedFixTransforms: true,
@@ -76,7 +86,7 @@ function tmpFile(name: string): string {
 
 describe('Verification tracker (agentic tool names)', () => {
   afterAll(() => {
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+    if (tmpDir) rmSafe(tmpDir)
   })
 
   it('write to src/ creates the obligation; commit warns, push escalates warn→deny', async () => {
@@ -118,6 +128,38 @@ describe('Verification tracker (agentic tool names)', () => {
     expect((await p.evaluate(input('bash', { command: 'git push origin main' }))).action).toBe('allow')
   })
 
+  it('a test run started before a later edit must not discharge that edit\'s obligation (race)', async () => {
+    const p = makeVerifyPipeline('vf-race')
+    // Edit #1 arms the obligation at generation 1.
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    // The test's own PreToolUse fires ("the run starts") — it observes
+    // generation 1 as current at the moment it began.
+    await p.evaluate(input('bash', { command: 'npm run test' }))
+    // A SECOND edit lands WHILE that run is still executing (in the real
+    // race, this happens between the run's PreToolUse and PostToolUse) —
+    // re-arms the obligation to generation 2.
+    await p.evaluate(input('write', { filePath: 'src/b.ts', content: 'y' }))
+    // The run finishes and its post-hook fires markVerificationSatisfied.
+    // This run started before edit #2 and never actually covered it, so it
+    // must NOT clear generation 2's obligation.
+    p.markVerificationSatisfied(input('bash', { command: 'npm run test' }))
+    // Still armed: the push boundary still fires (warn on the first hit),
+    // proving the obligation from edit #2 was not wrongly discharged.
+    expect((await p.evaluate(input('bash', { command: 'git push origin main' }))).action).toBe('warn')
+  })
+
+  it('normal order still discharges: edit, then a test that starts and finishes after it', async () => {
+    const p = makeVerifyPipeline('vf-race-normal')
+    // Edit arms the obligation.
+    await p.evaluate(input('write', { filePath: 'src/a.ts', content: 'x' }))
+    // The test starts strictly AFTER the edit and no further edit lands
+    // before it finishes — the common, correct-order case.
+    await p.evaluate(input('bash', { command: 'npm run test' }))
+    p.markVerificationSatisfied(input('bash', { command: 'npm run test' }))
+    // Discharged: no boundary warning left to fire.
+    expect((await p.evaluate(input('bash', { command: 'git push origin main' }))).action).toBe('allow')
+  })
+
   it('pathFromPatch extracts the target from Add/Update/Delete/Move markers', () => {
     expect(pathFromPatch('*** Add File: src/x.ts\n+code\n')).toBe('src/x.ts')
     expect(pathFromPatch('*** Update File: docs/readme.md\n-old\n+new\n')).toBe('docs/readme.md')
@@ -138,7 +180,7 @@ describe('Verification tracker (agentic tool names)', () => {
 
 describe('Content rules (disk scan)', () => {
   afterAll(() => {
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+    if (tmpDir) rmSafe(tmpDir)
   })
 
   const CONTENT_RULES = `version: 1
@@ -160,6 +202,7 @@ rules:
       contentTracker: new ContentTracker(),
       sequenceDetector: new SequenceDetector(),
       flowTracker: new FlowTracker(),
+      overrideStore: noopOverrideStore,
       ruleHierarchy: { global: null, user: null, project: rules, local: null },
       ruleVersion: 1,
       allowedFixTransforms: true,
@@ -191,7 +234,7 @@ rules:
     writeFileSync(notes, 'PRIVATE_KEY_xyz\n')
     expect((await dataInput(notes, 'clean payload 3')).action).toBe('deny')
     expect((await dataInput(notes, 'clean payload 4')).action).toBe('allow')
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   })
 
   it('inline content is always checked, even overwriting an already-scanned file (F9 regression)', async () => {
@@ -204,6 +247,6 @@ rules:
     // Overwrite with another inline secret: must STILL be flagged even though
     // the on-disk file was marked unchanged by the previous scan.
     expect((await fileInput(p, target, 'PRIVATE_KEY_inline_2', 'f9')).action).toBe('deny')
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir)
   })
 })

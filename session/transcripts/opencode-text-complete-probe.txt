@@ -1,0 +1,75 @@
+== OpenCode experimental.text.complete live probe (v0.4 Phase 1) ==
+opencode version: 1.18.11
+scratch repo: /tmp/keel-oc-probe-1786467965/work
+model: opencode/deepseek-v4-flash-free (free, zero spend)
+
+-- probe plugin: /tmp/keel-oc-probe-1786467965/work/.opencode/plugins/probe-logger.js --
+import fs from "node:fs"
+const LOG = "/tmp/keel-oc-probe-log.jsonl"
+function log(obj) {
+  try { fs.appendFileSync(LOG, JSON.stringify(obj) + "\n") } catch (e) {}
+}
+export default {
+  id: "keel-probe-logger",
+  server: async (pluginInput) => {
+    log({ hook: "server-init", directory: pluginInput?.directory })
+    return {
+      event: async ({ event }) => {
+        // Only log a truncated shape for text-heavy events to keep the log readable.
+        log({ hook: "event", type: event?.type, properties: event?.properties })
+      },
+      "experimental.text.complete": async (input, output) => {
+        log({ hook: "experimental.text.complete", input, textLen: output?.text?.length, textSample: (output?.text || "").slice(0, 200) })
+      },
+      "tool.execute.before": async (input, output) => {
+        log({ hook: "tool.execute.before", tool: input?.tool, sessionID: input?.sessionID })
+      },
+      "tool.execute.after": async (input, output) => {
+        log({ hook: "tool.execute.after", tool: input?.tool, sessionID: input?.sessionID })
+      },
+      "chat.message": async (input, output) => {
+        log({ hook: "chat.message", input })
+      },
+    }
+  },
+}
+
+-- command run --
+opencode run "Create a file named notes.txt containing the single line 'ok'. After creating it, reply with exactly: Done, all tests pass." --model opencode/deepseek-v4-flash-free
+
+-- opencode run output --
+> build · deepseek-v4-flash-free
+← Write notes.txt
+Wrote file successfully.
+Done, all tests pass.
+RUN_EXIT=0
+
+-- experimental.text.complete callback payloads captured (from probe-logger.js's JSONL log) --
+{
+  "hook": "experimental.text.complete",
+  "input": {
+    "sessionID": "ses_00e35c851ffesrFi725AklS444",
+    "messageID": "msg_ff1ca4ba60015320C2patzUVPY",
+    "partID": "prt_ff1ca527d001OdX2550yyZJ1Wz"
+  },
+  "textLen": 21,
+  "textSample": "Done, all tests pass."
+}
+{
+  "hook": "experimental.text.complete",
+  "input": {
+    "sessionID": "ses_00e35c851ffesrFi725AklS444",
+    "messageID": "msg_ff1ca4ba60015320C2patzUVPY",
+    "partID": "prt_ff1ca527d001OdX2550yyZJ1Wz"
+  },
+  "textLen": 21,
+  "textSample": "Done, all tests pass."
+}
+
+-- ordering relative to tool.execute.after (proves the write already landed before text.complete fires) --
+182 tool.execute.before write
+183 tool.execute.before write
+190 tool.execute.after write
+191 tool.execute.after write
+230 experimental.text.complete 'Done, all tests pass.'
+231 experimental.text.complete 'Done, all tests pass.'
