@@ -118,7 +118,7 @@ rules:
 
   - id: no-enforcer-removal
     type: command
-    match: "rm[^|;&]*[.]opencode/plugins/|rm[^|;&]*[.]keel/(rules[.]yaml|plugins|DISABLED|HALTED)|rm[^|;&]*[ \t/][.]keel([ \t]|/?$)"
+    match: "rm[^|;&]*[.]opencode.plugins.|rm[^|;&]*[.]keel.(rules[.]yaml|plugins|DISABLED|HALTED)|rm[^|;&]*[ \t/\\\\\\\\][.]keel([ \t]|[/\\\\\\\\]?$)"
     action: deny
     level: protect
     priority: 90
@@ -136,7 +136,7 @@ rules:
   # ── self-protection write gate (Tier 1; supervisor paste at gate-3, secreview) ──
   - id: no-self-protection-write
     type: command
-    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel/(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude/settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode/settings[.]json|[.]git/hooks/|[.]opencode/plugins/|[.]keel/DISABLED|[.]keel/HALTED)|git +config[^|;&]*core[.]hooksPath"
+    match: "(>>?|(?<![A-Za-z])(tee( +-a)?|cp|mv|install|ln|truncate|dd|rsync)(?![A-Za-z])|(?<![A-Za-z])sed +-i[^|;&]*|(?<![A-Za-z])python3? +-c[^|;&]*|(?<![A-Za-z])node +-e[^|;&]*|(?<![A-Za-z])perl +-[ep][^|;&]*)[^|;&]*[^A-Za-z0-9_-]([.]keel.(rules[.]yaml|plugins)|[.]keel[.]local[.]yaml|[.]claude.settings([.]local)?[.]json|[.]mcp[.]json|[.]vscode.settings[.]json|[.]git.hooks.|[.]opencode.plugins.|[.]keel.DISABLED|[.]keel.HALTED)|git +config[^|;&]*core[.]hooksPath"
     action: deny
     level: protect
     priority: 95

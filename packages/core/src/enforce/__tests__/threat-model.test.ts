@@ -450,6 +450,31 @@ rules:
       expect((await p.evaluate(input('bash', { command: `rm -rf ${target}` }, 'rm-plugin'))).action).toBe('deny')
     })
 
+    it('self-protection regexes catch Windows-style backslash paths, not just POSIX slashes', async () => {
+      // Regression guard for a real gap found on windows-latest CI: both
+      // rules' path fragments were hardcoded to forward slashes
+      // (`[.]opencode/plugins/`), so `path.win32.join`-style backslash paths
+      // silently bypassed the block on a real Windows machine. Deliberately
+      // literal backslash strings here (not path.win32.join) so this test
+      // exercises the Windows shape on every platform, including this
+      // suite's own macOS/Linux CI legs.
+      const p = makeDefaultsPipeline('balanced')
+      const winPluginPath = 'C:\\Users\\tester\\.opencode\\plugins\\keel-enforce.js'
+      expect((await p.evaluate(input('bash', { command: `rm ${winPluginPath}` }, 'rm-plugin-win'))).action).toBe('deny')
+      const second = await p.evaluate(input('bash', { command: `rm ${winPluginPath}` }, 'rm-plugin-win'))
+      expect(second.rule_id).toBe('no-enforcer-removal')
+
+      const winKeelDir = 'rm -rf C:\\Users\\tester\\.keel'
+      expect((await p.evaluate(input('bash', { command: winKeelDir }, 'rm-keel-win'))).action).toBe('deny')
+
+      const winSettingsPath = 'C:\\Users\\tester\\project\\.claude\\settings.json'
+      expect((await p.evaluate(input('bash', { command: `tee ${winSettingsPath} <<< x` }, 'tee-settings-win'))).action).toBe('deny')
+
+      // Known-healthy negative on the same shape: an unrelated Windows path
+      // must still be allowed, so this isn't just "any backslash denies".
+      expect((await p.evaluate(input('bash', { command: 'rm C:\\Users\\tester\\project\\notes.txt' }, 'rm-unrelated-win'))).action).toBe('allow')
+    })
+
     it('keel allow no longer grants a one-time override', async () => {
       const p = makeDefaultsPipeline('balanced')
       // A prior override grant exists, but the agent cannot self-approve via
