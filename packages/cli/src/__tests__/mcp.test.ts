@@ -57,23 +57,51 @@ beforeEach(() => {
   process.env.HOME = home
 })
 
-afterEach(() => {
+// `keel serve`/`keel gateway` auto-spawn a DETACHED daemon on first use and
+// reuse it across the rest of this file's tests -- it is a grandchild of
+// the test process, not the directly-spawned `child` each test tracks, so
+// awaiting that child's own exit (see killAndWait above) says nothing about
+// whether the daemon has released its handles on files inside `home`. Every
+// afterEach's rmSafe(home) raced that still-running daemon on Windows
+// (EBUSY on rmdir) for as long as the daemon stayed up, which was the whole
+// file, since it was only ever stopped once in afterAll -- after every
+// single test's own teardown had already tried and possibly failed.
+// Stopping it (and waiting for the PID to actually go away, not just for
+// the signal to be sent) after EVERY test, not only at the end, closes that
+// for good.
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms))
+
+async function stopDaemonIfRunning(): Promise<void> {
+  try {
+    if (!home) return
+    const { daemonStatePath } = require('../commands/daemon.js')
+    const { readFileSync } = require('node:fs')
+    const state = JSON.parse(readFileSync(daemonStatePath(), 'utf-8'))
+    if (!state?.pid) return
+    process.kill(state.pid, 'SIGTERM')
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      try {
+        process.kill(state.pid, 0) // throws once the process is gone
+      } catch {
+        return
+      }
+      await sleep(50)
+    }
+  } catch { /* no daemon state file: nothing was spawned */ }
+}
+
+afterEach(async () => {
+  await stopDaemonIfRunning()
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
   rmSafe(home); rmSafe(project)
 })
 
-afterAll(() => {
-  // A detached daemon may have been auto-spawned by the tests; stop it.
-  try {
-    if (home) {
-      const { loadDaemonState, daemonStatePath } = require('../commands/daemon.js')
-      const { readFileSync } = require('node:fs')
-      const path = daemonStatePath()
-      const state = JSON.parse(readFileSync(path, 'utf-8'))
-      if (state?.pid) process.kill(state.pid, 'SIGTERM')
-    }
-  } catch {}
+// Redundant with the per-test stop above in the normal case; kept as a
+// final safety net in case a test crashed before its own afterEach ran.
+afterAll(async () => {
+  await stopDaemonIfRunning()
 })
 
 /** Speak newline-delimited JSON-RPC over a child's stdio. */
