@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "vitest": "^4.1.10",
+    "vitest": "^4.1.11",
     "vite-node": "^6.0.0"
   },
   "license": "Apache-2.0",
